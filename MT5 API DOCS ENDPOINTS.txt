@@ -1,0 +1,2866 @@
+MT5 API DOCS ENDPOINTS
+
+Deals
+The Web API provides the following requests for receiving information about clients' deals:
+
+Request
+
+Description
+
+/api/deal/get
+
+Get a deal by a ticket.
+
+/api/deal/get_total
+
+Get the total number of deals.
+
+/api/deal/get_page
+
+Get deals by the login of a client.
+
+/api/deal/get_batch
+
+Get information about multiple deals by a list of logins, tickets or groups.
+
+/api/deal/update
+
+Change deal on the server.
+
+/api/deal/delete
+
+Deletes one or more deals by ticket numbers.
+
+/api/deal/backup/list
+
+Get deal backup creation dates within the specified time range.
+
+/api/deal/backup/get
+
+Get information about one or more deals from a specific backup on the server.
+
+/api/deal/backup/restore
+
+Recover a deal from backup.
+
+
+
+
+
+Data Structure
+Data on deals is passed in JSON format as a response to the /api/deal/get and /api/deal/get_page requests. Deal information includes the following parameters:
+
+Option Field
+
+Type
+
+Description
+
+Deal
+
+Integer
+
+Deal ticket.
+
+ExternalID
+
+String
+
+The deal ID in external trading systems.
+
+Login
+
+Integer
+
+The login of the client, to whom the deal belongs.
+
+Dealer
+
+Integer
+
+The login of a dealer, who has processed a deal.
+
+Order
+
+Integer
+
+The ticket of the order, as a result of which a deal was executed.
+
+Action
+
+Integer
+
+Type of action performed with a deal. Passed in a value of the EnDealAction enumeration.
+
+Entry
+
+Integer
+
+Deal direction. Passed in a value of the EnDealEntry enumeration.
+
+Digits
+
+Integer
+
+The number of decimal places in the price of a deal.
+
+DigitsCurrency
+
+Integer
+
+The number of decimal places the deposit currency of the client who has executed the deal.
+
+ContractSize
+
+Float
+
+The contract size of the symbol, for which a deal was executed.
+
+Time
+
+Integer
+
+The time of a deal execution in seconds that have elapsed since 01.01.1970.
+
+Symbol
+
+String
+
+The symbol, for which a deal is executed.
+
+Price
+
+Float
+
+The price of the deal.
+
+PriceSL
+
+Float
+
+The Stop Loss level of a deal. The Stop Loss values for entry and reversal deals are set in accordance with the Stop Loss of the orders, which initiated appropriate deals. The Stop Loss values ​​of appropriate positions as of the time of position closure are used for exit deals.
+
+PriceTP
+
+Float
+
+The Take Profit level of a deal. The Take Profit values for entry and reversal deals are set in accordance with the Take Profit of orders, which initiated these deals. The Take Profit values ​​of appropriate positions as of the time of position closure are used for exit deals.
+
+Volume
+
+Integer
+
+Volume of a deal. One unit corresponds to 1/10000 lot.
+
+VolumeExt
+
+Integer
+
+Volume of a deal with an extended accuracy. One unit corresponds to 1/100000000 lot.
+
+Profit
+
+Float
+
+Profit from a deal.
+
+Value
+
+Float
+
+The deal value in client deposit currency.
+
+Storage
+
+Float
+
+The swap size for a deal.
+
+Commission
+
+Float
+
+The amount of commission charged for a deal.
+
+RateProfit
+
+Float
+
+The exchange rate of the profit currency of a deal to the deposit currency of a client group.
+
+RateMargin
+
+Float
+
+The exchange rate of the margin currency of a deal to the client's deposit currency.
+
+ExpertID
+
+Integer
+
+The ID of the Expert Advisor that has executed a deal.
+
+PositionID
+
+Integer
+
+The position identifier (ticket) for a deal.
+
+Comment
+
+String
+
+Comment to a deal.
+
+ProfitRaw
+
+Float
+
+Return is specified in the profit currency of the symbol, for which the deal is executed. The profit/loss is expressed in the profit currency of the symbol, for which a deal is executed.
+
+PricePosition
+
+Float
+
+The price of the position closed with this deal.
+
+VolumeClosed
+
+Integer
+
+The position volume that was closed by the deal.
+
+TickValue
+
+Float
+
+The tick price for a deal.
+
+TickSize
+
+Float
+
+The tick size for a deal.
+
+Flags
+
+Integer
+
+The common flags of a deal. This parameter is reserved for future use.
+
+TimeMsc
+
+Integer
+
+The time of a deal in milliseconds.
+
+Reason
+
+Integer
+
+The reason for performing a deal. Passed in a value of the EnDealReason enumeration.
+
+Gateway
+
+String
+
+The ID of a gateway, using which a deal was performed.
+
+PriceGateway
+
+Float
+
+The price that was actually used for performing a deal through a gateway in an external trading system without taking in consideration its price transformation settings of the gateway.
+
+MarketBid
+
+Float
+
+The market Bid price as at the time of deal execution by the server. The field is only filled for the deals which were created after the platform was updated to build 2890 or higher. For earlier deals, the value will be zero.
+
+MarketAsk
+
+Float
+
+The market Ask price as at the time of deal execution by the server. The field is only filled for the deals which were created after the platform was updated to build 2890 or higher. For earlier deals, the value will be zero.
+
+MarketLast
+
+Float
+
+The market Last price as at the time of deal execution by the server. The field is only filled for the deals which were created after the platform was updated to build 2890 or higher. For earlier deals, the value will be zero.
+
+ModificationFlags
+
+Integer
+
+The deal modification flags. Passed in a value of the EnTradeModifyFlags enumeration (sum of values of appropriate flags). Deals that close a position or part of it inherit its modification flags. After closing, no separate entry about the position remains in the database. To prevent the information about modification from being lost, flags are copied to the deal that closes his position. At the same time, the additional EnTradeModifyFlags::MODIFY_FLAGS_POSITION modification flag is set for the deal meaning that the flags were inherited from the position.
+
+ApiData
+
+Array
+
+Array of user data.
+
+User data
+Parameter
+
+Type
+
+Description
+
+AppID
+
+Integer
+
+The identifier of the application that recorded the data.
+
+ID
+
+Integer
+
+Data identifier.
+
+ValueInt
+
+Integer
+
+The user parameter value of the int type.
+
+ValueUint
+
+Integer
+
+The user parameter value of the uint type.
+
+ValueDouble
+
+Float
+
+The user parameter value of the double type.
+
+
+
+
+
+Getting the Number of Deals
+This request is used for obtaining the total number of deals performed by a client in the specified time range.
+
+Request format
+
+GET /api/deal/get_total?login=login&from=date&to=date
+POST /api/deal/get_total?login=login&from=date&to=date
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : { "Total" : "number" }
+}
+
+Example
+
+//--- request to the server
+GET /api/deal/get_total?login=1020&from=1314882419&to=1315573619
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : { "Total" : "10" }
+}
+
+Request Parameters
+login — the login of a client
+from — the beginning of the period for requesting deals. The date is specified in seconds that have elapsed since 01.01.1970.
+to — the end of the period for requesting deals. The date is specified in seconds that have elapsed since 01.01.1970.
+Response Parameters
+retcode — if successful, the command returns a response code 0. Otherwise, it will return an error code.
+total — the number of deals performed by the client in the specified time range.
+
+
+
+Get Multiple Deals
+The request allows receiving information related to multiple deals, based on a list of logins, tickets or groups.
+
+Request Format
+
+GET /api/deal/get_batch?login=logins&group=groups&ticket=tickets&from=date&to=date&symbol=symbol
+POST /api/deal/get_batch?login=logins&group=groups&ticket=tickets&from=date&to=date&symbol=symbol
+POST /api/deal/get_batch?from=date&to=date&symbol=symbol
+{
+  "ticket": [
+    1012,
+    4034
+  ],
+  "group": [
+    demoforex-eur,
+    demoforex-usd
+  ],
+  "ticket": [
+    96639,
+    13549
+  ],
+} 
+
+Response Format
+
+{
+ "retcode" : "code description",
+ "answer" : [ description of deals ]
+}
+
+Example
+
+//--- request to the server
+GET /api/deal/get_batch?login=764636,764637&from=1546300800&to=1603093199
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    { 
+     "Deal" : "11918642",
+     "ExternalID" : '',
+     "Login" : "764636",
+     ...
+    },
+    { 
+     "Deal" : "11918643",
+     "ExternalID" : "",
+     "Login" : "764637",
+     ...
+    },
+...
+  ]
+}
+
+Request Parameters
+login — the list of logins, the positions of which you want to receive. A commas separated list. Can also be specified as an array in the POST request body.
+group — the list of groups, for users from which you want to receive deals. You can specify one group, several groups (comma separated) or a group mask. The mask is specified using "*" (any value) and "!" (exception). For example: "demo*,!demoforex" - all groups whose names begin with 'demo', except for the group demoforex. Groups can also be specified as an array in the POST request body.
+ticket — the list of deal tickets to receive. Can be specified as an array in the POST request body.
+from — the beginning of the period for requesting deals. The date is specified in seconds elapsed since 01.01.1970. The parameter is required when requesting operations by login or group.
+to — the end of the period for requesting deals. The date is specified in seconds elapsed since 01.01.1970. The parameter is required when requesting operations by login or group.
+symbol — the symbol deals for which you are requesting. You can specify multiple symbols separated by commas. Only makes sense when used together with the 'login' or 'group' parameter.
+Operations can be requested with only one parameter: by logins, by groups, or by tickets. You cannot specify all the three parameters together.
+
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — deal array in JSON format. The complete description of the passed deal parameters is given under the Data structure section.
+
+
+
+
+
+
+Positions
+The Web API provides the following requests for receiving information about clients' positions:
+
+Request
+
+Description
+
+/api/position/get
+
+Get a client's position by the symbol name.
+
+/api/position/get_total
+
+Get the total number of a client's open positions.
+
+/api/position/get_page
+
+Get positions by the login of a client.
+
+/api/position/get_batch
+
+Get information about multiple positions by a list of logins, tickets or groups.
+
+/api/position/update
+
+Change position on the server.
+
+/api/position/delete
+
+Deletes one or more positions by ticket numbers.
+
+/api/position/backup/list
+
+Get position backup creation dates within the specified time range.
+
+/api/position/backup/get
+
+Get position backup creation dates within the specified time range.
+
+/api/position/backup/restore
+
+Recover a position from a backup.
+
+/api/position/check
+
+Checks the correctness of an account's positions based on the history of deals.
+
+/api/position/fix
+
+Corrects an account's positions based on the history of deals.
+
+
+Data Structure
+Data on positions is passed in JSON format as a response to the /api/position/get and /api/position/get_page requests. Position information includes the following parameters:
+
+Option Field
+
+Type
+
+Description
+
+Login
+
+Integer
+
+The login of the client, to whom the trade position belongs.
+
+Symbol
+
+String
+
+The symbol of a trade position.
+
+Action
+
+Integer
+
+Position type. Passed as a value of the EnPositionAction enumeration.
+
+Digits
+
+Integer
+
+The number of decimal places in the price of a position.
+
+DigitsCurrency
+
+Integer
+
+The number of decimal places the deposit currency of the client who has opened the position.
+
+ContractSize
+
+Float
+
+The contract size of the symbol, for which a position is opened.
+
+Position
+
+Integer
+
+The ticket (unique identifier) of a trade position in a MetaTrader 5 platform.
+
+ExternalID
+
+String
+
+The position ticket (unique number) in an external trading system.
+
+TimeCreate
+
+Integer
+
+Time of position creation, in seconds that have elapsed since 01.01.1970.
+
+TimeUpdate
+
+Integer
+
+Time of the last modification of a position, in seconds that have elapsed since 01.01.1970. Position modification time is the time of its last volume modification. It is actually the time of the last deal of the financial instrument that corresponds to this position.
+
+TimeCreateMsc
+
+Integer
+
+The position creation time in milliseconds.
+
+TimeUpdateMsc
+
+Integer
+
+The time of the last modification of a trade position in milliseconds. Position modification time is the time of its last volume modification. It is actually the time of the last deal of the financial instrument that corresponds to this position.
+
+PriceOpen
+
+Float
+
+The weighted average open price of a position. Calculated by the following formula: (price of deal 1 * volume of deal 1 1 + ... + price of deal N * volume of deal N) / (volume of deal 1 + ... + volume of deal N).
+
+PriceCurrent
+
+Float
+
+The current price of the symbol, for which a trade position has been opened.
+
+PriceSL
+
+Float
+
+The Stop Loss level of a trade position.
+
+PriceTP
+
+Float
+
+The Take Profit level of a trade position.
+
+Volume
+
+Integer
+
+The volume of a trade position. One unit corresponds to 1/10000 lot.
+
+VolumeExt
+
+Integer
+
+The volume of a trade position with an extended accuracy. One unit corresponds to 1/100000000 lot.
+
+Profit
+
+Float
+
+The current profit/loss of a trade position.
+
+Storage
+
+Float
+
+The swap size for a position in deposit currency.
+
+RateProfit
+
+Float
+
+The exchange rate of the profit currency of a position to the deposit currency of a client group.
+
+RateMargin
+
+Float
+
+The exchange rate of the margin currency of a position to the client's deposit currency.
+
+ExpertID
+
+Integer
+
+The ID of the Expert Advisor that has opened the position.
+
+ExpertPositionID
+
+Integer
+
+Position ID.
+
+Comment
+
+String
+
+A comment to a position.
+
+Dealer
+
+Integer
+
+The login of a dealer, who has processed the order that opened the position.
+
+ActivationMode
+
+Integer
+
+Position activation type. Passed in a value of the EnActivation enumeration.
+
+ActivationTime
+
+Integer
+
+Time of position activation, in seconds that have elapsed since 01.01.1970.
+
+ActivationPrice
+
+Float
+
+Position activation price.
+
+ActivationFlags
+
+Integer
+
+Position activation flags. Passed as a value of the EnTradeActivationFlags enumeration (sum of values of appropriate flags).
+
+ModificationFlags
+
+Integer
+
+The position modification flags. Passed as a value of the EnTradeModifyFlags enumeration (sum of values of appropriate flags). Deals that close a position or part of it inherit its modification flags. After closing, no separate entry about the position remains in the database. To prevent the information about modification from being lost, flags are copied to the deal that closes his position. At the same time, the additional EnTradeModifyFlags::MODIFY_FLAGS_POSITION modification flag is set for the deal meaning that the flags were inherited from the position.
+
+Reason
+
+Integer
+
+The reason for position opening. Passed as a value of the EnPositionReason enumeration.
+
+ApiData
+
+Array
+
+Array of user data.
+
+User data
+Parameter
+
+Type
+
+Description
+
+AppID
+
+Integer
+
+The identifier of the application that recorded the data.
+
+ID
+
+Integer
+
+Data identifier.
+
+ValueInt
+
+Integer
+
+The user parameter value of the int type.
+
+ValueUint
+
+Integer
+
+The user parameter value of the uint type.
+
+ValueDouble
+
+Float
+
+The user parameter value of the double type.
+
+
+Getting a Position by Symbol
+This request allows to receive a client's position by the symbol name.
+
+Request format
+
+GET /api/position/get?login=login&symbol=name
+POST /api/position/get?login=login&symbol=name
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : { description }
+}
+
+Example
+
+//--- request to the server
+GET /api/position/get?login=764636&symbol=EURUSD
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : { 
+    "Position" : "617",
+    "ExternalID" : "",
+    "Login" : "764636",
+    "Dealer" : "0",
+    "Symbol" : "EURUSD",
+    "Action" : "0",
+    "Digits" : "5",
+    "DigitsCurrency" : "2",
+    "Reason" : "16",
+...
+}
+
+Request Parameters
+login — the login of a client.
+symbol — the name of the symbol for which you need to get a position.
+Response Parameters
+retcode — if successful, the command returns a response code 0. Otherwise, it will return an error code.
+answer — position parameters in JSON format. The complete description of the passed position parameters is given in the "Data structure" section.
+Note
+The request should only be used for netting accounts, in which only one position per symbol can be open at a time. For hedging accounts, use /api/position/get_batch. When using /api/position/get for hedging accounts having multiple positions for the specified symbol, the request will only return the first of them.
+The request only works with open positions on the client's account. The history of positions is formed on the side of client terminals based on the history of trades. It is impossible to obtain it.
+
+
+
+
+Getting the Number of Positions
+This request allows to get the total number of open positions of a client.
+
+Request format
+
+GET /api/position/get_total?login=login
+POST /api/position/get_total?login=login
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : { "Total" : "number" }
+}
+
+Example
+
+//--- request to the server
+GET /api/position/get_total?login=1020
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : { "Total" : "10" }
+}
+
+Request Parameters
+login — the login of a client
+Response Parameters
+retcode — if successful, the command returns a response code 0. Otherwise, it will return an error code.
+total — the number of a client's positions that are currently open.
+Note
+The request only works with open positions on the client's account. The history of positions is formed on the side of client terminals based on the history of trades. It is impossible to obtain it.
+
+
+
+Get Multiple Positions
+The request allows receiving information related to multiple positions, based on a list of logins, tickets or groups.
+
+Request Format
+
+GET /api/position/get_batch?login=logins&group=groups&ticket=tickets&symbol=symbols
+POST /api/position/get_batch?login=logins&group=groups&ticket=tickets&symbol=symbol
+POST /api/position/get_batch?symbol=symbol
+{
+  "ticket": [
+    1012,
+    4034
+  ],
+  "group": [
+    demoforex-eur,
+    demoforex-usd
+  ],
+  "ticket": [
+    96639,
+    13549
+  ],
+} 
+
+Response Format
+
+{
+ "retcode" : "code description",
+ "answer" : [ description of positions ]
+}
+
+Example
+
+//--- request to the server
+GET /api/position/get_batch?login=764636,764637
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    { 
+    "Position" : "618",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+    { 
+    "Position" : "617",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+...
+  ]
+}
+
+Request Parameters
+login — the list of logins, the positions of which you want to receive. A commas separated list. Can also  be specified as an array in the POST request body.
+group — the list of groups, for users from which you want to receive positions. You can specify one group, several groups (comma separated) or a group mask. The mask is specified using characters "*" (any value) and "!" (exception). For example: "demo*,!demoforex" - all groups whose names begin with 'demo', except for the group demoforex. Groups Can also be specified as an array in the POST request body.
+ticket — the list of order tickets to receive. Can be specified as an array in the POST request body.
+symbol — the symbol positions for which you want to receive. You can specify multiple symbols separated by commas. Only make sense in combination with the 'login' or 'group' parameter.
+Operations can be requested with only one parameter: by logins, by groups, or by tickets. You cannot specify all the three parameters together.
+
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — position array in JSON format. The complete description of the passed position parameters is provided under the Data Structure section.
+Note
+The request only works with open positions on the client's account. The history of positions is formed on the side of client terminals based on the history of trades. It is impossible to obtain it.
+
+
+
+Check Positions
+This request allows checking the correctness of account's trading positions based on the history of deals.
+
+Request Format
+
+GET /api/position/check?login=login
+POST /api/position/check?login=login
+
+Response Format
+
+{
+ "retcode" : "code description",
+ "current" : [ description of positions ]
+ "invalid" : [ description of positions ]
+ "missed" : [ description of positions ]
+ "nonexsit" : [ description of positions ]
+}
+
+Example
+
+//--- request to the server
+GET /api/position/check?login=73339
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    { 
+    "Position" : "618",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+     ...
+    ],
+  "invalid" : [
+    { 
+    "Position" : "619",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+     ...
+    ],
+  "missed" : [
+    { 
+    "Position" : "620",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+    ],
+  "nonexist" : [
+    { 
+    "Position" : "621",
+    "ExternalID" : "",
+    "Login" : "764636",
+     ...
+    },
+    ]
+] 
+
+Request Parameters
+login — login of the user whose positions you want to check.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+current — array of current positions on the account, in JSON format. The complete description of the passed position parameters is provided under the Data Structure section.
+invalid — during the check, the platform calculates what positions a client should have based on his history of trades. Calculated positions are compared with actual ones. If the calculate list contains positions that do not match actual positions, such records will be passed to the invalid array.
+missed — positions that were calculated based on the client's history and that are not found among actual positions are placed into this array. In other words, missing positions are placed into the 'missed' array.
+nonexist — the client's actual positions that are not found in the calculated list based on the history of deals are added to this array. In other words, the client's odd positions that do not exist in the history are added to the 'nonexist' array.
+Note
+If you need to correct positions based on the history of deals, you should use the /api/position/fix request.
+
+
+
+Get Daily Reports
+The request allows receiving daily reports by a date range and a login.
+
+Request Format
+
+GET /api/daily/get?from=date&to=date&login=login
+POST /api/daily/get?from=date&to=date&login=login
+
+Response Format
+
+{
+ "retcode" : "code description",
+  "answer" :  
+   { report description },
+   { report description },
+...
+}
+
+Example
+
+//--- request to the server
+/api/daily/get?from=1585904106&to=1586768106&login=765114
+//--- server response
+{
+   "retcode" : "0 Done",
+   "answer" : 
+     {
+       "Timestamp" : "132302519992466852",
+       "DatetimePrev" : "1585699199",
+       "Login" : "765114",
+       "Name" : "Test Collateral",
+       "Group" : "demo\\demoforex-hedged",
+       "Currency" : "USD",
+       "CurrencyDigits" : "2",
+       "Company" : "MetaQuotes DEV",
+       "EMail" : "",
+       "Balance" : "10010.31",
+       "Credit" : "0.00",
+       "InterestRate" : "0.00",
+       "CommissionDaily" : "0.00",
+       "CommissionMonthly" : "0.00",
+       "AgentDaily" : "0.00",
+       ...
+     },
+     {
+       "Timestamp" : "132303383992178046",
+       "DatetimePrev" : "1585785599",
+       "Login" : "765114",
+       "Name" : "Test Collateral",
+       "Group" : "demo\\demoforex-hedged",
+       "Currency" : "USD",
+       "CurrencyDigits" : "2",
+       "Company" : "MetaQuotes DEV",
+       "EMail" : "",
+       "Balance" : "10010.31",
+       "Credit" : "0.00",
+       "InterestRate" : "0.00",
+       "CommissionDaily" : "0.00",
+       "CommissionMonthly" : "0.00",
+       "AgentDaily" : "0.00",
+       ...
+     },
+     ...
+}
+
+Request Parameters
+login — client login for which you wish to receive daily reports.
+from — the beginning of the period for requesting reports. The date is specified in seconds elapsed since 01.01.1970.
+from — the end of the period for requesting reports. The date is specified in seconds elapsed since 01.01.1970.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — an array of daily reports in JSON format. The complete description of the passed data is given in the "Data structure" section.
+
+
+
+Data Structure
+Daily reports are passed in JSON format in response to the /api/daily/get and /api/daily/get_light requests.
+
+Method
+
+Type
+
+Purpose
+
+Timestamp
+
+Integer
+
+Daily report generation date and time. The date is specified in the FILETIME format.
+
+DatetimePrev
+
+Integer
+
+Previous daily report generation date and time. The date is specified in seconds elapsed since 01.01.1970.
+
+Login
+
+Integer
+
+Client login for which the daily report is generated.
+
+Name
+
+String
+
+Client name in a daily report.
+
+Group
+
+String
+
+Client group in a daily report.
+
+Currency
+
+String
+
+Client's deposit currency in a daily report.
+
+CurrencyDigits
+
+Integer
+
+The number of decimal places in the client's deposit currency in the daily report.
+
+Company
+
+String
+
+The company serving the client in a daily report.
+
+EMail
+
+String
+
+An email of a client in a daily report.
+
+Balance
+
+Float
+
+Client's balance in a daily report.
+
+Credit
+
+Float
+
+Client's credit funds in a daily report.
+
+InterestRate
+
+Float
+
+The amount of accumulated annual interest. Annual interest is calculated every day in accordance with the group settings (IMTConGroup::TradeInterestrate) and is accumulated in a separate account field. At the end of each month, the accumulated amount is credited to the account balance using an IMTDeal::DEAL_INTERESTRATE operation, and the InterestRate value is reset to zero.
+
+CommissionDaily
+
+Float
+
+The amount of commissions charged from a client for a day in the report.
+
+CommissionMonthly
+
+Float
+
+The total amount of commissions charged from a client for the current month in the report.
+
+AgentDaily
+
+Float
+
+The size of agent commissions charged for the client's trading operations for a day.
+
+AgentMonthly
+
+Float
+
+The amount of agent commissions charged for the client's trade operations for the current month.
+
+BalancePrevDay
+
+Float
+
+Client's balance at the end of the previous day.
+
+BalancePrevMonth
+
+Float
+
+Client's balance at the end of the previous trading month.
+
+EquityPrevDay
+
+Float
+
+Client's equity at the end of the previous day.
+
+EquityPrevMonth
+
+Float
+
+Client's equity at the end of the previous trading month.
+
+Margin
+
+Float
+
+Client's margin in a daily report.
+
+MarginFree
+
+Float
+
+Client's free margin in a daily report.
+
+MarginLevel
+
+Float
+
+Client's margin level in the daily report.
+
+MarginLeverage
+
+Float
+
+Client's margin leverage in the daily report.
+
+Profit
+
+Float
+
+Current profit amount for all open positions of the client in the daily report.
+
+ProfitStorage
+
+Float
+
+The current amount of swaps charged for a client's open positions for a day, but not yet reflected in the balance.
+
+ProfitEquity
+
+Float
+
+Client's current floating equity in the daily report.
+
+ProfitAssets
+
+Float
+
+Client's current assets in the daily report.
+
+ProfitLiabilities
+
+Float
+
+Client's current liabilities in a daily report.
+
+DailyProfit
+
+Float
+
+The amount of a client's recorded daily profit.
+
+DailyBalance
+
+Float
+
+The amount accrued to a client's balance during the reported day.
+
+DailyCredit
+
+Float
+
+The amount of credit given to a client during the reported day.
+
+DailyCharge
+
+Float
+
+The amount of other charges to the client's balance during the reported day.
+
+DailyCorrection
+
+Float
+
+The amount of corrective balance operations for a reported day.
+
+DailyBonus
+
+Float
+
+The amount of bonuses added to the client's balance for the reported day.
+
+DailyStorage
+
+Float
+
+The amount of swaps charged to the client for a reported day.
+
+DailyCommInstant
+
+Float
+
+The amount of instant commissions charged from the client for a reported day.
+
+DailyCommFee
+
+Float
+
+The amount of fees charged to the client for a reported day.
+
+DailyCommRound
+
+Float
+
+The amount of turnover commissions charged from the client for the reported day.
+
+DailyAgent
+
+Float
+
+The size of agent commissions charged for a client's trade operations for the reported day.
+
+DailyInterest
+
+Float
+
+The amount accrued to a client as part of the annual interest rate for the reported day.
+
+PositionAdd
+
+Array
+
+Array of account positions at the report generation time.
+
+OrderAdd
+
+Array
+
+Array of account orders at the report generation time.
+
+
+Get Multiple Reports by Logins
+Retrieve daily reports in batch for a list of user logins.
+
+Request Format
+
+GET /api/daily/get_batch?login=logins&from=date&to=date
+POST /api/daily/get_batch?login=logins&from=date&to=date
+
+Response Format
+
+{
+ "retcode" : "code description",
+ "answer" : [ description of users ]
+}
+
+Example
+
+//--- request to the server
+/api/daily/get_batch?from=1585904106&to=1586768106&login=765114,765115
+//--- server response
+{
+   "retcode" : "0 Done",
+   "answer" : 
+     {
+       "Timestamp" : "132302519992466852",
+       "DatetimePrev" : "1585699199",
+       "Login" : "765114",
+       "Name" : "Test Collateral",
+       "Group" : "demo\\demoforex-hedged",
+       "Currency" : "USD",
+       "CurrencyDigits" : "2",
+       "Company" : "MetaQuotes DEV",
+       "EMail" : "",
+       "Balance" : "10010.31",
+       "Credit" : "0.00",
+       "InterestRate" : "0.00",
+       "CommissionDaily" : "0.00",
+       "CommissionMonthly" : "0.00",
+       "AgentDaily" : "0.00",
+       ...
+     },
+     {
+       "Timestamp" : "132303383992178046",
+       "DatetimePrev" : "1585785599",
+       "Login" : "765115",
+       "Name" : "Test Collateral",
+       "Group" : "demo\\demoforex-hedged",
+       "Currency" : "USD",
+       "CurrencyDigits" : "2",
+       "Company" : "MetaQuotes DEV",
+       "EMail" : "",
+       "Balance" : "10010.31",
+       "Credit" : "0.00",
+       "InterestRate" : "0.00",
+       "CommissionDaily" : "0.00",
+       "CommissionMonthly" : "0.00",
+       "AgentDaily" : "0.00",
+       ...
+     },
+     ...
+}
+
+Request Parameters
+login — a list of user logins for which to retrieve data. Separated by commas.
+from — the start date of the period for which reports are requested. Specified in seconds elapsed since 01.01.1970.
+to — the end date of the period for which reports are requested. Specified in seconds elapsed since 01.01.1970.
+Response Parameters
+retcode — on success, the command returns a response code 0. Otherwise, the code of the occurred error will be returned.
+answer — an array of daily reports in JSON format. The complete description of the transmitted data is provided in the "Data structure" section.
+
+
+
+
+
+Get Multiple Users
+The request allows receiving information related to multiple users, based on a list of logins or groups.
+
+Request format
+
+GET /api/user/get_batch?login=logins
+GET /api/user/get_batch?group=groups
+ 
+POST /api/user/get_batch?login=logins
+POST /api/user/get_batch?group=groups
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : [ user description ]
+}
+
+Example
+
+//--- request to the server
+GET /api/user/get_batch?login=764636,764637
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    {
+     "Login": "764636",
+     "Group": "demo\\forex",
+     "CertSerialNumber": "0",
+     "Rights": "6627",
+     "MQID": "F5986B14",
+     "Registration": "1527173711",
+     "LastAccess": "1527173713",
+     "LastPassChange": "1527173711",
+     ...
+    },
+    {
+     "Login": "764637",
+     "Group": "demo\\forex",
+     "CertSerialNumber": "0",
+     "Rights": "6627",
+     "MQID": "H5926B36",
+     "Registration": "1527186511",
+     "LastAccess": "1527186513",
+     "LastPassChange": "1527186511",
+     ...
+    },
+  ]
+}
+
+Request Parameters
+login — list of user logins data of which you want to receive data. A commas separated list.
+group — the list of groups, for users from which you want to receive data. A commas separated list.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — array of user descriptions in JSON format. The full description of passed client parameters is available under the "Data structure" section.
+Note
+The user data that can be obtained depends on access permissions of a manager account that is used for Web client connection. If the "Access to personal data of accounts" permission is absent", some of the fields are not filled in the server response.
+Only one of the parameters can be used in the request. Multiple lists are not allowed.
+Please pay attention to the ApiData property use specifics. The following values are returned for each of the array elements (which are always 16):
+The required fields AppID and ID, which only contain their values.
+Fields ValueInt, ValueUInt and ValueDouble containing the corresponding presentation of the same binary value, which was written to the ApiData cell (via any type of API).
+
+Data Structure
+Data on users is passed in JSON format as a response to the /api/user/add, /api/user/update and /api/user/get requests.
+
+User Parameters
+Information about a user includes the following parameters:
+
+Option Field
+
+Type
+
+Description
+
+Login
+
+Integer
+
+The login of a user.
+
+Group
+
+String
+
+User group.
+
+CertSerialNumber
+
+Integer
+
+The number of a last used certificate for user authorization.
+
+Rights
+
+Integer
+
+Flags of the users permissions. Passed using a value of the EnUserRights enumeration (sum of values of appropriate flags).
+
+Registration
+
+Integer
+
+The user record creation date.
+
+LastAccess
+
+Integer
+
+The date of the last connection using the account.
+
+LastIP
+
+String
+
+The IP address from which the user last connected to the server.
+
+LastPassChange
+
+Integer
+
+The date of the last password change.
+
+Name
+
+String
+
+The name of the client. Obsolete field.
+
+FirstName
+
+String
+
+The first name of the client.
+
+LastName
+
+String
+
+The last name of the client.
+
+MiddleName
+
+String
+
+The middle name of the client.
+
+Company
+
+String
+
+The name of user's company.
+
+Account
+
+String
+
+The number of a user's account in an external bank.
+
+Country
+
+String
+
+The client's country of residence.
+
+Language
+
+Integer
+
+User's language in the format LANGID used in MS Windows (value from Prim.lang.identifier).
+
+City
+
+String
+
+The client's city of residence.
+
+State
+
+String
+
+The user's state (region) of residence.
+
+ZIPCode
+
+String
+
+The client's zip code.
+
+Address
+
+String
+
+The address of the user.
+
+Phone
+
+String
+
+The user's phone number.
+
+Email
+
+String
+
+The email address of the user.
+
+ID
+
+String
+
+The number of a user's identity document.
+
+Status
+
+String
+
+Client's status.
+
+Comment
+
+String
+
+A comment to the user.
+
+Color
+
+COLORREF
+
+The color of the user. The color of the user. This is the color of the user's requests shown when handling the requests via the manager terminal.
+
+PhonePassword
+
+String
+
+The user's phone password.
+
+Leverage
+
+Integer
+
+The size of a user's leverage.
+
+Agent
+
+Integer
+
+Agent account number of the user.
+
+Balance
+
+Float
+
+The current balance of a client. The balance cannot be updated via this field when creating or modifying an account. To top up an account, use the /webapi_trade_balance request.
+
+Credit
+
+Float
+
+The current amount of funds credited to the client.
+
+InterestRate
+
+Float
+
+The amount accrued for the current month calculated based on the annual interest rate.
+
+CommissionDaily
+
+Float
+
+The amount of commissions charged from a client for a day.
+
+CommissionMonthly
+
+Float
+
+The total amount of commissions charged from a client for the current month.
+
+CommissionAgentDaily
+
+Float
+
+The size of agent commissions charged for a client's trade operations for a day, from a daily report.
+
+CommissionAgentMonthly
+
+Float
+
+The amount of agent commissions charged for a client's trade operations for the current month.
+
+BalancePrevDay
+
+Float
+
+Client's balance as of the end of the previous day.
+
+BalancePrevMonth
+
+Float
+
+Client's balance as of the end of the previous trading month.
+
+EquityPrevDay
+
+Float
+
+A client's equity as of the end of the previous day.
+
+EquityPrevMonth
+
+Float
+
+The value of a client's equity as of the end of the previous trading month.
+
+MQID
+
+String
+
+MetaQuotes ID of the user.
+
+TradeAccounts
+
+String
+
+User account numbers in external trading systems as [gateway ID]=[account number in the system to which the gateway is connected]. The accounts must be separated by a vertical bar "|". The total length of the accounts and IDs stored for an account is limited to 128 characters (including the end-of-line character). The maximum length of each account is limited to 32 characters (including the end-of-line character). If the total length is exceeded when you add or change the account state, the error code MT_RET_ERR_DATA will be returned.
+
+ApiData
+
+Array
+
+Array of user data.
+
+LeadSource
+
+String
+
+A lead source — a website a client has come from.
+
+LeadCampaign
+
+String
+
+A lead campaign — name of a marketing campaign a client was attracted by.
+
+LimitOrders
+
+Integer
+
+The maximum number of active (placed) pending orders allowed on the account.
+
+LimitPositions
+
+Integer
+
+Maximum value of open positions allowed on the account.
+
+Trade Account Parameters
+Information about a trade account includes the following parameters:
+
+Option Field
+
+Type
+
+Description
+
+Login
+
+Integer
+
+The login of the client, to whom the trading account belongs.
+
+CurrencyDigits
+
+Integer
+
+The number of digits after the decimal point in the account deposit currency.
+
+Balance
+
+Float
+
+The balance of a trade account.
+
+Credit
+
+Float
+
+The current amount of credit given to an account.
+
+Margin
+
+Float
+
+The current amount of credit given to an account.
+
+MarginFree
+
+Float
+
+The free margin of an account.
+
+MarginLevel
+
+Float
+
+The margin level as a percentage. It is calculated as a percentage of the current account equity (Equity) to the margin volume (Margin).
+
+MarginLeverage
+
+Integer
+
+Margin leverage.
+
+MarginInitial
+
+Float
+
+The current size of the initial margin of positions on a trading account.
+
+MarginMaintenance
+
+Float
+
+The current size of the maintenance margin of positions on a trading account.
+
+Profit
+
+Float
+
+The size of the current profit for all open positions.
+
+Storage
+
+Float
+
+The current size of swaps charged for open positions on the account.
+
+Floating
+
+Float
+
+The size of floating profit/loss of open positions on the account. The floating profit/loss is calculated as the sum of Profit, Storage and Commission of open positions on the account.
+
+Equity
+
+Float
+
+The account equity calculated as a sum of Balance, Credit and Floating.
+
+SOActivation
+
+Integer
+
+The account status as per the minimum amount of funds on the account required to maintain trading positions. Passed using a value of the EnSoActivation enumeration.
+
+SOTime
+
+Integer
+
+The time when the Margin Call or Stop Out level was reached , in seconds that had elapsed since 01.01.1970.
+
+SOLevel
+
+Float
+
+The margin level of an account at the time it reaches the Stop Out level.
+
+SOEquity
+
+Float
+
+The equity of an account at the time it reaches the Stop Out level.
+
+SOMargin
+
+Float
+
+The volume of margin on the account at the time it reaches the Stop Out level.
+
+BlockedCommission
+
+Float
+
+The amount of the standard commission locked on the account, which has been accumulated during the day/month.
+
+BlockedProfit
+
+Float
+
+The amount of intraday profit locked on the account.
+
+Assets
+
+Float
+
+The current total amount of assets on a trading account.
+
+Liabilities
+
+Float
+
+The current total amount of liabilities on a trading account.
+
+User data
+Parameter
+
+Type
+
+Description
+
+AppID
+
+Integer
+
+The identifier of the application that recorded the data.
+
+ID
+
+Integer
+
+Data identifier.
+
+ValueInt
+
+Integer
+
+The user parameter value of the int type.
+
+ValueUint
+
+Integer
+
+The user parameter value of the uint type.
+
+ValueDouble
+
+Float
+
+The user parameter value of the double type.
+
+Getting the login list
+Use this request to receive the list of client accounts in the specified groups.
+
+Request format
+
+GET /api/user/logins?group=groups
+POST /api/user/logins?group=groups
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : [login array]
+}
+
+Example
+
+//--- request to the server
+GET //api/user/logins?group=demoforex,demo\\forex-usd
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+"104221",
+"104253",
+"104370",
+"104373",
+"104374",
+"104375",
+"104376" ]
+}
+
+Request Parameters
+group — comma separated group names, for which you need to receive the list of accounts. You may use the mask "*" and the negation sign "!" to specify groups. Example:
+group=demoforex, democfd — get the list of accounts in groups demoforex and democfd.
+group=demo\*, forexreal — get the list of accounts in groups of the demo subgroup and in the forexreal group.
+group=demo\*,!forex — get the list of accounts in all groups in the demo subgroup except for demo\forex group.
+group=demo* — get the list of accounts in all groups whose names (including path) start with demo.
+Response Parameters
+retcode — if successful, the command returns a response code 0. Otherwise, it will return an error code.
+answer — login list in JSON format.
+
+Get the Total Number of Users
+Use the request to obtain the total number of users on the trading server, available to your manager account.
+
+Request format
+
+GET /api/user/total
+POST /api/user/total
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : { "Total" : "number" }
+}
+
+Example
+
+//--- request to the server
+GET /api/user/total
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : { "Total" : "563" }
+}
+
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+total — number of users on the server.
+
+Get User Group by Login
+The request allows receiving a user group by the user login.
+
+Request format
+
+GET /api/user/group?login=login
+POST /api/user/group?login=login
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : { "Group" : "group" }
+}
+
+Example
+
+//--- request to the server
+GET /api/user/group?login=126993
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : { "Group" : "demo\\demoforex" }
+}
+
+Request Parameters
+login — the login of the user whose group you want to receive.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+group — the name of the group to which the user belongs.
+
+Get Multiple Trade States
+The request allows receiving information related to the states of multiple trading accounts, based on a list of logins or groups.
+
+Request format
+
+GET /api/user/account/get_batch?login=logins
+GET /api/user/account/get_batch?group=groups
+ 
+POST /api/user/account/get_batch?login=logins
+POST /api/user/account/get_batch?group=groups
+
+Response format
+
+{
+ "retcode" : "code description",
+ "answer" : [ description of trading states ]
+}
+
+Example
+
+//--- request to the server
+GET /api/user/account/get?login=764636,764635
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    {
+     "Login" : "764636",
+     "CurrencyDigits" : "2",
+     "Balance"": "26000.00",
+     "Credit"": "0.00",
+     "Margin" : "11.73",
+     "MarginFree" : "25981.83",
+     "MarginLevel"": "221598.98",
+     "MarginLeverage" : "10",
+     "Profit" : "-6.44",
+     ...
+    },
+    {
+     "Login" : "764635",
+     "CurrencyDigits" : "2",
+     "Balance"": "35000.00",
+     "Credit"": "0.00",
+     "Margin" : "956.73",
+     "MarginFree" : "19981.83",
+     "MarginLevel"": "119982.98",
+     "MarginLeverage" : "10",
+     "Profit" : "500.87",
+     ...
+    }
+  ]
+}
+
+Request Parameters
+login — the login of the account for which the trading state is requested.
+login — list of user logins for which you want to request the trading states. A commas separated list.
+group — the list of groups, for accounts from which you want to receive the trading states. A commas separated list.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — an array of trading states in JSON format. The full description of passed account parameters is available under the "Data structure" section.
+Note
+Trade account state can be received only in case it has open orders or positions or a trade activity has been detected at the account after the last server restart.
+Only one of the parameters can be used in the request. Multiple lists are not allowed.
+
+
+
+Get Client Information
+The request allows receiving client information by ID.
+
+Request Format
+
+GET /api/client/get?id=list of IDs&group=groups
+POST /api/client/get?id=list of IDs&group=groups
+
+Response Format
+
+{
+ "retcode" : "code description",
+  "answer" : [
+    {
+    client description
+    },
+    {
+    client description
+    },
+    ...
+  ]
+}
+
+Example
+
+//--- request to the server
+GET /api/client/get?id=1278,1279
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : [
+    {
+      "RecordID" : "1278",
+      "PersonName" : "John",
+      "PersonLastName" : "Smith"
+      "ClientType" : "1",
+      "ClientStatus" : "700",
+      "AssignedManager" : "1000"
+      ...
+    },
+    {
+      "RecordID" : "1279",
+      "PersonName" : "Mary",
+      "PersonLastName" : "Anne"
+      "ClientType" : "1",
+      "ClientStatus" : "700",
+      "AssignedManager" : "1200"
+    },
+    ...
+  ]
+}
+
+Request Parameters
+id — IDs of clients, data on which you wish to obtain. Specified as a comma separated list.
+group — an optional parameter for filtering results by the preferred group (TradingGroup) specified for the client. You can specify one group, several groups (comma separated) or a group mask. The mask is specified using "*" (any value) and "!" (exception). For example: "demo*,!demoforex" - all groups with the names beginning with 'demo', except for the group demoforex. The following clients are returned when filter by groups is used:
+Clients for whom TradingGroup is specified and this group corresponds to the request mask
+Clients for whom TradingGroup is not specified, but there is at least one bound account from the requested group
+Clients for whom TradingGroup is not specified and there are no bound accounts (to prevent the clients from being lost)
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — array of client descriptions in JSON format. The complete description of passed parameters is available under the "Data structure" section.
+
+
+
+Data Structure
+Client information is passed in the JSON format in response to /api/client/add, /api/client/update and /api/client/get requests.
+
+Client Parameters
+Parameter
+
+Type
+
+Description
+
+RecordID
+
+Integer
+
+Client ID.
+
+ClientType
+
+Integer
+
+Client type. Passed as the EnClientType enumeration value.
+
+ClientStatus
+
+Integer
+
+Client status. Passed as the EnClientStatus enumeration value.
+
+ClientExternalID
+
+String
+
+Client ID in the external trading system.
+
+AssignedManager
+
+Integer
+
+The manager responsible for the client.
+
+DateCreated
+
+Integer
+
+Client creation date.
+
+DateModified
+
+Integer
+
+Last client modification date.
+
+Comment
+
+String
+
+A comment to a client.
+
+ComplianceApprovedBy
+
+Integer
+
+The manager who checked the client data and approved registration.
+
+ComplianceClientCategory
+
+String
+
+Client compliance category — client classification based on the regulator rules.
+
+ComplianceDateApproval
+
+Integer
+
+Client approval date.
+
+ComplianceDateTermination
+
+Integer
+
+The date of service termination for the client.
+
+LeadCampaign
+
+String
+
+Lead campaign — the name of an advertising campaign the client was attracted by.
+
+LeadSource
+
+String
+
+Lead source — a website the client has come from.
+
+Introducer
+
+String
+
+The login (trading account) of the user who attracted this client.
+
+PersonTitle
+
+String
+
+Client's title, such as Mr. or Mrs.
+
+PersonName
+
+String
+
+Client's name.
+
+PersonMiddleName
+
+String
+
+Client's middle name.
+
+PersonLastName
+
+String
+
+Client's last name.
+
+PersonBirthDate
+
+Integer
+
+Client's date of birth. Specified in the FILETIME format.
+
+PersonCitizenship
+
+String
+
+Client's citizenship.
+
+PersonGender
+
+Integer
+
+Client's gender. Passed as a value of the EnGender enumeration.
+
+PersonTaxID
+
+String
+
+Client's tax ID, for example TIN.
+
+PersonDocumentType
+
+String
+
+Client's identification document type: passport, driver's license, etc.
+
+PersonDocumentNumber
+
+String
+
+The number of the identification document (of passport, driver's license, etc.).
+
+PersonDocumentDate
+
+Integer
+
+The issue date of the identification document (of passport, driver's license, etc.).
+
+PersonDocumentExpiration
+
+Integer
+
+The expiration date of the identification document (of passport, driver's license, etc.).
+
+PersonDocumentExtra
+
+String
+
+Additional information (comment) to the identification document.
+
+PersonEmployment
+
+Integer
+
+Client's employment status. Passed as a value from the EnEmployment enumeration.
+
+PersonIndustry
+
+Integer
+
+Client's employment industry. Passed as a value from the EnEmploymentIndustry enumeration.
+
+PersonEducation
+
+Integer
+
+Client's education level. Passed as a value from the EnEducationLevel enumeration.
+
+PersonWealthSource
+
+Integer
+
+Client's income source. Passed as a value from from the EnWealthSource enumeration.
+
+PersonAnnualIncome
+
+Float
+
+Client's annual income amount.
+
+PersonNetWorth
+
+Float
+
+The amount of the client's net assets.
+
+PersonAnnualDeposit
+
+Float
+
+The amount of the client's annual deposit.
+
+CompanyName
+
+String
+
+Company name (for corporate clients).
+
+CompanyRegNumber
+
+String
+
+Company registration number (for corporate clients).
+
+CompanyRegDate
+
+Integer
+
+Company registration date (for corporate clients).
+
+CompanyRegAuthority
+
+String
+
+The name of the registration authority with which the company is registered (for corporate body).
+
+CompanyVat
+
+String
+
+VAT number (for corporate clients).
+
+CompanyLei
+
+String
+
+LEI number for EMIR reports (for corporate clients).
+
+CompanyLicenseNumber
+
+String
+
+License number (for corporate clients).
+
+CompanyLicenseAuthority
+
+String
+
+The name of the licensing authority (for corporate clients).
+
+CompanyCountry
+
+String
+
+Company registration country (for corporate clients).
+
+CompanyAddress
+
+String
+
+Legal address of the company (for corporate clients).
+
+CompanyWebsite
+
+String
+
+Website address (for corporate clients).
+
+ContactPreferred
+
+Integer
+
+Client's preferred contact method. Passed as a value of the EnPreferredCommunication enumeration.
+
+ContactLanguage
+
+String
+
+The language spoken by the client.
+
+ContactEmail
+
+String
+
+Client's email address.
+
+ContactPhone
+
+String
+
+Client's phone number.
+
+ContactMessengers
+
+String
+
+List of the client's accounts in instant messengers.
+
+ContactSocialNetworks
+
+String
+
+List of the client's accounts in social networks.
+
+ContactLastDate
+
+Integer
+
+Date of the last client contact.
+
+AddressCountry
+
+String
+
+Client's country of residence.
+
+AddressPostcode
+
+String
+
+Client's zip code.
+
+AddressStreet
+
+String
+
+Client's address.
+
+AddressState
+
+String
+
+Client's region of residence.
+
+AddressCity
+
+String
+
+Client's city of residence.
+
+ExperienceFX
+
+Integer
+
+Information about the client's Forex trading experience. Passed as a value of the EnTradingExperience enumeration.
+
+ExperienceCFD
+
+Integer
+
+Information about the client's CFD trading experience. Passed as a value of the EnTradingExperience enumeration.
+
+ExperienceFutures
+
+Integer
+
+Information about the client's Futures trading experience. Passed as a value of the EnTradingExperience enumeration.
+
+ExperienceStocks
+
+Integer
+
+Information about the client's Stock trading experience. Passed as a value of the EnTradingExperience enumeration.
+
+TradingGroup
+
+String
+
+Preferred trading group for the client.
+
+ClientOrigin
+
+Integer
+
+Client record creation method. Passed as a value of the EnClientOrigin enumeration.
+
+ClientOriginLogin
+
+Integer
+
+The trading account number, based on which the client was created.
+
+KYCApplicantSumSub
+
+String
+
+Client's ID in the SumSub KYC-system.
+
+Document Parameters
+
+Parameter
+
+Type
+
+Description
+
+RecordID
+
+Integer
+
+Document ID.
+
+RelatedClient
+
+Integer
+
+ID of the client with whom the document is associated.
+
+RelatedUser
+
+Integer
+
+Login of the client with whom the document is associated. Currently not used.
+
+RelatedTransfer
+
+Integer
+
+The number of the operation with which the document is associated. Currently not used.
+
+ApprovedDate
+
+Integer
+
+Document approval date.
+
+ApprovedBy
+
+Integer
+
+The manager who approved/checked the document.
+
+DateIssue
+
+Integer
+
+Document issue date.
+
+DateExpiration
+
+Integer
+
+Document expiry date.
+
+DocumentType
+
+Integer
+
+Document type. Passed as a value from the EnDocumentTypes enumeration.
+
+DocumentSubtype
+
+Integer
+
+Document subtype. Passed as a value from the EnDocumentSubtype enumeration.
+
+DocumentName
+
+String
+
+Document name.
+
+DocumentComment
+
+String
+
+Comment to a document.
+
+DocumentStatus
+
+Integer
+
+Document status. Passed as a value from the EnDocumentStatus enumeration.
+
+DocumentFiles
+
+Array
+
+Array of document files.
+
+Document files
+
+Parameter
+
+Type
+
+Description
+
+CreatedBy
+
+Integer
+
+The login of the manager who added the file.
+
+CreatedDate
+
+Integer
+
+File adding date.
+
+ID
+
+Integer
+
+File identifier.
+
+Size
+
+Integer
+
+File size in bytes
+
+Hash
+
+Integer
+
+File hash.
+
+Flags
+
+Integer
+
+File flags. Passed as a value of EnFileFlags.
+
+Name
+
+String
+
+File name.
+
+Comment parameters
+
+Method
+
+Type
+
+Purpose
+
+RecordID
+
+Integer
+
+Comment ID.
+
+RelatedClient
+
+Integer
+
+The ID of the client with which the comment is associated.
+
+RelatedDocument
+
+Integer
+
+The ID of the document with which the comment is associated.
+
+Flags
+
+Integer
+
+Comment flags. Passed as a value of EnCommentFlags.
+
+Extra
+
+String
+
+Additional information about the comment.
+
+Text
+
+String
+
+Comment text.
+
+CommentType
+
+Integer
+
+Comment type. Passed as a value of EnCommentType.
+
+CommentResult
+
+Integer
+
+Call result from a comment. Passed as a value of EnCommentResult.
+
+AttachmentFiles
+
+Array
+
+Array of files attached to a comment.
+
+Attachment Parameters
+
+Parameter
+
+Type
+
+Description
+
+RecordID
+
+Integer
+
+Attachment ID. Corresponds to the "ID" parameter of the file.
+
+RelatedClient
+
+Integer
+
+The client ID with which the attachment is associated.
+
+FileType
+
+Integer
+
+File type. Passed as a value of EnFileType.
+
+FileName
+
+String
+
+File Name
+
+FileContent
+
+String
+
+Base64 encoded binary file contents.
+
+FileHash
+
+String
+
+File hash.
+
+FileFlags
+
+Integer
+
+File flags. Passed as a value of EnFileFlags.
+
+
+Get the List of a Client's Accounts
+The request allows receiving a list of accounts bound to a client record.
+
+Request Format
+
+GET /api/client/user/get_logins?client=identifiers
+POST /api/client/user/get_logins?client=identifiers
+
+Response Format
+
+{
+ "retcode" : "code description",
+  "answer" : {
+    "identifier" : [ list of accounts ], 
+    "identifier" : [ list of accounts ],
+    ... 
+  }
+}
+
+Example
+
+//--- request to the server
+GET /api/client/user/get_logins?client=1032,1033
+//--- server response
+{
+  "retcode" : "0 Done",
+  "answer" : {
+    "1032" : [ 18969, 18970, 18971, 18972 ],
+    "1033" : [ 25976, 25977, 25978 ]
+  }
+}
+
+Request Parameters
+client — the identifier of the client whose accounts you wish to obtain. Multiple tickets can be specified as separated by commas.
+Response Parameters
+retcode — if successful, the command returns the response code 0. Otherwise, an error code is returned.
+answer — the list of account for each client specified in the report.
+
+

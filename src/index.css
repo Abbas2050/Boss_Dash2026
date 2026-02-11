@@ -1,0 +1,278 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;900&family=Rajdhani:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@layer base {
+  :root {
+    --background: 222 47% 6%;
+    --foreground: 210 40% 96%;
+
+    --card: 222 47% 8%;
+    --card-foreground: 210 40% 96%;
+
+    --popover: 222 47% 8%;
+    --popover-foreground: 210 40% 96%;
+
+    --primary: 186 100% 50%;
+    --primary-foreground: 222 47% 6%;
+
+    --secondary: 222 47% 14%;
+    --secondary-foreground: 210 40% 96%;
+
+    --muted: 222 30% 18%;
+    --muted-foreground: 215 20% 55%;
+
+    --accent: 186 100% 50%;
+    --accent-foreground: 222 47% 6%;
+
+    --destructive: 0 85% 55%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 142 76% 45%;
+    --success-foreground: 222 47% 6%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 222 47% 6%;
+
+    --border: 222 30% 18%;
+    --input: 222 30% 18%;
+    --ring: 186 100% 50%;
+
+    --radius: 0.75rem;
+
+    /* Custom forex dashboard tokens */
+    --glow-primary: 186 100% 50%;
+    --glow-success: 142 76% 45%;
+    --glow-danger: 0 85% 55%;
+    --glow-warning: 38 92% 50%;
+    
+    --gradient-cyber: linear-gradient(135deg, hsl(186 100% 50% / 0.15), hsl(270 100% 60% / 0.1));
+    --gradient-card: linear-gradient(180deg, hsl(222 47% 10%), hsl(222 47% 6%));
+    --gradient-glow: linear-gradient(90deg, hsl(186 100% 50% / 0), hsl(186 100% 50% / 0.3), hsl(186 100% 50% / 0));
+    
+    --shadow-glow-sm: 0 0 10px hsl(186 100% 50% / 0.2);
+    --shadow-glow-md: 0 0 20px hsl(186 100% 50% / 0.3);
+    --shadow-glow-lg: 0 0 40px hsl(186 100% 50% / 0.4);
+    
+    --font-display: 'Orbitron', sans-serif;
+    --font-body: 'Rajdhani', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body);
+    background-image: 
+      radial-gradient(ellipse at top, hsl(222 47% 10%) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom right, hsl(186 100% 50% / 0.03) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom left, hsl(270 100% 60% / 0.03) 0%, transparent 50%);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .font-display {
+    font-family: var(--font-display);
+  }
+  
+  .font-body {
+    font-family: var(--font-body);
+  }
+  
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+
+  /* Glowing border effect */
+  .glow-border {
+    position: relative;
+    border: 1px solid hsl(186 100% 50% / 0.3);
+  }
+  
+  .glow-border::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, hsl(186 100% 50% / 0.5), transparent, hsl(270 100% 60% / 0.3));
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+
+  /* Animated scan line */
+  .scan-line {
+    position: relative;
+    overflow: hidden;
+  }
+  
+  .scan-line::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, hsl(186 100% 50% / 0.8), transparent);
+    animation: scan 3s linear infinite;
+  }
+
+  @keyframes scan {
+    0% { top: 0; opacity: 0; }
+    10% { opacity: 1; }
+    90% { opacity: 1; }
+    100% { top: 100%; opacity: 0; }
+  }
+
+  /* Pulse animation for live indicators */
+  .pulse-live {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% { 
+      box-shadow: 0 0 5px hsl(142 76% 45% / 0.5);
+    }
+    50% { 
+      box-shadow: 0 0 20px hsl(142 76% 45% / 0.8), 0 0 30px hsl(142 76% 45% / 0.4);
+    }
+  }
+
+  /* Data update flash */
+  .data-flash {
+    animation: flash 0.5s ease-out;
+  }
+
+  @keyframes flash {
+    0% { background-color: hsl(186 100% 50% / 0.3); }
+    100% { background-color: transparent; }
+  }
+
+  /* Floating animation */
+  .float {
+    animation: float 6s ease-in-out infinite;
+  }
+
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px); }
+  }
+
+  /* Grid pattern overlay */
+  .grid-pattern {
+    background-image: 
+      linear-gradient(hsl(186 100% 50% / 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(186 100% 50% / 0.03) 1px, transparent 1px);
+    background-size: 50px 50px;
+  }
+
+  /* Cyber card styling */
+  .cyber-card {
+    background: linear-gradient(180deg, hsl(222 47% 10%), hsl(222 47% 7%));
+    border: 1px solid hsl(186 100% 50% / 0.2);
+    border-radius: var(--radius);
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }
+  
+  .cyber-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, hsl(186 100% 50% / 0.5), transparent);
+  }
+  
+  .cyber-card:hover {
+    border-color: hsl(186 100% 50% / 0.4);
+    box-shadow: 0 0 30px hsl(186 100% 50% / 0.1), inset 0 1px 0 hsl(186 100% 50% / 0.1);
+  }
+
+  /* Status indicators */
+  .status-positive {
+    color: hsl(var(--success));
+    text-shadow: 0 0 10px hsl(142 76% 45% / 0.5);
+  }
+  
+  .status-negative {
+    color: hsl(var(--destructive));
+    text-shadow: 0 0 10px hsl(0 85% 55% / 0.5);
+  }
+  
+  .status-warning {
+    color: hsl(var(--warning));
+    text-shadow: 0 0 10px hsl(38 92% 50% / 0.5);
+  }
+
+  /* Metric value styling */
+  .metric-value {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+  }
+
+  /* Corner accents */
+  .corner-accent {
+    position: relative;
+  }
+  
+  .corner-accent::before,
+  .corner-accent::after {
+    content: '';
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border: 2px solid hsl(186 100% 50% / 0.5);
+  }
+  
+  .corner-accent::before {
+    top: -1px;
+    left: -1px;
+    border-right: none;
+    border-bottom: none;
+  }
+  
+  .corner-accent::after {
+    bottom: -1px;
+    right: -1px;
+    border-left: none;
+    border-top: none;
+  }
+
+  /* Animated number ticker */
+  .ticker {
+    display: inline-block;
+    transition: transform 0.3s ease-out;
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: hsl(222 47% 8%);
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: hsl(186 100% 50% / 0.3);
+    border-radius: 3px;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(186 100% 50% / 0.5);
+  }
+}

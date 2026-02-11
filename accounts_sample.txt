@@ -1,0 +1,25 @@
+# Leverage Update - Sample Account List
+# Format: serverId login
+# 
+# Edit this file with your account list, then use:
+#   - Web UI: http://localhost:8080/leverage-update
+#   - CLI: node leverage_update.js "token" "accounts_sample.txt" 100
+#
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+
+# PRODUCTION ACCOUNTS - Standard Leverage
+2 101610
+2 101611
+2 101612
+
+# VIP ACCOUNTS - High Leverage
+# 2-101620
+# 2-101621
+
+# TEST ACCOUNTS - Keep Low Leverage
+# 2-102001
+# 2-102002
+
+# Add your accounts above this line
+# Remember: Leverage must be between 1 and 500

@@ -1,0 +1,325 @@
+custom field is only used for entity, entity custom field is only used in /rest/users not in any other endpoint
+and to fetch entity u wil use this
+
+custom_change_me_field	
+{
+    "type": "choices",
+    "block": "CustomFieldsBlock",
+    "label": "Entity",
+    "search": false,
+    "choices": [
+        "StVincent",
+        "Mauritius",
+        "SCA_MAU"
+    ],
+    "options": {
+        "expanded": false,
+        "multiple": false
+    },
+    "optional": true,
+    "choiceLabels": [
+        "StVincent",
+        "Mauritius",
+        "SCA_MAU"
+    ],
+    "displayPriority": 1
+} 
+
+
+
+
+
+Account (MT5 ACCOUNTS)
+
+
+POST
+/rest/accounts
+
+request body
+
+application/json
+Example Value
+Schema
+{
+  "userId": null,
+  "login": null,
+  "serverId": null,
+  "balance": {
+    "lt": 0,
+    "gt": 0,
+    "lte": 0,
+    "gte": 0,
+    "eq": 0
+  },
+  "credit": {
+    "lt": 0,
+    "gt": 0,
+    "lte": 0,
+    "gte": 0,
+    "eq": 0
+  },
+  "equity": {
+    "lt": 0,
+    "gt": 0,
+    "lte": 0,
+    "gte": 0,
+    "eq": 0
+  },
+  "margin": {
+    "lt": 0,
+    "gt": 0,
+    "lte": 0,
+    "gte": 0,
+    "eq": 0
+  },
+  "orders": [
+    {
+      "field": "createdAt",
+      "direction": "DESC"
+    }
+  ],
+  "segment": {
+    "limit": 500,
+    "offset": 0
+  },
+  "createdAt": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "customFields": {
+    "custom_field_1": "Hello!",
+    "custom_field_2": "Bonjour!"
+  },
+  "companyId": null,
+  "userIds": [
+    0
+  ]
+}
+
+
+response
+[
+  {
+    "login": "string",
+    "serverId": 0,
+    "userId": 0,
+    "createdAt": "2026-02-05T08:51:50.184Z",
+    "groupName": "string",
+    "currency": "string",
+    "isEnabled": 0,
+    "leverage": 0,
+    "balance": 0,
+    "credit": 0,
+    "equity": 0,
+    "margin": 0,
+    "customFields": {
+      "custom_field_1": "Hello!",
+      "custom_field_2": "Bonjour!"
+    },
+    "managerId": 0,
+    "accountTypeId": 0,
+    "tradingStatus": "string",
+    "companyId": 0,
+    "tags": [
+      "string"
+    ],
+    "isReadOnly": 0
+  }
+]
+
+
+
+now this is for to request all clietns
+
+request body
+
+application/json
+Example Value
+Schema
+{
+  "ids": [
+    0
+  ],
+  "lead": true,
+  "email": "string",
+  "phone": "string",
+  "created": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "updated": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "promotedToClientAt": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "orders": [
+    {
+      "field": "updatedAt",
+      "direction": "DESC"
+    }
+  ],
+  "segment": {
+    "limit": 500,
+    "offset": 0
+  },
+  "firstDepositDate": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "managers": [
+    0
+  ],
+  "partners": [
+    0
+  ],
+  "testProfile": true,
+  "registerSocialProviders": [
+    "string"
+  ],
+  "cids": [
+    0
+  ],
+  "birthDate": {
+    "begin": "2018-01-01 00:00:00",
+    "end": "2019-01-01 00:00:00"
+  },
+  "verified": true,
+  "tradingStatuses": [
+    "string"
+  ],
+  "customFields": {
+    "custom_field_1": "Hello!",
+    "custom_field_2": "Bonjour!"
+  },
+  "canRequestIb": true,
+  "canCreateIbLinks": true,
+  "referralLinkIds": [
+    0
+  ],
+  "countries": [
+    "string"
+  ],
+  "tags": [
+    "string"
+  ],
+  "statuses": [
+    "string"
+  ],
+  "secondaryStatuses": [
+    "string"
+  ],
+  "expression": "string",
+  "clientTypes": [
+    "string"
+  ]
+}
+
+
+this is response
+
+[
+  {
+    "id": 0,
+    "managerId": 0,
+    "country": "string",
+    "city": "string",
+    "firstName": "string",
+    "lastName": "string",
+    "middleName": "string",
+    "email": "string",
+    "secondaryEmail": "string",
+    "referrer": "string",
+    "phone": "string",
+    "secondaryPhone": "string",
+    "lead": true,
+    "registrationDate": "2026-02-05T08:56:02.263Z",
+    "updatedAt": "2026-02-05T08:56:02.263Z",
+    "promotedToClientAt": "2026-02-05T08:56:02.263Z",
+    "lastLoginDate": "2026-02-05T08:56:02.263Z",
+    "referralLink": "string",
+    "status": "string",
+    "secondaryStatus": "string",
+    "commpeakStatus": "string",
+    "cellxpertCxd": "string",
+    "title": "string",
+    "isIb": true,
+    "isTrader": true,
+    "enabled": true,
+    "vat": "string",
+    "companyRegNumber": "string",
+    "companyJurisdiction": "string",
+    "nationality": "string",
+    "address": "string",
+    "state": "string",
+    "zipCode": "string",
+    "clientType": "string",
+    "lei": "string",
+    "taxResidency": "string",
+    "countryOfBirth": "string",
+    "cityOfBirth": "string",
+    "birthDate": "2026-02-05T08:56:02.263Z",
+    "language": "string",
+    "tags": [
+      "string"
+    ],
+    "customFields": {
+      "custom_field_1": "Hello!",
+      "custom_field_2": "Bonjour!"
+    },
+    "partnerId": 0,
+    "emailVerified": true,
+    "phoneVerified": true,
+    "notificationPreferences": [
+      "string"
+    ],
+    "testProfile": true,
+    "mifidCategorization": "string",
+    "tin": "string",
+    "noTinReason": "string",
+    "registerSocialProvider": "string",
+    "pep": true,
+    "riskLevel": "string",
+    "riskCategorization": "string",
+    "riskComment": "string",
+    "cid": 0,
+    "verified": true,
+    "tradingStatus": "string",
+    "clientIp": "string",
+    "source": "string",
+    "firstDepositId": 0,
+    "firstDepositDate": "2026-02-05T08:56:02.263Z",
+    "lastDepositId": 0,
+    "lastDepositDate": "2026-02-05T08:56:02.263Z",
+    "maxLeverage": 0,
+    "lastTradedAt": "2026-02-05T08:56:02.263Z",
+    "ibCampaignId": 0,
+    "canRequestIb": true,
+    "canCreateIbLinks": true,
+    "masterPartnerId": 0,
+    "entryPoint": "string",
+    "ibTreeDepth": 0,
+    "marketingDetails": {
+      "marketingLinkId": "",
+      "marketingLink": "",
+      "referrer": "",
+      "cellxpertCxd": "",
+      "utm": {
+        "campaign": "",
+        "content": "",
+        "medium": "",
+        "source": "",
+        "term": "",
+        "full_link": ""
+      }
+    },
+    "ib": true,
+    "trader": true
+  }
+]
+
+
+
+
