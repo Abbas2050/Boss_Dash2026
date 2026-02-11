@@ -13,24 +13,28 @@ import { getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { useState } from 'react';
 
 const Index = () => {
-  // Get today's date range in Dubai timezone for default values
-  const todayStart = getDubaiDayStart();
-  const todayEnd = getDubaiDayEnd();
-  
-  // Filter state lifted here with default values
+  // Filter state lifted here with default values - use lazy initialization
   const [selectedEntity, setSelectedEntity] = useState('all');
-  const [fromDate, setFromDate] = useState<Date>(todayStart);
-  const [toDate, setToDate] = useState<Date>(todayEnd);
+  const [fromDate, setFromDate] = useState<Date>(() => getDubaiDayStart());
+  const [toDate, setToDate] = useState<Date>(() => getDubaiDayEnd());
   const [activeQuickFilter, setActiveQuickFilter] = useState('today');
   const [appliedEntity, setAppliedEntity] = useState('all');
-  const [appliedFromDate, setAppliedFromDate] = useState<Date>(todayStart);
-  const [appliedToDate, setAppliedToDate] = useState<Date>(todayEnd);
+  const [appliedFromDate, setAppliedFromDate] = useState<Date>(() => getDubaiDayStart());
+  const [appliedToDate, setAppliedToDate] = useState<Date>(() => getDubaiDayEnd());
   const [refreshKey, setRefreshKey] = useState(0);
 
   const handleApplyFilters = (override?: { fromDate?: Date; toDate?: Date }) => {
+    const finalFromDate = override?.fromDate ?? fromDate;
+    const finalToDate = override?.toDate ?? toDate;
+    console.log('🔄 Index - Applying filters:', {
+      selectedEntity,
+      fromDate: new Date(finalFromDate).toISOString(),
+      toDate: new Date(finalToDate).toISOString(),
+      override: !!override
+    });
     setAppliedEntity(selectedEntity);
-    setAppliedFromDate(override?.fromDate ?? fromDate);
-    setAppliedToDate(override?.toDate ?? toDate);
+    setAppliedFromDate(new Date(finalFromDate));
+    setAppliedToDate(new Date(finalToDate));
     setRefreshKey(prev => prev + 1);
   };
 

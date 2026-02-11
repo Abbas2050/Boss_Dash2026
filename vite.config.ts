@@ -33,7 +33,7 @@ export default defineConfig(({ mode }) => ({
         rewrite: (path) => path,
       },
       '/api/mt5': {
-        target: 'http://localhost:8001',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/mt5/, '/mt5_api.php'),
       },

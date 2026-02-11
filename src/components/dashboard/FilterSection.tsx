@@ -89,6 +89,10 @@ export function FilterSection({
       case 'today':
         nextFrom = today;
         nextTo = todayEnd;
+        console.log('📅 FilterSection - "Today" selected:', {
+          from: new Date(nextFrom).toISOString(),
+          to: new Date(nextTo).toISOString()
+        });
         break;
       case 'yesterday':
         const yesterday = new Date(today);

@@ -45,7 +45,11 @@ export interface MT5AccountState {
   CurrencyDigits?: number;
   Balance?: number;
   Credit?: number;
+  Equity?: number;
   Profit?: number;
+  Storage?: number;
+  Commission?: number;
+  Floating?: number;
   Margin?: number;
   MarginFree?: number;
   MarginLevel?: number;
