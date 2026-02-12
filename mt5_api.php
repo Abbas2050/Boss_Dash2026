@@ -460,9 +460,17 @@ function handleRequest() {
         }, $items);
     };
 
+    $filterItem = function($item, array $fields) {
+        if(empty($fields)) return $item;
+        $allowed = array_flip($fields);
+        $arr = is_array($item) ? $item : (array)$item;
+        return array_intersect_key($arr, $allowed);
+    };
+
     switch($path) {
         case 'user':
             $login = $_GET['login'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
             if(!$login) {
                 return ['success' => false, 'error' => 'Login parameter required'];
             }
@@ -474,10 +482,16 @@ function handleRequest() {
                 return ['success' => false, 'error' => $mt5->getLastError()];
             }
             
+            $fields = $parseFields($fieldsParam);
+            if($fields) {
+                $user = $filterItem($user, $fields);
+            }
+
             return ['success' => true, 'data' => $user];
             
         case 'users':
             $loginsParam = $_GET['logins'] ?? $_POST['logins'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
             
             if(!$loginsParam) {
                 return ['success' => false, 'error' => 'Logins parameter required'];
@@ -495,11 +509,17 @@ function handleRequest() {
             
             $users = $mt5->getUsers($logins);
             $mt5->shutdown();
-            
+
+            $fields = $parseFields($fieldsParam);
+            if($fields && is_array($users)) {
+                $users = $filterFields($users, $fields);
+            }
+
             return ['success' => true, 'data' => $users];
             
         case 'account':
             $login = $_GET['login'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
             if(!$login) {
                 return ['success' => false, 'error' => 'Login parameter required'];
             }
@@ -511,6 +531,11 @@ function handleRequest() {
                 return ['success' => false, 'error' => $mt5->getLastError()];
             }
             
+            $fields = $parseFields($fieldsParam);
+            if($fields) {
+                $account = $filterItem($account, $fields);
+            }
+
             return ['success' => true, 'data' => $account];
 
         case 'accounts-batch':
@@ -608,6 +633,7 @@ function handleRequest() {
             $login = $_GET['login'] ?? null;
             $from = $_GET['from'] ?? null;
             $to = $_GET['to'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
             
             if(!$login) {
                 return ['success' => false, 'error' => 'Login parameter required'];
@@ -620,6 +646,15 @@ function handleRequest() {
                 return ['success' => false, 'error' => $mt5->getLastError()];
             }
             
+            $fields = $parseFields($fieldsParam);
+            if($fields && is_array($trades)) {
+                if(isset($trades['answer']) && is_array($trades['answer'])) {
+                    $trades['answer'] = $filterFields($trades['answer'], $fields);
+                } else {
+                    $trades = $filterFields($trades, $fields);
+                }
+            }
+
             return ['success' => true, 'data' => $trades];
 
         case 'deal-total':
@@ -645,6 +680,7 @@ function handleRequest() {
             $groupsParam = $_GET['groups'] ?? $_POST['groups'] ?? null;
             $from = $_GET['from'] ?? null;
             $to = $_GET['to'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
 
             if(!$loginsParam && !$groupsParam) {
                 return ['success' => false, 'error' => 'Logins or groups parameter required'];
@@ -681,7 +717,13 @@ function handleRequest() {
                 return ['success' => false, 'error' => $mt5->getLastError()];
             }
 
-            return ['success' => true, 'data' => $deals['answer'] ?? []];
+            $data = $deals['answer'] ?? [];
+            $fields = $parseFields($fieldsParam);
+            if($fields && is_array($data)) {
+                $data = $filterFields($data, $fields);
+            }
+
+            return ['success' => true, 'data' => $data];
 
         case 'position-total':
             $login = $_GET['login'] ?? null;
@@ -702,6 +744,7 @@ function handleRequest() {
         case 'positions-batch':
             $loginsParam = $_GET['logins'] ?? $_POST['logins'] ?? null;
             $groupsParam = $_GET['groups'] ?? $_POST['groups'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
 
             if(!$loginsParam && !$groupsParam) {
                 return ['success' => false, 'error' => 'Logins or groups parameter required'];
@@ -753,6 +796,11 @@ function handleRequest() {
                 }
             }
 
+            $fields = $parseFields($fieldsParam);
+            if($fields) {
+                $allPositions = $filterFields($allPositions, $fields);
+            }
+
             $mt5->shutdown();
             return ['success' => true, 'data' => $allPositions];
 
@@ -760,6 +808,7 @@ function handleRequest() {
             $login = $_GET['login'] ?? null;
             $from = $_GET['from'] ?? null;
             $to = $_GET['to'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
 
             if(!$login || !$from || !$to) {
                 return ['success' => false, 'error' => 'login, from and to parameters required'];
@@ -772,7 +821,13 @@ function handleRequest() {
                 return ['success' => false, 'error' => $mt5->getLastError()];
             }
 
-            return ['success' => true, 'data' => $report['answer'] ?? []];
+            $data = $report['answer'] ?? [];
+            $fields = $parseFields($fieldsParam);
+            if($fields && is_array($data)) {
+                $data = $filterFields($data, $fields);
+            }
+
+            return ['success' => true, 'data' => $data];
 
         case 'daily-batch':
             $loginsParam = $_GET['logins'] ?? $_POST['logins'] ?? null;

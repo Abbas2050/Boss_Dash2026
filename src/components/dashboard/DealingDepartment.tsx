@@ -19,12 +19,17 @@ interface DealingMetrics {
   totalCredit: number;
   clientsWithCredit: number;
   totalLots: number;
+  totalLotsLive: number;
+  buyLotsLive: number;
+  sellLotsLive: number;
   totalVolume: number;
 }
 
 interface SymbolActivity {
   symbol: string;
   positions: number;
+  netExposureLots: number;
+  subSymbols: Array<{ symbol: string; netExposureLots: number }>;
 }
 
 const defaultMetrics: DealingMetrics = {
@@ -32,6 +37,9 @@ const defaultMetrics: DealingMetrics = {
   totalCredit: 0,
   clientsWithCredit: 0,
   totalLots: 0,
+  totalLotsLive: 0,
+  buyLotsLive: 0,
+  sellLotsLive: 0,
   totalVolume: 0,
 };
 
@@ -50,6 +58,12 @@ const getLots = (volume: number | string, volumeExt?: number | string) => {
   const volExt = toNum(volumeExt);
   if (volExt > 0) return volExt / MT5_VOLUME_EXT_DIVISOR;
   return toNum(volume) / MT5_VOLUME_DIVISOR;
+};
+
+const normalizeSymbol = (symbol: string) => {
+  const trimmed = symbol.trim();
+  const dotIndex = trimmed.indexOf('.');
+  return dotIndex === -1 ? trimmed : trimmed.slice(0, dotIndex);
 };
 
 const getUtcDayStartFromLocalDate = (date: Date) => {
@@ -98,20 +112,27 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         const reportsFrom = Math.floor(mt5FromDate.getTime() / 1000);
         const reportsTo = Math.floor(mt5ToDate.getTime() / 1000);
 
+
         const mt5Groups = ['skylinkscapital\\*'];
 
         // Check if querying TODAY's data (real-time) or PAST data (historical)
         const isToday = isUtcTodaySelection(effectiveFromDate, effectiveToDate);
 
         // Get positions for symbol breakdown
-        const positionsResponse = await getMT5PositionsBatch({ groups: mt5Groups });
+        const positionsResponse = await getMT5PositionsBatch({ groups: mt5Groups, fields: ['Login', 'Symbol', 'Volume', 'VolumeExt', 'Action'] });
         if (cancelled) return;
         const positions: MT5Position[] = positionsResponse.success && positionsResponse.data ? positionsResponse.data : [];
 
-        // Get deals for total lots calculation
-        const dealsResponse = await getMT5DealsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
+        // Get deals for period-based calculations (volume)
+        const dealsResponse = await getMT5DealsBatch({
+          groups: mt5Groups,
+          from: reportsFrom,
+          to: reportsTo,
+          fields: ['Volume', 'VolumeExt', 'Price', 'ContractSize'],
+        });
         if (cancelled) return;
         const deals: MT5Trade[] = dealsResponse.success && dealsResponse.data ? dealsResponse.data : [];
+
 
 
 
@@ -148,19 +169,50 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
           reports = reportsResponse.success && reportsResponse.data ? reportsResponse.data : [];
         }
 
-        const symbolPositionsMap = new Map<string, number>();
+        const symbolPositionsMap = new Map<
+          string,
+          { positions: number; netExposureLots: number; subSymbols: Map<string, number> }
+        >();
         positions.forEach((position) => {
-          const symbol = position.Symbol || 'UNKNOWN';
-          symbolPositionsMap.set(symbol, (symbolPositionsMap.get(symbol) || 0) + 1);
+          const rawSymbol = position.Symbol || 'UNKNOWN';
+          const symbol = normalizeSymbol(rawSymbol);
+          const lots = getLots(position.Volume, position.VolumeExt);
+          const isSell = Number(position.Action) === 1;
+          const signedLots = isSell ? -lots : lots;
+          const existing = symbolPositionsMap.get(symbol) || { positions: 0, netExposureLots: 0, subSymbols: new Map() };
+          existing.subSymbols.set(rawSymbol, (existing.subSymbols.get(rawSymbol) || 0) + signedLots);
+          symbolPositionsMap.set(symbol, {
+            positions: existing.positions + 1,
+            netExposureLots: existing.netExposureLots + signedLots,
+            subSymbols: existing.subSymbols,
+          });
         });
 
         const topSymbolsData = Array.from(symbolPositionsMap.entries())
-          .map(([symbol, count]) => ({ symbol, positions: count }))
-          .sort((a, b) => b.positions - a.positions)
+          .map(([symbol, data]) => ({
+            symbol,
+            positions: data.positions,
+            netExposureLots: data.netExposureLots,
+            subSymbols: Array.from(data.subSymbols.entries())
+              .map(([subSymbol, netExposureLots]) => ({ symbol: subSymbol, netExposureLots }))
+              .sort((a, b) => Math.abs(b.netExposureLots) - Math.abs(a.netExposureLots)),
+          }))
+          .sort((a, b) => Math.abs(b.netExposureLots) - Math.abs(a.netExposureLots))
           .slice(0, 6);
 
-        // Calculate Total Lots from DEALS (all executed trades in period)
+        // Calculate Total Lots from DEALS (period)
         const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt), 0);
+
+        // Calculate Total Lots (live) from OPEN POSITIONS (buy vs sell)
+        const buyLotsLive = positions.reduce((sum, position) => {
+          const lots = getLots(position.Volume, position.VolumeExt);
+          return Number(position.Action) === 1 ? sum : sum + lots;
+        }, 0);
+        const sellLotsLive = positions.reduce((sum, position) => {
+          const lots = getLots(position.Volume, position.VolumeExt);
+          return Number(position.Action) === 1 ? sum + lots : sum;
+        }, 0);
+        const totalLotsLive = buyLotsLive + sellLotsLive;
 
         // Calculate Total Volume (notional) from DEALS in period
         const totalVolume = deals.reduce((sum, deal) => {
@@ -214,6 +266,9 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
           totalCredit,
           clientsWithCredit,
           totalLots,
+          totalLotsLive,
+          buyLotsLive,
+          sellLotsLive,
           totalVolume,
         });
         setDataSnapshot({
@@ -250,7 +305,7 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
   return (
     <DepartmentCard title="Dealing" icon={TrendingUp} accentColor="primary">
       <div>
-        <div className="text-xs text-muted-foreground mb-2">Top Symbols (Open Positions)</div>
+        <div className="text-xs text-muted-foreground mb-2">Top Symbols (Net Exposure)</div>
         <ForexTicker items={topSymbols} isLoading={isLoading} />
       </div>
 
@@ -259,7 +314,12 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
           <span className="text-xs text-muted-foreground">Total Lots (live)</span>
           <span className="text-[10px] text-muted-foreground font-mono">1m refresh</span>
         </div>
-        <MiniChart color="hsl(186 100% 50%)" value={metrics.totalLots} variant="area" height={48} />
+        <MiniChart
+          color="hsl(186 100% 50%)"
+          value={metrics.totalLotsLive}
+          variant="area"
+          height={48}
+        />
       </div>
 
       {dataSnapshot.positions === 0 && dataSnapshot.accounts === 0 && !isLoading && (

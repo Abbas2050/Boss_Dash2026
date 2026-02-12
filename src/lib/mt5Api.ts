@@ -104,7 +104,7 @@ export async function getMT5Trades(request: MT5TradesRequest): Promise<MT5ApiRes
 /**
  * Get MT5 deals batch by logins
  */
-export async function getMT5DealsBatch(request: { logins?: number[]; groups?: string[]; from?: number; to?: number }): Promise<MT5ApiResponse<MT5Trade[]>> {
+export async function getMT5DealsBatch(request: { logins?: number[]; groups?: string[]; from?: number; to?: number; fields?: string[] }): Promise<MT5ApiResponse<MT5Trade[]>> {
   try {
     let url = `${MT5_API_BASE}?endpoint=deals-batch`;
     if (request.groups && request.groups.length > 0) {
@@ -119,6 +119,10 @@ export async function getMT5DealsBatch(request: { logins?: number[]; groups?: st
     }
     if (request.to) {
       url += `&to=${request.to}`;
+    }
+    if (request.fields && request.fields.length > 0) {
+      const fieldsParam = encodeURIComponent(JSON.stringify(request.fields));
+      url += `&fields=${fieldsParam}`;
     }
     const response = await fetch(url);
     return await response.json();
@@ -155,7 +159,7 @@ export async function getMT5DealsTotal(request: { login: number; from?: number; 
 /**
  * Get MT5 positions batch by logins
  */
-export async function getMT5PositionsBatch(request: { logins?: number[]; groups?: string[] }): Promise<MT5ApiResponse<MT5Position[]>> {
+export async function getMT5PositionsBatch(request: { logins?: number[]; groups?: string[]; fields?: string[] }): Promise<MT5ApiResponse<MT5Position[]>> {
   try {
     let url = `${MT5_API_BASE}?endpoint=positions-batch`;
     if (request.groups && request.groups.length > 0) {
@@ -164,6 +168,10 @@ export async function getMT5PositionsBatch(request: { logins?: number[]; groups?
     } else if (request.logins && request.logins.length > 0) {
       const loginsParam = encodeURIComponent(JSON.stringify(request.logins));
       url += `&logins=${loginsParam}`;
+    }
+    if (request.fields && request.fields.length > 0) {
+      const fieldsParam = encodeURIComponent(JSON.stringify(request.fields));
+      url += `&fields=${fieldsParam}`;
     }
     const response = await fetch(url);
     return await response.json();
