@@ -194,7 +194,7 @@ export async function getMT5PositionsTotal(request: { login: number }): Promise<
 /**
  * Get MT5 daily reports batch by logins
  */
-export async function getMT5DailyReportsBatch(request: { logins?: number[]; groups?: string[]; from: number; to: number }): Promise<MT5ApiResponse<MT5DailyReport[]>> {
+export async function getMT5DailyReportsBatch(request: { logins?: number[]; groups?: string[]; from: number; to: number; fields?: string[] }): Promise<MT5ApiResponse<MT5DailyReport[]>> {
   try {
     let url = `${MT5_API_BASE}?endpoint=daily-batch&from=${request.from}&to=${request.to}`;
     if (request.groups && request.groups.length > 0) {
@@ -203,6 +203,10 @@ export async function getMT5DailyReportsBatch(request: { logins?: number[]; grou
     } else if (request.logins && request.logins.length > 0) {
       const loginsParam = encodeURIComponent(JSON.stringify(request.logins));
       url += `&logins=${loginsParam}`;
+    }
+    if (request.fields && request.fields.length > 0) {
+      const fieldsParam = encodeURIComponent(JSON.stringify(request.fields));
+      url += `&fields=${fieldsParam}`;
     }
     const response = await fetch(url);
     return await response.json();
@@ -217,7 +221,7 @@ export async function getMT5DailyReportsBatch(request: { logins?: number[]; grou
 /**
  * Get MT5 trading account states batch by logins or groups
  */
-export async function getMT5AccountsBatch(request: { logins?: number[]; groups?: string[] }): Promise<MT5ApiResponse<MT5AccountState[]>> {
+export async function getMT5AccountsBatch(request: { logins?: number[]; groups?: string[]; fields?: string[] }): Promise<MT5ApiResponse<MT5AccountState[]>> {
   try {
     let url = `${MT5_API_BASE}?endpoint=accounts-batch`;
     if (request.groups && request.groups.length > 0) {
@@ -226,6 +230,10 @@ export async function getMT5AccountsBatch(request: { logins?: number[]; groups?:
     } else if (request.logins && request.logins.length > 0) {
       const loginsParam = encodeURIComponent(JSON.stringify(request.logins));
       url += `&logins=${loginsParam}`;
+    }
+    if (request.fields && request.fields.length > 0) {
+      const fieldsParam = encodeURIComponent(JSON.stringify(request.fields));
+      url += `&fields=${fieldsParam}`;
     }
     const response = await fetch(url);
     return await response.json();

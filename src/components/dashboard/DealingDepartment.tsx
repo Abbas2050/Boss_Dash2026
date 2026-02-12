@@ -4,7 +4,6 @@ import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { ForexTicker } from './ForexTicker';
 import { MiniChart } from './MiniChart';
-import { getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { getMT5AccountsBatch, getMT5DailyReportsBatch, getMT5PositionsBatch, getMT5UserLogins, getMT5DealsBatch } from '@/lib/mt5Api';
 import type { MT5AccountState, MT5Position, MT5DailyReport, MT5Trade } from '@/lib/mt5Types';
 
@@ -53,6 +52,24 @@ const getLots = (volume: number | string, volumeExt?: number | string) => {
   return toNum(volume) / MT5_VOLUME_DIVISOR;
 };
 
+const getUtcDayStartFromLocalDate = (date: Date) => {
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0));
+};
+
+const getUtcDayEndFromLocalDate = (date: Date) => {
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999));
+};
+
+const isUtcTodaySelection = (from?: Date, to?: Date) => {
+  const now = new Date();
+  const todayStartUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const todayEndUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const selectedFromUtc = getUtcDayStartFromLocalDate(from ?? new Date());
+  const selectedToUtc = getUtcDayEndFromLocalDate(to ?? new Date());
+  return selectedFromUtc.getTime() === todayStartUtc.getTime() && selectedToUtc.getTime() === todayEndUtc.getTime();
+};
+
+
 export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey }: DepartmentProps) {
   const [metrics, setMetrics] = useState<DealingMetrics>(defaultMetrics);
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
@@ -71,14 +88,12 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
       setIsLoading(true);
 
       try {
-        // Always use the selected/applied dates, never fall back
-        const effectiveFromDate = fromDate ?? getDubaiDayStart();
-        const effectiveToDate = toDate ?? getDubaiDayEnd();
+        // Dealing section uses UTC day boundaries for MT5
+        const effectiveFromDate = fromDate ?? new Date();
+        const effectiveToDate = toDate ?? new Date();
 
-        const mt5FromDate = new Date(effectiveFromDate);
-        mt5FromDate.setHours(0, 0, 0, 0);
-        const mt5ToDate = new Date(effectiveToDate);
-        mt5ToDate.setHours(23, 59, 59, 999);
+        const mt5FromDate = getUtcDayStartFromLocalDate(effectiveFromDate);
+        const mt5ToDate = getUtcDayEndFromLocalDate(effectiveToDate);
 
         const reportsFrom = Math.floor(mt5FromDate.getTime() / 1000);
         const reportsTo = Math.floor(mt5ToDate.getTime() / 1000);
@@ -86,10 +101,7 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         const mt5Groups = ['skylinkscapital\\*'];
 
         // Check if querying TODAY's data (real-time) or PAST data (historical)
-        const dubaiNow = getDubaiDate();
-        const todayStart = new Date(dubaiNow);
-        todayStart.setHours(0, 0, 0, 0);
-        const isToday = mt5ToDate >= todayStart;
+        const isToday = isUtcTodaySelection(effectiveFromDate, effectiveToDate);
 
         // Get positions for symbol breakdown
         const positionsResponse = await getMT5PositionsBatch({ groups: mt5Groups });
@@ -101,15 +113,14 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         if (cancelled) return;
         const deals: MT5Trade[] = dealsResponse.success && dealsResponse.data ? dealsResponse.data : [];
 
+
+
         let accounts: MT5AccountState[] = [];
         let reports: MT5DailyReport[] = [];
 
         // For TODAY: Use accounts-batch endpoint (real-time/live data)
         if (isToday) {
-          const positionLogins = Array.from(new Set(positions.map((position) => position.Login).filter(Boolean)));
-          const accountsResponse = positionLogins.length > 0
-            ? await getMT5AccountsBatch({ logins: positionLogins })
-            : await getMT5AccountsBatch({ groups: mt5Groups });
+          const accountsResponse = await getMT5AccountsBatch({ groups: mt5Groups, fields: ['Login', 'Equity', 'Credit'] });
           if (cancelled) return;
 
           accounts = accountsResponse.success && accountsResponse.data ? accountsResponse.data : [];
@@ -119,7 +130,7 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
             if (cancelled) return;
             const logins = loginsResponse.success && loginsResponse.data ? loginsResponse.data : [];
             if (logins.length > 0) {
-              const fallbackAccountsResponse = await getMT5AccountsBatch({ logins });
+              const fallbackAccountsResponse = await getMT5AccountsBatch({ logins, fields: ['Login', 'Equity', 'Credit'] });
               if (cancelled) return;
               accounts = fallbackAccountsResponse.success && fallbackAccountsResponse.data ? fallbackAccountsResponse.data : [];
             }
@@ -127,7 +138,12 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         }
         // For PAST dates: Use daily-batch endpoint (historical reports)
         else {
-          const reportsResponse = await getMT5DailyReportsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
+          const reportsResponse = await getMT5DailyReportsBatch({
+            groups: mt5Groups,
+            from: reportsFrom,
+            to: reportsTo,
+            fields: ['Login', 'Timestamp', 'ProfitEquity', 'Balance', 'Profit', 'Credit'],
+          });
           if (cancelled) return;
           reports = reportsResponse.success && reportsResponse.data ? reportsResponse.data : [];
         }
@@ -146,11 +162,11 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         // Calculate Total Lots from DEALS (all executed trades in period)
         const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt), 0);
 
-        // Calculate Total Volume (notional) from current open POSITIONS
-        const totalVolume = positions.reduce((sum, position) => {
-          const contractSize = toNum(position.ContractSize);
-          const lots = getLots(position.Volume, position.VolumeExt);
-          const price = toNum(position.PriceCurrent) || toNum(position.PriceOpen);
+        // Calculate Total Volume (notional) from DEALS in period
+        const totalVolume = deals.reduce((sum, deal) => {
+          const contractSize = toNum(deal.ContractSize);
+          const lots = getLots(deal.Volume, deal.VolumeExt);
+          const price = toNum(deal.Price);
           const notional = contractSize && price ? lots * price * contractSize : 0;
           return sum + notional;
         }, 0);
@@ -161,17 +177,7 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         let clientsWithCredit = 0;
 
         if (isToday && accounts.length > 0) {
-          totalEquity = accounts.reduce((sum, account) => {
-            const equity = toNum(account.Equity);
-            if (equity > 0) return sum + equity;
-            const balance = toNum(account.Balance);
-            const credit = toNum(account.Credit);
-            const floating = toNum(account.Floating);
-            if (floating !== 0) return sum + balance + credit + floating;
-            const profit = toNum(account.Profit);
-            return sum + balance + credit + profit;
-          }, 0);
-
+          totalEquity = accounts.reduce((sum, account) => sum + toNum(account.Equity), 0);
           totalCredit = accounts.reduce((sum, account) => sum + toNum(account.Credit), 0);
           clientsWithCredit = accounts.filter((account) => toNum(account.Credit) > 0).length;
         } else if (!isToday && reports.length > 0) {
@@ -190,9 +196,10 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
 
           totalEquity = latestReports.reduce((sum, report) => {
             const equity = toNum(report.ProfitEquity);
+            if (equity > 0) return sum + equity;
             const balance = toNum(report.Balance);
             const profit = toNum(report.Profit);
-            return sum + (equity > 0 ? equity : balance + profit);
+            return sum + balance + profit;
           }, 0);
 
           totalCredit = latestReports.reduce((sum, report) => sum + toNum(report.Credit), 0);
@@ -230,14 +237,15 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
   }, [fromDate, toDate, refreshKey, selectedEntity]);
 
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const formatShortDate = (date: Date) => {
-    return `${MONTHS[date.getMonth()]} ${String(date.getDate()).padStart(2, '0')}`;
+  const formatShortDateUtc = (date: Date) => {
+    return `${MONTHS[date.getUTCMonth()]} ${String(date.getUTCDate()).padStart(2, '0')}`;
   };
 
-  // Build date label based on the selected dates
-  const effectiveFromDate = fromDate ?? getDubaiDayStart();
-  const effectiveToDate = toDate ?? getDubaiDayEnd();
-  const periodLabel = `${formatShortDate(effectiveFromDate)}–${formatShortDate(effectiveToDate)}`;
+  // Build date label based on UTC day boundaries
+  const labelFrom = getUtcDayStartFromLocalDate(fromDate ?? new Date());
+  const labelTo = getUtcDayEndFromLocalDate(toDate ?? new Date());
+  const periodLabel = `${formatShortDateUtc(labelFrom)}–${formatShortDateUtc(labelTo)}`;
+  const dataSourceLabel = isUtcTodaySelection(fromDate, toDate) ? 'UTC today (live)' : 'UTC (reports)';
 
   return (
     <DepartmentCard title="Dealing" icon={TrendingUp} accentColor="primary">
@@ -262,19 +270,19 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
 
       <div className="space-y-1 pt-2 border-t border-border/30">
         <MetricRow
-          label={`Total Equity (${periodLabel})`}
+          label={`Total Equity (${periodLabel}, ${dataSourceLabel})`}
           value={metrics.totalEquity}
           prefix="$"
           icon={<DollarSign className="w-3.5 h-3.5" />}
         />
         <MetricRow
-          label={`Total Credit (${periodLabel})`}
+          label={`Total Credit (${periodLabel}, ${dataSourceLabel})`}
           value={metrics.totalCredit}
           prefix="$"
           icon={<DollarSign className="w-3.5 h-3.5" />}
         />
         <MetricRow
-          label={`Clients with Credit (${periodLabel})`}
+          label={`Clients with Credit (${periodLabel}, ${dataSourceLabel})`}
           value={metrics.clientsWithCredit}
           icon={<Users className="w-3.5 h-3.5" />}
         />

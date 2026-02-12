@@ -1,12 +1,14 @@
 // Dubai Time Utilities
 // Dubai is UTC+4 (Gulf Standard Time)
 
+const DUBAI_OFFSET_MINUTES = 4 * 60;
+
 /**
  * Get current date in Dubai timezone
  */
 export function getDubaiDate(): Date {
   const now = new Date();
-  const dubaiOffset = 4 * 60; // Dubai is UTC+4 (in minutes)
+  const dubaiOffset = DUBAI_OFFSET_MINUTES; // Dubai is UTC+4 (in minutes)
   const localOffset = now.getTimezoneOffset(); // Local timezone offset in minutes
   const diffMinutes = dubaiOffset + localOffset;
   
@@ -40,11 +42,35 @@ export function getDubaiDayEnd(date?: Date): Date {
  * Convert any date to Dubai timezone
  */
 export function convertToDubaiTime(date: Date): Date {
-  const dubaiOffset = 4 * 60; // Dubai is UTC+4 (in minutes)
+  const dubaiOffset = DUBAI_OFFSET_MINUTES; // Dubai is UTC+4 (in minutes)
   const localOffset = date.getTimezoneOffset(); // Local timezone offset in minutes
   const diffMinutes = dubaiOffset + localOffset;
   
   return new Date(date.getTime() + diffMinutes * 60000);
+}
+
+/**
+ * Convert a Dubai-local Date to UTC.
+ * Useful for MT5 endpoints that expect UTC timestamps.
+ */
+export function convertDubaiToUtc(date: Date): Date {
+  return new Date(date.getTime() - DUBAI_OFFSET_MINUTES * 60000);
+}
+
+/**
+ * Get start of day in Dubai, converted to UTC.
+ */
+export function getDubaiDayStartUtc(date?: Date): Date {
+  const d = getDubaiDayStart(date);
+  return convertDubaiToUtc(d);
+}
+
+/**
+ * Get end of day in Dubai, converted to UTC.
+ */
+export function getDubaiDayEndUtc(date?: Date): Date {
+  const d = getDubaiDayEnd(date);
+  return convertDubaiToUtc(d);
 }
 
 /**

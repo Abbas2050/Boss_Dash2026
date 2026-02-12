@@ -440,6 +440,26 @@ function handleRequest() {
         return array_chunk($logins, $size);
     };
 
+    $parseFields = function($fieldsParam) {
+        if(!$fieldsParam) return null;
+        if(is_array($fieldsParam)) return array_values(array_filter($fieldsParam));
+        if(is_string($fieldsParam)) {
+            $decoded = json_decode($fieldsParam, true);
+            if(is_array($decoded)) return array_values(array_filter($decoded));
+            return array_values(array_filter(array_map('trim', explode(',', $fieldsParam))));
+        }
+        return null;
+    };
+
+    $filterFields = function(array $items, array $fields) {
+        if(empty($fields)) return $items;
+        $allowed = array_flip($fields);
+        return array_map(function($item) use ($allowed) {
+            $arr = is_array($item) ? $item : (array)$item;
+            return array_intersect_key($arr, $allowed);
+        }, $items);
+    };
+
     switch($path) {
         case 'user':
             $login = $_GET['login'] ?? null;
@@ -496,6 +516,7 @@ function handleRequest() {
         case 'accounts-batch':
             $loginsParam = $_GET['logins'] ?? $_POST['logins'] ?? null;
             $groupsParam = $_GET['groups'] ?? $_POST['groups'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
 
             if(!$loginsParam && !$groupsParam) {
                 return ['success' => false, 'error' => 'logins or groups parameter required'];
@@ -545,6 +566,11 @@ function handleRequest() {
                 if(isset($accounts['answer']) && is_array($accounts['answer'])) {
                     $allAccounts = array_merge($allAccounts, $accounts['answer']);
                 }
+            }
+
+            $fields = $parseFields($fieldsParam);
+            if($fields) {
+                $allAccounts = $filterFields($allAccounts, $fields);
             }
 
             $mt5->shutdown();
@@ -753,6 +779,7 @@ function handleRequest() {
             $groupsParam = $_GET['groups'] ?? $_POST['groups'] ?? null;
             $from = $_GET['from'] ?? null;
             $to = $_GET['to'] ?? null;
+            $fieldsParam = $_GET['fields'] ?? $_POST['fields'] ?? null;
 
             if((!$loginsParam && !$groupsParam) || !$from || !$to) {
                 return ['success' => false, 'error' => 'logins or groups, from and to parameters required'];
@@ -802,6 +829,11 @@ function handleRequest() {
                 if(isset($reports['answer']) && is_array($reports['answer'])) {
                     $allReports = array_merge($allReports, $reports['answer']);
                 }
+            }
+
+            $fields = $parseFields($fieldsParam);
+            if($fields) {
+                $allReports = $filterFields($allReports, $fields);
             }
 
             $mt5->shutdown();
