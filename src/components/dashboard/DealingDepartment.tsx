@@ -36,6 +36,23 @@ const defaultMetrics: DealingMetrics = {
   totalVolume: 0,
 };
 
+// MT5 volume divisors (from MT5 docs):
+//   Volume:    1 unit = 1/10,000 lot
+//   VolumeExt: 1 unit = 1/100,000,000 lot (higher precision)
+const MT5_VOLUME_DIVISOR = 10_000;
+const MT5_VOLUME_EXT_DIVISOR = 100_000_000;
+
+const toNum = (value: unknown) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
+};
+
+const getLots = (volume: number | string, volumeExt?: number | string) => {
+  const volExt = toNum(volumeExt);
+  if (volExt > 0) return volExt / MT5_VOLUME_EXT_DIVISOR;
+  return toNum(volume) / MT5_VOLUME_DIVISOR;
+};
+
 export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey }: DepartmentProps) {
   const [metrics, setMetrics] = useState<DealingMetrics>(defaultMetrics);
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
@@ -66,7 +83,7 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
         const reportsFrom = Math.floor(mt5FromDate.getTime() / 1000);
         const reportsTo = Math.floor(mt5ToDate.getTime() / 1000);
 
-        const mt5Groups = ['*'];
+        const mt5Groups = ['skylinkscapital\\*'];
 
         // Check if querying TODAY's data (real-time) or PAST data (historical)
         const dubaiNow = getDubaiDate();
@@ -115,19 +132,6 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
           reports = reportsResponse.success && reportsResponse.data ? reportsResponse.data : [];
         }
 
-        const toNum = (value: unknown) => {
-          const num = Number(value);
-          return Number.isFinite(num) ? num : 0;
-        };
-
-        const getLots = (volume: number | string, volumeExt?: number | string, contractSize: number | string = 100000) => {
-          const volExt = toNum(volumeExt);
-          const vol = toNum(volume);
-          const contract = toNum(contractSize);
-          if (volExt > 0 && contract > 0) return volExt / (contract * 1000);
-          return vol / 10000;
-        };
-
         const symbolPositionsMap = new Map<string, number>();
         positions.forEach((position) => {
           const symbol = position.Symbol || 'UNKNOWN';
@@ -140,12 +144,12 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
           .slice(0, 6);
 
         // Calculate Total Lots from DEALS (all executed trades in period)
-        const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt, deal.ContractSize), 0);
+        const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt), 0);
 
-        // Calculate Total Volume from current open POSITIONS
+        // Calculate Total Volume (notional) from current open POSITIONS
         const totalVolume = positions.reduce((sum, position) => {
           const contractSize = toNum(position.ContractSize);
-          const lots = getLots(position.Volume, position.VolumeExt, contractSize);
+          const lots = getLots(position.Volume, position.VolumeExt);
           const price = toNum(position.PriceCurrent) || toNum(position.PriceOpen);
           const notional = contractSize && price ? lots * price * contractSize : 0;
           return sum + notional;
