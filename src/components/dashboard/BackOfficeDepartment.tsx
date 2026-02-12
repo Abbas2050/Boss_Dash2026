@@ -34,14 +34,6 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
         const begin = fromDate ? formatDateTimeForAPI(fromDate, false) : formatDateTimeForAPI(fallbackStart, false);
         const end = toDate ? formatDateTimeForAPI(toDate, true) : formatDateTimeForAPI(fallbackEnd, true);
 
-        console.log('🔧 BackOfficeDepartment - Fetching data with filters:', { 
-          selectedEntity, 
-          begin, 
-          end, 
-          fromDate: fromDate?.toISOString(), 
-          toDate: toDate?.toISOString() 
-        });
-
         // Fetch all data in parallel
         const baseUsersFilter = selectedEntity !== 'all'
           ? { customFields: { custom_change_me_field: { value: selectedEntity } } }
@@ -106,16 +98,6 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
         const individualClients = individualUsers.length;
         const corporateClients = corporateUsers.length;
 
-        console.log('📊 BackOffice Data Fetched:', {
-          totalIBs: ibWithdrawals.length,
-          totalClients: clients.length,
-          totalMT5Accounts: accounts.length,
-          totalDeposits: allDeposits.length,
-          totalWithdrawals: allWithdrawals.length,
-          corporateClients,
-          firstDepositsInRange: firstDepositCount,
-        });
-
         setMetrics({
           totalIBs: ibWithdrawals.length,
           totalDeposits: allDeposits.length,
@@ -129,7 +111,7 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
           sumsubActive: 11, // Hardcoded - active KYC verifications
         });
       } catch (err) {
-        console.error('Error fetching back office data:', err);
+        // silently ignore
       } finally {
         setIsLoading(false);
       }

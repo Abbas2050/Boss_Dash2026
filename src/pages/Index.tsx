@@ -26,12 +26,6 @@ const Index = () => {
   const handleApplyFilters = (override?: { fromDate?: Date; toDate?: Date }) => {
     const finalFromDate = override?.fromDate ?? fromDate;
     const finalToDate = override?.toDate ?? toDate;
-    console.log('🔄 Index - Applying filters:', {
-      selectedEntity,
-      fromDate: new Date(finalFromDate).toISOString(),
-      toDate: new Date(finalToDate).toISOString(),
-      override: !!override
-    });
     setAppliedEntity(selectedEntity);
     setAppliedFromDate(new Date(finalFromDate));
     setAppliedToDate(new Date(finalToDate));

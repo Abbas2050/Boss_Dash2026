@@ -42,8 +42,6 @@ function parseCSV(csvText: string): string[][] {
  */
 export async function fetchSheetBalances(): Promise<SheetBalance[]> {
   try {
-    console.log('📊 Fetching Google Sheets data...');
-    
     const response = await fetch(SHEET_CSV_URL);
     
     if (!response.ok) {
@@ -51,10 +49,8 @@ export async function fetchSheetBalances(): Promise<SheetBalance[]> {
     }
     
     const csvText = await response.text();
-    console.log('📄 CSV Data:', csvText);
-    
+
     const rows = parseCSV(csvText);
-    console.log('📋 Parsed Rows:', rows);
     
     // Assuming the sheet structure is:
     // Row 1: Headers (e.g., "Label", "Value", "Currency")
@@ -79,11 +75,9 @@ export async function fetchSheetBalances(): Promise<SheetBalance[]> {
       }
     }
     
-    console.log('✅ Parsed Balances:', balances);
     return balances;
     
   } catch (error) {
-    console.error('❌ Error fetching Google Sheets:', error);
     // Return empty array on error
     return [];
   }

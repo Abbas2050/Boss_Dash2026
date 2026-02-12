@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Users, UserCheck, Calendar, AlertCircle, FileCheck, Shield } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
@@ -28,10 +28,6 @@ export function HRDepartment({ selectedEntity, fromDate, toDate, refreshKey }: {
     { name: 'Prem', from: '9-Mar-26', to: '19-Mar-26', returnDate: '20-Mar-26', status: 'upcoming' },
     { name: 'Sujaan', from: '23-Mar-26', to: '27-Mar-26', returnDate: '30-Mar-26', status: 'upcoming' },
   ];
-
-  useEffect(() => {
-    console.log('👥 HRDepartment filters:', { selectedEntity, fromDate, toDate, refreshKey });
-  }, [selectedEntity, fromDate, toDate, refreshKey]);
 
   const attendanceRate = (metrics.presentToday / metrics.totalWorkforce) * 100;
 

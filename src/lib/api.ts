@@ -145,17 +145,6 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
-  console.log('🔍 API REQUEST:', {
-    url,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token?.substring(0, 20)}...`,
-    },
-    body,
-  });
-
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -167,20 +156,14 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
       body: JSON.stringify(body),
     });
 
-    console.log('📡 API RESPONSE STATUS:', res.status, res.statusText);
-    console.log('📄 API RESPONSE HEADERS:', Object.fromEntries(res.headers));
-
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error('❌ API ERROR BODY:', text);
       throw new Error(`API error ${res.status}: ${text || 'no body'}`);
     }
 
     const data = await res.json();
-    console.log('✅ API SUCCESS:', { count: data?.length, data });
     return data;
   } catch (err: any) {
-    console.error('🚨 FETCH FAILED:', err?.message || err);
     throw err;
   }
 }
@@ -191,17 +174,6 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
-  console.log('🔍 USERS REQUEST:', {
-    url,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token?.substring(0, 20)}...`,
-    },
-    body,
-  });
-
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -213,19 +185,14 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
       body: JSON.stringify(body),
     });
 
-    console.log('📡 USERS RESPONSE STATUS:', res.status, res.statusText);
-
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error('❌ USERS ERROR BODY:', text);
       throw new Error(`Users API error ${res.status}: ${text || 'no body'}`);
     }
 
     const data = await res.json();
-    console.log('✅ USERS SUCCESS:', { count: data?.length, userIds: data?.map((u: User) => u.id) });
     return data;
   } catch (err: any) {
-    console.error('🚨 USERS FETCH FAILED:', err?.message || err);
     throw err;
   }
 }
@@ -236,17 +203,6 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
-  console.log('🔍 ACCOUNTS REQUEST:', {
-    url,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token?.substring(0, 20)}...`,
-    },
-    body,
-  });
-
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -258,19 +214,14 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
       body: JSON.stringify(body),
     });
 
-    console.log('📡 ACCOUNTS RESPONSE STATUS:', res.status, res.statusText);
-
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error('❌ ACCOUNTS ERROR BODY:', text);
       throw new Error(`Accounts API error ${res.status}: ${text || 'no body'}`);
     }
 
     const data = await res.json();
-    console.log('✅ ACCOUNTS SUCCESS:', { count: data?.length });
     return data;
   } catch (err: any) {
-    console.error('🚨 ACCOUNTS FETCH FAILED:', err?.message || err);
     throw err;
   }
 }
@@ -281,17 +232,6 @@ export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
-  console.log('🔍 TRADES REQUEST:', {
-    url,
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Authorization': `Bearer ${token?.substring(0, 20)}...`,
-    },
-    body,
-  });
-
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -303,20 +243,14 @@ export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
       body: JSON.stringify(body),
     });
 
-    console.log('📡 TRADES RESPONSE STATUS:', res.status, res.statusText);
-    console.log('📄 TRADES RESPONSE HEADERS:', Object.fromEntries(res.headers));
-
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error('❌ TRADES ERROR BODY:', text);
       throw new Error(`Trades API error ${res.status}: ${text || 'no body'}`);
     }
 
     const data = await res.json();
-    console.log('✅ TRADES SUCCESS:', { count: data?.length, data });
     return data;
   } catch (err: any) {
-    console.error('🚨 TRADES FETCH FAILED:', err?.message || err);
     throw err;
   }
 }
@@ -334,14 +268,6 @@ export async function updateAccountLeverage(
   const url = `${baseUrl}/${accountId}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
-  console.log('🔍 UPDATE LEVERAGE REQUEST:', {
-    url,
-    method: 'PUT',
-    serverId: request.serverId,
-    login: request.login,
-    newLeverage: request.leverage,
-  });
-
   try {
     const res = await fetch(url, {
       method: 'PUT',
@@ -353,22 +279,14 @@ export async function updateAccountLeverage(
       body: JSON.stringify({ leverage: request.leverage }),
     });
 
-    console.log('📡 UPDATE LEVERAGE RESPONSE STATUS:', res.status, res.statusText);
-
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      console.error('❌ UPDATE LEVERAGE ERROR:', text);
       throw new Error(`Update leverage error ${res.status}: ${text || 'no body'}`);
     }
 
     const data = await res.json();
-    console.log('✅ UPDATE LEVERAGE SUCCESS:', {
-      login: data.login,
-      newLeverage: data.leverage,
-    });
     return data;
   } catch (err: any) {
-    console.error('🚨 UPDATE LEVERAGE FAILED:', err?.message || err);
     throw err;
   }
 }
@@ -379,11 +297,6 @@ export async function updateAccountLeverage(
 export async function batchUpdateLeverage(
   requests: LeverageUpdateRequest[]
 ): Promise<LeverageUpdateResult[]> {
-  console.log('🔄 BATCH UPDATE LEVERAGE:', {
-    count: requests.length,
-    requests,
-  });
-
   const results: LeverageUpdateResult[] = [];
 
   for (const request of requests) {
@@ -404,13 +317,6 @@ export async function batchUpdateLeverage(
       });
     }
   }
-
-  console.log('📊 BATCH UPDATE RESULTS:', {
-    total: results.length,
-    successful: results.filter((r) => r.success).length,
-    failed: results.filter((r) => !r.success).length,
-    results,
-  });
 
   return results;
 }

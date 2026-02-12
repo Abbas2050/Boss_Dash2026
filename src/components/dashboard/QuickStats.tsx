@@ -41,22 +41,12 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
     const begin = fromDate ? formatDateTimeForAPI(fromDate, false) : formatDateTimeForAPI(fallbackStart, false);
     const end = toDate ? formatDateTimeForAPI(toDate, true) : formatDateTimeForAPI(fallbackEnd, true);
     
-    console.log('📊 QUICKSTATS: Applying filters', {
-      selectedEntity,
-      fromDate: fromDate?.toISOString(),
-      toDate: toDate?.toISOString(),
-      formattedBegin: begin,
-      formattedEnd: end,
-      refreshKey,
-    });
-
     const baseBody: any = {
       createdAt: begin && end ? { begin, end } : undefined,
       processedAt: begin && end ? { begin, end } : undefined,
       statuses: ['approved'],
     };
     
-    console.log('🔧 Transaction Request Body (baseBody):', JSON.stringify(baseBody, null, 2));
     const tradesBody: any = {
       openDate: begin && end ? { begin, end } : undefined,
       closeDate: begin && end ? { begin, end } : undefined,
@@ -80,15 +70,12 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
       ? fetchUsers({ customFields: { custom_change_me_field: selectedEntity } })
           .then(users => users.map(u => u.id))
           .catch(err => {
-            console.error('Failed to fetch users by entity:', err);
             return []; // Return empty array on error
           })
       : Promise.resolve(undefined); // No entity filter
 
     // Step 2: Fetch all data in parallel, then filter client-side by user IDs
     fetchUserIdsPromise.then(userIds => {
-      console.log('👥 User IDs for entity filter:', userIds);
-
       return Promise.all([
         fetchTransactions({ ...baseBody, transactionTypes: ['deposit'] }),
         fetchTransactions({ ...baseBody, transactionTypes: ['withdrawal'] }),
@@ -108,9 +95,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         
         if (userIds && userIds.length > 0) {
           trades = allTrades.filter((t: Trade) => userIds.includes(t.userId));
-          console.log(`🔍 Filtered trades by entity (${selectedEntity}):`, {
-            trades: `${allTrades.length} → ${trades.length}`,
-          });
         }
 
         const entityUserIds = userIds && userIds.length > 0 ? userIds : undefined;
@@ -123,8 +107,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         };
         Object.keys(accountsBody).forEach(key => accountsBody[key] === undefined && delete accountsBody[key]);
 
-        console.log('🔧 Accounts Request Body (entity/date):', JSON.stringify(accountsBody, null, 2));
-
         const accountsResponse = await fetchAccounts(accountsBody);
         accounts = accountsResponse as Account[];
 
@@ -134,14 +116,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
           ibWithdrawals = allIBWithdrawals.filter((tx: Transaction) => entityUserIds.includes(tx.fromUserId));
         }
 
-        console.log('🔍 Filtered by entity (no trade filter) for transactions:', {
-          entityUsers: entityUserIds?.length ?? 'all',
-          deposits: `${allDeposits.length} → ${deposits.length}`,
-          withdrawals: `${allWithdrawals.length} → ${withdrawals.length}`,
-          ibWithdrawals: `${allIBWithdrawals.length} → ${ibWithdrawals.length}`,
-          accounts: accounts.length,
-        });
-        
         const excludedDeposits = deposits.filter((tx: Transaction) => {
           const platformComment = (tx.platformComment || '').toLowerCase();
           return platformComment.includes('negative bal');
@@ -175,41 +149,10 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         
         const millionYards = tradeDetails.reduce((sum, t) => sum + t.millionYards, 0);
         
-        console.log('📊 Million/Yards Calculation (per-trade breakdown):', {
-          totalTrades: trades.length,
-          sampleTrades: tradeDetails.slice(0, 5),
-          totalMillionYards: millionYards,
-        });
-        
-        console.log('📊 Volume Calculation:', {
-          totalTrades: trades.length,
-          totalVolume,
-          sampleTrade: trades[0],
-        });
         const newMt5AccountsCount = accounts.length;
         const newUsersCount = newUsers.length;
         // Net = deposit - withdrawal
         const netDeposit = totalDeposit - totalWithdrawal;
-
-        console.info('QuickStats fetched', {
-          selectedEntity,
-          fromDate,
-          toDate,
-          deposits: deposits.length,
-          excludedDeposits: excludedDeposits.length,
-          withdrawals: withdrawals.length,
-          ibWithdrawals: ibWithdrawals.length,
-          trades: trades.length,
-          newUsers: newUsers.length,
-          totalDeposit,
-          totalWithdrawal,
-          totalIBWithdrawal,
-          totalVolume,
-          millionYards,
-          newMt5AccountsCount,
-          newUsersCount,
-          netDeposit,
-        });
 
         setStats([
           { label: 'Total Deposit', value: `$${totalDeposit.toLocaleString()}`, change: 0, icon: DollarSign },
@@ -221,7 +164,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         setErrorMessage(null);
       })
       .catch((err) => {
-        console.error('API error in QuickStats:', err);
         setErrorMessage(err?.message || 'Unable to fetch data');
         setStats(prev => prev.map(s => ({ ...s, value: '-', change: 0 })));
       })

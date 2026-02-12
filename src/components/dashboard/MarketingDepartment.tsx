@@ -20,7 +20,6 @@ export function MarketingDepartment({ selectedEntity, fromDate, toDate, refreshK
   });
 
   useEffect(() => {
-    console.log('📢 MarketingDepartment filters:', { selectedEntity, fromDate, toDate, refreshKey });
     const interval = setInterval(() => {
       setMetrics(prev => ({
         newClientsToday: prev.newClientsToday + Math.floor(Math.random() * 3),

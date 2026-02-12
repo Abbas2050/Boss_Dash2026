@@ -15,23 +15,25 @@ export function getDubaiDate(): Date {
 }
 
 /**
- * Get start of day (00:00:00) in Dubai timezone
+ * Get start of day (00:00:00) in Dubai timezone.
+ * If no date provided, uses current Dubai date.
+ * Expects input to already be Dubai-adjusted (from getDubaiDate or quick filters).
  */
 export function getDubaiDayStart(date?: Date): Date {
   const d = date ? new Date(date) : getDubaiDate();
-  const dubaiDate = convertToDubaiTime(d);
-  dubaiDate.setHours(0, 0, 0, 0);
-  return dubaiDate;
+  d.setHours(0, 0, 0, 0);
+  return d;
 }
 
 /**
- * Get end of day (23:59:59) in Dubai timezone
+ * Get end of day (23:59:59) in Dubai timezone.
+ * If no date provided, uses current Dubai date.
+ * Expects input to already be Dubai-adjusted (from getDubaiDate or quick filters).
  */
 export function getDubaiDayEnd(date?: Date): Date {
   const d = date ? new Date(date) : getDubaiDate();
-  const dubaiDate = convertToDubaiTime(d);
-  dubaiDate.setHours(23, 59, 59, 999);
-  return dubaiDate;
+  d.setHours(23, 59, 59, 999);
+  return d;
 }
 
 /**
@@ -46,23 +48,24 @@ export function convertToDubaiTime(date: Date): Date {
 }
 
 /**
- * Format date for API (YYYY-MM-DD HH:MM:SS) in Dubai time
+ * Format date for API (YYYY-MM-DD HH:MM:SS).
+ * Expects input to already be Dubai-adjusted. Does NOT re-convert.
  */
 export function formatDateTimeForAPI(date: Date, isEndOfDay: boolean = false): string {
-  const dubaiTime = convertToDubaiTime(date);
-  
+  const d = new Date(date);
+
   if (isEndOfDay) {
-    dubaiTime.setHours(23, 59, 59);
+    d.setHours(23, 59, 59);
   } else {
-    dubaiTime.setHours(0, 0, 0);
+    d.setHours(0, 0, 0);
   }
-  
-  const year = dubaiTime.getFullYear();
-  const month = String(dubaiTime.getMonth() + 1).padStart(2, '0');
-  const day = String(dubaiTime.getDate()).padStart(2, '0');
-  const hours = String(dubaiTime.getHours()).padStart(2, '0');
-  const minutes = String(dubaiTime.getMinutes()).padStart(2, '0');
-  const seconds = String(dubaiTime.getSeconds()).padStart(2, '0');
-  
+
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }

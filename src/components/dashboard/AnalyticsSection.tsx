@@ -61,18 +61,21 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         let end: string;
         
         if (fromDate || toDate) {
-          const fallbackEnd = toDate || now;
-          const fallbackStart = fromDate || new Date(fallbackEnd);
-          fallbackStart.setDate(fallbackStart.getDate() - 30);
-          begin = formatDateTimeForAPI(fallbackStart, false);
-          end = formatDateTimeForAPI(fallbackEnd, true);
+          const endDate = toDate ? new Date(toDate) : new Date(now);
+          let startDate: Date;
+          if (fromDate) {
+            startDate = new Date(fromDate);
+          } else {
+            startDate = new Date(endDate);
+            startDate.setDate(startDate.getDate() - 30);
+          }
+          begin = formatDateTimeForAPI(startDate, false);
+          end = formatDateTimeForAPI(endDate, true);
         } else {
           const { start, end: endDate } = getDateRangeByTimeline();
           begin = formatDateTimeForAPI(start, false);
           end = formatDateTimeForAPI(endDate, true);
         }
-
-        console.log('📊 AnalyticsSection - Fetching data:', { selectedEntity, begin, end, timelineMode });
 
         const baseUsersFilter = selectedEntity !== 'all'
           ? { customFields: { custom_change_me_field: { value: selectedEntity } } }
@@ -302,23 +305,9 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           .map(([name, data]) => ({ name, clients: data.clients, accounts: data.accounts }))
           .sort((a, b) => b.clients - a.clients);
         
-        console.log('📊 Entity Structure (ALL entities):', {
-          totalEntitiesFound: Object.keys(entityMap).length,
-          allEntities: Object.keys(entityMap),
-          entityMap,
-          entityDataAfterFilter: entityData
-        });
         setEntityClientsData(entityData);
-
-        console.log('✅ Analytics Data Loaded:', {
-          clientFunnel,
-          funnelSteps,
-          pspDeposits: pspDepositData.length,
-          pspWithdrawals: pspWithdrawalData.length,
-          entities: entityData.length,
-        });
       } catch (err) {
-        console.error('Error fetching analytics data:', err);
+        // silently ignore
       } finally {
         setIsLoading(false);
       }

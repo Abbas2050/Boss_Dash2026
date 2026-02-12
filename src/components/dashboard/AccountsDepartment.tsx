@@ -58,8 +58,6 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
         const begin = formatDateTimeForAPI(startDate, false);
         const end = formatDateTimeForAPI(endDate, true);
 
-        console.log('💰 AccountsDepartment - Fetching data:', { begin, end, selectedEntity, usingCustomDates: !!(fromDate && toDate) });
-
         // Build filter params with entity if selected
         const filterParams: any = { 
           processedAt: { begin, end },
@@ -87,14 +85,6 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
         const totalWithdrawals = Math.abs(withdrawalsData.reduce((sum, tx) => sum + tx.processedAmount, 0));
         const netFlow = totalDeposits - totalWithdrawals;
 
-        console.log('💳 TODAY Transactions:', {
-          deposits: totalDeposits,
-          withdrawals: totalWithdrawals,
-          netFlow,
-          depositCount: depositsData.length,
-          withdrawalCount: withdrawalsData.length,
-        });
-
         setMetrics({
           depositsToday: totalDeposits / 1000000,
           withdrawalsToday: totalWithdrawals / 1000000,
@@ -102,7 +92,7 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
           totalBalance: 2869781.44,
         });
       } catch (err) {
-        console.error('Error fetching account data:', err);
+        // silently ignore
       } finally {
         setIsLoading(false);
       }

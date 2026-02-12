@@ -40,7 +40,6 @@ export function NotificationPanel({ selectedEntity, fromDate, toDate, refreshKey
   const [notifications, setNotifications] = useState<Notification[]>(initialNotifications);
 
   useEffect(() => {
-    console.log('🔔 NotificationPanel filters:', { selectedEntity, fromDate, toDate, refreshKey });
     const interval = setInterval(() => {
       const types: Notification['type'][] = ['success', 'warning', 'info', 'error'];
       const messages = [

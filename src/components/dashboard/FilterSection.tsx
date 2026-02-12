@@ -59,6 +59,9 @@ export function FilterSection({
   setActiveQuickFilter,
   onSubmit,
 }: FilterSectionProps) {
+  const [fromOpen, setFromOpen] = useState(false);
+  const [toOpen, setToOpen] = useState(false);
+
   const handleEntityChange = (value: string) => {
     const currentFrom = fromDate ? new Date(fromDate) : undefined;
     const currentTo = toDate ? new Date(toDate) : undefined;
@@ -69,13 +72,17 @@ export function FilterSection({
   };
 
   const handleFromDateSelect = (date?: Date) => {
+    if (!date) return; // Prevent deselecting
     setFromDate(date);
     setActiveQuickFilter('');
+    setFromOpen(false);
   };
 
   const handleToDateSelect = (date?: Date) => {
+    if (!date) return; // Prevent deselecting
     setToDate(date);
     setActiveQuickFilter('');
+    setToOpen(false);
   };
 
   const handleQuickFilter = (filter: string) => {
@@ -89,10 +96,6 @@ export function FilterSection({
       case 'today':
         nextFrom = today;
         nextTo = todayEnd;
-        console.log('📅 FilterSection - "Today" selected:', {
-          from: new Date(nextFrom).toISOString(),
-          to: new Date(nextTo).toISOString()
-        });
         break;
       case 'yesterday':
         const yesterday = new Date(today);
@@ -192,7 +195,7 @@ export function FilterSection({
           <div className="h-6 w-px bg-border/50" />
 
           {/* From Date */}
-          <Popover>
+          <Popover open={fromOpen} onOpenChange={setFromOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"
@@ -220,7 +223,7 @@ export function FilterSection({
           <span className="text-xs text-muted-foreground font-mono">TO</span>
 
           {/* To Date */}
-          <Popover>
+          <Popover open={toOpen} onOpenChange={setToOpen}>
             <PopoverTrigger asChild>
               <Button
                 variant="outline"

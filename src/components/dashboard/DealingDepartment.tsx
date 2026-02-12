@@ -46,197 +46,194 @@ export function DealingDepartment({ selectedEntity, fromDate, toDate, refreshKey
     reports: 0,
   });
 
-  const fetchLiveData = async () => {
-    setIsLoading(true);
+  useEffect(() => {
+    let cancelled = false;
 
-    try {
-      // Always use the selected/applied dates, never fall back
-      const effectiveFromDate = fromDate ?? getDubaiDayStart();
-      const effectiveToDate = toDate ?? getDubaiDayEnd();
-      
-      console.log('📊 DealingDepartment - Fetching with dates:', {
-        fromDate: effectiveFromDate.toLocaleDateString(),
-        toDate: effectiveToDate.toLocaleDateString(),
-        receivedFromDate: fromDate?.toLocaleDateString(),
-        receivedToDate: toDate?.toLocaleDateString()
-      });
+    const fetchLiveData = async () => {
+      if (cancelled) return;
+      setIsLoading(true);
 
-      const mt5FromDate = new Date(effectiveFromDate);
-      mt5FromDate.setHours(0, 0, 0, 0);
-      const mt5ToDate = new Date(effectiveToDate);
-      mt5ToDate.setHours(23, 59, 59, 999);
+      try {
+        // Always use the selected/applied dates, never fall back
+        const effectiveFromDate = fromDate ?? getDubaiDayStart();
+        const effectiveToDate = toDate ?? getDubaiDayEnd();
 
-      const reportsFrom = Math.floor(mt5FromDate.getTime() / 1000);
-      const reportsTo = Math.floor(mt5ToDate.getTime() / 1000);
+        const mt5FromDate = new Date(effectiveFromDate);
+        mt5FromDate.setHours(0, 0, 0, 0);
+        const mt5ToDate = new Date(effectiveToDate);
+        mt5ToDate.setHours(23, 59, 59, 999);
 
-      const mt5Groups = ['*'];
+        const reportsFrom = Math.floor(mt5FromDate.getTime() / 1000);
+        const reportsTo = Math.floor(mt5ToDate.getTime() / 1000);
 
-      // Check if querying TODAY's data (real-time) or PAST data (historical)
-      const now = new Date();
-      const todayStart = new Date(now);
-      todayStart.setHours(0, 0, 0, 0);
-      const isToday = mt5ToDate >= todayStart;
+        const mt5Groups = ['*'];
 
-      // Get positions for symbol breakdown
-      const positionsResponse = await getMT5PositionsBatch({ groups: mt5Groups });
-      const positions: MT5Position[] = positionsResponse.success && positionsResponse.data ? positionsResponse.data : [];
+        // Check if querying TODAY's data (real-time) or PAST data (historical)
+        const dubaiNow = getDubaiDate();
+        const todayStart = new Date(dubaiNow);
+        todayStart.setHours(0, 0, 0, 0);
+        const isToday = mt5ToDate >= todayStart;
 
-      // Get deals for total lots calculation
-      const dealsResponse = await getMT5DealsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
-      const deals: MT5Trade[] = dealsResponse.success && dealsResponse.data ? dealsResponse.data : [];
+        // Get positions for symbol breakdown
+        const positionsResponse = await getMT5PositionsBatch({ groups: mt5Groups });
+        if (cancelled) return;
+        const positions: MT5Position[] = positionsResponse.success && positionsResponse.data ? positionsResponse.data : [];
 
-      let accounts: MT5AccountState[] = [];
-      let reports: MT5DailyReport[] = [];
+        // Get deals for total lots calculation
+        const dealsResponse = await getMT5DealsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
+        if (cancelled) return;
+        const deals: MT5Trade[] = dealsResponse.success && dealsResponse.data ? dealsResponse.data : [];
 
-      // For TODAY: Use accounts-batch endpoint (real-time/live data)
-      if (isToday) {
-        const positionLogins = Array.from(new Set(positions.map((position) => position.Login).filter(Boolean)));
-        const accountsResponse = positionLogins.length > 0
-          ? await getMT5AccountsBatch({ logins: positionLogins })
-          : await getMT5AccountsBatch({ groups: mt5Groups });
+        let accounts: MT5AccountState[] = [];
+        let reports: MT5DailyReport[] = [];
 
-        accounts = accountsResponse.success && accountsResponse.data ? accountsResponse.data : [];
+        // For TODAY: Use accounts-batch endpoint (real-time/live data)
+        if (isToday) {
+          const positionLogins = Array.from(new Set(positions.map((position) => position.Login).filter(Boolean)));
+          const accountsResponse = positionLogins.length > 0
+            ? await getMT5AccountsBatch({ logins: positionLogins })
+            : await getMT5AccountsBatch({ groups: mt5Groups });
+          if (cancelled) return;
 
-        if (accounts.length === 0) {
-          const loginsResponse = await getMT5UserLogins({ groups: mt5Groups });
-          const logins = loginsResponse.success && loginsResponse.data ? loginsResponse.data : [];
-          if (logins.length > 0) {
-            const fallbackAccountsResponse = await getMT5AccountsBatch({ logins });
-            accounts = fallbackAccountsResponse.success && fallbackAccountsResponse.data ? fallbackAccountsResponse.data : [];
+          accounts = accountsResponse.success && accountsResponse.data ? accountsResponse.data : [];
+
+          if (accounts.length === 0) {
+            const loginsResponse = await getMT5UserLogins({ groups: mt5Groups });
+            if (cancelled) return;
+            const logins = loginsResponse.success && loginsResponse.data ? loginsResponse.data : [];
+            if (logins.length > 0) {
+              const fallbackAccountsResponse = await getMT5AccountsBatch({ logins });
+              if (cancelled) return;
+              accounts = fallbackAccountsResponse.success && fallbackAccountsResponse.data ? fallbackAccountsResponse.data : [];
+            }
           }
         }
-      }
-      // For PAST dates: Use daily-batch endpoint (historical reports)
-      else {
-        const reportsResponse = await getMT5DailyReportsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
-        reports = reportsResponse.success && reportsResponse.data ? reportsResponse.data : [];
-      }
+        // For PAST dates: Use daily-batch endpoint (historical reports)
+        else {
+          const reportsResponse = await getMT5DailyReportsBatch({ groups: mt5Groups, from: reportsFrom, to: reportsTo });
+          if (cancelled) return;
+          reports = reportsResponse.success && reportsResponse.data ? reportsResponse.data : [];
+        }
 
-      const toNum = (value: unknown) => {
-        const num = Number(value);
-        return Number.isFinite(num) ? num : 0;
-      };
+        const toNum = (value: unknown) => {
+          const num = Number(value);
+          return Number.isFinite(num) ? num : 0;
+        };
 
-      const getLots = (volume: number | string, volumeExt?: number | string, contractSize: number | string = 100000) => {
-        const volExt = toNum(volumeExt);
-        const vol = toNum(volume);
-        const contract = toNum(contractSize);
-        // Correct formula: Lots = VolumeExt / (ContractSize × 1000)
-        if (volExt > 0 && contract > 0) return volExt / (contract * 1000);
-        return vol / 10000;
-      };
+        const getLots = (volume: number | string, volumeExt?: number | string, contractSize: number | string = 100000) => {
+          const volExt = toNum(volumeExt);
+          const vol = toNum(volume);
+          const contract = toNum(contractSize);
+          if (volExt > 0 && contract > 0) return volExt / (contract * 1000);
+          return vol / 10000;
+        };
 
-      const symbolPositionsMap = new Map<string, number>();
-      positions.forEach((position) => {
-        const symbol = position.Symbol || 'UNKNOWN';
-        symbolPositionsMap.set(symbol, (symbolPositionsMap.get(symbol) || 0) + 1);
-      });
-
-      const topSymbolsData = Array.from(symbolPositionsMap.entries())
-        .map(([symbol, count]) => ({ symbol, positions: count }))
-        .sort((a, b) => b.positions - a.positions)
-        .slice(0, 6);
-
-      setTopSymbols(topSymbolsData);
-
-      // Calculate Total Lots from DEALS (all executed trades in period)
-      const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt, deal.ContractSize), 0);
-      
-      // Calculate Total Volume from current open POSITIONS
-      const totalVolume = positions.reduce((sum, position) => {
-        const contractSize = toNum(position.ContractSize);
-        const lots = getLots(position.Volume, position.VolumeExt, contractSize);
-        const price = toNum(position.PriceCurrent) || toNum(position.PriceOpen);
-        const notional = contractSize && price ? lots * price * contractSize : 0;
-        return sum + notional;
-      }, 0);
-
-      // Calculate metrics based on data source (TODAY vs PAST)
-      let totalEquity = 0;
-      let totalCredit = 0;
-      let clientsWithCredit = 0;
-
-      if (isToday && accounts.length > 0) {
-        // TODAY: Use live accounts data
-        totalEquity = accounts.reduce((sum, account) => {
-          const equity = toNum(account.Equity);
-          if (equity > 0) return sum + equity;
-          const balance = toNum(account.Balance);
-          const credit = toNum(account.Credit);
-          const floating = toNum(account.Floating);
-          if (floating !== 0) return sum + balance + credit + floating;
-          const profit = toNum(account.Profit);
-          return sum + balance + credit + profit;
-        }, 0);
-
-        totalCredit = accounts.reduce((sum, account) => sum + toNum(account.Credit), 0);
-        clientsWithCredit = accounts.filter((account) => toNum(account.Credit) > 0).length;
-      } else if (!isToday && reports.length > 0) {
-        // PAST: Use historical daily reports
-        const latestReportByLogin = new Map<number, MT5DailyReport>();
-        reports.forEach((report) => {
-          const login = report.Login;
-          const ts = Number(report.Timestamp) || 0;
-          const existing = latestReportByLogin.get(login);
-          const existingTs = existing ? Number(existing.Timestamp) || 0 : 0;
-          if (!existing || ts > existingTs) {
-            latestReportByLogin.set(login, report);
-          }
+        const symbolPositionsMap = new Map<string, number>();
+        positions.forEach((position) => {
+          const symbol = position.Symbol || 'UNKNOWN';
+          symbolPositionsMap.set(symbol, (symbolPositionsMap.get(symbol) || 0) + 1);
         });
 
-        const latestReports = Array.from(latestReportByLogin.values());
+        const topSymbolsData = Array.from(symbolPositionsMap.entries())
+          .map(([symbol, count]) => ({ symbol, positions: count }))
+          .sort((a, b) => b.positions - a.positions)
+          .slice(0, 6);
 
-        totalEquity = latestReports.reduce((sum, report) => {
-          const equity = toNum(report.ProfitEquity);
-          const balance = toNum(report.Balance);
-          const profit = toNum(report.Profit);
-          return sum + (equity > 0 ? equity : balance + profit);
+        // Calculate Total Lots from DEALS (all executed trades in period)
+        const totalLots = deals.reduce((sum, deal) => sum + getLots(deal.Volume, deal.VolumeExt, deal.ContractSize), 0);
+
+        // Calculate Total Volume from current open POSITIONS
+        const totalVolume = positions.reduce((sum, position) => {
+          const contractSize = toNum(position.ContractSize);
+          const lots = getLots(position.Volume, position.VolumeExt, contractSize);
+          const price = toNum(position.PriceCurrent) || toNum(position.PriceOpen);
+          const notional = contractSize && price ? lots * price * contractSize : 0;
+          return sum + notional;
         }, 0);
 
-        totalCredit = latestReports.reduce((sum, report) => sum + toNum(report.Credit), 0);
-        clientsWithCredit = latestReports.filter((report) => toNum(report.Credit) > 0).length;
+        // Calculate metrics based on data source (TODAY vs PAST)
+        let totalEquity = 0;
+        let totalCredit = 0;
+        let clientsWithCredit = 0;
+
+        if (isToday && accounts.length > 0) {
+          totalEquity = accounts.reduce((sum, account) => {
+            const equity = toNum(account.Equity);
+            if (equity > 0) return sum + equity;
+            const balance = toNum(account.Balance);
+            const credit = toNum(account.Credit);
+            const floating = toNum(account.Floating);
+            if (floating !== 0) return sum + balance + credit + floating;
+            const profit = toNum(account.Profit);
+            return sum + balance + credit + profit;
+          }, 0);
+
+          totalCredit = accounts.reduce((sum, account) => sum + toNum(account.Credit), 0);
+          clientsWithCredit = accounts.filter((account) => toNum(account.Credit) > 0).length;
+        } else if (!isToday && reports.length > 0) {
+          const latestReportByLogin = new Map<number, MT5DailyReport>();
+          reports.forEach((report) => {
+            const login = report.Login;
+            const ts = Number(report.Timestamp) || 0;
+            const existing = latestReportByLogin.get(login);
+            const existingTs = existing ? Number(existing.Timestamp) || 0 : 0;
+            if (!existing || ts > existingTs) {
+              latestReportByLogin.set(login, report);
+            }
+          });
+
+          const latestReports = Array.from(latestReportByLogin.values());
+
+          totalEquity = latestReports.reduce((sum, report) => {
+            const equity = toNum(report.ProfitEquity);
+            const balance = toNum(report.Balance);
+            const profit = toNum(report.Profit);
+            return sum + (equity > 0 ? equity : balance + profit);
+          }, 0);
+
+          totalCredit = latestReports.reduce((sum, report) => sum + toNum(report.Credit), 0);
+          clientsWithCredit = latestReports.filter((report) => toNum(report.Credit) > 0).length;
+        }
+
+        if (cancelled) return;
+
+        setTopSymbols(topSymbolsData);
+        setMetrics({
+          totalEquity,
+          totalCredit,
+          clientsWithCredit,
+          totalLots,
+          totalVolume,
+        });
+        setDataSnapshot({
+          positions: positions.length,
+          accounts: accounts.length,
+          reports: deals.length,
+        });
+      } catch (error) {
+        // silently ignore
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
+    };
 
-      setMetrics({
-        totalEquity,
-        totalCredit,
-        clientsWithCredit,
-        totalLots,
-        totalVolume,
-      });
-
-      setDataSnapshot({
-        positions: positions.length,
-        accounts: accounts.length,
-        reports: deals.length,  // Show deals count instead of reports
-      });
-    } catch (error) {
-      console.error('Error fetching dealing metrics:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
     fetchLiveData();
     const interval = setInterval(fetchLiveData, 60000);
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [fromDate, toDate, refreshKey, selectedEntity]);
 
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const formatShortDate = (date: Date) => {
-    return date.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
+    return `${MONTHS[date.getMonth()]} ${String(date.getDate()).padStart(2, '0')}`;
   };
 
   // Build date label based on the selected dates
-  const getDateLabel = () => {
-    // Always use the passed dates, never fall back
-    const effectiveFromDate = fromDate ?? getDubaiDayStart();
-    const effectiveToDate = toDate ?? getDubaiDayEnd();
-    
-    return `${formatShortDate(effectiveFromDate)}–${formatShortDate(effectiveToDate)}`;
-  };
-
-  const periodLabel = getDateLabel();
+  const effectiveFromDate = fromDate ?? getDubaiDayStart();
+  const effectiveToDate = toDate ?? getDubaiDayEnd();
+  const periodLabel = `${formatShortDate(effectiveFromDate)}–${formatShortDate(effectiveToDate)}`;
 
   return (
     <DepartmentCard title="Dealing" icon={TrendingUp} accentColor="primary">
