@@ -42,7 +42,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
     const end = toDate ? formatDateTimeForAPI(toDate, true) : formatDateTimeForAPI(fallbackEnd, true);
     
     const baseBody: any = {
-      createdAt: begin && end ? { begin, end } : undefined,
       processedAt: begin && end ? { begin, end } : undefined,
       statuses: ['approved'],
     };

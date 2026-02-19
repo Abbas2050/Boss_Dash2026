@@ -18,6 +18,10 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
     individualClients: 10,
     corporateClients: 4,
     sumsubActive: 11,
+    activeAccounts: 0,
+    kycApproved: 0,
+    kycPending: 0,
+    kycRejected: 0,
   });
 
   const [isLoading, setIsLoading] = useState(false);
@@ -109,6 +113,19 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
           individualClients,
           corporateClients,
           sumsubActive: 11, // Hardcoded - active KYC verifications
+          activeAccounts: accounts.filter((a: any) => a.tradingStatus === 'active').length,
+          kycApproved: clients.filter((u: any) => {
+            const val = u.customFields?.custom_compliance_approval;
+            return val === 'Approved' || val === 'Approved with Conditions';
+          }).length,
+          kycPending: clients.filter((u: any) => {
+            const val = u.customFields?.custom_compliance_approval;
+            return val === 'Pending' || !val;
+          }).length,
+          kycRejected: clients.filter((u: any) => {
+            const val = u.customFields?.custom_compliance_approval;
+            return val === 'Rejected';
+          }).length,
         });
       } catch (err) {
         // silently ignore
@@ -237,17 +254,26 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
           />
         </div>
       </div>
-
-      {/* KYC/AML Status */}
-      <div className="pt-2 border-t border-border/30 flex items-center justify-between p-2 rounded-lg bg-success/10 border border-success/20">
-        <div className="flex items-center gap-2">
-          <CheckCircle className="w-3.5 h-3.5 text-success" />
-          <span className="text-xs text-muted-foreground">SumSub KYC</span>
-        </div>
-        <StatusBadge 
-          status="online"
-          label="Active" 
+      {/* Active Accounts Row */}
+      <div className="space-y-1">
+        <MetricRow 
+          label="Active Accounts" 
+          value={metrics.activeAccounts}
+          icon={<Database className="w-3.5 h-3.5" />}
         />
+      </div>
+
+      {/* KYC Status Breakdown */}
+      <div className="pt-2 border-t border-border/30 p-3 rounded-lg bg-background border border-border shadow-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <Shield className="w-4 h-4 text-foreground/80" />
+          <span className="text-base font-semibold text-foreground">KYC Status</span>
+        </div>
+        <div className="flex gap-4 text-base font-bold">
+          <span className="flex items-center gap-1 text-success"><CheckCircle className="w-4 h-4 text-success" /> Approved: <span>{metrics.kycApproved}</span></span>
+          <span className="flex items-center gap-1 text-warning"><AlertCircle className="w-4 h-4 text-warning" /> Pending: <span>{metrics.kycPending}</span></span>
+          <span className="flex items-center gap-1 text-destructive"><AlertCircle className="w-4 h-4 text-destructive" /> Rejected: <span>{metrics.kycRejected}</span></span>
+        </div>
       </div>
     </DepartmentCard>
   );

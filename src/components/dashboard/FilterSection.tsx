@@ -159,11 +159,11 @@ export function FilterSection({
 
   return (
     <div className="cyber-card p-4">
-      <div className="flex items-center justify-between gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 md:gap-6">
         {/* Left: Entity & Date Filters */}
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-2 md:gap-4 w-full md:w-auto">
           {/* Filter Icon */}
-          <div className="flex items-center gap-2 pr-4 border-r border-border/50">
+          <div className="flex items-center gap-2 pr-2 md:pr-4 border-r border-border/50">
             <div className="p-2 rounded-lg bg-primary/10">
               <Filter className="w-4 h-4 text-primary" />
             </div>

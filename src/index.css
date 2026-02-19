@@ -2,8 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;900&family=Rajdhani:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 @layer base {
   :root {
     --background: 222 47% 6%;
@@ -56,10 +54,47 @@
     --shadow-glow-md: 0 0 20px hsl(186 100% 50% / 0.3);
     --shadow-glow-lg: 0 0 40px hsl(186 100% 50% / 0.4);
     
-    --font-display: 'Orbitron', sans-serif;
-    --font-body: 'Rajdhani', sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
+    --font-display: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-body: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-mono: ui-monospace, 'SFMono-Regular', 'Segoe UI Mono', monospace;
   }
+}
+
+/* Light theme overrides (when `.light` is applied on the root) */
+.light {
+  --background: 210 30% 98%;
+  --foreground: 222 10% 10%;
+
+  --card: 210 30% 100%;
+  --card-foreground: 222 10% 10%;
+
+  --popover: 210 30% 100%;
+  --popover-foreground: 222 10% 10%;
+
+  --primary: 220 80% 40%;
+  --primary-foreground: 210 30% 98%;
+
+  --secondary: 210 25% 95%;
+  --secondary-foreground: 210 30% 10%;
+
+  --muted: 210 15% 90%;
+  --muted-foreground: 210 20% 40%;
+
+  --accent: 200 80% 45%;
+  --accent-foreground: 210 30% 10%;
+
+  --destructive: 0 85% 55%;
+  --destructive-foreground: 210 30% 98%;
+
+  --success: 142 76% 45%;
+  --success-foreground: 210 30% 10%;
+
+  --warning: 38 92% 50%;
+  --warning-foreground: 210 30% 10%;
+
+  --border: 210 16% 84%;
+  --input: 210 16% 94%;
+  --ring: 200 90% 45%;
 }
 
 @layer base {
@@ -75,6 +110,13 @@
       radial-gradient(ellipse at bottom right, hsl(186 100% 50% / 0.03) 0%, transparent 50%),
       radial-gradient(ellipse at bottom left, hsl(270 100% 60% / 0.03) 0%, transparent 50%);
     background-attachment: fixed;
+  }
+
+  .light body {
+    background-image:
+      radial-gradient(ellipse at top, hsl(210 60% 96%) 0%, transparent 55%),
+      radial-gradient(ellipse at bottom right, hsl(200 90% 45% / 0.05) 0%, transparent 50%),
+      radial-gradient(ellipse at bottom left, hsl(220 80% 45% / 0.04) 0%, transparent 50%);
   }
 }
 
@@ -177,8 +219,8 @@
 
   /* Cyber card styling */
   .cyber-card {
-    background: linear-gradient(180deg, hsl(222 47% 10%), hsl(222 47% 7%));
-    border: 1px solid hsl(186 100% 50% / 0.2);
+    background: linear-gradient(180deg, hsl(var(--card) / 0.96), hsl(var(--card) / 0.78));
+    border: 1px solid hsl(var(--border) / 0.75);
     border-radius: var(--radius);
     position: relative;
     overflow: hidden;
@@ -196,8 +238,18 @@
   }
   
   .cyber-card:hover {
-    border-color: hsl(186 100% 50% / 0.4);
-    box-shadow: 0 0 30px hsl(186 100% 50% / 0.1), inset 0 1px 0 hsl(186 100% 50% / 0.1);
+    border-color: hsl(var(--primary) / 0.45);
+    box-shadow: 0 0 30px hsl(var(--primary) / 0.12), inset 0 1px 0 hsl(var(--primary) / 0.12);
+  }
+
+  .light .cyber-card {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.98), hsl(var(--card) / 0.9));
+    border-color: hsl(var(--border) / 0.95);
+    box-shadow: 0 12px 28px hsl(220 30% 40% / 0.08);
+  }
+
+  .light .cyber-card::before {
+    background: linear-gradient(90deg, transparent, hsl(var(--primary) / 0.35), transparent);
   }
 
   /* Status indicators */

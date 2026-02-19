@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Transactions</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 15px; }
+
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }
+        .controls label { font-size: 13px; color: #888; }
+        .controls input, .controls select {
+            background: #24283b; border: 1px solid #414868; color: #e0e0e0;
+            padding: 6px 10px; border-radius: 4px; font-size: 13px;
+        }
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 7px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.secondary { background: #414868; color: #e0e0e0; }
+        button.secondary:hover { background: #565f89; }
+
+        .status-bar { display: flex; gap: 15px; margin-bottom: 15px; font-size: 12px; align-items: center; }
+        .status-item { padding: 4px 10px; background: #24283b; border-radius: 4px; }
+        .ws-status { padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .ws-connected { background: #1a3a2a; color: #9ece6a; }
+        .ws-disconnected { background: #3a1a1a; color: #f7768e; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 8px; text-align: left; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+        td { padding: 6px 8px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+        tr.live-row { animation: flash 1.5s ease-out; }
+        @keyframes flash { 0% { background: #2a2a4a; } 100% { background: transparent; } }
+
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; display: inline-block; }
+        .badge-deposit { background: #1a3a2a; color: #9ece6a; }
+        .badge-withdrawal { background: #3a1a1a; color: #f7768e; }
+        .badge-credit { background: #2e4057; color: #7aa2f7; }
+        .badge-bonus { background: #3b2e1a; color: #e0af68; }
+        .badge-commission { background: #2a2040; color: #bb9af7; }
+        .badge-transfer { background: #1a3040; color: #2ac3de; }
+        .badge-other { background: #24283b; color: #888; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #888; }
+
+        .table-wrap { max-height: 65vh; overflow-y: auto; border: 1px solid #292e42; border-radius: 6px; }
+        .empty-state { text-align: center; padding: 40px; color: #565f89; }
+
+        .tab-bar { display: flex; gap: 0; margin-bottom: 15px; border-bottom: 1px solid #292e42; }
+        .tab { padding: 8px 16px; font-size: 13px; color: #565f89; cursor: pointer; border-bottom: 2px solid transparent; }
+        .tab:hover { color: #c0caf5; }
+        .tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+        /* Summary cards */
+        .summary-grid { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .summary-card {
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 6px;
+            padding: 10px 14px; min-width: 160px; flex: 1;
+        }
+        .summary-card .label { font-size: 11px; color: #565f89; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .summary-card .row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+        .summary-card .row .key { color: #888; }
+        .summary-card .net { font-size: 14px; font-weight: bold; margin-top: 4px; padding-top: 4px; border-top: 1px solid #292e42; }
+
+        .client-info { background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 10px 14px; margin-bottom: 15px; font-size: 13px; display: none; }
+        .client-info .name { color: #7aa2f7; font-weight: bold; font-size: 15px; }
+        .client-info .detail { color: #888; margin-left: 15px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html" class="active">Transactions</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Transactions</h1>
+
+        <div class="status-bar">
+            <span id="wsStatus" class="ws-status ws-disconnected">WS Disconnected</span>
+            <div class="status-item">Live: <strong id="liveCount">0</strong></div>
+            <div class="status-item">History: <strong id="historyCount">0</strong></div>
+        </div>
+
+        <div class="tab-bar">
+            <div class="tab active" data-tab="live" onclick="switchTab('live')">Live Feed</div>
+            <div class="tab" data-tab="history" onclick="switchTab('history')">History</div>
+        </div>
+
+        <!-- Live Feed -->
+        <div id="livePanel">
+            <div id="liveSummary" class="summary-grid"></div>
+            <div class="controls">
+                <label>Filter:</label>
+                <select id="liveFilter" onchange="renderLiveTable()">
+                    <option value="">All</option>
+                    <option value="Deposit">Deposits</option>
+                    <option value="Withdrawal">Withdrawals</option>
+                    <option value="Transfer">Transfers</option>
+                    <option value="Credit">Credits</option>
+                    <option value="Bonus">Bonuses</option>
+                    <option value="Commission">Commissions</option>
+                </select>
+                <button class="secondary" onclick="clearLive()">Clear</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Login</th>
+                            <th>Name</th>
+                            <th>Group</th>
+                            <th>Amount</th>
+                            <th>Comment</th>
+                            <th>Reason</th>
+                            <th>IP</th>
+                            <th>Deal #</th>
+                        </tr>
+                    </thead>
+                    <tbody id="liveTable"></tbody>
+                </table>
+                <div id="liveEmpty" class="empty-state">Waiting for live transactions... Connect to WS to receive real-time alerts.</div>
+            </div>
+        </div>
+
+        <!-- History -->
+        <div id="historyPanel" style="display:none">
+            <div class="controls">
+                <label>Login:</label>
+                <input id="histLogin" type="number" placeholder="e.g. 1001" style="width:120px" />
+                <label>Group:</label>
+                <input id="histGroup" placeholder="e.g. *real*" style="width:120px" />
+                <label>From:</label>
+                <input id="histFrom" type="date" />
+                <label>To:</label>
+                <input id="histTo" type="date" />
+                <label>Type:</label>
+                <select id="histType">
+                    <option value="">All Non-Trade</option>
+                    <option value="2">Balance (Deposit/Withdrawal)</option>
+                    <option value="3">Credit</option>
+                    <option value="4">Charge</option>
+                    <option value="5">Correction</option>
+                    <option value="6">Bonus</option>
+                    <option value="7">Commission</option>
+                </select>
+                <button onclick="loadHistory()">Search</button>
+            </div>
+            <div id="clientInfo" class="client-info"></div>
+            <div id="historySummary" class="summary-grid"></div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Login</th>
+                            <th>Name</th>
+                            <th>Amount</th>
+                            <th>Comment</th>
+                            <th>Reason</th>
+                            <th>Deal #</th>
+                            <th>Order #</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyTable"></tbody>
+                </table>
+                <div id="historyEmpty" class="empty-state">Enter search criteria and click Search to load historical transactions.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let connection = null;
+        let liveTransactions = [];
+        const userCache = {};
+
+        // ---- Tabs ----
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+            document.getElementById('livePanel').style.display = tab === 'live' ? '' : 'none';
+            document.getElementById('historyPanel').style.display = tab === 'history' ? '' : 'none';
+        }
+
+        // ---- Helpers ----
+        function getBadgeClass(type) {
+            if (!type) return 'badge-other';
+            const t = type.toLowerCase();
+            if (t.includes('transfer')) return 'badge-transfer';
+            if (t.includes('deposit')) return 'badge-deposit';
+            if (t.includes('withdrawal')) return 'badge-withdrawal';
+            if (t.includes('credit')) return 'badge-credit';
+            if (t.includes('bonus')) return 'badge-bonus';
+            if (t.includes('commission') || t.includes('agent')) return 'badge-commission';
+            return 'badge-other';
+        }
+
+        function amountClass(val) {
+            return val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+        }
+
+        function formatAmount(val) {
+            if (val == null) return '-';
+            const sign = val >= 0 ? '+' : '';
+            return sign + val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Classify a deal action into a summary category
+        // reason=12 means Transfer in MT5
+        function classifyAction(action, profit, reason) {
+            switch (action) {
+                case 2:
+                    if (reason === 12) return profit >= 0 ? 'Transfer In' : 'Transfer Out';
+                    return profit >= 0 ? 'Deposit' : 'Withdrawal';
+                case 3: return profit >= 0 ? 'Credit In' : 'Credit Out';
+                case 4: return 'Charge';
+                case 5: return 'Correction';
+                case 6: return 'Bonus';
+                case 7: case 8: case 9: case 10: case 11: case 18: return 'Commission';
+                case 12: return 'Interest';
+                case 17: return 'Tax';
+                default: return 'Other';
+            }
+        }
+
+        // Classify a transactionType string (from live feed)
+        function classifyType(type) {
+            if (!type) return 'Other';
+            if (type === 'Transfer In') return 'Transfer In';
+            if (type === 'Transfer Out') return 'Transfer Out';
+            if (type === 'Deposit') return 'Deposit';
+            if (type === 'Withdrawal') return 'Withdrawal';
+            if (type === 'Credit') return 'Credit In';
+            if (type === 'Credit Out') return 'Credit Out';
+            if (type === 'Bonus') return 'Bonus';
+            if (type.includes('Commission') || type.includes('Agent')) return 'Commission';
+            if (type === 'Charge') return 'Charge';
+            if (type === 'Correction') return 'Correction';
+            if (type === 'Interest Rate') return 'Interest';
+            if (type === 'Tax') return 'Tax';
+            return 'Other';
+        }
+
+        // Build summary stats from categorized amounts
+        function buildSummaryHtml(categories) {
+            // Group into pairs: Deposit/Withdrawal, Credit In/Credit Out, etc.
+            const pairs = [
+                { label: 'Deposits / Withdrawals', inKey: 'Deposit', outKey: 'Withdrawal' },
+                { label: 'Transfers In / Out', inKey: 'Transfer In', outKey: 'Transfer Out' },
+                { label: 'Credit In / Out', inKey: 'Credit In', outKey: 'Credit Out' },
+                { label: 'Bonus', inKey: 'Bonus', outKey: null },
+                { label: 'Commission', inKey: null, outKey: 'Commission' },
+                { label: 'Correction', inKey: 'Correction', outKey: null },
+                { label: 'Other', inKey: 'Other', outKey: null },
+            ];
+
+            let html = '';
+            for (const p of pairs) {
+                const inAmt = p.inKey ? (categories[p.inKey] || 0) : 0;
+                const outAmt = p.outKey ? (categories[p.outKey] || 0) : 0;
+                const net = inAmt + outAmt;
+
+                // Skip categories with no activity
+                if (inAmt === 0 && outAmt === 0) continue;
+
+                let rows = '';
+                if (p.inKey && categories[p.inKey]) {
+                    rows += `<div class="row"><span class="key">In</span><span class="positive">${formatAmount(inAmt)}</span></div>`;
+                }
+                if (p.outKey && categories[p.outKey]) {
+                    rows += `<div class="row"><span class="key">Out</span><span class="negative">${formatAmount(outAmt)}</span></div>`;
+                }
+
+                html += `<div class="summary-card">
+                    <div class="label">${p.label}</div>
+                    ${rows}
+                    <div class="net ${amountClass(net)}">${formatAmount(net)}</div>
+                </div>`;
+            }
+            return html;
+        }
+
+        // ---- User info cache ----
+        async function resolveNames(logins) {
+            const unique = [...new Set(logins)].filter(l => userCache[l] === undefined);
+            if (unique.length === 0) return;
+
+            try {
+                const params = unique.map(l => `logins=${l}`).join('&');
+                const resp = await fetch(`/Account/GetUserInfoBatch?${params}`);
+                if (resp.ok) {
+                    const data = await resp.json();
+                    for (const [login, info] of Object.entries(data)) {
+                        userCache[login] = info.name || '';
+                    }
+                }
+            } catch {}
+
+            // Mark any unresolved logins so we don't retry
+            for (const l of unique) {
+                if (userCache[l] === undefined) userCache[l] = '';
+            }
+        }
+
+        // ---- Live Feed ----
+        function computeLiveSummary() {
+            const categories = {};
+            for (const t of liveTransactions) {
+                const cat = classifyType(t.transactionType);
+                categories[cat] = (categories[cat] || 0) + (t.amount || 0);
+            }
+            document.getElementById('liveSummary').innerHTML = buildSummaryHtml(categories);
+        }
+
+        function renderLiveTable() {
+            const filter = document.getElementById('liveFilter').value;
+            const filtered = filter
+                ? liveTransactions.filter(t => t.transactionType && t.transactionType.includes(filter))
+                : liveTransactions;
+
+            const tbody = document.getElementById('liveTable');
+            document.getElementById('liveEmpty').style.display = filtered.length ? 'none' : '';
+
+            tbody.innerHTML = filtered.map((t, i) => `
+                <tr class="${i === 0 ? 'live-row' : ''}">
+                    <td>${escapeHtml(t.time) || new Date().toLocaleTimeString('en-GB', { hour12: false })}</td>
+                    <td><span class="badge ${getBadgeClass(t.transactionType)}">${escapeHtml(t.transactionType)}</span></td>
+                    <td>${t.login || '-'}</td>
+                    <td>${escapeHtml(t.name) || '-'}</td>
+                    <td>${escapeHtml(t.group) || '-'}</td>
+                    <td class="${amountClass(t.amount)}"><strong>${formatAmount(t.amount)}</strong></td>
+                    <td>${escapeHtml(t.comment) || '-'}</td>
+                    <td>${escapeHtml(t.reason) || '-'}</td>
+                    <td>${escapeHtml(t.ip) || '-'}</td>
+                    <td>${t.dealTicket || '-'}</td>
+                </tr>
+            `).join('');
+
+            computeLiveSummary();
+        }
+
+        function clearLive() {
+            liveTransactions = [];
+            document.getElementById('liveCount').textContent = '0';
+            document.getElementById('liveSummary').innerHTML = '';
+            renderLiveTable();
+        }
+
+        // ---- History ----
+        async function loadHistory() {
+            const login = document.getElementById('histLogin').value.trim();
+            const group = document.getElementById('histGroup').value.trim();
+            const from = document.getElementById('histFrom').value;
+            const to = document.getElementById('histTo').value;
+            const actionFilter = document.getElementById('histType').value;
+
+            if (!from || !to) {
+                alert('Please select From and To dates');
+                return;
+            }
+
+            // Single optimized endpoint: server-side filtering + user enrichment
+            const params = new URLSearchParams({ from, to });
+            if (login) params.set('login', login);
+            else if (group) params.set('group', group);
+            if (actionFilter) params.set('action', actionFilter);
+
+            try {
+                const resp = await fetch(`/Deal/GetTransactions?${params}`);
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    alert(`Error: ${text}`);
+                    return;
+                }
+
+                const data = await resp.json();
+                const deals = data.transactions;
+                const users = data.users || {};
+
+                // Merge into local cache
+                for (const [lid, info] of Object.entries(users)) {
+                    userCache[lid] = info.name || '';
+                }
+
+                deals.sort((a, b) => b.time - a.time);
+
+                // Show client info if searching by single login
+                const clientInfoEl = document.getElementById('clientInfo');
+                if (login && users[login]) {
+                    clientInfoEl.innerHTML = `<span class="name">${escapeHtml(users[login].name)}</span><span class="detail">Login: ${login}</span>`;
+                    clientInfoEl.style.display = '';
+                } else {
+                    clientInfoEl.style.display = 'none';
+                }
+
+                // Compute summary
+                const categories = {};
+                for (const d of deals) {
+                    const cat = classifyAction(d.action, d.profit, d.reason);
+                    categories[cat] = (categories[cat] || 0) + d.profit;
+                }
+                document.getElementById('historySummary').innerHTML = buildSummaryHtml(categories);
+
+                // Render table
+                document.getElementById('historyCount').textContent = deals.length;
+                const tbody = document.getElementById('historyTable');
+                document.getElementById('historyEmpty').style.display = deals.length ? 'none' : '';
+
+                tbody.innerHTML = deals.map(d => {
+                    const u = users[d.login] || {};
+                    const typeLabel = classifyAction(d.action, d.profit, d.reason);
+                    return `<tr>
+                        <td>${escapeHtml(d.timeString)}</td>
+                        <td><span class="badge ${getBadgeClass(typeLabel)}">${escapeHtml(typeLabel)}</span></td>
+                        <td>${d.login}</td>
+                        <td>${escapeHtml(u.name || '')}</td>
+                        <td class="${amountClass(d.profit)}"><strong>${formatAmount(d.profit)}</strong></td>
+                        <td>${escapeHtml(d.comment) || '-'}</td>
+                        <td>${escapeHtml(d.reasonString) || '-'}</td>
+                        <td>${d.deal}</td>
+                        <td>${d.order || '-'}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                alert(`Failed: ${e.message}`);
+            }
+        }
+
+        // ---- SignalR ----
+        async function connectWs() {
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl("/ws/dashboard")
+                .withAutomaticReconnect([0, 2000, 5000, 10000])
+                .build();
+
+            connection.on("TransactionAlert", (data) => {
+                liveTransactions.unshift(data);
+                if (liveTransactions.length > 500) liveTransactions.pop();
+                document.getElementById('liveCount').textContent = liveTransactions.length;
+                renderLiveTable();
+            });
+
+            connection.onreconnecting(() => {
+                document.getElementById('wsStatus').textContent = 'WS Reconnecting...';
+                document.getElementById('wsStatus').className = 'ws-status ws-disconnected';
+            });
+            connection.onreconnected(() => {
+                document.getElementById('wsStatus').textContent = 'WS Connected';
+                document.getElementById('wsStatus').className = 'ws-status ws-connected';
+            });
+            connection.onclose(() => {
+                document.getElementById('wsStatus').textContent = 'WS Disconnected';
+                document.getElementById('wsStatus').className = 'ws-status ws-disconnected';
+            });
+
+            try {
+                await connection.start();
+                document.getElementById('wsStatus').textContent = 'WS Connected';
+                document.getElementById('wsStatus').className = 'ws-status ws-connected';
+            } catch (err) {
+                console.error('SignalR connect failed:', err);
+            }
+        }
+
+        // ---- Init ----
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('histFrom').value = today;
+        document.getElementById('histTo').value = today;
+        connectWs();
+    </script>
+</body>
+</html>

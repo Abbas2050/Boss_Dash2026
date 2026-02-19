@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Account Alerts</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 15px; }
+
+        .status-bar { display: flex; gap: 15px; margin-bottom: 15px; font-size: 12px; align-items: center; }
+        .status-item { padding: 4px 10px; background: #24283b; border-radius: 4px; }
+        .ws-status { padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .ws-connected { background: #1a3a2a; color: #9ece6a; }
+        .ws-disconnected { background: #3a1a1a; color: #f7768e; }
+
+        .tab-bar { display: flex; gap: 0; margin-bottom: 15px; border-bottom: 1px solid #292e42; }
+        .tab { padding: 8px 16px; font-size: 13px; color: #565f89; cursor: pointer; border-bottom: 2px solid transparent; }
+        .tab:hover { color: #c0caf5; }
+        .tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+        .controls { display: flex; gap: 10px; margin-bottom: 15px; align-items: center; flex-wrap: wrap; }
+        .controls label { font-size: 13px; color: #888; }
+        .controls select {
+            background: #24283b; border: 1px solid #414868; color: #e0e0e0;
+            padding: 6px 10px; border-radius: 4px; font-size: 13px;
+        }
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 7px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.secondary { background: #414868; color: #e0e0e0; }
+        button.secondary:hover { background: #565f89; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 8px; text-align: left; font-weight: 600; position: sticky; top: 0; z-index: 1; }
+        td { padding: 6px 8px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+        tr.live-row { animation: flash 1.5s ease-out; }
+        @keyframes flash { 0% { background: #2a2a4a; } 100% { background: transparent; } }
+
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; display: inline-block; }
+        .badge-add { background: #1a3a2a; color: #9ece6a; }
+        .badge-update { background: #2e4057; color: #7aa2f7; }
+        .badge-delete { background: #3a1a1a; color: #f7768e; }
+        .badge-margin-call { background: #3b2e1a; color: #e0af68; }
+        .badge-stop-out { background: #3a1a1a; color: #f7768e; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #888; }
+
+        .change-list { list-style: none; padding: 0; margin: 0; }
+        .change-item { font-size: 12px; padding: 1px 0; }
+        .change-field { color: #7aa2f7; font-weight: 600; }
+        .change-from { color: #f7768e; text-decoration: line-through; }
+        .change-to { color: #9ece6a; }
+        .change-arrow { color: #565f89; margin: 0 4px; }
+
+        .table-wrap { max-height: 65vh; overflow-y: auto; border: 1px solid #292e42; border-radius: 6px; }
+        .empty-state { text-align: center; padding: 40px; color: #565f89; }
+
+        .summary-grid { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
+        .summary-card {
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 6px;
+            padding: 10px 14px; min-width: 120px; flex: 1; text-align: center;
+        }
+        .summary-card .label { font-size: 11px; color: #565f89; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .summary-card .value { font-size: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html" class="active">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Account Alerts</h1>
+
+        <div class="status-bar">
+            <span id="wsStatus" class="ws-status ws-disconnected">WS Disconnected</span>
+            <div class="status-item">User Changes: <strong id="userCount">0</strong></div>
+            <div class="status-item">Margin Alerts: <strong id="marginCount">0</strong></div>
+        </div>
+
+        <div id="summaryCards" class="summary-grid">
+            <div class="summary-card"><div class="label">New Accounts</div><div class="value positive" id="sumAdd">0</div></div>
+            <div class="summary-card"><div class="label">Updates</div><div class="value" id="sumUpdate" style="color:#7aa2f7">0</div></div>
+            <div class="summary-card"><div class="label">Deleted</div><div class="value negative" id="sumDelete">0</div></div>
+            <div class="summary-card"><div class="label">Margin Calls</div><div class="value" id="sumMargin" style="color:#e0af68">0</div></div>
+            <div class="summary-card"><div class="label">Stop Outs</div><div class="value negative" id="sumStopOut">0</div></div>
+        </div>
+
+        <div class="tab-bar">
+            <div class="tab active" data-tab="users" onclick="switchTab('users')">User Changes</div>
+            <div class="tab" data-tab="margin" onclick="switchTab('margin')">Margin / Stop-Out</div>
+            <div class="tab" data-tab="all" onclick="switchTab('all')">All Alerts</div>
+        </div>
+
+        <!-- User Changes Panel -->
+        <div id="usersPanel">
+            <div class="controls">
+                <label>Filter:</label>
+                <select id="userFilter" onchange="renderUserTable()">
+                    <option value="">All</option>
+                    <option value="Add">New Accounts</option>
+                    <option value="Update">Updates</option>
+                    <option value="Delete">Deleted</option>
+                </select>
+                <button class="secondary" onclick="clearUsers()">Clear</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Event</th>
+                            <th>Login</th>
+                            <th>Name</th>
+                            <th>Group</th>
+                            <th>Leverage</th>
+                            <th>Balance</th>
+                            <th>Changes</th>
+                            <th>Comment</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTable"></tbody>
+                </table>
+                <div id="userEmpty" class="empty-state">Waiting for user change events... Connect to WS to receive real-time alerts.</div>
+            </div>
+        </div>
+
+        <!-- Margin / Stop-Out Panel -->
+        <div id="marginPanel" style="display:none">
+            <div class="controls">
+                <label>Filter:</label>
+                <select id="marginFilter" onchange="renderMarginTable()">
+                    <option value="">All</option>
+                    <option value="MarginCall">Margin Call</option>
+                    <option value="StopOut">Stop Out</option>
+                </select>
+                <button class="secondary" onclick="clearMargin()">Clear</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Alert Type</th>
+                            <th>Login</th>
+                            <th>Group</th>
+                            <th>Equity</th>
+                            <th>Balance</th>
+                            <th>Margin</th>
+                            <th>Margin Level</th>
+                            <th>Floating P/L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="marginTable"></tbody>
+                </table>
+                <div id="marginEmpty" class="empty-state">Waiting for margin call / stop-out events...</div>
+            </div>
+        </div>
+
+        <!-- All Alerts Panel -->
+        <div id="allPanel" style="display:none">
+            <div class="controls">
+                <button class="secondary" onclick="clearAll()">Clear All</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Alert Type</th>
+                            <th>Login</th>
+                            <th>Name / Group</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="allTable"></tbody>
+                </table>
+                <div id="allEmpty" class="empty-state">Waiting for any account alerts...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let connection = null;
+        let userEvents = [];
+        let marginEvents = [];
+        let allEvents = [];
+
+        // Counters
+        let counts = { Add: 0, Update: 0, Delete: 0, MarginCallEnter: 0, MarginCallLeave: 0, StopOutEnter: 0, StopOutLeave: 0 };
+
+        // ---- Tabs ----
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+            document.getElementById('usersPanel').style.display = tab === 'users' ? '' : 'none';
+            document.getElementById('marginPanel').style.display = tab === 'margin' ? '' : 'none';
+            document.getElementById('allPanel').style.display = tab === 'all' ? '' : 'none';
+        }
+
+        // ---- Helpers ----
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function getBadgeClass(type) {
+            if (type === 'Add') return 'badge-add';
+            if (type === 'Update') return 'badge-update';
+            if (type === 'Delete') return 'badge-delete';
+            if (type.includes('MarginCall')) return 'badge-margin-call';
+            if (type.includes('StopOut')) return 'badge-stop-out';
+            return '';
+        }
+
+        function formatAlertType(type) {
+            switch (type) {
+                case 'MarginCallEnter': return 'Margin Call';
+                case 'MarginCallLeave': return 'MC Cleared';
+                case 'StopOutEnter': return 'Stop Out';
+                case 'StopOutLeave': return 'SO Cleared';
+                default: return type;
+            }
+        }
+
+        function formatNumber(val, decimals = 2) {
+            if (val == null || val === undefined) return '-';
+            return Number(val).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+
+        function amountClass(val) {
+            return val > 0 ? 'positive' : val < 0 ? 'negative' : 'neutral';
+        }
+
+        function updateSummary() {
+            document.getElementById('sumAdd').textContent = counts.Add;
+            document.getElementById('sumUpdate').textContent = counts.Update;
+            document.getElementById('sumDelete').textContent = counts.Delete;
+            document.getElementById('sumMargin').textContent = counts.MarginCallEnter;
+            document.getElementById('sumStopOut').textContent = counts.StopOutEnter;
+            document.getElementById('userCount').textContent = userEvents.length;
+            document.getElementById('marginCount').textContent = marginEvents.length;
+        }
+
+        // ---- Format changes array into readable HTML ----
+        function formatChanges(changes) {
+            if (!changes || changes.length === 0) return '<span class="neutral">-</span>';
+            return '<ul class="change-list">' + changes.map(c =>
+                `<li class="change-item"><span class="change-field">${escapeHtml(c.field)}</span><span class="change-arrow">:</span> ` +
+                `<span class="change-from">${escapeHtml(c.from || '(empty)')}</span>` +
+                `<span class="change-arrow">&rarr;</span>` +
+                `<span class="change-to">${escapeHtml(c.to || '(empty)')}</span></li>`
+            ).join('') + '</ul>';
+        }
+
+        // ---- User Changes Table ----
+        function renderUserTable() {
+            const filter = document.getElementById('userFilter').value;
+            const filtered = filter ? userEvents.filter(e => e.eventType === filter) : userEvents;
+
+            const tbody = document.getElementById('userTable');
+            document.getElementById('userEmpty').style.display = filtered.length ? 'none' : '';
+
+            tbody.innerHTML = filtered.map((e, i) => `
+                <tr class="${i === 0 ? 'live-row' : ''}">
+                    <td>${escapeHtml(e.time)}</td>
+                    <td><span class="badge ${getBadgeClass(e.eventType)}">${e.eventType}</span></td>
+                    <td>${e.login || '-'}</td>
+                    <td>${escapeHtml(e.name) || '-'}</td>
+                    <td>${escapeHtml(e.group) || '-'}</td>
+                    <td>${e.leverage || '-'}</td>
+                    <td>${formatNumber(e.balance)}</td>
+                    <td>${e.eventType === 'Update' ? formatChanges(e.changes) : '<span class="neutral">-</span>'}</td>
+                    <td>${escapeHtml(e.comment) || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        // ---- Margin / Stop-Out Table ----
+        function renderMarginTable() {
+            const filter = document.getElementById('marginFilter').value;
+            const filtered = filter ? marginEvents.filter(e => e.alertType.includes(filter)) : marginEvents;
+
+            const tbody = document.getElementById('marginTable');
+            document.getElementById('marginEmpty').style.display = filtered.length ? 'none' : '';
+
+            tbody.innerHTML = filtered.map((e, i) => {
+                const a = e.account || {};
+                const marginLevel = a.margin > 0 ? ((a.equity / a.margin) * 100) : 0;
+                const floating = (a.equity || 0) - (a.balance || 0) - (a.credit || 0);
+                return `
+                <tr class="${i === 0 ? 'live-row' : ''}">
+                    <td>${escapeHtml(e.time)}</td>
+                    <td><span class="badge ${getBadgeClass(e.alertType)}">${formatAlertType(e.alertType)}</span></td>
+                    <td>${a.login || '-'}</td>
+                    <td>${escapeHtml(e.group) || '-'}</td>
+                    <td class="${amountClass(a.equity)}">${formatNumber(a.equity)}</td>
+                    <td>${formatNumber(a.balance)}</td>
+                    <td>${formatNumber(a.margin)}</td>
+                    <td class="${marginLevel < 100 ? 'negative' : marginLevel < 150 ? 'neutral' : ''}">${formatNumber(marginLevel)}%</td>
+                    <td class="${amountClass(floating)}">${formatNumber(floating)}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // ---- All Alerts Table ----
+        function renderAllTable() {
+            const tbody = document.getElementById('allTable');
+            document.getElementById('allEmpty').style.display = allEvents.length ? 'none' : '';
+
+            tbody.innerHTML = allEvents.map((e, i) => `
+                <tr class="${i === 0 ? 'live-row' : ''}">
+                    <td>${escapeHtml(e.time)}</td>
+                    <td><span class="badge ${getBadgeClass(e.type)}">${escapeHtml(e.typeLabel)}</span></td>
+                    <td>${e.login || '-'}</td>
+                    <td>${escapeHtml(e.nameGroup) || '-'}</td>
+                    <td>${escapeHtml(e.details) || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        // ---- Clear ----
+        function clearUsers() { userEvents = []; counts.Add = 0; counts.Update = 0; counts.Delete = 0; updateSummary(); renderUserTable(); }
+        function clearMargin() { marginEvents = []; counts.MarginCallEnter = 0; counts.MarginCallLeave = 0; counts.StopOutEnter = 0; counts.StopOutLeave = 0; updateSummary(); renderMarginTable(); }
+        function clearAll() { clearUsers(); clearMargin(); allEvents = []; renderAllTable(); }
+
+        // ---- SignalR ----
+        async function connectWs() {
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl("/ws/dashboard")
+                .withAutomaticReconnect([0, 2000, 5000, 10000])
+                .build();
+
+            // User creation / update / deletion
+            connection.on("UserChangeAlert", (data) => {
+                userEvents.unshift(data);
+                if (userEvents.length > 500) userEvents.pop();
+                counts[data.eventType] = (counts[data.eventType] || 0) + 1;
+
+                let details = '';
+                if (data.eventType === 'Add') {
+                    details = `Leverage: ${data.leverage}, Email: ${data.email || '-'}`;
+                } else if (data.eventType === 'Update' && data.changes && data.changes.length > 0) {
+                    details = data.changes.map(c => `${c.field}: ${c.from || '(empty)'} \u2192 ${c.to || '(empty)'}`).join(', ');
+                } else if (data.eventType === 'Delete') {
+                    details = 'Account deleted';
+                } else {
+                    details = `Balance: ${formatNumber(data.balance)}, Group: ${data.group || '-'}`;
+                }
+
+                allEvents.unshift({
+                    time: data.time,
+                    type: data.eventType,
+                    typeLabel: data.eventType === 'Add' ? 'New Account' : data.eventType === 'Delete' ? 'Deleted' : 'Updated',
+                    login: data.login,
+                    nameGroup: `${data.name || ''} | ${data.group || ''}`,
+                    details
+                });
+                if (allEvents.length > 1000) allEvents.pop();
+
+                updateSummary();
+                renderUserTable();
+                renderAllTable();
+            });
+
+            // Margin call / stop-out alerts
+            connection.on("AccountAlert", (data) => {
+                const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+                data.time = now;
+                marginEvents.unshift(data);
+                if (marginEvents.length > 500) marginEvents.pop();
+                counts[data.alertType] = (counts[data.alertType] || 0) + 1;
+
+                const a = data.account || {};
+                allEvents.unshift({
+                    time: now,
+                    type: data.alertType,
+                    typeLabel: formatAlertType(data.alertType),
+                    login: a.login,
+                    nameGroup: data.group || '-',
+                    details: `Equity: ${formatNumber(a.equity)}, Margin: ${formatNumber(a.margin)}, Balance: ${formatNumber(a.balance)}`
+                });
+                if (allEvents.length > 1000) allEvents.pop();
+
+                updateSummary();
+                renderMarginTable();
+                renderAllTable();
+            });
+
+            connection.onreconnecting(() => {
+                document.getElementById('wsStatus').textContent = 'WS Reconnecting...';
+                document.getElementById('wsStatus').className = 'ws-status ws-disconnected';
+            });
+            connection.onreconnected(() => {
+                document.getElementById('wsStatus').textContent = 'WS Connected';
+                document.getElementById('wsStatus').className = 'ws-status ws-connected';
+            });
+            connection.onclose(() => {
+                document.getElementById('wsStatus').textContent = 'WS Disconnected';
+                document.getElementById('wsStatus').className = 'ws-status ws-disconnected';
+            });
+
+            try {
+                await connection.start();
+                document.getElementById('wsStatus').textContent = 'WS Connected';
+                document.getElementById('wsStatus').className = 'ws-status ws-connected';
+            } catch (err) {
+                console.error('SignalR connect failed:', err);
+            }
+        }
+
+        // ---- Init ----
+        connectWs();
+    </script>
+</body>
+</html>

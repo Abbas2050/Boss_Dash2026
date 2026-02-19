@@ -14,6 +14,7 @@ interface NotificationPanelProps {
   fromDate?: Date;
   toDate?: Date;
   refreshKey: number;
+  minimized?: boolean;
 }
 
 const iconMap = {
@@ -36,7 +37,7 @@ const initialNotifications: Notification[] = [
   { id: '3', type: 'info', title: 'System Update', message: 'Scheduled maintenance in 4 hours', time: new Date(Date.now() - 300000) },
 ];
 
-export function NotificationPanel({ selectedEntity, fromDate, toDate, refreshKey }: NotificationPanelProps) {
+export function NotificationPanel({ selectedEntity, fromDate, toDate, refreshKey, minimized = false }: NotificationPanelProps) {
   const [notifications, setNotifications] = useState<Notification[]>(initialNotifications);
 
   useEffect(() => {
@@ -72,6 +73,25 @@ export function NotificationPanel({ selectedEntity, fromDate, toDate, refreshKey
   const removeNotification = (id: string) => {
     setNotifications(prev => prev.filter(n => n.id !== id));
   };
+
+  if (minimized) {
+    return (
+      <div className="p-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-primary">Alerts</h4>
+          <span className="text-xs text-muted-foreground">{notifications.length}</span>
+        </div>
+        <div className="mt-2 space-y-1">
+          {notifications.slice(0, 3).map((n) => (
+            <div key={n.id} className="flex items-center gap-2 text-xs text-foreground">
+              <span className="w-2 h-2 rounded-full bg-primary/70" />
+              <span className="truncate">{n.title} | <span className="text-muted-foreground">{formatTime(n.time)}</span></span>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cyber-card p-4 h-full">
@@ -113,3 +133,4 @@ export function NotificationPanel({ selectedEntity, fromDate, toDate, refreshKey
     </div>
   );
 }
+

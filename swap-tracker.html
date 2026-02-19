@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Swap Tracker</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 15px; }
+
+        .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { background: #24283b; color: #7aa2f7; padding: 8px 6px; text-align: right; font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+        th:first-child, th:nth-child(2), th:nth-child(3) { text-align: left; }
+        td { padding: 5px 6px; border-bottom: 1px solid #292e42; text-align: right; white-space: nowrap; }
+        td:first-child, td:nth-child(2), td:nth-child(3) { text-align: left; }
+        tr:hover td { background: #1f2335; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #e0af68; }
+        .muted { color: #565f89; }
+
+        .badge-red { background: #f7768e; color: #1a1b26; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700; }
+        .badge-yellow { background: #e0af68; color: #1a1b26; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700; }
+        .badge-green { background: #9ece6a; color: #1a1b26; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700; }
+
+        .table-wrap { max-height: calc(100vh - 180px); overflow: auto; background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; }
+
+        .loading { color: #565f89; font-style: italic; padding: 20px; text-align: center; }
+
+        #msg { font-size: 13px; min-height: 20px; margin-bottom: 8px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        .auto-label { font-size: 12px; color: #565f89; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html" class="active">Swap Tracker</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Swap-Free Tracker</h1>
+        <div id="msg"></div>
+
+        <div class="toolbar">
+            <span class="auto-label">Auto-refresh: 5s</span>
+        </div>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>LP</th>
+                        <th>Ticket</th>
+                        <th>Symbol</th>
+                        <th>Side</th>
+                        <th>Volume</th>
+                        <th>Swap ($)</th>
+                        <th>Swap Free Days</th>
+                        <th>Days Used</th>
+                        <th>Days Left</th>
+                        <th>Charge Tonight</th>
+                    </tr>
+                </thead>
+                <tbody id="posTable"><tr><td colspan="10" class="loading">Loading...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let autoTimer = null;
+
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 6000);
+        }
+
+        function fmt(v, decimals = 2) {
+            if (v === undefined || v === null) return '-';
+            return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+
+        function swapColor(v) {
+            if (v > 0.005) return 'positive';
+            if (v < -0.005) return 'negative';
+            return '';
+        }
+
+        async function loadPositions() {
+            try {
+                const resp = await fetch(`${API}/Swap/positions`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+                const data = await resp.json();
+                renderPositions(data);
+            } catch (e) {
+                document.getElementById('posTable').innerHTML = `<tr><td colspan="10" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
+            }
+        }
+
+        function renderPositions(data) {
+            const tbody = document.getElementById('posTable');
+            tbody.innerHTML = '';
+
+            if (!data || data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="10" class="loading">No positions found</td></tr>';
+                return;
+            }
+
+            data.forEach(p => {
+                const tr = document.createElement('tr');
+                const sideClass = p.side === 'Buy' ? 'positive' : 'negative';
+
+                let daysLeftBadge;
+                if (p.daysLeft === 0 && p.willChargeTonight) {
+                    daysLeftBadge = `<span class="badge-red">${p.daysLeft}</span>`;
+                } else if (p.daysLeft <= 2 && p.daysLeft > 0) {
+                    daysLeftBadge = `<span class="badge-yellow">${p.daysLeft}</span>`;
+                } else if (p.daysLeft > 2) {
+                    daysLeftBadge = `<span class="badge-green">${p.daysLeft}</span>`;
+                } else {
+                    daysLeftBadge = `<span class="muted">-</span>`;
+                }
+
+                const chargeBadge = p.willChargeTonight
+                    ? `<span class="badge-red">YES</span>`
+                    : `<span class="muted">No</span>`;
+
+                tr.innerHTML = `
+                    <td><strong>${p.lpName}</strong></td>
+                    <td class="muted">${p.ticket}</td>
+                    <td>${p.symbol}</td>
+                    <td class="${sideClass}">${p.side}</td>
+                    <td>${fmt(p.volume)}</td>
+                    <td class="${swapColor(p.swap)}">${fmt(p.swap)}</td>
+                    <td>${p.swapFreeDays !== null ? p.swapFreeDays : '<span class="muted">-</span>'}</td>
+                    <td>${p.daysUsed}</td>
+                    <td>${daysLeftBadge}</td>
+                    <td>${chargeBadge}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            msg(`Loaded ${data.length} positions`, true);
+        }
+
+        // Auto-refresh
+        function startAutoRefresh() {
+            if (autoTimer) clearInterval(autoTimer);
+            autoTimer = setInterval(loadPositions, 5000);
+        }
+
+        // Init
+        loadPositions();
+        startAutoRefresh();
+    </script>
+</body>
+</html>

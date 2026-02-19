@@ -70,7 +70,7 @@ export function HRDepartment({ selectedEntity, fromDate, toDate, refreshKey }: {
         </div>
         <div className="space-y-1.5">
           {leaveSchedule.map((leave, idx) => (
-            <div key={idx} className="p-2 rounded-md bg-secondary/30 border border-border/40 text-xs">
+            <div key={idx} className="p-2 rounded-md bg-background border border-border text-xs">
               <div className="flex items-center justify-between gap-2 mb-1">
                 <span className="font-semibold text-foreground">{leave.name}</span>
                 <StatusBadge 

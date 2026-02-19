@@ -178,11 +178,14 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         ];
         setTransactionBreakdown(transactionData);
 
-        // 5. CLIENT SEGMENTATION - Individual/Corporate × Verified/Not Verified
-        const individualVerified = allUsers.filter(u => u.clientType === 'Individual' && u.verified === true).length;
-        const individualNotVerified = allUsers.filter(u => u.clientType === 'Individual' && u.verified !== true).length;
-        const corporateVerified = allUsers.filter(u => u.clientType === 'Corporate' && u.verified === true).length;
-        const corporateNotVerified = allUsers.filter(u => u.clientType === 'Corporate' && u.verified !== true).length;
+        // 5. CLIENT SEGMENTATION - Individual/Corporate × Verified/Not Verified (use top-level fields)
+        // Defensive: support both u.clientType and u['clientType'] (API may return as property or in object)
+        const getClientType = (u: any) => u.clientType || u['clientType'];
+        const getVerified = (u: any) => u.verified ?? u['verified'];
+        const individualVerified = allUsers.filter(u => getClientType(u) === 'Individual' && getVerified(u) === true).length;
+        const individualNotVerified = allUsers.filter(u => getClientType(u) === 'Individual' && getVerified(u) !== true).length;
+        const corporateVerified = allUsers.filter(u => getClientType(u) === 'Corporate' && getVerified(u) === true).length;
+        const corporateNotVerified = allUsers.filter(u => getClientType(u) === 'Corporate' && getVerified(u) !== true).length;
         const segmentationData = [
           { name: 'Individual Verified', value: individualVerified, color: '#3b82f6', type: 'Individual', status: 'Verified' },
           { name: 'Individual Not Verified', value: individualNotVerified, color: '#93c5fd', type: 'Individual', status: 'Not Verified' },
@@ -232,19 +235,18 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           .slice(0, 12); // Top 12 instruments
         setTopInstruments(instrumentData);
 
-        const normalizePspName = (pspName?: string) => {
-          if (!pspName) return 'Unknown';
-          const normalized = pspName.trim();
-          const lower = normalized.toLowerCase();
-          if (lower === 'bankwire') return 'Crypto LD';
-          if (lower === 'promise') return 'Cash LD';
-          return normalized;
+        // Use tx.psp if available, else fallback to comment or 'Unknown'
+        const normalizePspName = (tx: any) => {
+          // Try to use tx.psp, else fallback to comment, else 'Unknown'
+          if (tx.psp) return tx.psp.trim();
+          if (tx.comment) return tx.comment.trim();
+          return 'Unknown';
         };
 
         // 7. PSP DEPOSITS BREAKDOWN - Sum by PSP field (if available)
         const pspDepMap: { [key: string]: { amount: number; count: number } } = {};
         allDeposits.forEach(tx => {
-          const psp = normalizePspName(tx.psp);
+          const psp = normalizePspName(tx);
           if (!pspDepMap[psp]) pspDepMap[psp] = { amount: 0, count: 0 };
           pspDepMap[psp].amount += tx.processedAmount / 1000000;
           pspDepMap[psp].count += 1;
@@ -257,7 +259,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         // 8. PSP WITHDRAWALS + IB BREAKDOWN
         const pspWdMap: { [key: string]: { amount: number; type: string; count: number } } = {};
         allWithdrawals.forEach(tx => {
-          const psp = normalizePspName(tx.psp);
+          const psp = normalizePspName(tx);
           if (!pspWdMap[psp]) pspWdMap[psp] = { amount: 0, type: 'Withdrawal', count: 0 };
           pspWdMap[psp].amount += Math.abs(tx.processedAmount) / 1000000;
           pspWdMap[psp].count += 1;
@@ -386,18 +388,21 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
             {funnelData.length > 0 ? (
               <div className="space-y-3">
                 {funnelData.map((step, index) => (
-                  <div key={index} className="relative">
+                  <div key={index} className="relative overflow-hidden">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs font-medium text-muted-foreground">{step.stage}</span>
                       <span className="text-sm font-semibold">{step.count} <span className="text-xs text-muted-foreground">({step.percentage}%)</span></span>
                     </div>
                     <div 
-                      className="h-16 rounded-lg flex items-center justify-center text-white font-semibold transition-all"
+                      className="h-16 rounded-lg flex items-center justify-center text-foreground font-semibold transition-all"
                       style={{
                         backgroundColor: step.fill,
                         width: `${step.percentage}%`,
+                        minWidth: '48px',
+                        maxWidth: 'calc(100% - 16px)',
                         marginLeft: `${(100 - step.percentage) / 2}%`,
-                        boxShadow: `0 4px 12px ${step.fill}40`
+                        boxShadow: `0 4px 12px ${step.fill}40`,
+                        overflow: 'hidden'
                       }}
                     >
                       {step.count}
@@ -444,7 +449,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                     </div>
                     <div className="relative w-full h-10 rounded-lg overflow-hidden bg-secondary/20 border border-border/30">
                       <div 
-                        className="h-full flex items-center justify-end pr-3 text-white text-sm font-bold transition-all shadow-lg"
+                        className="h-full flex items-center justify-end pr-3 text-foreground text-sm font-bold transition-all shadow-lg"
                         style={{
                           width: `${Math.max((item.value / Math.max(...transactionBreakdown.map(t => t.value))) * 100, 5)}%`,
                           backgroundColor: idx === 0 ? '#10b981' : idx === 1 ? '#ef4444' : '#f59e0b',
@@ -586,7 +591,12 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} fontSize={11} stroke="hsl(var(--muted-foreground))" />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: '$M', angle: -90, position: 'insideLeft' }} />
-                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} formatter={(value) => [`$${value.toFixed(2)}M`, 'Deposits']} />
+                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} formatter={(value) => {
+                    let v = value;
+                    if (Array.isArray(v)) v = v[0];
+                    const num = typeof v === 'number' ? v : parseFloat(v);
+                    return [`$${isNaN(num) ? v : num.toFixed(2)}M`, 'Deposits'];
+                  }} />
                   <Bar dataKey="value" fill="#10b981" radius={[8, 8, 0, 0]}>
                     {pspDeposits.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -613,7 +623,12 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} fontSize={11} stroke="hsl(var(--muted-foreground))" />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: '$M', angle: -90, position: 'insideLeft' }} />
-                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} formatter={(value) => [`$${value.toFixed(2)}M`, 'Amount']} />
+                  <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} formatter={(value) => {
+                    let v = value;
+                    if (Array.isArray(v)) v = v[0];
+                    const num = typeof v === 'number' ? v : parseFloat(v);
+                    return [`$${isNaN(num) ? v : num.toFixed(2)}M`, 'Amount'];
+                  }} />
                   <Bar dataKey="value" fill="#ef4444" radius={[8, 8, 0, 0]}>
                     {pspWithdrawals.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -672,7 +687,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                       <div key={idx} className="p-4 rounded-lg border border-border/50 bg-secondary/30">
                         <div className="flex items-center justify-between mb-3">
                           <h4 className="font-semibold text-sm">{entity.name}</h4>
-                          <span className="px-2 py-1 rounded-full text-xs font-bold text-white" style={{ backgroundColor: color }}>
+                          <span className="px-2 py-1 rounded-full text-xs font-bold text-foreground" style={{ backgroundColor: color }}>
                             {conversionRate}%
                           </span>
                         </div>

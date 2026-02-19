@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - History & Revenue Share</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 15px; }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 15px; flex-wrap: wrap; }
+        .controls label { font-size: 13px; color: #888; }
+        .controls input[type="date"], .controls select { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 7px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.secondary { background: #414868; color: #e0e0e0; }
+        button.secondary:hover { background: #565f89; }
+
+        .tabs { display: flex; gap: 0; border-bottom: 1px solid #292e42; margin-bottom: 15px; }
+        .tab { padding: 10px 20px; font-size: 13px; color: #565f89; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+        .tab:hover { color: #c0caf5; }
+        .tab.active { color: #7aa2f7; border-bottom-color: #7aa2f7; }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { background: #24283b; color: #7aa2f7; padding: 8px 6px; text-align: right; font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
+        th:first-child, th:nth-child(2), th:nth-child(3) { text-align: left; }
+        td { padding: 5px 6px; border-bottom: 1px solid #292e42; text-align: right; white-space: nowrap; }
+        td:first-child, td:nth-child(2), td:nth-child(3) { text-align: left; }
+        tr:hover td { background: #1f2335; }
+        tr.total-row td { background: #24283b; font-weight: 700; border-top: 2px solid #7aa2f7; }
+        tr.error-row td { opacity: 0.5; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #e0af68; }
+        .muted { color: #565f89; }
+
+        .table-wrap { max-height: calc(100vh - 230px); overflow: auto; background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; }
+
+        .inline-edit { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 2px 6px; border-radius: 3px; font-size: 12px; width: 90px; text-align: right; }
+
+        #msg { font-size: 13px; min-height: 20px; margin-bottom: 8px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        .loading { color: #565f89; font-style: italic; padding: 20px; text-align: center; }
+
+        .export-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html" class="active">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>History & Revenue Share</h1>
+
+        <div class="controls">
+            <label>From:</label>
+            <input type="date" id="dateFrom" />
+            <label>To:</label>
+            <input type="date" id="dateTo" />
+            <button onclick="loadActivePanel()">Load</button>
+        </div>
+
+        <div id="msg"></div>
+
+        <div class="tabs">
+            <div class="tab active" data-panel="aggregate" onclick="switchTab(this)">Revenue Share</div>
+            <div class="tab" data-panel="deals" onclick="switchTab(this)">Trade Deals</div>
+            <div class="tab" data-panel="volume" onclick="switchTab(this)">Volume (Yards)</div>
+        </div>
+
+        <!-- Tab 1: Aggregate Revenue Share -->
+        <div id="panel-aggregate" class="panel active">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>LP Name</th>
+                            <th>Login</th>
+                            <th>Source</th>
+                            <th>Start Equity</th>
+                            <th>End Equity</th>
+                            <th>Credit</th>
+                            <th>Deposit</th>
+                            <th>Withdrawal</th>
+                            <th>Net Deposits</th>
+                            <th>Gross P/L</th>
+                            <th>Commission</th>
+                            <th>Swap</th>
+                            <th>Net P/L</th>
+                            <th>Real LP P/L</th>
+                            <th>NTP %</th>
+                            <th>LP P/L (Rev Share)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="aggTable"><tr><td colspan="16" class="loading">Click "Load" to fetch data</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab 2: Trade Deals -->
+        <div id="panel-deals" class="panel">
+            <div class="controls">
+                <label>LP:</label>
+                <select id="dealLpSelect"><option value="">-- Select LP --</option></select>
+                <button onclick="loadDeals()">Load Deals</button>
+                <button class="secondary" onclick="exportDealsCsv()">Export CSV</button>
+            </div>
+            <div class="table-wrap" style="margin-top:10px">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Ticket</th>
+                            <th>Symbol</th>
+                            <th>Time</th>
+                            <th>Direction</th>
+                            <th>Entry</th>
+                            <th>Volume</th>
+                            <th>Price</th>
+                            <th>Contract Size</th>
+                            <th>Market Value</th>
+                            <th>Profit</th>
+                            <th>Commission</th>
+                            <th>Fee</th>
+                            <th>Swap</th>
+                            <th>LP Comm</th>
+                            <th>LP Comm/Lot</th>
+                        </tr>
+                    </thead>
+                    <tbody id="dealsTable"><tr><td colspan="15" class="loading">Select an LP and click "Load Deals"</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab 3: Volume (Yards) -->
+        <div id="panel-volume" class="panel">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>LP Name</th>
+                            <th>Login</th>
+                            <th>Source</th>
+                            <th>Trade Count</th>
+                            <th>Total Lots</th>
+                            <th>Notional (USD)</th>
+                            <th>Volume (Yards)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="volTable"><tr><td colspan="7" class="loading">Click "Load" to fetch data</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let lastAggData = null;
+        let lastDealsData = null;
+        let lastVolData = null;
+        let lpAccounts = [];
+
+        // Default date range: first of current month to today
+        const now = new Date();
+        document.getElementById('dateFrom').value = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        document.getElementById('dateTo').value = now.toISOString().split('T')[0];
+
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 6000);
+        }
+
+        function getTimestamps() {
+            const from = document.getElementById('dateFrom').value;
+            const to = document.getElementById('dateTo').value;
+            if (!from || !to) { msg('Select date range', false); return null; }
+            return {
+                from: Math.floor(new Date(from + 'T00:00:00Z').getTime() / 1000),
+                to: Math.floor(new Date(to + 'T23:59:59Z').getTime() / 1000),
+            };
+        }
+
+        function fmt(v, decimals = 2) {
+            if (v === undefined || v === null) return '-';
+            return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+
+        function colorClass(v) {
+            if (v > 0.005) return 'positive';
+            if (v < -0.005) return 'negative';
+            return '';
+        }
+
+        function colorCell(v, decimals = 2) {
+            return `<td class="${colorClass(v)}">${fmt(v, decimals)}</td>`;
+        }
+
+        // ---- Tab switching ----
+        function switchTab(el) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            el.classList.add('active');
+            document.getElementById('panel-' + el.dataset.panel).classList.add('active');
+        }
+
+        function loadActivePanel() {
+            const active = document.querySelector('.tab.active').dataset.panel;
+            if (active === 'aggregate') loadAggregate();
+            else if (active === 'deals') loadDeals();
+            else if (active === 'volume') loadVolume();
+        }
+
+        // ---- Load LP list for deals dropdown ----
+        async function loadLpList() {
+            try {
+                const resp = await fetch(`${API}/api/LpAccount`);
+                if (resp.ok) {
+                    lpAccounts = await resp.json();
+                    const sel = document.getElementById('dealLpSelect');
+                    sel.innerHTML = '<option value="">-- Select LP --</option>';
+                    lpAccounts.forEach(lp => {
+                        sel.innerHTML += `<option value="${lp.mt5Login}">${lp.lpName} (${lp.mt5Login})</option>`;
+                    });
+                }
+            } catch (e) { }
+        }
+
+        // ---- Aggregate Revenue Share ----
+        async function loadAggregate() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            const tbody = document.getElementById('aggTable');
+            tbody.innerHTML = '<tr><td colspan="16" class="loading">Loading...</td></tr>';
+
+            try {
+                const resp = await fetch(`${API}/History/aggregate?from=${ts.from}&to=${ts.to}`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastAggData = await resp.json();
+                renderAggregate(lastAggData);
+                msg(`Loaded ${lastAggData.items.length} LPs`, true);
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="16" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
+                msg('Request failed', false);
+            }
+        }
+
+        function renderAggregate(data) {
+            const tbody = document.getElementById('aggTable');
+            tbody.innerHTML = '';
+
+            data.items.forEach(item => {
+                const tr = document.createElement('tr');
+                if (item.isError) tr.className = 'error-row';
+
+                if (item.isError) {
+                    tr.innerHTML = `
+                        <td><strong>${item.lpName}</strong></td>
+                        <td>${item.login}</td>
+                        <td class="muted">${item.source}</td>
+                        <td colspan="13" class="negative">${item.errorMessage || 'Error'}</td>
+                    `;
+                } else {
+                    tr.innerHTML = `
+                        <td><strong>${item.lpName}</strong></td>
+                        <td>${item.login}</td>
+                        <td class="muted">${item.source}</td>
+                        <td>${fmt(item.startEquity)}</td>
+                        <td>${fmt(item.endEquity)}</td>
+                        <td>${fmt(item.credit)}</td>
+                        ${colorCell(item.deposit)}
+                        ${colorCell(item.withdrawal)}
+                        ${colorCell(item.netDeposits)}
+                        ${colorCell(item.grossProfit)}
+                        ${colorCell(item.totalCommission)}
+                        ${colorCell(item.totalSwap)}
+                        ${colorCell(item.netPL)}
+                        ${colorCell(item.realLpPL)}
+                        <td class="neutral">${fmt(item.ntpPercent, 1)}%</td>
+                        ${colorCell(item.lpPL)}
+                    `;
+                }
+                tbody.appendChild(tr);
+            });
+
+            // Totals row
+            const t = data.totals;
+            const totalTr = document.createElement('tr');
+            totalTr.className = 'total-row';
+            totalTr.innerHTML = `
+                <td><strong>TOTAL</strong></td>
+                <td></td>
+                <td></td>
+                <td>${fmt(t.startEquity)}</td>
+                <td>${fmt(t.endEquity)}</td>
+                <td>${fmt(t.credit)}</td>
+                ${colorCell(t.deposit)}
+                ${colorCell(t.withdrawal)}
+                ${colorCell(t.netDeposits)}
+                ${colorCell(t.grossProfit)}
+                ${colorCell(t.totalCommission)}
+                ${colorCell(t.totalSwap)}
+                ${colorCell(t.netPL)}
+                ${colorCell(t.realLpPL)}
+                <td></td>
+                ${colorCell(t.lpPL)}
+            `;
+            tbody.appendChild(totalTr);
+        }
+
+        // ---- Trade Deals ----
+        async function loadDeals() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            const login = document.getElementById('dealLpSelect').value;
+            if (!login) { msg('Select an LP first', false); return; }
+
+            const tbody = document.getElementById('dealsTable');
+            tbody.innerHTML = '<tr><td colspan="15" class="loading">Loading...</td></tr>';
+
+            try {
+                const resp = await fetch(`${API}/History/deals?login=${login}&from=${ts.from}&to=${ts.to}`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastDealsData = await resp.json();
+                renderDeals(lastDealsData);
+                msg(`Loaded ${lastDealsData.totalDeals} deals for ${lastDealsData.lpName}`, true);
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="15" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
+                msg('Request failed', false);
+            }
+        }
+
+        function renderDeals(data) {
+            const tbody = document.getElementById('dealsTable');
+            tbody.innerHTML = '';
+
+            if (!data.deals || data.deals.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="15" class="loading">No trade deals found</td></tr>';
+                return;
+            }
+
+            data.deals.forEach(d => {
+                const tr = document.createElement('tr');
+                const dirClass = d.direction === 'Buy' ? 'positive' : 'negative';
+                tr.innerHTML = `
+                    <td>${d.dealTicket}</td>
+                    <td><strong>${d.symbol}</strong></td>
+                    <td class="muted">${d.timeString}</td>
+                    <td class="${dirClass}">${d.direction}</td>
+                    <td>${d.entry}</td>
+                    <td>${fmt(d.volume, 2)}</td>
+                    <td>${fmt(d.price, 5)}</td>
+                    <td>${fmt(d.contractSize, 0)}</td>
+                    <td>${fmt(d.marketValue, 0)}</td>
+                    ${colorCell(d.profit)}
+                    ${colorCell(d.commission)}
+                    ${colorCell(d.fee)}
+                    ${colorCell(d.swap)}
+                    <td>${fmt(d.lpCommission)}</td>
+                    <td>${fmt(d.lpCommPerLot)}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function exportDealsCsv() {
+            if (!lastDealsData || !lastDealsData.deals || lastDealsData.deals.length === 0) {
+                msg('No deals to export', false);
+                return;
+            }
+
+            const headers = ['Ticket','Symbol','Time','Direction','Entry','Volume','Price','ContractSize','MarketValue','Profit','Commission','Fee','Swap','LpComm','LpComm/Lot'];
+            const rows = lastDealsData.deals.map(d => [
+                d.dealTicket, d.symbol, d.timeString, d.direction, d.entry,
+                d.volume, d.price, d.contractSize, d.marketValue,
+                d.profit, d.commission, d.fee, d.swap,
+                d.lpCommission, d.lpCommPerLot
+            ]);
+
+            const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `deals_${lastDealsData.lpName}_${document.getElementById('dateFrom').value}_${document.getElementById('dateTo').value}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // ---- Volume (Yards) ----
+        async function loadVolume() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            const tbody = document.getElementById('volTable');
+            tbody.innerHTML = '<tr><td colspan="7" class="loading">Loading...</td></tr>';
+
+            try {
+                const resp = await fetch(`${API}/History/volume?from=${ts.from}&to=${ts.to}`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastVolData = await resp.json();
+                renderVolume(lastVolData);
+                msg(`Loaded volume for ${lastVolData.items.length} LPs`, true);
+            } catch (e) {
+                tbody.innerHTML = `<tr><td colspan="7" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
+                msg('Request failed', false);
+            }
+        }
+
+        function renderVolume(data) {
+            const tbody = document.getElementById('volTable');
+            tbody.innerHTML = '';
+
+            data.items.forEach(item => {
+                const tr = document.createElement('tr');
+                if (item.isError) tr.className = 'error-row';
+
+                if (item.isError) {
+                    tr.innerHTML = `
+                        <td><strong>${item.lpName}</strong></td>
+                        <td>${item.login}</td>
+                        <td class="muted">${item.source}</td>
+                        <td colspan="4" class="negative">${item.errorMessage || 'Error'}</td>
+                    `;
+                } else {
+                    tr.innerHTML = `
+                        <td><strong>${item.lpName}</strong></td>
+                        <td>${item.login}</td>
+                        <td class="muted">${item.source}</td>
+                        <td>${item.tradeCount.toLocaleString()}</td>
+                        <td>${fmt(item.totalLots)}</td>
+                        <td>${fmt(item.notionalUsd, 0)}</td>
+                        <td>${fmt(item.volumeYards, 4)}</td>
+                    `;
+                }
+                tbody.appendChild(tr);
+            });
+
+            // Totals row
+            const t = data.totals;
+            const totalTr = document.createElement('tr');
+            totalTr.className = 'total-row';
+            totalTr.innerHTML = `
+                <td><strong>TOTAL</strong></td>
+                <td></td>
+                <td></td>
+                <td>${t.tradeCount.toLocaleString()}</td>
+                <td>${fmt(t.totalLots)}</td>
+                <td>${fmt(t.notionalUsd, 0)}</td>
+                <td>${fmt(t.volumeYards, 4)}</td>
+            `;
+            tbody.appendChild(totalTr);
+        }
+
+        // Init
+        loadLpList();
+    </script>
+</body>
+</html>

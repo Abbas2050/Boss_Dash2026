@@ -1,4 +1,3 @@
-import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { FilterSection } from '@/components/dashboard/FilterSection';
 import { QuickStats } from '@/components/dashboard/QuickStats';
 import { DealingDepartment } from '@/components/dashboard/DealingDepartment';
@@ -41,7 +40,6 @@ const Index = () => {
         <div className="absolute inset-0 grid-pattern opacity-30" />
       </div>
       <div className="relative z-10">
-        <DashboardHeader />
         <main className="p-6 space-y-5">
           {/* Filter Section */}
           <FilterSection

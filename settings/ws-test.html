@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC Dashboard - WebSocket Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { color: #7aa2f7; font-size: 18px; margin-bottom: 15px; }
+        .controls { margin-bottom: 15px; display: flex; align-items: center; gap: 8px; }
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.disconnect { background: #f7768e; }
+        button.disconnect:hover { background: #ff9e9e; }
+        button.clear { background: #414868; color: #e0e0e0; }
+        button.clear:hover { background: #565f89; }
+        #status { padding: 6px 12px; border-radius: 4px; display: inline-block; font-weight: bold; font-size: 12px; }
+        .connected { background: #1a3a2a; color: #9ece6a; }
+        .disconnected { background: #3a1a1a; color: #f7768e; }
+        .connecting { background: #3b2e1a; color: #e0af68; }
+        .count { color: #565f89; font-size: 12px; margin-left: 8px; }
+        #log { max-height: 80vh; overflow-y: auto; border: 1px solid #292e42; padding: 10px; background: #1a1b26; border-radius: 6px; }
+        .event { padding: 4px 0; border-bottom: 1px solid #24283b; font-size: 13px; }
+        .event-type { font-weight: bold; display: inline-block; min-width: 220px; }
+        .coverage { color: #9ece6a; }
+        .deal { color: #7aa2f7; }
+        .position { color: #e0af68; }
+        .order { color: #bb9af7; }
+        .alert { color: #f7768e; }
+        .time { color: #565f89; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/ws-test.html" class="active">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>SignalR WebSocket Test</h1>
+        <div class="controls">
+            <button onclick="connect()">Connect</button>
+            <button class="disconnect" onclick="disconnect()">Disconnect</button>
+            <button class="clear" onclick="clearLog()">Clear Log</button>
+            <span id="status" class="disconnected">Disconnected</span>
+            <span id="counter" class="count">0 events</span>
+        </div>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        let connection = null;
+        let eventCount = 0;
+
+        function setStatus(text, cls) {
+            const el = document.getElementById('status');
+            el.textContent = text;
+            el.className = cls;
+        }
+
+        function log(type, cssClass, data) {
+            eventCount++;
+            document.getElementById('counter').textContent = eventCount + ' events';
+            const el = document.getElementById('log');
+            const time = new Date().toLocaleTimeString('en-GB', { hour12: false, fractionalSecondDigits: 3 });
+            const div = document.createElement('div');
+            div.className = 'event';
+            div.innerHTML = `<span class="time">${time}</span><span class="event-type ${cssClass}">${type}</span> ${JSON.stringify(data, null, 0)}`;
+            el.prepend(div);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+            eventCount = 0;
+            document.getElementById('counter').textContent = '0 events';
+        }
+
+        async function connect() {
+            if (connection && connection.state === 'Connected') {
+                log('INFO', '', 'Already connected');
+                return;
+            }
+
+            setStatus('Connecting...', 'connecting');
+
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl("/ws/dashboard")
+                .withAutomaticReconnect([0, 2000, 5000, 10000])
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+
+            connection.on("PositionMatchTableUpdate", (data) => {
+                const rowCount = data.rows ? data.rows.length : 0;
+                const lpCount = data.lpNames ? data.lpNames.length : 0;
+                log('PositionMatchTableUpdate', 'coverage', { symbols: rowCount, lps: lpCount, totals: data.totals });
+            });
+
+            connection.on("DealUpdate", (data) => { log('DealUpdate', 'deal', data); });
+            connection.on("PositionUpdate", (data) => { log('PositionUpdate', 'position', data); });
+            connection.on("OrderUpdate", (data) => { log('OrderUpdate', 'order', data); });
+            connection.on("AccountAlert", (data) => { log('AccountAlert', 'alert', data); });
+
+            connection.onreconnecting(() => setStatus('Reconnecting...', 'connecting'));
+            connection.onreconnected(() => setStatus('Connected', 'connected'));
+            connection.onclose(() => setStatus('Disconnected', 'disconnected'));
+
+            try {
+                await connection.start();
+                setStatus('Connected', 'connected');
+                log('INFO', '', 'Connected to /ws/dashboard');
+            } catch (err) {
+                setStatus('Disconnected', 'disconnected');
+                log('ERROR', 'alert', err.toString());
+            }
+        }
+
+        async function disconnect() {
+            if (connection) {
+                await connection.stop();
+                setStatus('Disconnected', 'disconnected');
+                log('INFO', '', 'Disconnected');
+            }
+        }
+
+        connect();
+    </script>
+</body>
+</html>

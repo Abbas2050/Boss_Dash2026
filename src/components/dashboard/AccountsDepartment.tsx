@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle } from 'lucide-react';
+import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTriangle } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { fetchTransactions } from '@/lib/api';
-import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
+import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { StatusBadge } from './StatusBadge';
+import { fetchWalletBalances } from '@/lib/walletApi';
 
 interface PSPBalance {
   name: string;
   balance: number;
-  status: 'active' | 'pending';
+  status: 'active' | 'pending' | 'error';
 }
 
 export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKey }: { selectedEntity: string; fromDate?: Date; toDate?: Date; refreshKey: number }) {
@@ -17,56 +18,37 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
     depositsToday: 0,
     withdrawalsToday: 0,
     netFlow: 0,
-    totalBalance: 2869781.44,
+    totalBalance: 0,
   });
 
-  const [pspBalances, setPspBalances] = useState<PSPBalance[]>([
-    { name: 'Bitpace', balance: 84.47, status: 'active' },
-    { name: 'LetKnow Pay', balance: 108082.27, status: 'active' },
-    { name: 'OwnBit', balance: 112914.73, status: 'active' },
-    { name: 'HeroPayment', balance: 173959.67, status: 'active' },
-    { name: 'Match2Pay', balance: 504.50, status: 'active' },
-    { name: 'Gold Souq', balance: 1395052.17, status: 'active' },
-    { name: 'FAB Bank', balance: 1076429.89, status: 'active' },
-    { name: 'MBME', balance: 2753.74, status: 'active' },
-  ]);
-
-  const [bankReceivable] = useState(0);
-  const [cryptoReceivable] = useState(350000);
+  const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
+  const [bankReceivable, setBankReceivable] = useState(0);
+  const [cryptoReceivable, setCryptoReceivable] = useState(0);
+  const [reportDate, setReportDate] = useState('—');
+  const [reportUpdated, setReportUpdated] = useState('—');
+  const [walletError, setWalletError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     const fetchTodayData = async () => {
       try {
         setIsLoading(true);
-        
-        // Use custom dates if provided, otherwise use TODAY
-        let startDate: Date, endDate: Date;
-        if (fromDate && toDate) {
-          startDate = new Date(fromDate);
-          startDate.setHours(0, 0, 0, 0);
-          endDate = new Date(toDate);
-          endDate.setHours(23, 59, 59, 999);
-        } else {
-          const now = getDubaiDate();
-          startDate = new Date(now);
-          startDate.setHours(0, 0, 0, 0);
-          endDate = new Date(now);
-          endDate.setHours(23, 59, 59, 999);
-        }
+
+        const now = getDubaiDate();
+        const startDate = new Date(now);
+        startDate.setHours(0, 0, 0, 0);
+        const endDate = new Date(now);
+        endDate.setHours(23, 59, 59, 999);
 
         const begin = formatDateTimeForAPI(startDate, false);
         const end = formatDateTimeForAPI(endDate, true);
 
-        // Build filter params with entity if selected
+        // Always all entities for Accounts
         const filterParams: any = { 
           processedAt: { begin, end },
           transactionTypes: ['deposit'], 
           statuses: ['approved'] 
         };
-        if (selectedEntity && selectedEntity !== 'all') {
-          filterParams.customFields = { 'custom_change_me_field': selectedEntity };
-        }
 
         // Fetch deposits and withdrawals
         const [depositsData, withdrawalsData] = await Promise.all([
@@ -85,12 +67,12 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
         const totalWithdrawals = Math.abs(withdrawalsData.reduce((sum, tx) => sum + tx.processedAmount, 0));
         const netFlow = totalDeposits - totalWithdrawals;
 
-        setMetrics({
-          depositsToday: totalDeposits / 1000000,
-          withdrawalsToday: totalWithdrawals / 1000000,
-          netFlow: netFlow / 1000000,
-          totalBalance: 2869781.44,
-        });
+        setMetrics(prev => ({
+          ...prev,
+          depositsToday: totalDeposits,
+          withdrawalsToday: totalWithdrawals,
+          netFlow,
+        }));
       } catch (err) {
         // silently ignore
       } finally {
@@ -98,8 +80,73 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
       }
     };
 
+    const fetchWalletData = async () => {
+      const response = await fetchWalletBalances();
+      if (!response?.ok || !response?.data?.widgets) {
+        setWalletError(response?.error || 'Wallet API unavailable');
+        return;
+      }
+
+      setWalletError(null);
+
+      const widgets = response.data.widgets;
+      const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
+      const order = [
+        { key: 'bitpace', label: 'Bitpace' },
+        { key: 'letknowpay', label: 'LetKnow Pay' },
+        { key: 'ownbit', label: 'OwnBit' },
+        { key: 'heropayment', label: 'HeroPayment' },
+        { key: 'googlesheets_match2pay', label: 'Match2Pay' },
+        { key: 'googlesheets_goldsouq', label: 'Gold Souq' },
+        { key: 'googlesheets_fab', label: 'FAB Bank' },
+        { key: 'googlesheets_mbme', label: 'MBME' },
+      ];
+
+      const mapped = order.map(({ key, label }) => {
+        const entry = widgetMap.get(key);
+        const status = (entry?.status || 'ok') as 'ok' | 'pending' | 'error';
+        const balance = status === 'error' ? 0 : Number(entry?.balance ?? 0);
+        return {
+          name: entry?.name || label,
+          balance,
+          status: status === 'error' ? 'error' : 'active',
+        } as PSPBalance;
+      });
+
+      const total = typeof response.data.total_balance === 'number'
+        ? response.data.total_balance
+        : mapped.reduce((sum, item) => sum + item.balance, 0);
+
+      if (response.timestamp) {
+        const ts = new Date(response.timestamp.replace(' ', 'T'));
+        if (!Number.isNaN(ts.getTime())) {
+          setReportDate(ts.toISOString().slice(0, 10));
+          setReportUpdated(
+            ts.toLocaleString('en-US', {
+              month: 'short',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            })
+          );
+        }
+      }
+
+      setPspBalances(mapped);
+      setMetrics(prev => ({ ...prev, totalBalance: total }));
+      setBankReceivable(Number(response.data.bank_receivable ?? 0));
+      setCryptoReceivable(Number(response.data.crypto_receivable ?? 0));
+    };
+
     fetchTodayData();
-  }, [selectedEntity, fromDate, toDate, refreshKey]);
+    fetchWalletData();
+    const interval = setInterval(fetchWalletData, 2 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [refreshKey]);
+
+  const periodLabel = 'Today';
 
   return (
     <DepartmentCard title="Accounts" icon={Wallet} accentColor="success">
@@ -110,16 +157,20 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
             <ArrowUpRight className="w-3.5 h-3.5" />
             <span className="text-xs">Deposits</span>
           </div>
-          <div className="font-mono font-semibold text-lg">${metrics.depositsToday.toFixed(2)}M</div>
-          <div className="text-xs text-muted-foreground">Today (Real)</div>
+          <div className="font-mono font-semibold text-lg">
+            ${metrics.depositsToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-xs text-muted-foreground">{periodLabel}</div>
         </div>
         <div className="p-2 rounded-lg bg-destructive/10 border border-destructive/20">
           <div className="flex items-center gap-1 text-destructive mb-1">
             <ArrowDownRight className="w-3.5 h-3.5" />
             <span className="text-xs">Withdrawals</span>
           </div>
-          <div className="font-mono font-semibold text-lg">${metrics.withdrawalsToday.toFixed(2)}M</div>
-          <div className="text-xs text-muted-foreground">Today (Real)</div>
+          <div className="font-mono font-semibold text-lg">
+            ${metrics.withdrawalsToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="text-xs text-muted-foreground">{periodLabel}</div>
         </div>
       </div>
 
@@ -131,7 +182,7 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
             <span className="text-xs text-muted-foreground">Net Flow (Today)</span>
           </div>
           <span className={`font-mono font-semibold ${metrics.netFlow >= 0 ? 'text-success' : 'text-destructive'}`}>
-            ${metrics.netFlow.toFixed(2)}M
+            ${metrics.netFlow.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </span>
         </div>
       </div>
@@ -141,16 +192,26 @@ export function AccountsDepartment({ selectedEntity, fromDate, toDate, refreshKe
         <div className="mb-2">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs font-semibold text-foreground">Closing Balance Report</span>
-            <span className="text-[10px] text-muted-foreground">2026-02-05</span>
+            <span className="text-[10px] text-muted-foreground">{reportDate}</span>
           </div>
-          <div className="text-[10px] text-muted-foreground">Updated: Feb 05, 12:00:13</div>
+          <div className="text-[10px] text-muted-foreground">Updated: {reportUpdated}</div>
         </div>
         
         <div className="space-y-1 max-h-40 overflow-y-auto">
+          {walletError && (
+            <div className="text-[11px] text-destructive">{walletError}</div>
+          )}
+          {pspBalances.length === 0 && !isLoading && (
+            <div className="text-[11px] text-muted-foreground">No wallet data available.</div>
+          )}
           {pspBalances.map((psp) => (
             <div key={psp.name} className="flex items-center justify-between p-1.5 rounded-md bg-secondary/30 border border-border/40 text-xs">
               <div className="flex items-center gap-2 flex-1 min-w-0">
-                <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
+                {psp.status === 'error' ? (
+                  <AlertTriangle className="w-3 h-3 text-destructive flex-shrink-0" />
+                ) : (
+                  <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
+                )}
                 <span className="text-foreground truncate">{psp.name}</span>
               </div>
               <span className="font-mono font-semibold text-right ml-2 flex-shrink-0">
