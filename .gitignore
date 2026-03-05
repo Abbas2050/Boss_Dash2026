@@ -32,6 +32,7 @@ dist-ssr
 *credentials*.json
 *secret*.json
 *service-account*.json
+skylinkscapital-12ac4c6a138f.json
 *.ntvs*
 *.njsproj
 *.sln
