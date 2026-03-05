@@ -34,9 +34,9 @@
 
         table { width: 100%; border-collapse: collapse; font-size: 12px; }
         th { background: #24283b; color: #7aa2f7; padding: 8px 6px; text-align: right; font-weight: 600; white-space: nowrap; position: sticky; top: 0; }
-        th:first-child, th:nth-child(2), th:nth-child(3) { text-align: left; }
+        th:first-child, th:nth-child(2), th:nth-child(3), th:nth-child(4) { text-align: left; }
         td { padding: 5px 6px; border-bottom: 1px solid #292e42; text-align: right; white-space: nowrap; }
-        td:first-child, td:nth-child(2), td:nth-child(3) { text-align: left; }
+        td:first-child, td:nth-child(2), td:nth-child(3), td:nth-child(4) { text-align: left; }
         tr:hover td { background: #1f2335; }
         tr.total-row td { background: #24283b; font-weight: 700; border-top: 2px solid #7aa2f7; }
         tr.error-row td { opacity: 0.5; }
@@ -106,6 +106,7 @@
                             <th>LP Name</th>
                             <th>Login</th>
                             <th>Source</th>
+                            <th>Start Period</th>
                             <th>Start Equity</th>
                             <th>End Equity</th>
                             <th>Credit</th>
@@ -121,7 +122,7 @@
                             <th>LP P/L (Rev Share)</th>
                         </tr>
                     </thead>
-                    <tbody id="aggTable"><tr><td colspan="16" class="loading">Click "Load" to fetch data</td></tr></tbody>
+                    <tbody id="aggTable"><tr><td colspan="17" class="loading">Click "Load" to fetch data</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -260,20 +261,44 @@
             const ts = getTimestamps();
             if (!ts) return;
 
+            // Collect per-LP date overrides from inline pickers (before clearing the table)
+            const overrides = {};
+            document.querySelectorAll('#aggTable input[type="date"]').forEach(input => {
+                const lp = input.dataset.lp;
+                const val = input.value;
+                if (lp && val) {
+                    overrides[lp] = Math.floor(new Date(val + 'T00:00:00Z').getTime() / 1000);
+                }
+            });
+
             const tbody = document.getElementById('aggTable');
-            tbody.innerHTML = '<tr><td colspan="16" class="loading">Loading...</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="17" class="loading">Loading...</td></tr>';
+
+            const body = {
+                from: ts.from,
+                to: ts.to,
+                overrides: Object.keys(overrides).length > 0 ? overrides : null
+            };
 
             try {
-                const resp = await fetch(`${API}/History/aggregate?from=${ts.from}&to=${ts.to}`);
+                const resp = await fetch(`${API}/History/aggregate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
                 if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
 
                 lastAggData = await resp.json();
                 renderAggregate(lastAggData);
                 msg(`Loaded ${lastAggData.items.length} LPs`, true);
             } catch (e) {
-                tbody.innerHTML = `<tr><td colspan="16" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="17" class="loading" style="color:#f7768e">Error: ${e.message}</td></tr>`;
                 msg('Request failed', false);
             }
+        }
+
+        function tsToDate(ts) {
+            return new Date(ts * 1000).toISOString().split('T')[0];
         }
 
         function renderAggregate(data) {
@@ -289,13 +314,15 @@
                         <td><strong>${item.lpName}</strong></td>
                         <td>${item.login}</td>
                         <td class="muted">${item.source}</td>
-                        <td colspan="13" class="negative">${item.errorMessage || 'Error'}</td>
+                        <td colspan="14" class="negative">${item.errorMessage || 'Error'}</td>
                     `;
                 } else {
+                    const effDate = tsToDate(item.effectiveFrom);
                     tr.innerHTML = `
                         <td><strong>${item.lpName}</strong></td>
                         <td>${item.login}</td>
                         <td class="muted">${item.source}</td>
+                        <td><input type="date" class="inline-edit" data-lp="${item.lpName}" value="${effDate}"></td>
                         <td>${fmt(item.startEquity)}</td>
                         <td>${fmt(item.endEquity)}</td>
                         <td>${fmt(item.credit)}</td>
@@ -320,6 +347,7 @@
             totalTr.className = 'total-row';
             totalTr.innerHTML = `
                 <td><strong>TOTAL</strong></td>
+                <td></td>
                 <td></td>
                 <td></td>
                 <td>${fmt(t.startEquity)}</td>

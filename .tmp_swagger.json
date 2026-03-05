@@ -1,0 +1,6619 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "SLCDashboard",
+    "version": "1.0"
+  },
+  "paths": {
+    "/Account/GetAllAccounts": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Account/GetAccountsByGroup": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Account/GetAccountByLogin": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AccountsModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Account/GetUserInfo": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/Account/GetUserInfoBatch": {
+      "get": {
+        "tags": [
+          "Account"
+        ],
+        "parameters": [
+          {
+            "name": "logins",
+            "in": "query",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int64"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/ClosedPosition/GetByLogin": {
+      "get": {
+        "tags": [
+          "ClosedPosition"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/ClosedPosition/GetByLogins": {
+      "get": {
+        "tags": [
+          "ClosedPosition"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/ClosedPosition/GetByGroup": {
+      "get": {
+        "tags": [
+          "ClosedPosition"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/ClosedPosition/GetByGroupSymbol": {
+      "get": {
+        "tags": [
+          "ClosedPosition"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/ClosedPosition/GetByLoginsSymbol": {
+      "get": {
+        "tags": [
+          "ClosedPosition"
+        ],
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/Coverage/summary": {
+      "get": {
+        "tags": [
+          "Coverage"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/AggregatedSummaryData"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/AggregatedSummaryData"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/AggregatedSummaryData"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Coverage/dashboard": {
+      "get": {
+        "tags": [
+          "Coverage"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Coverage/dashboard/{baseSymbol}": {
+      "get": {
+        "tags": [
+          "Coverage"
+        ],
+        "parameters": [
+          {
+            "name": "baseSymbol",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolCoverageDashboard"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Coverage/position-match-table": {
+      "get": {
+        "tags": [
+          "Coverage"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionMatchTable"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionMatchTable"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionMatchTable"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Coverage/lp/{lpName}/positions": {
+      "get": {
+        "tags": [
+          "Coverage"
+        ],
+        "parameters": [
+          {
+            "name": "lpName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByLogin": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByLogins": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByTickets": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByGroup": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByGroupSymbol": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetDealsByLoginsSymbol": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DealModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Deal/GetTransactions": {
+      "get": {
+        "tags": [
+          "Deal"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/DealMatch/Run": {
+      "get": {
+        "tags": [
+          "DealMatch"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealMatchReport"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealMatchReport"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealMatchReport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/DealMatch/CentroidOrders": {
+      "get": {
+        "tags": [
+          "DealMatch"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "riskAccount",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cenOrdId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "execution",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "markupModels",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/Group/TotalGroups": {
+      "get": {
+        "tags": [
+          "Group"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Group/GetAllGroups": {
+      "get": {
+        "tags": [
+          "Group"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/GroupModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Group/GetGroup": {
+      "get": {
+        "tags": [
+          "Group"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Group/GetGroupByLogin": {
+      "get": {
+        "tags": [
+          "Group"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/History/aggregate": {
+      "get": {
+        "tags": [
+          "History"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryAggregateResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryAggregateResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryAggregateResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/History/deals": {
+      "get": {
+        "tags": [
+          "History"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDealsResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDealsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryDealsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/History/volume": {
+      "get": {
+        "tags": [
+          "History"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryVolumeResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryVolumeResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryVolumeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/History/lp-config/{lpName}": {
+      "put": {
+        "tags": [
+          "History"
+        ],
+        "parameters": [
+          {
+            "name": "lpName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpConfigUpdateRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpConfigUpdateRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpConfigUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByLogin": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByLogins": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByTickets": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByGroup": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByGroupSymbol": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/HistoryPosition/GetByLoginsSymbol": {
+      "get": {
+        "tags": [
+          "HistoryPosition"
+        ],
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrderModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/LpAccount": {
+      "get": {
+        "tags": [
+          "LpAccount"
+        ],
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "LpAccount"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLpAccountRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLpAccountRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLpAccountRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/LpAccount/{id}": {
+      "get": {
+        "tags": [
+          "LpAccount"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "LpAccount"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLpAccountRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLpAccountRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateLpAccountRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpAccount"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "LpAccount"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "permanent",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/LpAccount/by-lp/{lpName}": {
+      "get": {
+        "tags": [
+          "LpAccount"
+        ],
+        "parameters": [
+          {
+            "name": "lpName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpAccount"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/LpAccount/sync": {
+      "post": {
+        "tags": [
+          "LpAccount"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/LpInfo": {
+      "get": {
+        "tags": [
+          "LpInfo"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpInfo"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpInfo"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LpInfo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "LpInfo"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/LpInfo/{id}": {
+      "get": {
+        "tags": [
+          "LpInfo"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "LpInfo"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpInfo"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "LpInfo"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/LpInfo/import": {
+      "post": {
+        "tags": [
+          "LpInfo"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoImportRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoImportRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LpInfoImportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/Metrics/lp": {
+      "get": {
+        "tags": [
+          "Metrics"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpMetricsResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpMetricsResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LpMetricsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Metrics/equity-summary": {
+      "get": {
+        "tags": [
+          "Metrics"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquitySummaryResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquitySummaryResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EquitySummaryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByLogin": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByLogins": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByTicket": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "parameters": [
+          {
+            "name": "ticket",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PositionModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByTickets": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByGroup": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsBySymbol": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Position/GetPositionsByGroupSymbol": {
+      "get": {
+        "tags": [
+          "Position"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "symbol",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PositionModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetDailyByLogin": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "light",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetDailyByGroup": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "light",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetDailyByLogins": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "light",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "text/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DailyModel"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetSummaryByLogin": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetSummaryByGroup": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummaryModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetCategorizedDealsByLogin": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Report/GetCategorizedDealsByGroup": {
+      "get": {
+        "tags": [
+          "Report"
+        ],
+        "parameters": [
+          {
+            "name": "group",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 1
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategorizedDealsModel"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Swap/positions": {
+      "get": {
+        "tags": [
+          "Swap"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapPositionItem"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapPositionItem"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapPositionItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Swap/rates": {
+      "get": {
+        "tags": [
+          "Swap"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapRateItem"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapRateItem"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SwapRateItem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/Swap/rates/csv": {
+      "get": {
+        "tags": [
+          "Swap"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/Swap/diagnostics": {
+      "get": {
+        "tags": [
+          "Swap"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/SymbolMapping": {
+      "get": {
+        "tags": [
+          "SymbolMapping"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolMapping"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolMapping"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SymbolMapping"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "SymbolMapping"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/SymbolMapping/{id}": {
+      "put": {
+        "tags": [
+          "SymbolMapping"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/SymbolMappingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SymbolMapping"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "SymbolMapping"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/TerminalPosition/positions": {
+      "post": {
+        "tags": [
+          "TerminalPosition"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalPositionSnapshot"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalPositionSnapshot"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/TerminalPositionSnapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/TerminalPosition/status": {
+      "get": {
+        "tags": [
+          "TerminalPosition"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AccountsModel": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "currencyDigits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "balance": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "margin": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginFree": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginLevel": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginLeverage": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "marginInitial": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginMaintenance": {
+            "type": "number",
+            "format": "double"
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "swap": {
+            "type": "number",
+            "format": "double"
+          },
+          "commission": {
+            "type": "number",
+            "format": "double"
+          },
+          "floatingPnl": {
+            "type": "number",
+            "format": "double"
+          },
+          "equity": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AggregatedSummaryData": {
+        "type": "object",
+        "properties": {
+          "baseSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "clientBuyLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientSellLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientNetLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientPositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "clientProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "coverageBuyLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "coverageSellLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "coverageNetLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "coveragePositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "coverageProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitUncovered": {
+            "type": "number",
+            "format": "double"
+          },
+          "netExposure": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CategorizedDealsModel": {
+        "type": "object",
+        "properties": {
+          "fromTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fromDate": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "toTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toDate": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "queryType": {
+            "type": "string",
+            "nullable": true
+          },
+          "queryValue": {
+            "type": "string",
+            "nullable": true
+          },
+          "deposits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "withdrawals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "credits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "trades": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "adjustments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "commissions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "other": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealModel"
+            },
+            "nullable": true
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "depositCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "withdrawalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "creditCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "tradeCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "adjustmentCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "commissionCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "otherCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CentroidFill": {
+        "type": "object",
+        "properties": {
+          "lp": {
+            "type": "string",
+            "nullable": true
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "timestamp": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "CentroidOrder": {
+        "type": "object",
+        "properties": {
+          "ext_login": {
+            "type": "string",
+            "nullable": true
+          },
+          "ext_order": {
+            "type": "string",
+            "nullable": true
+          },
+          "ext_posid": {
+            "type": "string",
+            "nullable": true
+          },
+          "ext_dealid": {
+            "type": "string",
+            "nullable": true
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "party_symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "side": {
+            "type": "string",
+            "nullable": true
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "avg_price": {
+            "type": "number",
+            "format": "double"
+          },
+          "fill_volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "maker": {
+            "type": "string",
+            "nullable": true
+          },
+          "maker_cat": {
+            "type": "string",
+            "nullable": true
+          },
+          "cen_ord_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "client_ord_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "risk_account": {
+            "type": "string",
+            "nullable": true
+          },
+          "node_account": {
+            "type": "string",
+            "nullable": true
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CentroidFill"
+            },
+            "nullable": true
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CentroidFill"
+            },
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "create_time": {
+            "type": "string",
+            "nullable": true
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "execution": {
+            "type": "string",
+            "nullable": true
+          },
+          "group": {
+            "type": "string",
+            "nullable": true
+          },
+          "account": {
+            "type": "string",
+            "nullable": true
+          },
+          "recv_time_msc": {
+            "type": "string",
+            "nullable": true
+          },
+          "bid": {
+            "type": "number",
+            "format": "double"
+          },
+          "ask": {
+            "type": "number",
+            "format": "double"
+          },
+          "ext_bid": {
+            "type": "number",
+            "format": "double"
+          },
+          "ext_ask": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateLpAccountRequest": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "groupPattern": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "source": {
+            "$ref": "#/components/schemas/LpSource"
+          },
+          "mt5TerminalPath": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Server": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Password": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DailyModel": {
+        "type": "object",
+        "properties": {
+          "datetime": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "dateString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "datetimePrev": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "group": {
+            "type": "string",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "currencyDigits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "company": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          },
+          "balance": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "interestRate": {
+            "type": "number",
+            "format": "double"
+          },
+          "commissionDaily": {
+            "type": "number",
+            "format": "double"
+          },
+          "commissionMonthly": {
+            "type": "number",
+            "format": "double"
+          },
+          "agentDaily": {
+            "type": "number",
+            "format": "double"
+          },
+          "agentMonthly": {
+            "type": "number",
+            "format": "double"
+          },
+          "balancePrevDay": {
+            "type": "number",
+            "format": "double"
+          },
+          "balancePrevMonth": {
+            "type": "number",
+            "format": "double"
+          },
+          "equityPrevDay": {
+            "type": "number",
+            "format": "double"
+          },
+          "equityPrevMonth": {
+            "type": "number",
+            "format": "double"
+          },
+          "margin": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginFree": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginLevel": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginLeverage": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitStorage": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyBalance": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCredit": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCharge": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCorrection": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyBonus": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyStorage": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCommInstant": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCommRound": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyAgent": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyInterest": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyDividend": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyTaxes": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailySOCompensation": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailyCommFee": {
+            "type": "number",
+            "format": "double"
+          },
+          "dailySOCompensationCredit": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitAssets": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitLiabilities": {
+            "type": "number",
+            "format": "double"
+          },
+          "positionTotal": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "orderTotal": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DealMatchReport": {
+        "type": "object",
+        "properties": {
+          "fromDate": {
+            "type": "string",
+            "nullable": true
+          },
+          "toDate": {
+            "type": "string",
+            "nullable": true
+          },
+          "totalClientDeals": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalCentroidOrders": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "matchedCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "unmatchedClientCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "unmatchedLpCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalSpreadRevenueUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalClientCommission": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalSlippageUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "matches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DealMatchResult"
+            },
+            "nullable": true
+          },
+          "unmatchedClientDeals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnmatchedClientDeal"
+            },
+            "nullable": true
+          },
+          "unmatchedCentroidOrders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CentroidOrder"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "DealMatchResult": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "side": {
+            "type": "string",
+            "nullable": true
+          },
+          "clientLogin": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "clientName": {
+            "type": "string",
+            "nullable": true
+          },
+          "externalDealId": {
+            "type": "string",
+            "nullable": true
+          },
+          "dealTicket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "orderTicket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "positionId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "clientPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientVolume": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketBid": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketAsk": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpBid": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpAsk": {
+            "type": "number",
+            "format": "double"
+          },
+          "dealTime": {
+            "type": "string",
+            "nullable": true
+          },
+          "entry": {
+            "type": "string",
+            "nullable": true
+          },
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lpPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpVolume": {
+            "type": "number",
+            "format": "double"
+          },
+          "centroidOrderId": {
+            "type": "string",
+            "nullable": true
+          },
+          "partySymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "lpFills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CentroidFill"
+            },
+            "nullable": true
+          },
+          "matchStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "matchMethod": {
+            "type": "string",
+            "nullable": true
+          },
+          "slippage": {
+            "type": "number",
+            "format": "double"
+          },
+          "slippageUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "volumeMatch": {
+            "type": "number",
+            "format": "double"
+          },
+          "centroidFillCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "spread": {
+            "type": "number",
+            "format": "double"
+          },
+          "spreadRevenueUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientCommission": {
+            "type": "number",
+            "format": "double"
+          },
+          "contractSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientUnits": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpUnits": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DealModel": {
+        "type": "object",
+        "properties": {
+          "deal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "externalID": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "dealer": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "order": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "action": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "actionString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "entry": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "entryString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "digits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "digitsCurrency": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "contractSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "timeMsc": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeExt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lots": {
+            "type": "number",
+            "format": "double",
+            "readOnly": true
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "storage": {
+            "type": "number",
+            "format": "double"
+          },
+          "commission": {
+            "type": "number",
+            "format": "double"
+          },
+          "fee": {
+            "type": "number",
+            "format": "double"
+          },
+          "rateProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "rateMargin": {
+            "type": "number",
+            "format": "double"
+          },
+          "expertID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "positionID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "reason": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reasonString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "gateway": {
+            "type": "string",
+            "nullable": true
+          },
+          "priceGateway": {
+            "type": "number",
+            "format": "double"
+          },
+          "pricePosition": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceSL": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceTP": {
+            "type": "number",
+            "format": "double"
+          },
+          "volumeClosed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeClosedExt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tickValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "tickSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "flags": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "modificationFlags": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "profitRaw": {
+            "type": "number",
+            "format": "double"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketBid": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketAsk": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketLast": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnAuthMode": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnFreeMarginMode": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnHistoryLimit": {
+        "enum": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnMailMode": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnMarginFlags": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnNewsMode": {
+        "enum": [
+          0,
+          1,
+          2
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnPermissionsFlags": {
+        "enum": [
+          0,
+          1,
+          2,
+          4,
+          8,
+          16,
+          32,
+          64,
+          128,
+          256,
+          448,
+          511
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnReportsFlags": {
+        "enum": [
+          0,
+          1,
+          2,
+          4,
+          5
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnReportsMode": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnStopOutMode": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EnTradeFlags": {
+        "enum": [
+          0,
+          1,
+          2,
+          4,
+          8,
+          16,
+          31,
+          32,
+          64,
+          128,
+          256,
+          512,
+          1024,
+          2048,
+          4095
+        ],
+        "type": "integer",
+        "format": "int64"
+      },
+      "EnTransferMode": {
+        "enum": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "EquitySummaryResponse": {
+        "type": "object",
+        "properties": {
+          "lpWithdrawableEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientWithdrawableEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "difference": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "GroupModel": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string",
+            "nullable": true
+          },
+          "server": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "permissionFlags": {
+            "$ref": "#/components/schemas/EnPermissionsFlags"
+          },
+          "authMode": {
+            "$ref": "#/components/schemas/EnAuthMode"
+          },
+          "authPasswordMin": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "company": {
+            "type": "string",
+            "nullable": true
+          },
+          "companyPage": {
+            "type": "string",
+            "nullable": true
+          },
+          "companyEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "companySupportPage": {
+            "type": "string",
+            "nullable": true
+          },
+          "companySupportEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "companyCatalog": {
+            "type": "string",
+            "nullable": true
+          },
+          "companyDepositPage": {
+            "type": "string",
+            "nullable": true
+          },
+          "companyWidthdrawalPage": {
+            "type": "string",
+            "nullable": true
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "currencyDigits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reportsMode": {
+            "$ref": "#/components/schemas/EnReportsMode"
+          },
+          "reportsFlags": {
+            "$ref": "#/components/schemas/EnReportsFlags"
+          },
+          "reportsEmail": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportsSMTP": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportsSMTPLogin": {
+            "type": "string",
+            "nullable": true
+          },
+          "reportsSMTPPass": {
+            "type": "string",
+            "nullable": true
+          },
+          "newsMode": {
+            "$ref": "#/components/schemas/EnNewsMode"
+          },
+          "newsCategory": {
+            "type": "string",
+            "nullable": true
+          },
+          "mailMode": {
+            "$ref": "#/components/schemas/EnMailMode"
+          },
+          "tradeFlags": {
+            "$ref": "#/components/schemas/EnTradeFlags"
+          },
+          "tradeInterestrate": {
+            "type": "number",
+            "format": "double"
+          },
+          "tradeVirtualCredit": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginFreeMode": {
+            "$ref": "#/components/schemas/EnFreeMarginMode"
+          },
+          "marginSOMode": {
+            "$ref": "#/components/schemas/EnStopOutMode"
+          },
+          "marginCall": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginStopOut": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginFreeProfitMode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "marginMode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "marginFlags": {
+            "$ref": "#/components/schemas/EnMarginFlags"
+          },
+          "demoLeverage": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "demoDeposit": {
+            "type": "number",
+            "format": "double"
+          },
+          "demoInactivityPeriod": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "limitHistory": {
+            "$ref": "#/components/schemas/EnHistoryLimit"
+          },
+          "limitOrders": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "limitSymbols": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "limitPositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "tradeTransferMode": {
+            "$ref": "#/components/schemas/EnTransferMode"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryAggregateItem": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source": {
+            "type": "string",
+            "nullable": true
+          },
+          "startEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "endEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "deposit": {
+            "type": "number",
+            "format": "double"
+          },
+          "withdrawal": {
+            "type": "number",
+            "format": "double"
+          },
+          "netDeposits": {
+            "type": "number",
+            "format": "double"
+          },
+          "grossProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCommission": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalSwap": {
+            "type": "number",
+            "format": "double"
+          },
+          "netPL": {
+            "type": "number",
+            "format": "double"
+          },
+          "realLpPL": {
+            "type": "number",
+            "format": "double"
+          },
+          "ntpPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpPL": {
+            "type": "number",
+            "format": "double"
+          },
+          "isError": {
+            "type": "boolean"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryAggregateResponse": {
+        "type": "object",
+        "properties": {
+          "fromTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryAggregateItem"
+            },
+            "nullable": true
+          },
+          "totals": {
+            "$ref": "#/components/schemas/HistoryAggregateTotals"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryAggregateTotals": {
+        "type": "object",
+        "properties": {
+          "startEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "endEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "deposit": {
+            "type": "number",
+            "format": "double"
+          },
+          "withdrawal": {
+            "type": "number",
+            "format": "double"
+          },
+          "netDeposits": {
+            "type": "number",
+            "format": "double"
+          },
+          "grossProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCommission": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalSwap": {
+            "type": "number",
+            "format": "double"
+          },
+          "netPL": {
+            "type": "number",
+            "format": "double"
+          },
+          "realLpPL": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpPL": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryDealItem": {
+        "type": "object",
+        "properties": {
+          "dealTicket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "direction": {
+            "type": "string",
+            "nullable": true
+          },
+          "entry": {
+            "type": "string",
+            "nullable": true
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "contractSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "commission": {
+            "type": "number",
+            "format": "double"
+          },
+          "fee": {
+            "type": "number",
+            "format": "double"
+          },
+          "swap": {
+            "type": "number",
+            "format": "double"
+          },
+          "marketValue": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpCommission": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpCommPerLot": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryDealsResponse": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "fromTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "totalDeals": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "deals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryDealItem"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryVolumeItem": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source": {
+            "type": "string",
+            "nullable": true
+          },
+          "tradeCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "notionalUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "volumeYards": {
+            "type": "number",
+            "format": "double"
+          },
+          "isError": {
+            "type": "boolean"
+          },
+          "errorMessage": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryVolumeResponse": {
+        "type": "object",
+        "properties": {
+          "fromTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryVolumeItem"
+            },
+            "nullable": true
+          },
+          "totals": {
+            "$ref": "#/components/schemas/HistoryVolumeTotals"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryVolumeTotals": {
+        "type": "object",
+        "properties": {
+          "tradeCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "notionalUsd": {
+            "type": "number",
+            "format": "double"
+          },
+          "volumeYards": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpAccount": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "groupPattern": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "source": {
+            "$ref": "#/components/schemas/LpSource"
+          },
+          "isActive": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mt5TerminalPath": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Server": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Password": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpConfigUpdateRequest": {
+        "type": "object",
+        "properties": {
+          "manualStartEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "customStartDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "customEndDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpCoverageBreakdown": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "baseSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "buyLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "sellLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "netLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "positionCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpInfo": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "offsetHours": {
+            "type": "number",
+            "format": "double"
+          },
+          "revSharePercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "swapFreeDays": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "creditCap": {
+            "type": "number",
+            "format": "double"
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true
+          },
+          "manualStartEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "customStartDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "customEndDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpInfoImportRequest": {
+        "type": "object",
+        "properties": {
+          "csvText": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpInfoRequest": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "offsetHours": {
+            "type": "number",
+            "format": "double"
+          },
+          "revSharePercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "swapFreeDays": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "creditCap": {
+            "type": "number",
+            "format": "double"
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true
+          },
+          "manualStartEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "customStartDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "customEndDate": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpMetricsItem": {
+        "type": "object",
+        "properties": {
+          "lp": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "equity": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "realEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "balance": {
+            "type": "number",
+            "format": "double"
+          },
+          "margin": {
+            "type": "number",
+            "format": "double"
+          },
+          "freeMargin": {
+            "type": "number",
+            "format": "double"
+          },
+          "marginLevel": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpMetricsResponse": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LpMetricsItem"
+            },
+            "nullable": true
+          },
+          "totals": {
+            "$ref": "#/components/schemas/LpMetricsTotals"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpMetricsTotals": {
+        "type": "object",
+        "properties": {
+          "equity": {
+            "type": "number",
+            "format": "double"
+          },
+          "credit": {
+            "type": "number",
+            "format": "double"
+          },
+          "realEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "balance": {
+            "type": "number",
+            "format": "double"
+          },
+          "margin": {
+            "type": "number",
+            "format": "double"
+          },
+          "freeMargin": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LpSource": {
+        "enum": [
+          0,
+          1
+        ],
+        "type": "integer",
+        "format": "int32"
+      },
+      "OrderModel": {
+        "type": "object",
+        "properties": {
+          "contractSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "dealer": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "digits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "expertID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "externalID": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "modificationFlags": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "order": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "type": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "typeString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "positionByID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "positionID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "priceCurrent": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceOrder": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceSL": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceTP": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceTrigger": {
+            "type": "number",
+            "format": "double"
+          },
+          "print": {
+            "type": "string",
+            "nullable": true
+          },
+          "rateMargin": {
+            "type": "number",
+            "format": "double"
+          },
+          "reason": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reasonString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "state": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "stateString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "timeSetup": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeSetupString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "timeDone": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeDoneString": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "timeExpiration": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeInitial": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeInitialExt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lots": {
+            "type": "number",
+            "format": "double",
+            "readOnly": true
+          },
+          "volumeCurrent": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeCurrentExt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lotsRemaining": {
+            "type": "number",
+            "format": "double",
+            "readOnly": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PositionMatchRow": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "direction": {
+            "type": "string",
+            "nullable": true
+          },
+          "clientNet": {
+            "type": "number",
+            "format": "double"
+          },
+          "uncovered": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpNets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "PositionMatchTable": {
+        "type": "object",
+        "properties": {
+          "lpNames": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PositionMatchRow"
+            },
+            "nullable": true
+          },
+          "totals": {
+            "$ref": "#/components/schemas/PositionMatchTotals"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PositionMatchTotals": {
+        "type": "object",
+        "properties": {
+          "clientNet": {
+            "type": "number",
+            "format": "double"
+          },
+          "uncovered": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpNets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "format": "double"
+            },
+            "nullable": true
+          },
+          "clientPositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "lpPositions": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PositionModel": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "action": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "digits": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "digitsCurency": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "contractSize": {
+            "type": "number",
+            "format": "double"
+          },
+          "ticket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true
+          },
+          "timeCreate": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeUpdate": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeCreateMsc": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "timeUpdateMsc": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "priceOpen": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceCurrent": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceSL": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceTP": {
+            "type": "number",
+            "format": "double"
+          },
+          "volume": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volumeExt": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lots": {
+            "type": "number",
+            "format": "double",
+            "readOnly": true
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "swap": {
+            "type": "number",
+            "format": "double"
+          },
+          "rateProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "rateMargin": {
+            "type": "number",
+            "format": "double"
+          },
+          "expertID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expertPositionID": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "dealerLogin": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "activationMode": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "activationTime": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "activationPrice": {
+            "type": "number",
+            "format": "double"
+          },
+          "activationFlags": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "reason": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReportSummaryModel": {
+        "type": "object",
+        "properties": {
+          "fromTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "fromDate": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "toTimestamp": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "toDate": {
+            "type": "string",
+            "nullable": true,
+            "readOnly": true
+          },
+          "queryType": {
+            "type": "string",
+            "nullable": true
+          },
+          "queryValue": {
+            "type": "string",
+            "nullable": true
+          },
+          "currentBalance": {
+            "type": "number",
+            "format": "double"
+          },
+          "currentEquity": {
+            "type": "number",
+            "format": "double"
+          },
+          "currentCredit": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalDeposits": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalWithdrawals": {
+            "type": "number",
+            "format": "double"
+          },
+          "netDeposits": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCreditsIn": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCreditsOut": {
+            "type": "number",
+            "format": "double"
+          },
+          "netCredits": {
+            "type": "number",
+            "format": "double"
+          },
+          "tradingProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCommissions": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalSwaps": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalFees": {
+            "type": "number",
+            "format": "double"
+          },
+          "netLotsBuy": {
+            "type": "number",
+            "format": "double"
+          },
+          "netLotsSell": {
+            "type": "number",
+            "format": "double"
+          },
+          "netLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "dealCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "depositCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "withdrawalCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "creditCount": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "tradeCount": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SwapPositionItem": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "side": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ticket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "swap": {
+            "type": "number",
+            "format": "double"
+          },
+          "swapFreeDays": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true
+          },
+          "daysUsed": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "daysLeft": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "willChargeTonight": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SwapRateItem": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rawSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "finalSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "swapLong": {
+            "type": "number",
+            "format": "double"
+          },
+          "swapShort": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SymbolCoverageDashboard": {
+        "type": "object",
+        "properties": {
+          "baseSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "clientBuyLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientSellLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientNetLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "clientPositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "clientProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCoverageBuyLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCoverageSellLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCoverageNetLots": {
+            "type": "number",
+            "format": "double"
+          },
+          "totalCoveragePositions": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "totalCoverageProfit": {
+            "type": "number",
+            "format": "double"
+          },
+          "lpBreakdown": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LpCoverageBreakdown"
+            },
+            "nullable": true
+          },
+          "netExposure": {
+            "type": "number",
+            "format": "double"
+          },
+          "profitUncovered": {
+            "type": "number",
+            "format": "double"
+          },
+          "netUncovered": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SymbolMapping": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "rawSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "mappedSymbol": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "SymbolMappingRequest": {
+        "type": "object",
+        "properties": {
+          "rawSymbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "mappedSymbol": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TerminalPositionDto": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "action": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceOpen": {
+            "type": "number",
+            "format": "double"
+          },
+          "priceCurrent": {
+            "type": "number",
+            "format": "double"
+          },
+          "profit": {
+            "type": "number",
+            "format": "double"
+          },
+          "swap": {
+            "type": "number",
+            "format": "double"
+          },
+          "timeCreate": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "TerminalPositionSnapshot": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "positions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TerminalPositionDto"
+            },
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UnmatchedClientDeal": {
+        "type": "object",
+        "properties": {
+          "deal": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "order": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "positionId": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "login": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "clientName": {
+            "type": "string",
+            "nullable": true
+          },
+          "symbol": {
+            "type": "string",
+            "nullable": true
+          },
+          "side": {
+            "type": "string",
+            "nullable": true
+          },
+          "price": {
+            "type": "number",
+            "format": "double"
+          },
+          "volume": {
+            "type": "number",
+            "format": "double"
+          },
+          "time": {
+            "type": "string",
+            "nullable": true
+          },
+          "entry": {
+            "type": "string",
+            "nullable": true
+          },
+          "externalId": {
+            "type": "string",
+            "nullable": true
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpdateLpAccountRequest": {
+        "type": "object",
+        "properties": {
+          "lpName": {
+            "type": "string",
+            "nullable": true
+          },
+          "groupPattern": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "isActive": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "mt5TerminalPath": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Server": {
+            "type": "string",
+            "nullable": true
+          },
+          "mt5Password": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

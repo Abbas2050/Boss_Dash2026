@@ -104,6 +104,7 @@ type HistoryAggregateItem = {
   source?: string;
   isError?: boolean;
   errorMessage?: string;
+  effectiveFrom?: number;
   startEquity: number;
   endEquity: number;
   credit: number;
@@ -202,7 +203,370 @@ type LiveNotification = {
   at: string;
 };
 
+type NopClient = {
+  login: number | string;
+  name: string;
+  volume: number;
+  realLimit?: string | number | null;
+  mt5Limit?: number | null;
+  equity: number;
+  credit: number;
+  balance: number;
+  marginFree: number;
+  margin: number;
+  marginLevel: number;
+};
+
+type NopSymbolGroup = {
+  symbol: string;
+  netTotal: number;
+  buyClients: NopClient[];
+  sellClients: NopClient[];
+  buyTotal: number;
+  sellTotal: number;
+};
+
+type NopReportData = {
+  timestamp: string;
+  accountsReporting: number;
+  collectedLogins: number;
+  symbols: NopSymbolGroup[];
+};
+
 type FullscreenTableKey = "coverage" | "risk" | "metrics" | "swap" | "history";
+type ColumnFilterOperator = "contains" | "eq" | "neq";
+
+const TABLE_ENHANCER_SELECTOR = "table.min-w-full";
+
+const normalizeFilterValue = (value: unknown) => String(value ?? "").trim().toLowerCase();
+
+const parseMaybeNumber = (raw: string) => {
+  const cleaned = raw.replace(/[$,%\s,]/g, "").trim();
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : null;
+};
+
+const csvEscape = (value: string) => {
+  const v = String(value ?? "");
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+};
+
+const exportRowsToCsv = (filePrefix: string, headers: string[], rows: string[][]) => {
+  const lines = [headers.map(csvEscape).join(","), ...rows.map((row) => row.map(csvEscape).join(","))];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:]/g, "-").replace(/\..+$/, "");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${filePrefix}-${stamp}.csv`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
+
+const mountTableEnhancer = (table: HTMLTableElement) => {
+  const thead = table.querySelector("thead");
+  const tbody = table.querySelector("tbody");
+  if (!thead || !tbody) return () => undefined;
+
+  const headerRows = Array.from(thead.querySelectorAll("tr"));
+  const headerRow = headerRows[headerRows.length - 1] as HTMLTableRowElement | undefined;
+  if (!headerRow) return () => undefined;
+
+  const ths = Array.from(headerRow.querySelectorAll("th"));
+  if (!ths.length) return () => undefined;
+
+  const headers = ths.map((th, idx) => {
+    const txt = (th.textContent || "").trim();
+    return txt || `Column ${idx + 1}`;
+  });
+  const tableKind = String(table.dataset.tableKind || "").toLowerCase();
+
+  const filterState = headers.map(() => ({ op: "contains" as ColumnFilterOperator, value: "" }));
+  let globalQuery = "";
+  let sortIndex = -1;
+  let sortDir: "asc" | "desc" = "asc";
+
+  const wrapper = table.parentElement;
+  if (!wrapper) return () => undefined;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "mb-2 flex flex-wrap items-center gap-2";
+
+  const globalInput = document.createElement("input");
+  globalInput.type = "text";
+  globalInput.placeholder = "Search all columns...";
+  globalInput.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100";
+
+  const clearBtn = document.createElement("button");
+  clearBtn.type = "button";
+  clearBtn.textContent = "Clear Filters";
+  clearBtn.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200";
+
+  const exportBtn = document.createElement("button");
+  exportBtn.type = "button";
+  exportBtn.textContent = "Export Excel";
+  exportBtn.className = "rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300";
+  const showHiddenBtn = document.createElement("button");
+  showHiddenBtn.type = "button";
+  showHiddenBtn.textContent = "Show hidden data";
+  showHiddenBtn.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200";
+  let showHiddenData = false;
+
+  toolbar.appendChild(globalInput);
+  toolbar.appendChild(clearBtn);
+  toolbar.appendChild(exportBtn);
+  toolbar.appendChild(showHiddenBtn);
+  wrapper.parentElement?.insertBefore(toolbar, wrapper);
+
+  const filterRow = document.createElement("tr");
+  filterRow.className = "bg-slate-100/80 dark:bg-slate-900/70";
+
+  headers.forEach((_, idx) => {
+    const th = document.createElement("th");
+    th.className = "px-2 py-1";
+
+    const row = document.createElement("div");
+    row.className = "flex items-center gap-1";
+
+    const op = document.createElement("select");
+    op.className = "rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900";
+    [
+      { v: "contains", t: "~" },
+      { v: "eq", t: "=" },
+      { v: "neq", t: "!=" },
+    ].forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.v;
+      option.textContent = item.t;
+      op.appendChild(option);
+    });
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "filter";
+    input.className = "w-full min-w-[64px] rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900";
+
+    row.appendChild(op);
+    row.appendChild(input);
+    th.appendChild(row);
+    filterRow.appendChild(th);
+
+    op.addEventListener("change", () => {
+      filterState[idx].op = op.value as ColumnFilterOperator;
+      applyState();
+    });
+    input.addEventListener("input", () => {
+      filterState[idx].value = input.value;
+      applyState();
+    });
+  });
+
+  thead.appendChild(filterRow);
+
+  const indicators: HTMLSpanElement[] = [];
+  ths.forEach((th, idx) => {
+    th.style.cursor = "pointer";
+    const indicator = document.createElement("span");
+    indicator.className = "ml-1 text-[10px] text-slate-400";
+    indicator.textContent = "-";
+    th.appendChild(indicator);
+    indicators.push(indicator);
+    th.addEventListener("click", () => {
+      if (sortIndex === idx) {
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+      } else {
+        sortIndex = idx;
+        sortDir = "asc";
+      }
+      applyState();
+    });
+  });
+
+  const getRows = () =>
+    Array.from(tbody.querySelectorAll("tr")).map((tr, index) => {
+      const cells = Array.from(tr.querySelectorAll("td,th")).map((cell) => (cell.textContent || "").trim());
+      return { tr: tr as HTMLTableRowElement, cells, index };
+    });
+  const isTotalLabel = (txt: string) => {
+    const t = String(txt || "").toUpperCase();
+    return t === "TOTAL" || t === "GOLD TOTAL";
+  };
+  const getNumberAt = (row: { cells: string[] }, colName: string) => {
+    const idx = headers.findIndex((h) => h.toLowerCase() === colName.toLowerCase());
+    if (idx < 0) return null;
+    return parseMaybeNumber(row.cells[idx] || "");
+  };
+
+  const applyState = () => {
+    const rows = getRows();
+    const normalizedGlobal = normalizeFilterValue(globalQuery);
+    const rowHiddenByDefault = new Set<HTMLTableRowElement>();
+    const hiddenCols = new Set<number>();
+
+    if (!showHiddenData) {
+      if (tableKind === "coverage" || tableKind === "risk") {
+        rows.forEach((row) => {
+          const label = row.cells[0] || "";
+          if (isTotalLabel(label)) return;
+          const clientNet = getNumberAt(row, "Client Net");
+          if (clientNet === 0) rowHiddenByDefault.add(row.tr);
+        });
+      }
+      if (tableKind === "metrics") {
+        rows.forEach((row) => {
+          const label = row.cells[0] || "";
+          if (isTotalLabel(label)) return;
+          const equity = getNumberAt(row, "Equity");
+          if (equity === 0) rowHiddenByDefault.add(row.tr);
+        });
+      }
+      if (tableKind === "coverage") {
+        for (let col = 4; col < headers.length; col += 1) {
+          let nonZeroFound = false;
+          for (const row of rows) {
+            const label = row.cells[0] || "";
+            if (isTotalLabel(label)) continue;
+            const n = parseMaybeNumber(row.cells[col] || "");
+            if (n !== null && n !== 0) {
+              nonZeroFound = true;
+              break;
+            }
+          }
+          if (!nonZeroFound) hiddenCols.add(col);
+        }
+      }
+    }
+
+    let visible = rows.filter((row) => {
+      if (rowHiddenByDefault.has(row.tr)) return false;
+      const globalPass = !normalizedGlobal || row.cells.some((c) => normalizeFilterValue(c).includes(normalizedGlobal));
+      if (!globalPass) return false;
+
+      for (let i = 0; i < filterState.length; i += 1) {
+        const value = normalizeFilterValue(filterState[i].value);
+        if (!value) continue;
+        const cellRaw = row.cells[i] || "";
+        const cell = normalizeFilterValue(cellRaw);
+        const op = filterState[i].op;
+
+        if (op === "contains" && !cell.includes(value)) return false;
+        if (op === "eq") {
+          const nCell = parseMaybeNumber(cellRaw);
+          const nValue = parseMaybeNumber(filterState[i].value);
+          if (nCell !== null && nValue !== null) {
+            if (nCell !== nValue) return false;
+          } else if (cell !== value) return false;
+        }
+        if (op === "neq") {
+          const nCell = parseMaybeNumber(cellRaw);
+          const nValue = parseMaybeNumber(filterState[i].value);
+          if (nCell !== null && nValue !== null) {
+            if (nCell === nValue) return false;
+          } else if (cell === value) return false;
+        }
+      }
+      return true;
+    });
+
+    if (sortIndex >= 0) {
+      visible = [...visible].sort((a, b) => {
+        const aRaw = a.cells[sortIndex] || "";
+        const bRaw = b.cells[sortIndex] || "";
+        const aNum = parseMaybeNumber(aRaw);
+        const bNum = parseMaybeNumber(bRaw);
+        let cmp = 0;
+        if (aNum !== null && bNum !== null) {
+          cmp = aNum - bNum;
+        } else {
+          cmp = aRaw.localeCompare(bRaw, undefined, { numeric: true, sensitivity: "base" });
+        }
+        if (cmp === 0) cmp = a.index - b.index;
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+    }
+
+    const visibleSet = new Set(visible.map((r) => r.tr));
+    const hidden = rows.filter((r) => !visibleSet.has(r.tr));
+
+    [...visible, ...hidden].forEach((row) => {
+      row.tr.style.display = visibleSet.has(row.tr) ? "" : "none";
+      tbody.appendChild(row.tr);
+      Array.from(row.tr.querySelectorAll("td,th")).forEach((cell, idx) => {
+        (cell as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
+      });
+    });
+    ths.forEach((th, idx) => {
+      (th as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
+    });
+    Array.from(filterRow.querySelectorAll("th")).forEach((th, idx) => {
+      (th as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
+    });
+
+    indicators.forEach((indicator, idx) => {
+      if (idx !== sortIndex) indicator.textContent = "-";
+      else indicator.textContent = sortDir === "asc" ? "^" : "v";
+    });
+  };
+
+  globalInput.addEventListener("input", () => {
+    globalQuery = globalInput.value;
+    applyState();
+  });
+
+  clearBtn.addEventListener("click", () => {
+    globalQuery = "";
+    globalInput.value = "";
+    sortIndex = -1;
+    sortDir = "asc";
+    filterState.forEach((f) => {
+      f.op = "contains";
+      f.value = "";
+    });
+    Array.from(filterRow.querySelectorAll("select")).forEach((s) => ((s as HTMLSelectElement).value = "contains"));
+    Array.from(filterRow.querySelectorAll("input")).forEach((s) => ((s as HTMLInputElement).value = ""));
+    applyState();
+  });
+
+  exportBtn.addEventListener("click", () => {
+    const visibleRows = getRows().filter((r) => r.tr.style.display !== "none");
+    const hiddenCols = new Set<number>();
+    ths.forEach((th, idx) => {
+      if ((th as HTMLElement).style.display === "none") hiddenCols.add(idx);
+    });
+    const visibleColIndexes = headers.map((_, idx) => idx).filter((idx) => !hiddenCols.has(idx));
+    const exportHeaders = visibleColIndexes.map((idx) => headers[idx]);
+    const csvRows = visibleRows.map((r) => visibleColIndexes.map((idx) => r.cells[idx] || ""));
+    if (!csvRows.length) return;
+    exportRowsToCsv("dealing-table", exportHeaders, csvRows);
+  });
+  showHiddenBtn.addEventListener("click", () => {
+    showHiddenData = !showHiddenData;
+    showHiddenBtn.textContent = showHiddenData ? "Hide hidden data" : "Show hidden data";
+    applyState();
+  });
+
+  applyState();
+
+  return () => {
+    toolbar.remove();
+    filterRow.remove();
+    ths.forEach((th) => {
+      th.style.cursor = "";
+    });
+    indicators.forEach((indicator) => indicator.remove());
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      (row as HTMLTableRowElement).style.display = "";
+      Array.from((row as HTMLTableRowElement).querySelectorAll("td,th")).forEach((cell) => {
+        (cell as HTMLElement).style.display = "";
+      });
+    });
+    ths.forEach((th) => {
+      (th as HTMLElement).style.display = "";
+    });
+    Array.from(filterRow.querySelectorAll("th")).forEach((th) => {
+      (th as HTMLElement).style.display = "";
+    });
+  };
+};
 
 const DEFAULT_METRICS: DealingMetrics = {
   totalEquity: 0,
@@ -301,6 +665,12 @@ const formatDollar = (value: number) => {
   return <span className="text-rose-700 dark:text-rose-300">-${abs}</span>;
 };
 
+const formatMaybeNumber = (value: unknown, digits = 2) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+
 const REBATE_RULES_SAMPLE_CSV = `symbol,rate_per_lot
 XAUUSD,2.00
 EURUSD,1.00
@@ -349,6 +719,20 @@ const toInputDate = (date: Date) => {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
+};
+
+const epochSecondsToInputDate = (epochSeconds?: number | null) => {
+  const ts = Number(epochSeconds);
+  if (!Number.isFinite(ts) || ts <= 0) return "";
+  return toInputDate(new Date(ts * 1000));
+};
+
+const inputDateToUtcEpochSeconds = (value: string) => {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const parsed = Date.parse(`${trimmed}T00:00:00Z`);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.floor(parsed / 1000);
 };
 
 const escapeCsv = (value: string | number | null | undefined) => {
@@ -424,6 +808,7 @@ export function DealingDepartmentPage() {
   const [fullscreenTable, setFullscreenTable] = useState<FullscreenTableKey | null>(null);
   const [snapshottingTable, setSnapshottingTable] = useState<FullscreenTableKey | null>(null);
   const coverageSignalRRef = useRef<SignalRConnectionManager | null>(null);
+  const dealingRootRef = useRef<HTMLDivElement | null>(null);
   const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
   const [metricsEquitySummary, setMetricsEquitySummary] = useState<EquitySummaryData | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
@@ -445,6 +830,15 @@ export function DealingDepartmentPage() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLastUpdated, setHistoryLastUpdated] = useState<Date | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [historySavingLp, setHistorySavingLp] = useState<string | null>(null);
+  const [historyStartPeriodEdits, setHistoryStartPeriodEdits] = useState<Record<string, string>>({});
+  const [nopData, setNopData] = useState<NopReportData | null>(null);
+  const [nopLoading, setNopLoading] = useState(false);
+  const [nopError, setNopError] = useState<string | null>(null);
+  const [nopLastUpdated, setNopLastUpdated] = useState<Date | null>(null);
+  const [nopRefreshKey, setNopRefreshKey] = useState(0);
+  const [nopSymbol, setNopSymbol] = useState("");
+  const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
   const [rebateDefaultRate, setRebateDefaultRate] = useState("0");
   const [rebateFromDate, setRebateFromDate] = useState(() => toInputDate(new Date()));
@@ -482,6 +876,8 @@ export function DealingDepartmentPage() {
         ? swapLoading
         : activeMenu === "History"
           ? historyLoading
+          : activeMenu === "Clients NOP"
+            ? nopLoading
           : activeMenu === "Rebate Calculator"
             ? rebateCalcLoading
           : isLoading;
@@ -588,6 +984,7 @@ export function DealingDepartmentPage() {
     "Coverage",
     "Metrics",
     "Deal Matching",
+    "Clients NOP",
     "Rebate Calculator",
     "History",
     "Swap Tracker",
@@ -608,6 +1005,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "History") {
       setHistoryRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Clients NOP") {
+      setNopRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Rebate Calculator") {
@@ -970,15 +1371,33 @@ export function DealingDepartmentPage() {
       if (historyTab === "aggregate") {
         const items = historyAggregateData?.items || [];
         if (!items.length) return;
-        const headers = ["LP Name", "Login", "Source", "Start Equity", "End Equity", "Credit", "Deposit", "Withdrawal", "Net Deposits", "Gross P/L", "Commission", "Swap", "Net P/L", "Real LP P/L", "NTP %", "LP P/L (Rev Share)"];
+        const headers = ["LP Name", "Login", "Source", "Start Period", "Start Equity", "End Equity", "Credit", "Deposit", "Withdrawal", "Net Deposits", "Gross P/L", "Commission", "Swap", "Net P/L", "Real LP P/L", "NTP %", "LP P/L (Rev Share)"];
         const rows: Array<Array<string | number>> = items.map((item) =>
           item.isError
-            ? [item.lpName, String(item.login), item.source || "-", `ERROR: ${item.errorMessage || "Error"}`, "", "", "", "", "", "", "", "", "", "", "", ""]
-            : [item.lpName, String(item.login), item.source || "-", item.startEquity, item.endEquity, item.credit, item.deposit, item.withdrawal, item.netDeposits, item.grossProfit, item.totalCommission, item.totalSwap, item.netPL, item.realLpPL, `${item.ntpPercent.toFixed(1)}%`, item.lpPL],
+            ? [item.lpName, String(item.login), item.source || "-", "", `ERROR: ${item.errorMessage || "Error"}`, "", "", "", "", "", "", "", "", "", "", "", ""]
+            : [
+                item.lpName,
+                String(item.login),
+                item.source || "-",
+                epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from),
+                item.startEquity,
+                item.endEquity,
+                item.credit,
+                item.deposit,
+                item.withdrawal,
+                item.netDeposits,
+                item.grossProfit,
+                item.totalCommission,
+                item.totalSwap,
+                item.netPL,
+                item.realLpPL,
+                `${item.ntpPercent.toFixed(1)}%`,
+                item.lpPL,
+              ],
         );
         if (historyAggregateData?.totals) {
           const t = historyAggregateData.totals;
-          rows.push(["TOTAL", "", "", t.startEquity, t.endEquity, t.credit, t.deposit, t.withdrawal, t.netDeposits, t.grossProfit, t.totalCommission, t.totalSwap, t.netPL, t.realLpPL, "", t.lpPL]);
+          rows.push(["TOTAL", "", "", "", t.startEquity, t.endEquity, t.credit, t.deposit, t.withdrawal, t.netDeposits, t.grossProfit, t.totalCommission, t.totalSwap, t.netPL, t.realLpPL, "", t.lpPL]);
         }
         downloadTableSnapshot({ filePrefix: "history-aggregate-snapshot", title: "History Snapshot - Revenue Share", updatedAt: historyLastUpdated, headers, rows });
         return;
@@ -1020,6 +1439,28 @@ export function DealingDepartmentPage() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [fullscreenTable]);
+  useEffect(() => {
+    const root = dealingRootRef.current;
+    if (!root) return;
+
+    const tables = Array.from(root.querySelectorAll(TABLE_ENHANCER_SELECTOR)) as HTMLTableElement[];
+    if (!tables.length) return;
+
+    const cleanups = tables.map((table) => mountTableEnhancer(table));
+    return () => {
+      cleanups.forEach((cleanup) => cleanup());
+    };
+  }, [
+    activeMenu,
+    historyTab,
+    coverageData?.rows?.length,
+    metricsData?.items?.length,
+    swapRows.length,
+    historyAggregateData?.items?.length,
+    historyDealsData?.deals?.length,
+    historyVolumeData?.items?.length,
+    rebateCalcRows.length,
+  ]);
 
   useEffect(() => {
     if (activeMenu !== "Coverage" && activeMenu !== "Risk Exposure") {
@@ -1214,6 +1655,61 @@ export function DealingDepartmentPage() {
     const to = Math.floor(getUtcDayEndFromLocalDate(toDate).getTime() / 1000);
     return { from, to };
   }, [fromDate, toDate]);
+
+  const applyHistoryLpStartPeriod = async (lpName: string, dateValue: string, options?: { refresh?: boolean }) => {
+    const customStartDate = String(dateValue || "").trim();
+    const parsedTs = inputDateToUtcEpochSeconds(customStartDate);
+    if (!parsedTs) {
+      setHistoryError("Invalid Start Period date.");
+      return;
+    }
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl
+      ? `${backendBaseUrl}/History/lp-config/${encodeURIComponent(lpName)}`
+      : `/History/lp-config/${encodeURIComponent(lpName)}`;
+
+    setHistorySavingLp(lpName);
+    setHistoryError(null);
+    try {
+      const resp = await fetch(endpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customStartDate: `${customStartDate}T00:00:00Z`,
+        }),
+      });
+      if (!resp.ok) throw new Error(`History lp-config ${resp.status}`);
+      setHistoryAggregateData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          items: (prev.items || []).map((item) => (item.lpName === lpName ? { ...item, effectiveFrom: parsedTs } : item)),
+        };
+      });
+      if (options?.refresh !== false) {
+        setHistoryRefreshKey((k) => k + 1);
+      }
+    } catch (e: any) {
+      setHistoryError(e?.message || `Failed to update Start Period for ${lpName}.`);
+    } finally {
+      setHistorySavingLp((current) => (current === lpName ? null : current));
+    }
+  };
+
+  const handleHistoryLoad = async () => {
+    if (historyTab === "aggregate") {
+      const edits = Object.entries(historyStartPeriodEdits).filter(([, value]) => String(value || "").trim().length > 0);
+      if (edits.length) {
+        for (const [lpName, dateValue] of edits) {
+          // Save each LP override first, then refresh once at the end.
+          // eslint-disable-next-line no-await-in-loop
+          await applyHistoryLpStartPeriod(lpName, dateValue, { refresh: false });
+        }
+        setHistoryStartPeriodEdits({});
+      }
+    }
+    setHistoryRefreshKey((k) => k + 1);
+  };
 
   useEffect(() => {
     if (activeMenu !== "Dealing") {
@@ -1460,6 +1956,167 @@ export function DealingDepartmentPage() {
     };
   }, [activeMenu, historyTab, historySelectedLogin, historyTimestamps.from, historyTimestamps.to, historyRefreshKey]);
 
+  useEffect(() => {
+    if (activeMenu !== "Clients NOP") return;
+    let cancelled = false;
+
+    const loadNop = async () => {
+      setNopLoading(true);
+      setNopError(null);
+      try {
+        const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+        const positionsEndpoint = backendBaseUrl
+          ? `${backendBaseUrl}/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`
+          : `/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`;
+        const positionsResp = await fetch(positionsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
+        if (!positionsResp.ok) throw new Error(`GetPositionsByGroup ${positionsResp.status}`);
+        const allPositions = (await positionsResp.json()) as Array<{
+          login?: number | string;
+          symbol?: string;
+          action?: number;
+          lots?: number;
+          volume?: number;
+          volumeExt?: number;
+        }>;
+
+        const allSymbols = Array.from(
+          new Set(
+            (allPositions || [])
+              .map((p) => String(p?.symbol || "").trim())
+              .filter(Boolean),
+          ),
+        ).sort((a, b) => a.localeCompare(b));
+
+        const filteredPositions = (allPositions || []).filter((p) => {
+          const symbol = String(p?.symbol || "").trim();
+          if (!symbol) return false;
+          if (nopSymbol && symbol !== nopSymbol) return false;
+          return getPositionLots(p) > 0;
+        });
+
+        const logins = Array.from(
+          new Set(
+            filteredPositions
+              .map((p) => Number(p?.login))
+              .filter((v) => Number.isFinite(v) && v > 0),
+          ),
+        );
+
+        const accountsEndpoint = backendBaseUrl ? `${backendBaseUrl}/Account/GetAllAccounts` : "/Account/GetAllAccounts";
+        const accountsResp = await fetch(accountsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
+        if (!accountsResp.ok) throw new Error(`GetAllAccounts ${accountsResp.status}`);
+        const allAccounts = (await accountsResp.json()) as Array<{
+          login?: number | string;
+          balance?: number;
+          credit?: number;
+          margin?: number;
+          marginFree?: number;
+          marginLevel?: number;
+          equity?: number;
+        }>;
+        const accountByLogin = new Map<number, (typeof allAccounts)[number]>();
+        for (const account of allAccounts || []) {
+          const login = Number(account?.login);
+          if (!Number.isFinite(login) || login <= 0) continue;
+          accountByLogin.set(login, account);
+        }
+
+        const userInfoByLogin = new Map<number, { name?: string }>();
+        const chunkSize = 80;
+        for (let i = 0; i < logins.length; i += chunkSize) {
+          const chunk = logins.slice(i, i + chunkSize);
+          if (!chunk.length) continue;
+          const query = chunk.map((login) => `logins=${encodeURIComponent(String(login))}`).join("&");
+          const userInfoEndpoint = backendBaseUrl ? `${backendBaseUrl}/Account/GetUserInfoBatch?${query}` : `/Account/GetUserInfoBatch?${query}`;
+          try {
+            const infoResp = await fetch(userInfoEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
+            if (!infoResp.ok) continue;
+            const payload = (await infoResp.json()) as Record<string, { login?: number | string; name?: string }>;
+            Object.values(payload || {}).forEach((entry) => {
+              const login = Number(entry?.login);
+              if (!Number.isFinite(login) || login <= 0) return;
+              userInfoByLogin.set(login, { name: String(entry?.name || "") });
+            });
+          } catch {
+            // continue without names if batch info request fails
+          }
+        }
+
+        const symbolBuckets = new Map<string, { buy: Map<number, number>; sell: Map<number, number> }>();
+        for (const position of filteredPositions) {
+          const symbol = String(position?.symbol || "").trim();
+          const login = Number(position?.login);
+          const lots = getPositionLots(position);
+          if (!symbol || !Number.isFinite(login) || login <= 0 || !(lots > 0)) continue;
+          const side = Number(position?.action) === 1 ? "sell" : "buy";
+          const bucket = symbolBuckets.get(symbol) || { buy: new Map<number, number>(), sell: new Map<number, number>() };
+          const current = bucket[side].get(login) || 0;
+          bucket[side].set(login, current + lots);
+          symbolBuckets.set(symbol, bucket);
+        }
+
+        const toClient = (login: number, volume: number): NopClient => {
+          const account = accountByLogin.get(login);
+          const info = userInfoByLogin.get(login);
+          return {
+            login,
+            name: String(info?.name || ""),
+            volume,
+            realLimit: null,
+            mt5Limit: null,
+            equity: Number(account?.equity || 0),
+            credit: Number(account?.credit || 0),
+            balance: Number(account?.balance || 0),
+            marginFree: Number(account?.marginFree || 0),
+            margin: Number(account?.margin || 0),
+            marginLevel: Number(account?.marginLevel || 0),
+          };
+        };
+
+        const symbols: NopSymbolGroup[] = Array.from(symbolBuckets.entries())
+          .map(([symbol, bucket]) => {
+            const buyClients = Array.from(bucket.buy.entries())
+              .map(([login, volume]) => toClient(login, volume))
+              .sort((a, b) => b.volume - a.volume);
+            const sellClients = Array.from(bucket.sell.entries())
+              .map(([login, volume]) => toClient(login, volume))
+              .sort((a, b) => b.volume - a.volume);
+            const buyTotal = buyClients.reduce((sum, row) => sum + row.volume, 0);
+            const sellTotal = sellClients.reduce((sum, row) => sum + row.volume, 0);
+            return {
+              symbol,
+              buyClients,
+              sellClients,
+              buyTotal,
+              sellTotal,
+              netTotal: buyTotal - sellTotal,
+            };
+          })
+          .sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+        const normalized: NopReportData = {
+          timestamp: new Date().toISOString(),
+          accountsReporting: logins.filter((login) => accountByLogin.has(login)).length,
+          collectedLogins: logins.length,
+          symbols,
+        };
+        if (cancelled) return;
+        setNopData(normalized);
+        setNopLastUpdated(new Date());
+        setNopSymbolsAll(allSymbols);
+      } catch (e: any) {
+        if (!cancelled) setNopError(e?.message || "Failed to load clients NOP.");
+      } finally {
+        if (!cancelled) setNopLoading(false);
+      }
+    };
+
+    loadNop();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMenu, nopRefreshKey]);
+
   const summaryCards = useMemo(() => {
     if (activeMenu === "Rebate Calculator") {
       const totals = rebateCalcRows.reduce(
@@ -1559,6 +2216,25 @@ export function DealingDepartmentPage() {
       ];
     }
 
+    if (activeMenu === "Clients NOP") {
+      const rows = nopData?.symbols || [];
+      let buyLots = 0;
+      let sellLots = 0;
+
+      rows.forEach((s) => {
+        buyLots += Number.isFinite(s.buyTotal) ? s.buyTotal : 0;
+        sellLots += Number.isFinite(s.sellTotal) ? s.sellTotal : 0;
+      });
+
+      const netLots = buyLots - sellLots;
+      return [
+        { label: "Symbols", value: rows.length.toLocaleString() },
+        { label: "Buy Lots", value: buyLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+        { label: "Sell Lots", value: sellLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+        { label: "Net Lots", value: netLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      ];
+    }
+
     return [
       { label: "Client Equity", value: `$${metrics.totalEquity.toLocaleString()}` },
       { label: "LP Equity", value: `$${(overviewData.lpMetrics?.totals?.equity || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
@@ -1572,7 +2248,7 @@ export function DealingDepartmentPage() {
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
       { label: "Total Uncovered", value: (overviewData.coverage?.totals?.uncovered || 0).toFixed(2) },
     ];
-  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount]);
+  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData]);
 
   const rebateSymbolTotals = useMemo(() => {
     const bySymbol = new Map<
@@ -1703,7 +2379,7 @@ export function DealingDepartmentPage() {
   }, [activeMenu, liveEnabledEvents]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-6 md:p-8">
+    <div ref={dealingRootRef} className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-6 md:p-8">
       <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="h-fit rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-slate-50 to-slate-100 p-4 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 lg:sticky lg:top-6">
           <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300/80">Dealing Menu</div>
@@ -1881,7 +2557,7 @@ export function DealingDepartmentPage() {
               )}
 
               <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "coverage" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                <table className="min-w-full text-xs">
+                <table data-table-kind="coverage" className="min-w-full text-xs">
                   <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                     <tr>
                       <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
@@ -1994,7 +2670,7 @@ export function DealingDepartmentPage() {
                 )}
 
                 <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "risk" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table className="min-w-full text-xs">
+                  <table data-table-kind="risk" className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
@@ -2086,7 +2762,7 @@ export function DealingDepartmentPage() {
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{metricsError}</div>
               )}
               <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "metrics" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                <table className="min-w-full text-xs">
+                <table data-table-kind="metrics" className="min-w-full text-xs">
                   <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                     <tr>
                       <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">LP</th>
@@ -2197,7 +2873,7 @@ export function DealingDepartmentPage() {
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{swapError}</div>
               )}
               <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "swap" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                <table className="min-w-full text-xs">
+                <table data-table-kind="swap" className="min-w-full text-xs">
                   <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                     <tr>
                       <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">LP</th>
@@ -2307,6 +2983,13 @@ export function DealingDepartmentPage() {
                     {tab.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => void handleHistoryLoad()}
+                  className="rounded-md border border-cyan-500/50 bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
+                >
+                  Load
+                </button>
 
                 {historyTab === "deals" && (
                   <>
@@ -2324,7 +3007,7 @@ export function DealingDepartmentPage() {
                     </select>
                     <button
                       type="button"
-                      onClick={() => setHistoryRefreshKey((k) => k + 1)}
+                      onClick={() => void handleHistoryLoad()}
                       className="rounded-md border border-cyan-500/50 bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
                     >
                       Load Deals
@@ -2347,12 +3030,13 @@ export function DealingDepartmentPage() {
 
               {historyTab === "aggregate" && (
                 <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table className="min-w-full text-xs">
+                  <table data-table-kind="history-aggregate" className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">LP Name</th>
                         <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
                         <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Source</th>
+                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Start Period</th>
                         <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Start Equity</th>
                         <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">End Equity</th>
                         <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Credit</th>
@@ -2375,11 +3059,25 @@ export function DealingDepartmentPage() {
                           <td className="border-t border-slate-800 px-3 py-2 text-left">{item.login}</td>
                           <td className="border-t border-slate-800 px-3 py-2 text-left text-slate-500 dark:text-slate-400">{item.source || "-"}</td>
                           {item.isError ? (
-                            <td colSpan={13} className="border-t border-slate-800 px-3 py-2 text-left text-rose-700 dark:text-rose-300">
+                            <td colSpan={14} className="border-t border-slate-800 px-3 py-2 text-left text-rose-700 dark:text-rose-300">
                               {item.errorMessage || "Error"}
                             </td>
                           ) : (
                             <>
+                              <td className="border-t border-slate-800 px-3 py-2 text-left">
+                                <input
+                                  type="date"
+                                  value={historyStartPeriodEdits[item.lpName] ?? epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from) || toYmd(fromDate)}
+                                  onChange={(e) =>
+                                    setHistoryStartPeriodEdits((prev) => ({
+                                      ...prev,
+                                      [item.lpName]: e.target.value,
+                                    }))
+                                  }
+                                  disabled={historySavingLp === item.lpName}
+                                  className="w-[132px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                                />
+                              </td>
                               <td className="border-t border-slate-800 px-3 py-2 text-right">{item.startEquity.toLocaleString()}</td>
                               <td className="border-t border-slate-800 px-3 py-2 text-right">{item.endEquity.toLocaleString()}</td>
                               <td className="border-t border-slate-800 px-3 py-2 text-right">{item.credit.toLocaleString()}</td>
@@ -2404,6 +3102,7 @@ export function DealingDepartmentPage() {
                           <td className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2">TOTAL</td>
                           <td className="px-3 py-2" />
                           <td className="px-3 py-2" />
+                          <td className="px-3 py-2" />
                           <td className="px-3 py-2 text-right">{historyAggregateData.totals.startEquity.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right">{historyAggregateData.totals.endEquity.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right">{historyAggregateData.totals.credit.toLocaleString()}</td>
@@ -2426,7 +3125,7 @@ export function DealingDepartmentPage() {
 
               {historyTab === "deals" && (
                 <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table className="min-w-full text-xs">
+                  <table data-table-kind="history-deals" className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Ticket</th>
@@ -2473,7 +3172,7 @@ export function DealingDepartmentPage() {
 
               {historyTab === "volume" && (
                 <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table className="min-w-full text-xs">
+                  <table data-table-kind="history-volume" className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">LP Name</th>
@@ -2531,6 +3230,190 @@ export function DealingDepartmentPage() {
                     No history data available for this range.
                   </div>
                 )}
+            </section>
+          ) : activeMenu === "Clients NOP" ? (
+            <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
+              <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Clients NOP Report</h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Grouped buy/sell client exposure per symbol with net lots and margin profile.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-slate-600 dark:text-slate-300">Symbol</label>
+                  <select
+                    value={nopSymbol}
+                    onChange={(e) => setNopSymbol(e.target.value)}
+                    className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  >
+                    <option value="">All Symbols</option>
+                    {nopSymbolsAll.map((symbol) => (
+                      <option key={`nop-symbol-${symbol}`} value={symbol}>
+                        {symbol}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => setNopRefreshKey((k) => k + 1)}
+                    className="inline-flex items-center gap-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-200 hover:bg-cyan-500/20"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${nopLoading ? "animate-spin" : ""}`} />
+                    Load
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-4 flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
+                <span>Timestamp: <span className="font-mono text-slate-700 dark:text-slate-200">{nopData?.timestamp || "-"}</span></span>
+                <span>Accounts: <span className="font-mono text-slate-700 dark:text-slate-200">{(nopData?.accountsReporting || 0).toLocaleString()}</span></span>
+                <span>Logins with positions: <span className="font-mono text-slate-700 dark:text-slate-200">{(nopData?.collectedLogins || 0).toLocaleString()}</span></span>
+                {nopLastUpdated && <span>Updated {nopLastUpdated.toLocaleTimeString()}</span>}
+              </div>
+
+              {nopError && (
+                <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{nopError}</div>
+              )}
+
+              <div className="space-y-4">
+                {(nopData?.symbols || []).map((sym) => {
+                  const netCls = sym.netTotal > 0 ? "text-emerald-700 dark:text-emerald-300" : sym.netTotal < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500";
+                  return (
+                    <section key={`nop-${sym.symbol}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                      <div className="mb-3 flex items-center justify-between rounded-lg border border-slate-300 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-900/70">
+                        <span className="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">{sym.symbol}</span>
+                        <span className="text-xs">NET: <span className={`font-mono font-semibold ${netCls}`}>{formatMaybeNumber(sym.netTotal, 2)} lots</span></span>
+                      </div>
+
+                      {sym.buyClients?.length > 0 && (
+                        <div className="mb-3">
+                          <div className="mb-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                            BUY ({sym.buyClients.length} clients)
+                          </div>
+                          <div className="overflow-x-auto rounded-lg border border-slate-800">
+                            <table data-table-kind="nop-buy" className="min-w-full text-xs">
+                              <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                                <tr>
+                                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
+                                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Name</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Volume</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Real Limit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">MT5 Limit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Equity</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Credit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Balance</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Free</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Margin</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">M.LVL</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sym.buyClients.map((c, idx) => (
+                                  <tr
+                                    key={`nop-buy-${sym.symbol}-${c.login}-${idx}`}
+                                    className={`${Number(c.realLimit) > 0 && Math.abs(Number(c.volume) || 0) > Number(c.realLimit) ? "bg-rose-500/10" : "bg-slate-50 dark:bg-slate-950/30"}`}
+                                  >
+                                    <td className="border-t border-slate-800 px-3 py-2 text-left font-mono">{c.login}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-left">{c.name || "-"}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right font-semibold text-emerald-700 dark:text-emerald-300">{formatMaybeNumber(c.volume, 2)}</td>
+                                    <td
+                                      className={`border-t border-slate-800 px-3 py-2 text-right ${Number(c.realLimit) > 0 && Math.abs(Number(c.volume) || 0) > Number(c.realLimit) ? "font-semibold text-rose-700 dark:text-rose-300" : "text-slate-500 dark:text-slate-400"}`}
+                                    >
+                                      {Number(c.realLimit) > 0 ? formatMaybeNumber(c.realLimit, 2) : "-"}
+                                    </td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right text-slate-500 dark:text-slate-400">{c.mt5Limit ? formatMaybeNumber(c.mt5Limit, 2) : "Unlimited"}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.equity, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.credit, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.balance, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.marginFree, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.margin, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
+                                  <td className="px-3 py-2 text-right" colSpan={2}>TOTAL</td>
+                                  <td className="px-3 py-2 text-right text-emerald-700 dark:text-emerald-300">{formatMaybeNumber(sym.buyTotal, 2)}</td>
+                                  <td className="px-3 py-2" colSpan={8} />
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {sym.sellClients?.length > 0 && (
+                        <div className="mb-3">
+                          <div className="mb-1 rounded-md border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300">
+                            SELL ({sym.sellClients.length} clients)
+                          </div>
+                          <div className="overflow-x-auto rounded-lg border border-slate-800">
+                            <table data-table-kind="nop-sell" className="min-w-full text-xs">
+                              <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                                <tr>
+                                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
+                                  <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Name</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Volume</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Real Limit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">MT5 Limit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Equity</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Credit</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Balance</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Free</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Margin</th>
+                                  <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">M.LVL</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {sym.sellClients.map((c, idx) => (
+                                  <tr
+                                    key={`nop-sell-${sym.symbol}-${c.login}-${idx}`}
+                                    className={`${Number(c.realLimit) > 0 && Math.abs(Number(c.volume) || 0) > Number(c.realLimit) ? "bg-rose-500/10" : "bg-slate-50 dark:bg-slate-950/30"}`}
+                                  >
+                                    <td className="border-t border-slate-800 px-3 py-2 text-left font-mono">{c.login}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-left">{c.name || "-"}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right font-semibold text-rose-700 dark:text-rose-300">{formatMaybeNumber(c.volume, 2)}</td>
+                                    <td
+                                      className={`border-t border-slate-800 px-3 py-2 text-right ${Number(c.realLimit) > 0 && Math.abs(Number(c.volume) || 0) > Number(c.realLimit) ? "font-semibold text-rose-700 dark:text-rose-300" : "text-slate-500 dark:text-slate-400"}`}
+                                    >
+                                      {Number(c.realLimit) > 0 ? formatMaybeNumber(c.realLimit, 2) : "-"}
+                                    </td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right text-slate-500 dark:text-slate-400">{c.mt5Limit ? formatMaybeNumber(c.mt5Limit, 2) : "Unlimited"}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.equity, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.credit, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.balance, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.marginFree, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.margin, 2)}</td>
+                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
+                                  <td className="px-3 py-2 text-right" colSpan={2}>TOTAL</td>
+                                  <td className="px-3 py-2 text-right text-rose-700 dark:text-rose-300">{formatMaybeNumber(sym.sellTotal, 2)}</td>
+                                  <td className="px-3 py-2" colSpan={8} />
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-900/70">
+                        <span className="font-semibold">NET TOTAL: </span>
+                        <span className={`font-mono font-semibold ${netCls}`}>{formatMaybeNumber(sym.netTotal, 2)} lots</span>
+                      </div>
+                    </section>
+                  );
+                })}
+              </div>
+
+              {!nopLoading && !(nopData?.symbols || []).length && (
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+                  No positions found for the selected symbol.
+                </div>
+              )}
             </section>
           ) : activeMenu === "Rebate Calculator" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
@@ -2627,7 +3510,7 @@ export function DealingDepartmentPage() {
               )}
 
               <div className="rounded-lg border border-slate-800 overflow-x-auto">
-                <table className="min-w-full text-xs">
+                <table data-table-kind="rebate-rules" className="min-w-full text-xs">
                   <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                     <tr>
                       <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
@@ -2673,7 +3556,7 @@ export function DealingDepartmentPage() {
 
               {rebateSymbolTotals.length > 0 && (
                 <div className="mt-4 rounded-lg border border-slate-800 overflow-x-auto">
-                  <table className="min-w-full text-xs">
+                  <table data-table-kind="rebate-result" className="min-w-full text-xs">
                     <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
@@ -2817,6 +3700,9 @@ export function DealingDepartmentPage() {
     </div>
   );
 }
+
+
+
 
 
 
