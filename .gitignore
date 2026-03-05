@@ -20,6 +20,18 @@ dist-ssr
 *.suo
 .env
 .env.*
+!.env.example
+
+# Secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*credentials*.json
+*secret*.json
+*service-account*.json
 *.ntvs*
 *.njsproj
 *.sln
