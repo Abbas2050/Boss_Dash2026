@@ -1,14 +1,7 @@
 // Google Analytics 4 API integration for Marketing insights
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
-import path from "path";
-import fs from "fs";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const DEBUG_GA4 = process.env.DEBUG_GA4 === "1";
-const DEFAULT_KEY_FILE = path.join(__dirname, "skylinkscapital-12ac4c6a138f.json");
 
 function debug(...args) {
   if (DEBUG_GA4) console.log("[GA4]", ...args);
@@ -20,15 +13,30 @@ function createClientAndPropertyId() {
     throw new Error("GA4_PROPERTY_ID is not configured");
   }
 
-  const explicitKeyFile =
-    process.env.GA4_KEY_FILE || process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const keyFile = explicitKeyFile || (fs.existsSync(DEFAULT_KEY_FILE) ? DEFAULT_KEY_FILE : "");
+  const explicitKeyFile = process.env.GA4_KEY_FILE || process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const inlineCredentialsRaw = process.env.GA4_SERVICE_ACCOUNT_JSON || "";
+  let inlineCredentials = null;
+  if (inlineCredentialsRaw) {
+    try {
+      inlineCredentials = JSON.parse(inlineCredentialsRaw);
+    } catch {
+      throw new Error("GA4_SERVICE_ACCOUNT_JSON is not valid JSON");
+    }
+  }
 
-  if (keyFile) {
-    debug("Using key file:", keyFile);
+  if (inlineCredentials) {
+    debug("Using inline GA4 service-account JSON from env");
     return {
       propertyId,
-      client: new BetaAnalyticsDataClient({ keyFilename: keyFile }),
+      client: new BetaAnalyticsDataClient({ credentials: inlineCredentials }),
+    };
+  }
+
+  if (explicitKeyFile) {
+    debug("Using key file:", explicitKeyFile);
+    return {
+      propertyId,
+      client: new BetaAnalyticsDataClient({ keyFilename: explicitKeyFile }),
     };
   }
 
