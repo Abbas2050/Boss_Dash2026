@@ -1,12 +1,55 @@
-import { useEffect, useState } from 'react';
-import { Settings, Users, Database, TrendingUp, CheckCircle, AlertCircle, Shield, Briefcase, User } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  Settings,
+  Users,
+  Database,
+  TrendingUp,
+  CheckCircle,
+  AlertCircle,
+  Shield,
+  Briefcase,
+  User,
+  ArrowDownToLine,
+  ArrowUpToLine,
+  Search,
+  Loader2,
+  Camera,
+  Maximize2,
+  Minimize2,
+} from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
-import { StatusBadge } from './StatusBadge';
-import { fetchUsers, fetchAccounts, fetchTransactions } from '@/lib/api';
-import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
+import { fetchUsers, fetchTransactions, fetchAccounts } from '@/lib/api';
+import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
+import { fetchWalletBalances } from '@/lib/walletApi';
 
-export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refreshKey }: { selectedEntity: string; fromDate?: Date; toDate?: Date; refreshKey: number }) {
+type CashflowTx = {
+  id: number | string;
+  processedAt: string;
+  amount: number;
+  pspName: string;
+  pspId: number | null;
+};
+
+type PSPBalance = {
+  name: string;
+  balance: number;
+  status: 'active' | 'pending' | 'error';
+};
+
+export function BackOfficeDepartment({
+  selectedEntity,
+  fromDate,
+  toDate,
+  refreshKey,
+  variant = 'full',
+}: {
+  selectedEntity: string;
+  fromDate?: Date;
+  toDate?: Date;
+  refreshKey: number;
+  variant?: 'full' | 'compact';
+}) {
   const [metrics, setMetrics] = useState({
     totalIBs: 0,
     totalDeposits: 0,
@@ -26,81 +69,344 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
 
   const [isLoading, setIsLoading] = useState(false);
 
+  const [lookupCrmId, setLookupCrmId] = useState('');
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupResult, setLookupResult] = useState<{
+    crmId: number;
+    deposits: CashflowTx[];
+    withdrawals: CashflowTx[];
+  } | null>(null);
+
+  const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
+  const [reportDate, setReportDate] = useState('-');
+  const [reportUpdated, setReportUpdated] = useState('-');
+  const [walletError, setWalletError] = useState<string | null>(null);
+  const [walletTotal, setWalletTotal] = useState(0);
+  const [bankReceivable, setBankReceivable] = useState(0);
+  const [cryptoReceivable, setCryptoReceivable] = useState(0);
+  const [cashflowFullscreen, setCashflowFullscreen] = useState(false);
+  const [snapshottingCashflow, setSnapshottingCashflow] = useState(false);
+
+  const formatTxDate = (value: string) => {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value || '-';
+    return d.toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const getPspName = (tx: any) => {
+    const pspId = Number(tx?.pspId);
+    if (pspId === 13) return 'Cash';
+    if ([8, 7, 16, 15].includes(pspId)) return 'Bank';
+    if (Number.isFinite(pspId)) return 'Crypto';
+    return 'Crypto';
+  };
+
+  const handleLookupClientCashflow = async () => {
+    const crmIdRaw = String(lookupCrmId || '').trim();
+    const crmId = Number(crmIdRaw);
+    if (!crmIdRaw || !Number.isFinite(crmId) || crmId <= 0) {
+      setLookupError('Enter a valid CRM ID first.');
+      return;
+    }
+
+    try {
+      setLookupLoading(true);
+      setLookupError(null);
+      setLookupResult(null);
+      const [depositsRaw, withdrawalsRaw] = await Promise.all([
+        fetchTransactions({
+          fromUserId: crmId,
+          transactionTypes: ['deposit'],
+          statuses: ['approved'],
+        }),
+        fetchTransactions({
+          fromUserId: crmId,
+          transactionTypes: ['withdrawal'],
+          statuses: ['approved'],
+        }),
+      ]);
+
+      const mapTx = (tx: any): CashflowTx => ({
+        id: tx?.id ?? Math.random().toString(36).slice(2),
+        processedAt: String(tx?.processedAt || ''),
+        amount: Math.abs(Number(tx?.processedAmount || 0)),
+        pspName: getPspName(tx),
+        pspId: Number.isFinite(Number(tx?.pspId)) ? Number(tx?.pspId) : null,
+      });
+
+      const deposits = (Array.isArray(depositsRaw) ? depositsRaw : [])
+        .map(mapTx)
+        .sort((a, b) => new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime());
+
+      const withdrawals = (Array.isArray(withdrawalsRaw) ? withdrawalsRaw : [])
+        .map(mapTx)
+        .sort((a, b) => new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime());
+
+      setLookupResult({
+        crmId,
+        deposits,
+        withdrawals,
+      });
+    } catch (e: any) {
+      setLookupError(e?.message || 'Failed to fetch client cashflow.');
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  const cashflowRows = useMemo(() => {
+    const deposits = lookupResult?.deposits || [];
+    const withdrawals = lookupResult?.withdrawals || [];
+    const maxLen = Math.max(deposits.length, withdrawals.length);
+    return Array.from({ length: maxLen }).map((_, idx) => ({
+      deposit: deposits[idx] || null,
+      withdrawal: withdrawals[idx] || null,
+    }));
+  }, [lookupResult]);
+
+  const createdRate = metrics.totalClients > 0 ? Math.round((metrics.totalMT5Accounts / metrics.totalClients) * 100) : 0;
+  const lookupDepositTotal = lookupResult?.deposits.reduce((s, t) => s + t.amount, 0) || 0;
+  const lookupWithdrawalTotal = lookupResult?.withdrawals.reduce((s, t) => s + t.amount, 0) || 0;
+  const depositByPsp = useMemo(() => {
+    const m = new Map<string, number>();
+    (lookupResult?.deposits || []).forEach((tx) => {
+      const key = tx.pspName || '-';
+      m.set(key, (m.get(key) || 0) + tx.amount);
+    });
+    return Array.from(m.entries())
+      .map(([psp, amount]) => ({ psp, amount }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [lookupResult?.deposits]);
+  const withdrawalByPsp = useMemo(() => {
+    const m = new Map<string, number>();
+    (lookupResult?.withdrawals || []).forEach((tx) => {
+      const key = tx.pspName || '-';
+      m.set(key, (m.get(key) || 0) + tx.amount);
+    });
+    return Array.from(m.entries())
+      .map(([psp, amount]) => ({ psp, amount }))
+      .sort((a, b) => b.amount - a.amount);
+  }, [lookupResult?.withdrawals]);
+
+  const handleCashflowSnapshot = () => {
+    if (!cashflowRows.length) return;
+    setSnapshottingCashflow(true);
+    try {
+      const headers = ['Dep Txn ID', 'Dep Date', 'Dep PSP', 'Dep Amount', 'Wdr Txn ID', 'Wdr Date', 'Wdr PSP', 'Wdr Amount'];
+      const rows = cashflowRows.map((row) => [
+        row.deposit ? String(row.deposit.id) : '-',
+        row.deposit ? formatTxDate(row.deposit.processedAt) : '-',
+        row.deposit?.pspName || '-',
+        row.deposit ? `$${row.deposit.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-',
+        row.withdrawal ? String(row.withdrawal.id) : '-',
+        row.withdrawal ? formatTxDate(row.withdrawal.processedAt) : '-',
+        row.withdrawal?.pspName || '-',
+        row.withdrawal ? `$${row.withdrawal.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-',
+      ]);
+
+      const normalize = (v: string) => String(v ?? '');
+      const measureCanvas = document.createElement('canvas');
+      const measureCtx = measureCanvas.getContext('2d');
+      if (!measureCtx) return;
+      measureCtx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+
+      const depositPspLines =
+        depositByPsp.length > 0
+          ? depositByPsp.map((row) => `${row.psp}: $${row.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`)
+          : ['No deposit PSP data'];
+      const withdrawalPspLines =
+        withdrawalByPsp.length > 0
+          ? withdrawalByPsp.map((row) => `${row.psp}: $${row.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}`)
+          : ['No withdrawal PSP data'];
+      const maxPspLines = Math.max(depositPspLines.length, withdrawalPspLines.length);
+
+      const colWidths = headers.map((header, colIdx) => {
+        const headerWidth = measureCtx.measureText(header).width;
+        const rowWidth = rows.reduce((max, row) => Math.max(max, measureCtx.measureText(normalize(String(row[colIdx] ?? ''))).width), 0);
+        return Math.ceil(Math.max(headerWidth, rowWidth) + 24);
+      });
+
+      const rowHeight = 26;
+      const headerHeight = 28;
+      const titleHeight = 52;
+      const summaryHeight = 70;
+      const pspHeaderHeight = 26;
+      const pspLineHeight = 18;
+      const pspBlockHeight = pspHeaderHeight + maxPspLines * pspLineHeight + 12;
+      const totalsHeight = 30;
+      const tableWidth = colWidths.reduce((sum, w) => sum + w, 0);
+      const imageWidth = Math.max(920, tableWidth + 24);
+      const imageHeight = titleHeight + summaryHeight + pspBlockHeight + headerHeight + rowHeight * rows.length + totalsHeight + 18;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = imageWidth;
+      canvas.height = imageHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, imageWidth, imageHeight);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '600 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto';
+      ctx.fillText(`Client Cashflow Snapshot - CRM ${lookupResult?.crmId ?? '-'}`, 12, 24);
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillStyle = '#94a3b8';
+      ctx.fillText(`Generated: ${new Date().toLocaleString()}`, 12, 42);
+
+      const summaryY = titleHeight;
+      const summaryW = (imageWidth - 36) / 2;
+      const summaryH = 58;
+      ctx.fillStyle = '#052e16';
+      ctx.fillRect(12, summaryY, summaryW, summaryH);
+      ctx.fillStyle = '#ecfdf5';
+      ctx.font = '600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto';
+      ctx.fillText(`Deposits: ${lookupResult?.deposits.length ?? 0} tx`, 22, summaryY + 22);
+      ctx.fillText(`Total: $${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, 22, summaryY + 42);
+
+      ctx.fillStyle = '#451a03';
+      ctx.fillRect(24 + summaryW, summaryY, summaryW, summaryH);
+      ctx.fillStyle = '#fffbeb';
+      ctx.fillText(`Withdrawals: ${lookupResult?.withdrawals.length ?? 0} tx`, 34 + summaryW, summaryY + 22);
+      ctx.fillText(`Total: $${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, 34 + summaryW, summaryY + 42);
+
+      const pspY = summaryY + summaryHeight;
+      const pspW = (imageWidth - 36) / 2;
+      const pspH = pspBlockHeight - 8;
+      ctx.fillStyle = '#0f3d2e';
+      ctx.fillRect(12, pspY, pspW, pspH);
+      ctx.fillStyle = '#d1fae5';
+      ctx.font = '600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto';
+      ctx.fillText('Deposits by PSP', 22, pspY + 18);
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      depositPspLines.forEach((line, idx) => {
+        ctx.fillText(line, 22, pspY + 38 + idx * pspLineHeight);
+      });
+
+      ctx.fillStyle = '#5b3410';
+      ctx.fillRect(24 + pspW, pspY, pspW, pspH);
+      ctx.fillStyle = '#fef3c7';
+      ctx.font = '600 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto';
+      ctx.fillText('Withdrawals by PSP', 34 + pspW, pspY + 18);
+      ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      withdrawalPspLines.forEach((line, idx) => {
+        ctx.fillText(line, 34 + pspW, pspY + 38 + idx * pspLineHeight);
+      });
+
+      const tableX = 12;
+      const tableY = titleHeight + summaryHeight + pspBlockHeight;
+      let x = tableX;
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(tableX, tableY, tableWidth, headerHeight);
+      ctx.strokeStyle = '#334155';
+      ctx.strokeRect(tableX, tableY, tableWidth, headerHeight);
+      headers.forEach((header, idx) => {
+        ctx.fillStyle = '#e2e8f0';
+        ctx.fillText(header, x + 8, tableY + 18);
+        x += colWidths[idx];
+      });
+
+      rows.forEach((row, rowIdx) => {
+        const y = tableY + headerHeight + rowIdx * rowHeight;
+        ctx.fillStyle = rowIdx % 2 === 0 ? '#111827' : '#0b1220';
+        ctx.fillRect(tableX, y, tableWidth, rowHeight);
+        ctx.strokeStyle = '#1f2937';
+        ctx.strokeRect(tableX, y, tableWidth, rowHeight);
+        let cx = tableX;
+        row.forEach((cell, colIdx) => {
+          ctx.fillStyle = '#cbd5e1';
+          ctx.fillText(normalize(String(cell ?? '')), cx + 8, y + 17);
+          cx += colWidths[colIdx];
+        });
+      });
+
+      const totalY = tableY + headerHeight + rows.length * rowHeight;
+      ctx.fillStyle = '#1f2937';
+      ctx.fillRect(tableX, totalY, tableWidth, totalsHeight);
+      ctx.strokeStyle = '#334155';
+      ctx.strokeRect(tableX, totalY, tableWidth, totalsHeight);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(`Deposits Total: $${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, tableX + 8, totalY + 19);
+      ctx.fillText(`Withdrawals Total: $${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`, tableX + Math.floor(tableWidth / 2), totalY + 19);
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const href = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = href;
+        a.download = `cashflow-snapshot-${lookupResult?.crmId || 'crm'}.png`;
+        a.click();
+        URL.revokeObjectURL(href);
+      }, 'image/png');
+    } finally {
+      setSnapshottingCashflow(false);
+    }
+  };
+
   useEffect(() => {
     const fetchBackOfficeData = async () => {
       try {
         setIsLoading(true);
         const now = getDubaiDate();
-        const fallbackEnd = now;
-        const fallbackStart = new Date(fallbackEnd);
-        fallbackStart.setDate(fallbackStart.getDate() - 30);
+        const fallbackStart = getDubaiDayStart(now);
+        const fallbackEnd = getDubaiDayEnd(now);
 
         const begin = fromDate ? formatDateTimeForAPI(fromDate, false) : formatDateTimeForAPI(fallbackStart, false);
         const end = toDate ? formatDateTimeForAPI(toDate, true) : formatDateTimeForAPI(fallbackEnd, true);
 
-        // Fetch all data in parallel
-        const baseUsersFilter = selectedEntity !== 'all'
-          ? { customFields: { custom_change_me_field: { value: selectedEntity } } }
-          : {};
-        const clientDateFilter = fromDate || toDate
-          ? { created: { begin, end } }
-          : {};
-        const [
-          allUsers,
-          allAccounts,
-          ibWithdrawals,
-          allDeposits,
-          allWithdrawals,
-          verifiedUsers,
-          individualUsers,
-          corporateUsers,
-        ] = await Promise.all([
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter }),
-          fetchAccounts({ 
-            createdAt: { begin, end },
-            segment: { limit: 1000, offset: 0 } 
-          }),
-          fetchTransactions({ 
-            processedAt: { begin, end },
-            transactionTypes: ['ib withdrawal'],
-            statuses: ['approved']
-          }),
-          fetchTransactions({ 
-            processedAt: { begin, end },
-            transactionTypes: ['deposit'],
-            statuses: ['approved']
-          }),
-          fetchTransactions({ 
-            processedAt: { begin, end },
-            transactionTypes: ['withdrawal'],
-            statuses: ['approved']
-          }),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
-        ]);
+        const baseUsersFilter =
+          selectedEntity !== 'all' ? { customFields: { custom_change_me_field: { value: selectedEntity } } } : {};
+        const clientDateFilter = fromDate || toDate ? { created: { begin, end } } : {};
 
-        // Filter by entity if needed
+        const [allUsers, allAccounts, ibWithdrawals, allDeposits, allWithdrawals, verifiedUsers, individualUsers, corporateUsers] =
+          await Promise.all([
+            fetchUsers({ ...baseUsersFilter, ...clientDateFilter }),
+            fetchAccounts({
+              createdAt: { begin, end },
+              segment: { limit: 1000, offset: 0 },
+            }),
+            fetchTransactions({
+              processedAt: { begin, end },
+              transactionTypes: ['ib withdrawal'],
+              statuses: ['approved'],
+            }),
+            fetchTransactions({
+              processedAt: { begin, end },
+              transactionTypes: ['deposit'],
+              statuses: ['approved'],
+            }),
+            fetchTransactions({
+              processedAt: { begin, end },
+              transactionTypes: ['withdrawal'],
+              statuses: ['approved'],
+            }),
+            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
+            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
+            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
+          ]);
+
         let clients = allUsers;
         let accounts = allAccounts;
         if (selectedEntity !== 'all') {
-          const entityUserIds = allUsers.map(u => u.id);
+          const entityUserIds = allUsers.map((u) => u.id);
           clients = allUsers;
-          accounts = (allAccounts as any[]).filter(a => entityUserIds.includes(a.userId));
+          accounts = (allAccounts as any[]).filter((a) => entityUserIds.includes(a.userId));
         }
 
-        // Count users whose firstDepositDate falls in the selected date range
         const rangeStart = new Date(begin);
         const rangeEnd = new Date(end);
-        const firstDepositCount = allUsers.filter(user => {
+        const firstDepositCount = allUsers.filter((user) => {
           if (!user.firstDepositDate) return false;
           const userFirstDepositDate = new Date(user.firstDepositDate);
           return userFirstDepositDate >= rangeStart && userFirstDepositDate <= rangeEnd;
         }).length;
-
-        const verifiedClients = verifiedUsers.length;
-        const individualClients = individualUsers.length;
-        const corporateClients = corporateUsers.length;
 
         setMetrics({
           totalIBs: ibWithdrawals.length,
@@ -109,10 +415,10 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
           totalClients: clients.length,
           totalMT5Accounts: accounts.length,
           firstDeposits: firstDepositCount,
-          verifiedClients,
-          individualClients,
-          corporateClients,
-          sumsubActive: 11, // Hardcoded - active KYC verifications
+          verifiedClients: verifiedUsers.length,
+          individualClients: individualUsers.length,
+          corporateClients: corporateUsers.length,
+          sumsubActive: 11,
           activeAccounts: accounts.filter((a: any) => a.tradingStatus === 'active').length,
           kycApproved: clients.filter((u: any) => {
             const val = u.customFields?.custom_compliance_approval;
@@ -127,7 +433,7 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
             return val === 'Rejected';
           }).length,
         });
-      } catch (err) {
+      } catch {
         // silently ignore
       } finally {
         setIsLoading(false);
@@ -137,143 +443,405 @@ export function BackOfficeDepartment({ selectedEntity, fromDate, toDate, refresh
     fetchBackOfficeData();
   }, [selectedEntity, fromDate, toDate, refreshKey]);
 
+  useEffect(() => {
+    const fetchWalletData = async () => {
+      const response = await fetchWalletBalances();
+      if (!response?.ok || !response?.data?.widgets) {
+        setWalletError(response?.error || 'Wallet API unavailable');
+        setPspBalances([]);
+        return;
+      }
+
+      setWalletError(null);
+      const widgets = response.data.widgets;
+      const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
+      const order = [
+        { key: 'bitpace', label: 'Bitpace' },
+        { key: 'letknowpay', label: 'LetKnow Pay' },
+        { key: 'ownbit', label: 'OwnBit' },
+        { key: 'heropayment', label: 'HeroPayment' },
+        { key: 'googlesheets_match2pay', label: 'Match2Pay' },
+        { key: 'googlesheets_goldsouq', label: 'Gold Souq' },
+        { key: 'googlesheets_fab', label: 'FAB Bank' },
+        { key: 'googlesheets_mbme', label: 'MBME' },
+      ];
+
+      const mapped = order.map(({ key, label }) => {
+        const entry = widgetMap.get(key);
+        const status = (entry?.status || 'ok') as 'ok' | 'pending' | 'error';
+        const balance = status === 'error' ? 0 : Number(entry?.balance ?? 0);
+        return {
+          name: entry?.name || label,
+          balance,
+          status: status === 'error' ? 'error' : 'active',
+        } as PSPBalance;
+      });
+
+      const total =
+        typeof response.data.total_balance === 'number'
+          ? response.data.total_balance
+          : mapped.reduce((sum, item) => sum + item.balance, 0);
+
+      setPspBalances(mapped);
+      setWalletTotal(total);
+      setBankReceivable(Number(response.data.bank_receivable ?? 0));
+      setCryptoReceivable(Number(response.data.crypto_receivable ?? 0));
+
+      if (response.timestamp) {
+        const ts = new Date(response.timestamp.replace(' ', 'T'));
+        if (!Number.isNaN(ts.getTime())) {
+          setReportDate(ts.toISOString().slice(0, 10));
+          setReportUpdated(
+            ts.toLocaleString('en-US', {
+              month: 'short',
+              day: '2-digit',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            })
+          );
+        }
+      }
+    };
+
+    fetchWalletData();
+    const iv = setInterval(fetchWalletData, 2 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [refreshKey]);
+
   return (
     <DepartmentCard title="Back Office" icon={Settings}>
-      {/* Transaction Counts */}
-      <div className="grid grid-cols-3 gap-2">
-        <div className="text-center p-2 rounded-lg bg-primary/10 border border-primary/20">
-          <Users className="w-4 h-4 text-primary mx-auto mb-1" />
-          <div className="font-mono font-semibold">{metrics.totalIBs}</div>
-          <div className="text-xs text-muted-foreground">IB's</div>
-        </div>
-        <div className="text-center p-2 rounded-lg bg-success/10 border border-success/20">
-          <TrendingUp className="w-4 h-4 text-success mx-auto mb-1" />
-          <div className="font-mono font-semibold">{metrics.totalDeposits}</div>
-          <div className="text-xs text-muted-foreground">Deposits</div>
-        </div>
-        <div className="text-center p-2 rounded-lg bg-warning/10 border border-warning/20">
-          <AlertCircle className="w-4 h-4 text-warning mx-auto mb-1" />
-          <div className="font-mono font-semibold">{metrics.totalWithdrawals}</div>
-          <div className="text-xs text-muted-foreground">Withdrawals</div>
-        </div>
-      </div>
-
-      {/* Growth Rate */}
-      <div className="pt-2 border-t border-border/30">
-        <div className="flex items-center justify-between mb-2">
-          <div>
-            <span className="text-xs text-muted-foreground">Accounts Created Rate</span>
-            <div className="text-lg font-semibold">{metrics.totalClients > 0 ? Math.round((metrics.totalMT5Accounts / metrics.totalClients) * 100) : 0}%</div>
-          </div>
-          <div className="text-right">
-            <div className="text-sm font-mono text-primary">{metrics.totalMT5Accounts}</div>
-            <div className="text-[10px] text-muted-foreground">of {metrics.totalClients}</div>
-          </div>
-        </div>
-        <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
-          <div 
-            className="h-full bg-gradient-to-r from-primary to-blue-500 transition-all"
-            style={{width: metrics.totalClients > 0 ? `${(metrics.totalMT5Accounts / metrics.totalClients) * 100}%` : '0%'}}
-          />
-        </div>
-      </div>
-
-      {/* Growth Metrics Chart */}
-      <div className="pt-2 border-t border-border/30">
-        <div className="flex items-center gap-2 mb-3">
-          <TrendingUp className="w-3.5 h-3.5 text-primary" />
-          <span className="text-xs text-muted-foreground">Growth Summary</span>
-          {isLoading && <span className="text-[10px] text-primary animate-pulse">loading...</span>}
-        </div>
-        <div className="space-y-2">
-          {/* Total Clients */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-xs text-muted-foreground">Total Clients</span>
-              <span className="text-sm font-semibold text-primary">{metrics.totalClients}</span>
+      <div className="space-y-4">
+        {variant === 'full' && (
+          <section className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-slate-50 via-white to-cyan-50/70 p-4 dark:from-slate-950/80 dark:via-slate-900 dark:to-cyan-950/30">
+            <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-cyan-500/10 blur-3xl" />
+            <div className="pointer-events-none absolute -left-10 -bottom-10 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
+            <div className="relative">
+              <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">Backoffice Command</div>
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Operations Snapshot</h2>
+                {isLoading && <span className="animate-pulse text-[11px] text-cyan-700 dark:text-cyan-300">Refreshing</span>}
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                  <div className="text-[10px] text-slate-500">Clients</div>
+                  <div className="mt-1 font-mono text-base font-semibold">{metrics.totalClients.toLocaleString()}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                  <div className="text-[10px] text-slate-500">MT5 Accounts</div>
+                  <div className="mt-1 font-mono text-base font-semibold">{metrics.totalMT5Accounts.toLocaleString()}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                  <div className="text-[10px] text-slate-500">Deposits</div>
+                  <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{metrics.totalDeposits.toLocaleString()}</div>
+                </div>
+                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                  <div className="text-[10px] text-slate-500">Withdrawals</div>
+                  <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{metrics.totalWithdrawals.toLocaleString()}</div>
+                </div>
+              </div>
             </div>
-            <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-primary to-cyan-500 transition-all"
-                style={{width: `${Math.min((metrics.totalClients / 100) * 100, 100)}%`}}
+          </section>
+        )}
+
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <section className="h-full rounded-2xl border border-border/50 bg-card/40 p-4">
+          <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">1. Backoffice Overview</div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-center">
+              <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
+              <div className="font-mono font-semibold">{metrics.totalIBs}</div>
+              <div className="text-xs text-muted-foreground">IB events</div>
+            </div>
+            <div className="rounded-lg border border-success/20 bg-success/10 p-2 text-center">
+              <TrendingUp className="mx-auto mb-1 h-4 w-4 text-success" />
+              <div className="font-mono font-semibold">{metrics.totalDeposits}</div>
+              <div className="text-xs text-muted-foreground">Deposits</div>
+            </div>
+            <div className="rounded-lg border border-warning/20 bg-warning/10 p-2 text-center">
+              <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
+              <div className="font-mono font-semibold">{metrics.totalWithdrawals}</div>
+              <div className="text-xs text-muted-foreground">Withdrawals</div>
+            </div>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-border/40 bg-background/60 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">Accounts Created Rate</span>
+              <span className="font-mono text-sm font-semibold text-primary">{createdRate}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div className="h-full bg-gradient-to-r from-primary to-cyan-500 transition-all" style={{ width: `${createdRate}%` }} />
+            </div>
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              {metrics.totalMT5Accounts.toLocaleString()} accounts of {metrics.totalClients.toLocaleString()} clients
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div className="space-y-1 rounded-lg border border-border/40 bg-background/50 p-3">
+              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Users className="h-3.5 w-3.5 text-primary" />
+                Client Breakdown
+              </div>
+              <MetricRow label="Verified Clients" value={metrics.verifiedClients} icon={<Shield className="h-3.5 w-3.5" />} />
+              <MetricRow label="Individual Clients" value={metrics.individualClients} icon={<User className="h-3.5 w-3.5" />} />
+              <MetricRow label="Corporate Clients" value={metrics.corporateClients} icon={<Briefcase className="h-3.5 w-3.5" />} />
+              <MetricRow label="Active Accounts" value={metrics.activeAccounts} icon={<Database className="h-3.5 w-3.5" />} />
+            </div>
+
+            <div className="rounded-lg border border-border/40 bg-background/50 p-3">
+              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Shield className="h-3.5 w-3.5 text-primary" />
+                KYC Status
+              </div>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-center">
+                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Approved</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-emerald-800 dark:text-emerald-200">{metrics.kycApproved}</div>
+                </div>
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-center">
+                  <div className="text-[10px] text-amber-700 dark:text-amber-300">Pending</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200">{metrics.kycPending}</div>
+                </div>
+                <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-center">
+                  <div className="text-[10px] text-rose-700 dark:text-rose-300">Rejected</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-rose-800 dark:text-rose-200">{metrics.kycRejected}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="h-full rounded-2xl border border-border/50 bg-card/40 p-4">
+          <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">2. Closing Balance Report</div>
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <div className="text-xs font-semibold text-foreground">PSP Wallet Balances</div>
+              <div className="text-[10px] text-muted-foreground">Updated: {reportUpdated}</div>
+            </div>
+            <div className="text-[10px] text-muted-foreground">{reportDate}</div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border/40 bg-background/50 p-2">
+              {walletError && <div className="text-[11px] text-destructive">{walletError}</div>}
+              {pspBalances.length === 0 && !isLoading && !walletError && <div className="text-[11px] text-muted-foreground">No wallet data available.</div>}
+              {pspBalances.map((psp) => (
+                <div key={psp.name} className="flex items-center justify-between rounded-md border border-border/40 bg-secondary/30 p-1.5 text-xs">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    {psp.status === 'error' ? <AlertCircle className="h-3 w-3 flex-shrink-0 text-destructive" /> : <CheckCircle className="h-3 w-3 flex-shrink-0 text-success" />}
+                    <span className="truncate text-foreground">{psp.name}</span>
+                  </div>
+                  <span className="ml-2 flex-shrink-0 text-right font-mono font-semibold">
+                    ${psp.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-2">
+              <div className="rounded-lg border border-primary/20 bg-primary/10 p-2">
+                <div className="text-[10px] text-muted-foreground">Total Combined</div>
+                <div className="mt-1 font-mono text-base font-bold text-primary">
+                  ${walletTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-lg border border-warning/20 bg-warning/10 p-2">
+                <div className="text-[10px] text-muted-foreground">To be received in BANK</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-warning">
+                  ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2">
+                <div className="text-[10px] text-muted-foreground">To be received in CRYPTO</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-cyan-500">
+                  ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        </div>
+
+        {variant === 'full' && (
+          <section className="rounded-2xl border border-border/50 bg-card/40 p-4">
+            <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">3. Client Cashflow Finder</div>
+            <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-slate-50 via-white to-cyan-50/60 p-3 dark:from-slate-900/60 dark:via-slate-950 dark:to-cyan-950/20">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
+                <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Lookup by CRM ID</span>
+              </div>
+              {lookupResult && (
+                <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                  CRM ID: <span className="font-mono">{lookupResult.crmId}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+              <input
+                value={lookupCrmId}
+                onChange={(e) => setLookupCrmId(e.target.value)}
+                placeholder="Enter CRM ID (e.g. 10314)"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-500/40 focus:ring dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
+              <button
+                type="button"
+                onClick={handleLookupClientCashflow}
+                disabled={lookupLoading}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-800 hover:bg-cyan-500/20 disabled:opacity-60 dark:text-cyan-100"
+              >
+                {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                {lookupLoading ? 'Searching...' : 'Find Cashflow'}
+              </button>
             </div>
-          </div>
 
-          {/* MT5 Accounts Created */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-xs text-muted-foreground">MT5 Accounts Created</span>
-              <span className="text-sm font-semibold text-success">{metrics.totalMT5Accounts}</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-success to-emerald-500 transition-all"
-                style={{width: `${Math.min((metrics.totalMT5Accounts / 100) * 100, 100)}%`}}
-              />
-            </div>
-          </div>
+            {lookupError && (
+              <div className="mt-2 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                {lookupError}
+              </div>
+            )}
 
-          {/* First Deposits */}
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-xs text-muted-foreground">First Deposits</span>
-              <span className="text-sm font-semibold text-amber-500">{metrics.firstDeposits}</span>
-            </div>
-            <div className="w-full h-2 rounded-full bg-muted overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all"
-                style={{width: `${Math.min((metrics.firstDeposits / 100) * 100, 100)}%`}}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
+            {lookupResult && (
+              <>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-2">
+                    <div className="flex items-center gap-1 text-[11px] text-emerald-800 dark:text-emerald-300">
+                      <ArrowDownToLine className="h-3.5 w-3.5" /> Deposits
+                    </div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-emerald-900 dark:text-emerald-100">
+                      {lookupResult.deposits.length} tx | ${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2">
+                    <div className="flex items-center gap-1 text-[11px] text-amber-800 dark:text-amber-300">
+                      <ArrowUpToLine className="h-3.5 w-3.5" /> Withdrawals
+                    </div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-amber-900 dark:text-amber-100">
+                      {lookupResult.withdrawals.length} tx | ${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </div>
+                  </div>
+                </div>
 
-      {/* Client Types & Verification */}
-      <div className="pt-2 border-t border-border/30">
-        <div className="flex items-center gap-2 mb-2">
-          <Users className="w-3.5 h-3.5 text-primary" />
-          <span className="text-xs text-muted-foreground">Client Breakdown</span>
-        </div>
-        <div className="space-y-1">
-          <MetricRow 
-            label="Verified Clients" 
-            value={metrics.verifiedClients}
-            icon={<Shield className="w-3.5 h-3.5" />}
-          />
-          <MetricRow 
-            label="Individual Clients" 
-            value={metrics.individualClients}
-            icon={<User className="w-3.5 h-3.5" />}
-          />
-          <MetricRow 
-            label="Corporate Clients" 
-            value={metrics.corporateClients}
-            icon={<Briefcase className="w-3.5 h-3.5" />}
-          />
-        </div>
-      </div>
-      {/* Active Accounts Row */}
-      <div className="space-y-1">
-        <MetricRow 
-          label="Active Accounts" 
-          value={metrics.activeAccounts}
-          icon={<Database className="w-3.5 h-3.5" />}
-        />
-      </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2">
+                    <div className="mb-1 text-[11px] font-semibold text-emerald-800 dark:text-emerald-300">Deposits by PSP</div>
+                    <div className="max-h-28 space-y-1 overflow-y-auto">
+                      {depositByPsp.length === 0 && <div className="text-[11px] text-slate-500">No deposit PSP data.</div>}
+                      {depositByPsp.map((row) => (
+                        <div key={`dep-psp-${row.psp}`} className="flex items-center justify-between text-[11px]">
+                          <span className="truncate text-slate-700 dark:text-slate-200">{row.psp}</span>
+                          <span className="font-mono text-emerald-700 dark:text-emerald-300">${row.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
+                    <div className="mb-1 text-[11px] font-semibold text-amber-800 dark:text-amber-300">Withdrawals by PSP</div>
+                    <div className="max-h-28 space-y-1 overflow-y-auto">
+                      {withdrawalByPsp.length === 0 && <div className="text-[11px] text-slate-500">No withdrawal PSP data.</div>}
+                      {withdrawalByPsp.map((row) => (
+                        <div key={`wd-psp-${row.psp}`} className="flex items-center justify-between text-[11px]">
+                          <span className="truncate text-slate-700 dark:text-slate-200">{row.psp}</span>
+                          <span className="font-mono text-amber-700 dark:text-amber-300">${row.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
 
-      {/* KYC Status Breakdown */}
-      <div className="pt-2 border-t border-border/30 p-3 rounded-lg bg-background border border-border shadow-sm">
-        <div className="flex items-center gap-2 mb-2">
-          <Shield className="w-4 h-4 text-foreground/80" />
-          <span className="text-base font-semibold text-foreground">KYC Status</span>
-        </div>
-        <div className="flex gap-4 text-base font-bold">
-          <span className="flex items-center gap-1 text-success"><CheckCircle className="w-4 h-4 text-success" /> Approved: <span>{metrics.kycApproved}</span></span>
-          <span className="flex items-center gap-1 text-warning"><AlertCircle className="w-4 h-4 text-warning" /> Pending: <span>{metrics.kycPending}</span></span>
-          <span className="flex items-center gap-1 text-destructive"><AlertCircle className="w-4 h-4 text-destructive" /> Rejected: <span>{metrics.kycRejected}</span></span>
-        </div>
+                <div
+                  className={`mt-3 rounded-lg border border-slate-200 dark:border-slate-800 ${
+                    cashflowFullscreen ? 'fixed inset-3 z-50 overflow-auto bg-white p-3 shadow-2xl dark:bg-slate-950' : 'overflow-x-auto'
+                  }`}
+                >
+                  <div className="mb-2 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCashflowSnapshot}
+                      disabled={snapshottingCashflow || !cashflowRows.length}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:border-slate-400 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      <Camera className={`h-3.5 w-3.5 ${snapshottingCashflow ? 'animate-pulse' : ''}`} />
+                      {snapshottingCashflow ? 'Capturing...' : 'Snapshot'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCashflowFullscreen((v) => !v)}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      {cashflowFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                      {cashflowFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+                    </button>
+                  </div>
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                      <tr>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Deposits</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Withdrawals</th>
+                      </tr>
+                      <tr>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Txn ID</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Date</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">PSP</th>
+                        <th className="px-2 py-2 text-right font-semibold uppercase tracking-wide">Amount</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Txn ID</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Date</th>
+                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">PSP</th>
+                        <th className="px-2 py-2 text-right font-semibold uppercase tracking-wide">Amount</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cashflowRows.length === 0 && (
+                        <tr>
+                          <td colSpan={8} className="px-3 py-4 text-center text-slate-500 dark:text-slate-400">
+                            No deposit/withdrawal records found for this client.
+                          </td>
+                        </tr>
+                      )}
+                      {cashflowRows.map((row, idx) => (
+                        <tr key={`cashflow-${idx}`} className="bg-white odd:bg-slate-50 dark:bg-slate-950/50 dark:odd:bg-slate-900/40">
+                          <td className="border-t border-slate-200 px-2 py-2 font-mono dark:border-slate-800">{row.deposit ? String(row.deposit.id) : '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.deposit ? formatTxDate(row.deposit.processedAt) : '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.deposit?.pspName || '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 text-right text-emerald-700 dark:border-slate-800 dark:text-emerald-300">
+                            {row.deposit ? `$${row.deposit.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}
+                          </td>
+                          <td className="border-t border-slate-200 px-2 py-2 font-mono dark:border-slate-800">{row.withdrawal ? String(row.withdrawal.id) : '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.withdrawal ? formatTxDate(row.withdrawal.processedAt) : '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.withdrawal?.pspName || '-'}</td>
+                          <td className="border-t border-slate-200 px-2 py-2 text-right text-amber-700 dark:border-slate-800 dark:text-amber-300">
+                            {row.withdrawal ? `$${row.withdrawal.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-slate-200/80 font-semibold text-slate-700 dark:bg-slate-900/95 dark:text-slate-200">
+                        <td className="px-2 py-2">TOTAL</td>
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2 text-right text-emerald-700 dark:text-emerald-300">
+                          ${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2">TOTAL</td>
+                        <td className="px-2 py-2" />
+                        <td className="px-2 py-2 text-right text-amber-700 dark:text-amber-300">
+                          ${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-2 py-2" />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </>
+            )}
+            </div>
+          </section>
+        )}
       </div>
     </DepartmentCard>
   );

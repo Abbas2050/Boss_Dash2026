@@ -44,22 +44,70 @@ function mapRows(rows, mapper) {
   return Array.isArray(rows) ? rows.map(mapper) : [];
 }
 
+function emptyInsights(propertyId, startDate, endDate, warning) {
+  return {
+    meta: {
+      source: "google-analytics-4",
+      propertyId,
+      startDate,
+      endDate,
+      generatedAt: new Date().toISOString(),
+      warning,
+    },
+    main: {
+      sessions: 0,
+      activeUsers: 0,
+      newUsers: 0,
+      returningUsers: 0,
+      conversions: 0,
+      bounceRate: 0,
+      engagementDuration: 0,
+    },
+    topCountries: [],
+    campaigns: [],
+    activeUsersByCountry: [],
+    activeUsersBySource: [],
+    userTrend: [],
+    campaignTrend: [],
+  };
+}
+
 export async function getMarketingInsights(startDate, endDate, _entity) {
-  const { propertyId, client } = createClientAndPropertyId();
+  const fallbackPropertyId = process.env.GA4_PROPERTY_ID || "476328175";
+  let propertyId = fallbackPropertyId;
+  let client;
+  try {
+    const created = createClientAndPropertyId();
+    propertyId = created.propertyId;
+    client = created.client;
+  } catch (err) {
+    const warning = err?.message || "Failed to initialize GA4 client";
+    debug("client init error:", warning);
+    return emptyInsights(propertyId, startDate, endDate, warning);
+  }
+
   const property = `properties/${propertyId}`;
 
-  const [main] = await client.runReport({
-    property,
-    dateRanges: [{ startDate, endDate }],
-    metrics: [
-      { name: "sessions" },
-      { name: "activeUsers" },
-      { name: "newUsers" },
-      { name: "conversions" },
-      { name: "bounceRate" },
-      { name: "userEngagementDuration" },
-    ],
-  });
+  let main = { rows: [] };
+  try {
+    const [resp] = await client.runReport({
+      property,
+      dateRanges: [{ startDate, endDate }],
+      metrics: [
+        { name: "sessions" },
+        { name: "activeUsers" },
+        { name: "newUsers" },
+        { name: "conversions" },
+        { name: "bounceRate" },
+        { name: "userEngagementDuration" },
+      ],
+    });
+    main = resp || main;
+  } catch (err) {
+    const warning = err?.message || "Failed to fetch GA4 main report";
+    debug("main report error:", warning);
+    return emptyInsights(propertyId, startDate, endDate, warning);
+  }
 
   let countries = { rows: [] };
   try {

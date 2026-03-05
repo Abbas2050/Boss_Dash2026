@@ -8,7 +8,7 @@ export const AccessGuard: React.FC<{ page: string; children: React.ReactNode }> 
       <div className="flex flex-col items-center justify-center min-h-[60vh]">
         <div className="text-3xl font-bold text-destructive mb-4">Access Denied</div>
         <div className="text-muted-foreground text-lg">You do not have permission to view this page.</div>
-        <a href="/" className="mt-6 px-6 py-2 bg-primary text-white rounded-lg font-semibold shadow hover:bg-primary/80 transition">Go Home</a>
+        <a href="/" className="mt-6 rounded-lg bg-primary px-6 py-2 font-semibold text-primary-foreground shadow transition hover:bg-primary/80">Go Home</a>
       </div>
     );
   }

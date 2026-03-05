@@ -9,7 +9,9 @@ export const Layout: React.FC = () => {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     try {
       const saved = localStorage.getItem('theme');
-      return (saved === 'light' ? 'light' : 'dark');
+      if (saved === "light" || saved === "dark") return saved;
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
+      return "dark";
     } catch (e) {
       return 'dark';
     }

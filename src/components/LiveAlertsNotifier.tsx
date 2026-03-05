@@ -26,10 +26,10 @@ function eventItemClass(eventName: AlertEventKey): string {
   if (eventName === "AccountAlert") return "text-destructive border-destructive/30 bg-destructive/10";
   if (eventName === "UserChangeAlert") return "text-success border-success/30 bg-success/10";
   if (eventName === "TransactionAlert") return "text-warning border-warning/30 bg-warning/10";
-  if (eventName === "PositionMatchTableUpdate") return "text-cyan-300 border-cyan-400/30 bg-cyan-500/10";
-  if (eventName === "DealUpdate") return "text-blue-300 border-blue-400/30 bg-blue-500/10";
-  if (eventName === "PositionUpdate") return "text-lime-300 border-lime-400/30 bg-lime-500/10";
-  if (eventName === "OrderUpdate") return "text-orange-300 border-orange-400/30 bg-orange-500/10";
+  if (eventName === "PositionMatchTableUpdate") return "text-cyan-700 dark:text-cyan-300 border-cyan-400/40 bg-cyan-100/60 dark:bg-cyan-500/10";
+  if (eventName === "DealUpdate") return "text-blue-700 dark:text-blue-300 border-blue-400/40 bg-blue-100/60 dark:bg-blue-500/10";
+  if (eventName === "PositionUpdate") return "text-lime-700 dark:text-lime-300 border-lime-400/40 bg-lime-100/60 dark:bg-lime-500/10";
+  if (eventName === "OrderUpdate") return "text-orange-700 dark:text-orange-300 border-orange-400/40 bg-orange-100/60 dark:bg-orange-500/10";
   return "text-primary border-primary/30 bg-primary/10";
 }
 

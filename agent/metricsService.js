@@ -1,4 +1,5 @@
 import { getMarketingInsights } from "../ga4.js";
+import { SWAGGER_ENDPOINTS, SWAGGER_META } from "./swaggerCatalog.js";
 
 const DEFAULT_GROUP = "*";
 
@@ -71,6 +72,27 @@ function toNumber(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeMethod(method) {
+  const m = String(method || "get").toLowerCase();
+  return ["get", "post", "put", "delete", "patch", "options", "head", "trace"].includes(m) ? m : "get";
+}
+
+function findSwaggerEndpoint(path, method) {
+  const wantedPath = String(path || "").trim();
+  const wantedMethod = normalizeMethod(method);
+  return SWAGGER_ENDPOINTS.find((ep) => ep.path === wantedPath && ep.method === wantedMethod) || null;
+}
+
+function resolvePathTemplate(path, pathParams = {}) {
+  return String(path || "").replace(/\{([^}]+)\}/g, (_, key) => {
+    const val = pathParams?.[key];
+    if (val === undefined || val === null) {
+      throw new Error(`Missing path param: ${key}`);
+    }
+    return encodeURIComponent(String(val));
+  });
+}
+
 export async function getDealingSummary(params = {}) {
   const range = buildRange(params);
   const group = params.group || DEFAULT_GROUP;
@@ -141,6 +163,16 @@ export async function getLpMetrics() {
       credit: toNumber(data?.totals?.credit),
     },
     lowestMargin,
+    raw: data,
+  };
+}
+
+export async function getLpEquitySummary() {
+  const data = await fetchJson(buildBackendUrl("/Metrics/equity-summary"));
+  return {
+    lpWithdrawableEquity: toNumber(data?.lpWithdrawableEquity),
+    clientWithdrawableEquity: toNumber(data?.clientWithdrawableEquity),
+    difference: toNumber(data?.difference),
     raw: data,
   };
 }
@@ -317,6 +349,103 @@ export async function getLiveSnapshot(params = {}) {
     lpMetrics: getVal(lpMetrics),
     swap: getVal(swap),
     history: getVal(history),
+  };
+}
+
+export async function listSwaggerEndpoints(params = {}) {
+  const tag = String(params.tag || "").toLowerCase();
+  const method = String(params.method || "").toLowerCase();
+  const search = String(params.search || "").toLowerCase();
+  const limit = Math.max(1, Math.min(200, Number(params.limit) || 50));
+
+  const filtered = SWAGGER_ENDPOINTS.filter((ep) => {
+    if (tag && String(ep.tag || "").toLowerCase() !== tag) return false;
+    if (method && ep.method !== method) return false;
+    if (search) {
+      const hay = `${ep.path} ${ep.tag || ""} ${ep.summary || ""}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  }).slice(0, limit);
+
+  return {
+    meta: SWAGGER_META,
+    totalMatched: filtered.length,
+    endpoints: filtered.map((ep) => ({
+      method: ep.method.toUpperCase(),
+      path: ep.path,
+      tag: ep.tag,
+      summary: ep.summary,
+      parameters: ep.parameters,
+      requestBody: ep.requestBody,
+      responses: ep.responses,
+    })),
+  };
+}
+
+export async function callSwaggerEndpoint(params = {}) {
+  const path = String(params.path || "");
+  const method = normalizeMethod(params.method);
+  const query = params.query && typeof params.query === "object" ? params.query : {};
+  const pathParams = params.pathParams && typeof params.pathParams === "object" ? params.pathParams : {};
+  const body = params.body && typeof params.body === "object" ? params.body : undefined;
+
+  const endpoint = findSwaggerEndpoint(path, method);
+  if (!endpoint) {
+    throw new Error(`Endpoint not found in imported swagger: ${method.toUpperCase()} ${path}`);
+  }
+
+  const resolvedPath = resolvePathTemplate(path, pathParams);
+  const url = new URL(buildBackendUrl(resolvedPath));
+  for (const [k, v] of Object.entries(query)) {
+    if (v === null || v === undefined) continue;
+    if (Array.isArray(v)) {
+      v.forEach((item) => url.searchParams.append(k, String(item)));
+    } else {
+      url.searchParams.set(k, String(v));
+    }
+  }
+
+  const isBodyMethod = ["post", "put", "patch"].includes(method);
+  const headers = {
+    Accept: "application/json, text/json, text/plain, */*",
+  };
+
+  const resp = await fetch(url.toString(), {
+    method: method.toUpperCase(),
+    headers: isBodyMethod ? { ...headers, "Content-Type": "application/json" } : headers,
+    body: isBodyMethod ? JSON.stringify(body || {}) : undefined,
+  });
+
+  const contentType = String(resp.headers.get("content-type") || "");
+  const rawText = await resp.text();
+  let parsed;
+  if (contentType.includes("json")) {
+    try {
+      parsed = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      parsed = rawText;
+    }
+  } else {
+    parsed = rawText;
+  }
+
+  return {
+    request: {
+      method: method.toUpperCase(),
+      path,
+      resolvedPath,
+      url: url.toString(),
+      query,
+      pathParams,
+      hasBody: Boolean(isBodyMethod),
+    },
+    response: {
+      ok: resp.ok,
+      status: resp.status,
+      contentType,
+      data: parsed,
+    },
   };
 }
 

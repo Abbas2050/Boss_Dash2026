@@ -1,25 +1,10 @@
-import React from "react";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardContent,
-  CardFooter,
-} from "../components/ui/card";
-// ...existing code...
-// ...existing code...
-// ...existing code...
-// ...existing code...
+import React, { useEffect, useState } from "react";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 import { fetchLPAccounts, createLPAccount, LPAccount, LPAccountRequest } from "../lib/lpAccounts";
-// ...existing code...
-// ...existing code...
-// ...existing code...
-// ...existing code...
-// ...existing code...
-
 
 export default function LPManagerPage() {
-  // State for header stats
   const [accounts, setAccounts] = useState<LPAccount[]>([]);
   const [form, setForm] = useState({
     name: "",
@@ -28,11 +13,10 @@ export default function LPManagerPage() {
     server: "",
     source: "Manager",
     groupPattern: "",
-    description: ""
+    description: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // TODO: Add state for terminal feed status, coverage dashboard, etc.
 
   useEffect(() => {
     fetchLPAccounts()
@@ -60,86 +44,82 @@ export default function LPManagerPage() {
   };
 
   return (
-    <div className="min-h-screen bg-card/40 p-6">
-      {/* Header Section */}
-      <div className="flex flex-wrap items-center gap-3 mb-6">
-        <h1 className="text-2xl font-bold text-foreground tracking-wide mr-6">LP Account Manager</h1>
-        <Badge className="bg-primary/20 text-primary font-mono">LP Accounts: {accounts.length}</Badge>
-        <Badge className="bg-card/30 text-foreground font-mono">Manager: 0</Badge>
-        <Badge className="bg-card/30 text-foreground font-mono">Terminal: 0</Badge>
-        <Button className="ml-auto bg-muted text-foreground px-4 py-1 rounded" size="sm">Refresh All</Button>
+    <div className="min-h-screen bg-background p-6 text-foreground">
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <h1 className="mr-6 text-2xl font-bold tracking-wide">LP Account Manager</h1>
+        <Badge className="bg-primary/15 text-primary">LP Accounts: {accounts.length}</Badge>
+        <Badge className="bg-secondary text-secondary-foreground">Manager: 0</Badge>
+        <Badge className="bg-secondary text-secondary-foreground">Terminal: 0</Badge>
+        <Button className="ml-auto" variant="secondary" size="sm">Refresh All</Button>
       </div>
 
-      {/* Add LP Account Form & Terminal Feed Status */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
-        <form onSubmit={handleSubmit} className="bg-card/20 rounded-lg p-6 flex flex-col gap-3">
-          <div className="text-lg font-semibold text-foreground mb-2">Add LP Account</div>
-          {error && <div className="text-destructive text-sm mb-2">{error}</div>}
-          <Input name="name" placeholder="LP Name e.g. ATFX, FXCM" value={form.name} onChange={handleChange} required className="bg-card/10 text-foreground placeholder:text-foreground/60" />
-          <Input name="login" placeholder="MT5 Login e.g. 102001" value={form.login} onChange={handleChange} required className="bg-card/10 text-foreground placeholder:text-foreground/60" />
-          <Input name="password" placeholder="Password" type="password" value={form.password} onChange={handleChange} required className="bg-card/10 text-foreground placeholder:text-foreground/60" />
-          <Input name="server" placeholder="Server" value={form.server} onChange={handleChange} required className="bg-card/10 text-foreground placeholder:text-foreground/60" />
-          <div className="flex gap-3">
-            <Select name="source" value={form.source} onChange={handleChange} className="bg-white/10 text-white">
-              <option value="Manager">Manager</option>
-              <option value="Terminal">Terminal</option>
-            </Select>
-            <Input name="groupPattern" placeholder="Group Pattern (optional)" value={form.groupPattern} onChange={handleChange} className="bg-white/10 text-white placeholder:text-white/50" />
+      <div className="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2">
+        <form onSubmit={handleSubmit} className="rounded-lg border border-border bg-card p-6">
+          <div className="mb-3 text-lg font-semibold">Add LP Account</div>
+          {error && <div className="mb-3 text-sm text-destructive">{error}</div>}
+          <div className="space-y-3">
+            <Input name="name" placeholder="LP Name e.g. ATFX, FXCM" value={form.name} onChange={handleChange} required className="bg-background" />
+            <Input name="login" placeholder="MT5 Login e.g. 102001" value={form.login} onChange={handleChange} required className="bg-background" />
+            <Input name="password" placeholder="Password" type="password" value={form.password} onChange={handleChange} required className="bg-background" />
+            <Input name="server" placeholder="Server" value={form.server} onChange={handleChange} required className="bg-background" />
+            <div className="flex gap-3">
+              <select name="source" value={form.source} onChange={handleChange} className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground">
+                <option value="Manager">Manager</option>
+                <option value="Terminal">Terminal</option>
+              </select>
+              <Input name="groupPattern" placeholder="Group Pattern (optional)" value={form.groupPattern} onChange={handleChange} className="bg-background" />
+            </div>
+            <Input name="description" placeholder="Description (optional)" value={form.description} onChange={handleChange} className="bg-background" />
+            <Button type="submit" className="mt-2" disabled={submitting}>
+              {submitting ? "Adding..." : "Add LP Account"}
+            </Button>
           </div>
-          <Input name="description" placeholder="Description (optional)" value={form.description} onChange={handleChange} className="bg-white/10 text-white placeholder:text-white/50" />
-          <Button type="submit" className="mt-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold" disabled={submitting}>
-            {submitting ? "Adding..." : "Add LP Account"}
-          </Button>
         </form>
-        {/* Terminal Feed Status placeholder */}
-        <div className="bg-card/20 rounded-lg p-6">
-          <div className="text-lg font-semibold text-foreground mb-2">Terminal Feed Status</div>
-          <div className="text-foreground/70 text-sm">(Coming soon)</div>
+
+        <div className="rounded-lg border border-border bg-card p-6">
+          <div className="mb-2 text-lg font-semibold">Terminal Feed Status</div>
+          <div className="text-sm text-muted-foreground">(Coming soon)</div>
         </div>
       </div>
 
-      {/* LP Accounts Table */}
       <div className="mb-8">
-        <div className="flex items-center justify-between mb-4">
-          <div className="text-lg font-semibold text-foreground">LP Accounts</div>
-          <div className="text-sm text-muted">Showing {accounts.length} LPs</div>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="text-lg font-semibold">LP Accounts</div>
+          <div className="text-sm text-muted-foreground">Showing {accounts.length} LPs</div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {accounts.map((acc) => (
-            <div key={acc.id} className="bg-card/30 rounded-lg p-4 shadow-sm hover:shadow-md transition">
+            <div key={acc.id} className="rounded-lg border border-border bg-card p-4 shadow-sm transition hover:shadow-md">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <div className="text-sm text-muted font-mono">ID: {acc.id}</div>
-                  <div className="text-lg font-semibold text-foreground">{acc.name}</div>
-                  <div className="text-sm text-foreground/80">Login: <span className="font-mono">{acc.login}</span></div>
+                  <div className="font-mono text-sm text-muted-foreground">ID: {acc.id}</div>
+                  <div className="text-lg font-semibold">{acc.name}</div>
+                  <div className="text-sm text-muted-foreground">Login: <span className="font-mono text-foreground">{acc.login}</span></div>
                 </div>
                 <div className="text-right">
-                  <div className={acc.status === 'connected' ? 'inline-flex items-center gap-2 text-success' : 'inline-flex items-center gap-2 text-destructive'}>
-                    <span className={`w-2 h-2 rounded-full ${acc.status === 'connected' ? 'bg-success' : 'bg-destructive'}`} />
-                    <span className="text-xs font-semibold">{acc.status === 'connected' ? 'Active' : 'Inactive'}</span>
+                  <div className={acc.status === "connected" ? "inline-flex items-center gap-2 text-success" : "inline-flex items-center gap-2 text-destructive"}>
+                    <span className={`h-2 w-2 rounded-full ${acc.status === "connected" ? "bg-success" : "bg-destructive"}`} />
+                    <span className="text-xs font-semibold">{acc.status === "connected" ? "Active" : "Inactive"}</span>
                   </div>
                 </div>
               </div>
 
-              <div className="mt-3 text-sm text-foreground/70">Source: {acc.source || '-'}</div>
-              <div className="text-sm text-foreground/70">Group: {acc.groupPattern || '-'}</div>
-              {acc.description && <div className="mt-2 text-sm text-foreground/60">{acc.description}</div>}
+              <div className="mt-3 text-sm text-muted-foreground">Server: {acc.server || "-"}</div>
 
               <div className="mt-4 flex items-center gap-2">
-                <Button size="xs" className="bg-yellow-400/80 text-black px-2 py-1 rounded">Edit</Button>
-                <Button size="xs" className="bg-red-500/80 text-white px-2 py-1 rounded">Deactivate</Button>
-                <Button size="xs" className="bg-pink-500/80 text-white px-2 py-1 rounded">Remove</Button>
+                <Button size="sm" variant="outline" className="px-2 py-1">Edit</Button>
+                <Button size="sm" variant="destructive" className="px-2 py-1">Deactivate</Button>
+                <Button size="sm" variant="secondary" className="px-2 py-1">Remove</Button>
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Coverage Dashboard (Live) placeholder */}
-      <div className="bg-card/20 rounded-lg p-4">
-        <div className="text-lg font-semibold text-foreground mb-2">Coverage Dashboard (Live)</div>
-        <div className="text-foreground/70 text-sm">(Coming soon)</div>
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="mb-2 text-lg font-semibold">Coverage Dashboard (Live)</div>
+        <div className="text-sm text-muted-foreground">(Coming soon)</div>
       </div>
     </div>
   );

@@ -5,7 +5,6 @@ import { AccountsDepartment } from '@/components/dashboard/AccountsDepartment';
 import { HRDepartment } from '@/components/dashboard/HRDepartment';
 import { BackOfficeDepartment } from '@/components/dashboard/BackOfficeDepartment';
 import { MarketingDepartment } from '@/components/dashboard/MarketingDepartment';
-import { NotificationPanel } from '@/components/dashboard/NotificationPanel';
 import { AnalyticsSection } from '@/components/dashboard/AnalyticsSection';
 import { getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 
@@ -62,27 +61,29 @@ const Index = () => {
           />
           {/* Main Dashboard Grid */}
           <div className="grid grid-cols-12 gap-5">
-            {/* Dealing Department - Largest, most important */}
+            {/* Dealing Department */}
             <div className="col-span-12 lg:col-span-4">
-              <DealingDepartment 
+              <DealingDepartment
                 selectedEntity={appliedEntity}
                 fromDate={appliedFromDate}
                 toDate={appliedToDate}
                 refreshKey={refreshKey}
               />
             </div>
-            {/* Accounts Department */}
+            {/* LP Department (duplicate of Accounts) */}
             <div className="col-span-12 lg:col-span-4">
               <AccountsDepartment 
                 selectedEntity={appliedEntity}
                 fromDate={appliedFromDate}
                 toDate={appliedToDate}
                 refreshKey={refreshKey}
+                title="Dealing (LP)"
+                mode="lp"
               />
             </div>
-            {/* Notifications Panel */}
+            {/* Accounts Department */}
             <div className="col-span-12 lg:col-span-4">
-              <NotificationPanel 
+              <AccountsDepartment 
                 selectedEntity={appliedEntity}
                 fromDate={appliedFromDate}
                 toDate={appliedToDate}
@@ -105,6 +106,7 @@ const Index = () => {
                 fromDate={appliedFromDate}
                 toDate={appliedToDate}
                 refreshKey={refreshKey}
+                variant="compact"
               />
             </div>
             {/* Marketing Department */}

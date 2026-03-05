@@ -15,7 +15,30 @@ router.get('/marketing-insights', async (req, res) => {
     const data = await getMarketingInsights(String(start), String(end));
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: err?.message || 'Marketing insights failed' });
+    res.json({
+      meta: {
+        source: 'google-analytics-4',
+        startDate: String(start),
+        endDate: String(end),
+        generatedAt: new Date().toISOString(),
+        warning: err?.message || 'Marketing insights failed',
+      },
+      main: {
+        sessions: 0,
+        activeUsers: 0,
+        newUsers: 0,
+        returningUsers: 0,
+        conversions: 0,
+        bounceRate: 0,
+        engagementDuration: 0,
+      },
+      topCountries: [],
+      campaigns: [],
+      activeUsersByCountry: [],
+      activeUsersBySource: [],
+      userTrend: [],
+      campaignTrend: [],
+    });
   }
 });
 

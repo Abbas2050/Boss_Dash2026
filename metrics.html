@@ -29,23 +29,40 @@
             padding: 8px 10px; text-align: right; border-bottom: 1px solid #292e42;
             position: sticky; top: 0; z-index: 1;
         }
-        thead th:first-child { text-align: left; }
+        thead th:first-child, thead th:nth-child(2) { text-align: left; }
         tbody tr { border-bottom: 1px solid #1a1b26; }
         tbody tr:hover { background: #1a1b2a; }
         tbody td { padding: 6px 10px; text-align: right; white-space: nowrap; }
-        tbody td:first-child { text-align: left; color: #c0caf5; font-weight: 600; }
+        tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
+        tbody td:first-child { color: #c0caf5; font-weight: 600; }
 
         tfoot td {
             padding: 8px 10px; text-align: right; font-weight: 700;
             border-top: 2px solid #292e42; background: #13131d;
         }
-        tfoot td:first-child { text-align: left; color: #c0caf5; }
+        tfoot td:first-child, tfoot td:nth-child(2) { text-align: left; }
+        tfoot td:first-child { color: #c0caf5; }
 
         .val-pos { color: #9ece6a; }
         .val-neg { color: #f7768e; }
         .val-zero { color: #565f89; }
 
         .loading { text-align: center; padding: 60px; color: #565f89; font-size: 14px; }
+
+        .equity-summary {
+            display: flex; gap: 16px; margin-top: 16px;
+        }
+        .equity-box {
+            flex: 1; border: 1px solid #292e42; border-radius: 6px;
+            background: #1a1b26; text-align: center; padding: 16px 12px;
+        }
+        .equity-box .label {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.5px; color: #7aa2f7; margin-bottom: 8px;
+        }
+        .equity-box .value {
+            font-size: 22px; font-weight: 700; color: #c0caf5;
+        }
     </style>
 </head>
 <body>
@@ -62,6 +79,7 @@
         <a href="/account-alerts.html">Account Alerts</a>
         <a href="/deal-matching.html">Deal Matching</a>
         <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -78,6 +96,8 @@
         <div id="tableContainer">
             <div class="loading">Loading metrics...</div>
         </div>
+
+        <div class="equity-summary" id="equitySummary"></div>
     </div>
 
     <script>
@@ -102,13 +122,14 @@
             }
 
             let html = '<table><thead><tr>';
-            html += '<th>LP</th><th>Equity</th><th>Real Equity</th><th>Credit</th>';
+            html += '<th>LP Name</th><th>Login</th><th>Equity</th><th>Real Equity</th><th>Credit</th>';
             html += '<th>Balance</th><th>Margin</th><th>Free Margin</th><th>Margin Level %</th>';
             html += '</tr></thead><tbody>';
 
             data.items.forEach(item => {
                 html += '<tr>';
                 html += `<td>${item.lp}</td>`;
+                html += `<td style="color:#565f89">${item.login}</td>`;
                 html += `<td>${fmtDollar(item.equity)}</td>`;
                 html += `<td>${fmtDollar(item.realEquity)}</td>`;
                 html += `<td>${fmtDollar(item.credit)}</td>`;
@@ -121,6 +142,7 @@
 
             html += '</tbody><tfoot><tr>';
             html += '<td>TOTAL</td>';
+            html += '<td></td>';
             html += `<td>${fmtDollar(data.totals.equity)}</td>`;
             html += `<td>${fmtDollar(data.totals.realEquity)}</td>`;
             html += `<td>${fmtDollar(data.totals.credit)}</td>`;
@@ -147,8 +169,44 @@
             }
         }
 
+        function renderEquitySummary(data) {
+            const fmtVal = v => {
+                const formatted = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                return `${v < 0 ? '-' : ''}$${formatted}`;
+            };
+
+            const diffColor = data.difference < 0 ? '#f7768e' : '#9ece6a';
+
+            document.getElementById('equitySummary').innerHTML = `
+                <div class="equity-box">
+                    <div class="label">LP Withdrawable Equity</div>
+                    <div class="value">${fmtVal(data.lpWithdrawableEquity)}</div>
+                </div>
+                <div class="equity-box">
+                    <div class="label">Client Withdrawable Equity</div>
+                    <div class="value">${fmtVal(data.clientWithdrawableEquity)}</div>
+                </div>
+                <div class="equity-box">
+                    <div class="label">LP-Client WD Equity Difference</div>
+                    <div class="value" style="color:${diffColor}">${fmtVal(data.difference)}</div>
+                </div>
+            `;
+        }
+
+        async function fetchEquitySummary() {
+            try {
+                const resp = await fetch('/Metrics/equity-summary');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                renderEquitySummary(data);
+            } catch (e) {
+                console.error('Failed to fetch equity summary:', e);
+            }
+        }
+
         fetchMetrics();
-        setInterval(fetchMetrics, 5000);
+        fetchEquitySummary();
+        setInterval(() => { fetchMetrics(); fetchEquitySummary(); }, 5000);
     </script>
 </body>
 </html>
