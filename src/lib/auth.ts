@@ -56,6 +56,10 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export function getAuthToken(): string | null {
+  return getSession()?.token || null;
+}
+
 export function getUsers(): AuthUser[] {
   return read<AuthUser[]>(USERS_KEY) || [];
 }
@@ -158,5 +162,13 @@ export function isAuthenticated(): boolean {
 export function hasAccess(page: string): boolean {
   const currentUser = getCurrentUser();
   if (!currentUser) return false;
-  return currentUser.access.includes(page) || currentUser.role === "Super Admin";
+  if (currentUser.role === "Super Admin") return true;
+  const owned = Array.isArray(currentUser.access) ? currentUser.access : [];
+  if (owned.includes(page)) return true;
+  const idx = page.indexOf(":");
+  if (idx > 0) {
+    const prefix = page.slice(0, idx);
+    return owned.includes(prefix);
+  }
+  return false;
 }

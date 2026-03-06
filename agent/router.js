@@ -1,14 +1,46 @@
 import express from "express";
+import jwt from "jsonwebtoken";
 import { agentCapabilities, runAgentChat } from "./llmAgent.js";
 import { dateUtils, getLiveSnapshot } from "./metricsService.js";
 
 const router = express.Router();
+const AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET || "";
 
-router.get("/capabilities", (req, res) => {
+function parseToken(req) {
+  const raw = req.headers.authorization || "";
+  const headerToken = raw.startsWith("Bearer ") ? raw.slice(7) : "";
+  const queryToken = typeof req.query.token === "string" ? req.query.token : "";
+  return headerToken || queryToken || "";
+}
+
+function canUseLiveAgent(payload) {
+  if (!payload) return false;
+  if (payload.role === "Super Admin") return true;
+  const access = Array.isArray(payload.access) ? payload.access : [];
+  return access.includes("LiveAgent");
+}
+
+function requireLiveAgentAccess(req, res, next) {
+  if (!AUTH_JWT_SECRET) {
+    return res.status(503).json({ error: "auth_not_configured" });
+  }
+  const token = parseToken(req);
+  if (!token) return res.status(401).json({ error: "missing_token" });
+  try {
+    const payload = jwt.verify(token, AUTH_JWT_SECRET);
+    if (!canUseLiveAgent(payload)) return res.status(403).json({ error: "forbidden" });
+    req.auth = payload;
+    next();
+  } catch {
+    return res.status(401).json({ error: "invalid_token" });
+  }
+}
+
+router.get("/capabilities", requireLiveAgentAccess, (req, res) => {
   res.json(agentCapabilities());
 });
 
-router.post("/chat", async (req, res) => {
+router.post("/chat", requireLiveAgentAccess, async (req, res) => {
   const body = req.body || {};
   const range = dateUtils.buildRange({
     fromDate: body.fromDate,
@@ -43,7 +75,7 @@ router.post("/chat", async (req, res) => {
   }
 });
 
-router.get("/live", async (req, res) => {
+router.get("/live", requireLiveAgentAccess, async (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");

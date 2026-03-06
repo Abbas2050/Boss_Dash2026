@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login } from "@/lib/auth";
+import { getDefaultRouteForUser } from "@/lib/permissions";
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -20,7 +21,7 @@ export default function LoginPage() {
       setError("Invalid credentials or suspended user.");
       return;
     }
-    navigate("/");
+    navigate(getDefaultRouteForUser(user));
   };
 
   return (

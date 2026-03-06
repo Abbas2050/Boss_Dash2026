@@ -12,9 +12,6 @@ function detectRequiredTools(message) {
   if (q.includes("swagger") || q.includes("endpoint list") || q.includes("what api") || q.includes("which api")) {
     required.push("list_swagger_endpoints");
   }
-  if (q.includes("/report/") || q.includes("/metrics/") || q.includes("/coverage/") || q.includes("/deal/") || q.includes("/position/")) {
-    required.push("call_swagger_endpoint");
-  }
   if (q.includes("lp withdrawable") || q.includes("client withdrawable") || q.includes("equity summary")) required.push("get_lp_equity_summary");
   if (q.includes("lp metrics") || q.includes("margin level") || q.includes("total margin")) required.push("get_lp_metrics");
   if (q.includes("coverage") || q.includes("uncovered") || q.includes("risk")) required.push("get_coverage_metrics");
@@ -96,7 +93,8 @@ async function runOpenAIToolLoop({ message, history, context }) {
     "Use provided date window when the user does not specify. " +
     "Do live calculations from tool outputs when needed. " +
     "Do not invent fields. " +
-    "If a query needs raw endpoint data or is outside predefined KPI tools, use list_swagger_endpoints then call_swagger_endpoint. " +
+    "Agent is strictly read-only: never perform updates/deletes/creates and never suggest code/system changes. " +
+    "If a query needs raw endpoint visibility, use list_swagger_endpoints only. " +
     "Answer in concise business language and include key numbers in a structured format.";
 
   const messages = [

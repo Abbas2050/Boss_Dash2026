@@ -19,13 +19,13 @@ import { MainDashboard } from "./pages/MainDashboard";
 import { DepartmentPages } from "./pages/DepartmentPages";
 import { LiveAlertsNotifier } from "./components/LiveAlertsNotifier";
 import LoginPage from "./pages/LoginPage";
-import { Navigate } from "react-router-dom";
 import { hasAccess } from "./lib/auth";
+import { UnauthorizedPage } from "./components/UnauthorizedPage";
 
 const queryClient = new QueryClient();
 
 function SettingsRoute({ children }: { children: any }) {
-  if (!hasAccess("Settings")) return <Navigate to="/" replace />;
+  if (!hasAccess("Settings")) return <UnauthorizedPage title="Settings Access Required" />;
   return children;
 }
 

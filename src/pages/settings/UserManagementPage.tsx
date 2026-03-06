@@ -1,8 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Shield, UserPlus, Search, Trash2, Pencil, CheckCircle2 } from "lucide-react";
 import { AuthUser, deleteUser, getCurrentUser, getUsers, refreshUsers, upsertUser } from "@/lib/auth";
+import { DASHBOARD_SECTION_KEYS, DEALING_TAB_KEYS, DEPARTMENT_KEYS, NOTIFICATION_KEYS } from "@/lib/permissions";
 
-const pages = ["Dealing", "Backoffice", "HR", "Marketing", "Accounts", "Settings", "Alerts"];
+const dashboardKeys = [{ key: "Dashboard", label: "Main Dashboard" }, ...DASHBOARD_SECTION_KEYS];
+const departmentKeys = [...DEPARTMENT_KEYS, { key: "Alerts", label: "Alerts" }];
+const dealingTabKeys = DEALING_TAB_KEYS;
+const notificationKeys = NOTIFICATION_KEYS;
 
 type UserForm = {
   name: string;
@@ -18,7 +22,7 @@ const blankForm: UserForm = {
   email: "",
   role: "Analyst",
   status: "active",
-  access: ["Alerts"],
+  access: [],
   password: "",
 };
 
@@ -117,9 +121,23 @@ export const UserManagementPage: React.FC = () => {
   const toggleAccess = (page: string) => {
     setForm((prev) => ({
       ...prev,
-      access: prev.access.includes(page)
-        ? prev.access.filter((p) => p !== page)
-        : [...prev.access, page],
+      access: prev.access.includes(page) ? prev.access.filter((p) => p !== page) : [...prev.access, page],
+    }));
+  };
+
+  const enableAllDealingTabs = () => {
+    setForm((prev) => {
+      const next = new Set(prev.access);
+      next.add("Dealing");
+      dealingTabKeys.forEach((item) => next.add(item.key));
+      return { ...prev, access: Array.from(next) };
+    });
+  };
+
+  const clearAllDealingTabs = () => {
+    setForm((prev) => ({
+      ...prev,
+      access: prev.access.filter((key) => !key.startsWith("Dealing:")),
     }));
   };
 
@@ -231,20 +249,104 @@ export const UserManagementPage: React.FC = () => {
             </select>
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            {pages.map((page) => (
-              <button
-                key={page}
-                onClick={() => toggleAccess(page)}
-                className={`rounded-md px-2 py-1 text-xs border ${
-                  form.access.includes(page)
-                    ? "border-primary/40 bg-primary/15 text-primary"
-                    : "border-border/50 bg-secondary/30 text-muted-foreground"
-                }`}
-              >
-                {page}
-              </button>
-            ))}
+          <div className="mt-4 space-y-4">
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dashboard Access</div>
+              <div className="flex flex-wrap gap-2">
+                {dashboardKeys.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Department Access</div>
+              <div className="flex flex-wrap gap-2">
+                {departmentKeys.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dealing Tab Access</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={enableAllDealingTabs}
+                    className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700"
+                  >
+                    Allow All Tabs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAllDealingTabs}
+                    className="rounded-md border border-slate-400/40 bg-slate-500/10 px-2 py-1 text-xs text-slate-700"
+                  >
+                    Clear Tabs
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {dealingTabKeys.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notification Access</div>
+              <div className="flex flex-wrap gap-2">
+                {notificationKeys.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           {error && <div className="mt-3 text-sm text-destructive">{error}</div>}

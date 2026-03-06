@@ -9,6 +9,7 @@ import { Toast } from '../Toast';
 import { useMemo } from 'react';
 import { getCurrentUser, hasAccess, logout } from '@/lib/auth';
 import { useNavigate } from 'react-router-dom';
+import { DEALING_TAB_KEYS } from '@/lib/permissions';
 
 interface DashboardHeaderProps {
   theme: 'dark' | 'light';
@@ -69,6 +70,7 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
   // derive system online state from last update timestamp (true if recent)
   const systemOnline = (Date.now() - lastUpdate.getTime()) < 120000; // 2 minutes
   const can = (section: string) => hasAccess(section);
+  const canDealing = can("Dealing") || DEALING_TAB_KEYS.some((item) => can(item.key));
 
   return (
     <>
@@ -94,11 +96,13 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
 
         <div className="flex items-center gap-4">
           <nav className="hidden md:flex items-center gap-2">
-            <NavLink to="/" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
-              <span>Home</span>
-            </NavLink>
-            {can("Dealing") && <NavLink to="/departments/dealing" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
+            {can("Dashboard") && (
+              <NavLink to="/" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18" /></svg>
+                <span>Home</span>
+              </NavLink>
+            )}
+            {canDealing && <NavLink to="/departments/dealing" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
               <TrendingUp className="w-4 h-4" />
               <span>Dealing</span>
             </NavLink>}
@@ -200,7 +204,7 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
       <div className="fixed inset-0 z-40 bg-black/40" onClick={() => setMobileOpen(false)}>
         <div className="absolute right-0 top-0 w-64 h-full bg-card shadow-lg p-4" onClick={e => e.stopPropagation()}>
           <nav className="flex flex-col gap-2">
-            {can("Dealing") && <NavLink to="/departments/dealing" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><TrendingUp className="w-4 h-4" />Dealing</NavLink>}
+            {canDealing && <NavLink to="/departments/dealing" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><TrendingUp className="w-4 h-4" />Dealing</NavLink>}
             {can("Backoffice") && <NavLink to="/departments/backoffice" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><FileText className="w-4 h-4" />Backoffice</NavLink>}
             {can("Accounts") && <NavLink to="/departments/accounts" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><Users className="w-4 h-4" />Accounts</NavLink>}
             {can("Marketing") && <NavLink to="/departments/marketing" className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10v6a1 1 0 0 0 1 1h3m10-7v6a1 1 0 0 1-1 1h-3m-6-7V7a1 1 0 0 1 1-1h3m6 0v2m0 0a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z" /></svg>Marketing</NavLink>}

@@ -156,24 +156,6 @@ export const AGENT_TOOLS = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "call_swagger_endpoint",
-      description: "Call any endpoint imported from Swagger by exact path+method with query/path params/body.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Exact swagger path, e.g. /Report/GetSummaryByGroup" },
-          method: { type: "string", description: "HTTP method, e.g. get/post/put/delete" },
-          query: { type: "object", description: "Query string params as key/value map" },
-          pathParams: { type: "object", description: "Path template params, e.g. {\"lpName\":\"OneRoyal\"}" },
-          body: { type: "object", description: "JSON body for POST/PUT/PATCH" },
-        },
-        required: ["path", "method"],
-      },
-    },
-  },
 ];
 
 const registry = {
@@ -193,6 +175,9 @@ const registry = {
 };
 
 export async function executeTool(name, args = {}) {
+  if (name === "call_swagger_endpoint") {
+    throw new Error("call_swagger_endpoint is disabled in read-only mode.");
+  }
   const fn = registry[name];
   if (!fn) throw new Error(`Unknown tool: ${name}`);
   return fn(args || {});

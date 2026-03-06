@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bot, CircleDot, MessageSquare, SendHorizontal, X } from "lucide-react";
 import { AgentChatMessage, AgentLiveSnapshot, fetchAgentCapabilities, sendAgentChat } from "@/lib/agentApi";
+import { getAuthToken } from "@/lib/auth";
 
 const quickPrompts = [
   "What is my current equity?",
@@ -40,7 +41,12 @@ export function LiveChatAgent() {
   }, []);
 
   useEffect(() => {
-    const es = new EventSource(`/api/agent/live?fromDate=${fromDate}&toDate=${toDate}`);
+    const token = getAuthToken();
+    if (!token) {
+      setLiveStatus("error");
+      return;
+    }
+    const es = new EventSource(`/api/agent/live?fromDate=${fromDate}&toDate=${toDate}&token=${encodeURIComponent(token)}`);
     es.addEventListener("snapshot", (event) => {
       try {
         const parsed = JSON.parse((event as MessageEvent).data) as AgentLiveSnapshot;

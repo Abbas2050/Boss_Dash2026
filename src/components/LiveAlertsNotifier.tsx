@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/components/ui/sonner";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
+import { hasAccess } from "@/lib/auth";
 import { Activity, AlertTriangle, CheckCircle, Info, ShoppingCart, X, XCircle } from "lucide-react";
 import {
   ALERT_EVENT_KEYS,
@@ -91,7 +92,10 @@ export function LiveAlertsNotifier() {
   const [prefs, setPrefs] = useState<AlertPreferences>(prefsRef.current);
 
   const enabledEvents = useMemo(
-    () => ALERT_EVENT_KEYS.filter((key) => prefs[key]),
+    () =>
+      ALERT_EVENT_KEYS.filter(
+        (key) => prefs[key] && hasAccess(`Notifications:${key}`)
+      ),
     [prefs]
   );
 

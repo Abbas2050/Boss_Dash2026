@@ -10,14 +10,19 @@ import {
   writeAlertPreferences,
 } from "@/lib/alertPreferences";
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
+import { hasAccess } from "@/lib/auth";
 
 export const AlertsSettingsPage: React.FC = () => {
+  const allowedEventKeys = useMemo(
+    () => ALERT_EVENT_KEYS.filter((key) => hasAccess(`Notifications:${key}`)),
+    []
+  );
   const [prefs, setPrefs] = useState<AlertPreferences>(() => readAlertPreferences());
   const [saved, setSaved] = useState<string>("");
 
   const enabledCount = useMemo(
-    () => ALERT_EVENT_KEYS.filter((k) => prefs[k]).length,
-    [prefs]
+    () => allowedEventKeys.filter((k) => prefs[k]).length,
+    [prefs, allowedEventKeys]
   );
 
   const setPref = (key: AlertEventKey, value: boolean) => {
@@ -30,7 +35,7 @@ export const AlertsSettingsPage: React.FC = () => {
 
   const enableAll = () => {
     const next = ALERT_EVENT_KEYS.reduce((acc, key) => {
-      acc[key] = true;
+      acc[key] = allowedEventKeys.includes(key);
       return acc;
     }, {} as AlertPreferences);
     setPrefs(next);
@@ -76,7 +81,7 @@ export const AlertsSettingsPage: React.FC = () => {
             </div>
             <div className="text-sm text-muted-foreground">
               Enabled: <span className="font-semibold text-foreground">{enabledCount}</span> /{" "}
-              {ALERT_EVENT_KEYS.length}
+              {allowedEventKeys.length}
               {saved && <span className="ml-3 text-success">{saved}</span>}
             </div>
           </div>
@@ -105,7 +110,7 @@ export const AlertsSettingsPage: React.FC = () => {
         </section>
 
         <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {ALERT_EVENT_KEYS.map((key) => (
+          {allowedEventKeys.map((key) => (
             <div key={key} className="rounded-xl border border-border/40 bg-card/70 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>

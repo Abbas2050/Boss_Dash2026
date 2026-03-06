@@ -3,6 +3,9 @@ import { AlertTriangle, Bell, Camera, Info, Maximize2, Minimize2, RefreshCw } fr
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/dealingApi";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
+import { hasAccess } from "@/lib/auth";
+import { DEALING_TABS } from "@/lib/permissions";
+import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
   ALERT_EVENT_KEYS,
   ALERT_EVENT_META,
@@ -904,7 +907,10 @@ export function DealingDepartmentPage() {
   const liveAlertDedupRef = useRef<Record<string, number>>({});
   const livePrefsRef = useRef<AlertPreferences>(readAlertPreferences());
   const [livePrefs, setLivePrefs] = useState<AlertPreferences>(livePrefsRef.current);
-  const liveEnabledEvents = useMemo(() => ALERT_EVENT_KEYS.filter((key) => livePrefs[key]), [livePrefs]);
+  const liveEnabledEvents = useMemo(
+    () => ALERT_EVENT_KEYS.filter((key) => livePrefs[key] && hasAccess(`Notifications:${key}`)),
+    [livePrefs]
+  );
 
   const modeLabel = isUtcTodaySelection(fromDate, toDate) ? "Live" : "Reports";
   const menuLoading =
@@ -1020,18 +1026,18 @@ export function DealingDepartmentPage() {
     };
   }, [fromDate, toDate, refreshKey]);
 
-  const menuItems = [
-    "Dealing",
-    "Risk Exposure",
-    "Coverage",
-    "Metrics",
-    "Contract Sizes",
-    "Deal Matching",
-    "Clients NOP",
-    "Rebate Calculator",
-    "History",
-    "Swap Tracker",
-  ];
+  const menuItems = DEALING_TABS as readonly string[];
+  const allowedMenuItems = useMemo(
+    () => menuItems.filter((item) => hasAccess(`Dealing:${item}`)),
+    [menuItems]
+  );
+
+  useEffect(() => {
+    if (!allowedMenuItems.length) return;
+    if (!allowedMenuItems.includes(activeMenu)) {
+      setActiveMenu(allowedMenuItems[0]);
+    }
+  }, [allowedMenuItems, activeMenu]);
 
   const handlePageRefresh = () => {
     if (activeMenu === "Coverage" || activeMenu === "Risk Exposure") {
@@ -2573,12 +2579,15 @@ export function DealingDepartmentPage() {
   }, [activeMenu, liveEnabledEvents]);
 
   return (
+    !allowedMenuItems.length ? (
+      <UnauthorizedPage title="No Dealing Tabs Authorized" />
+    ) : (
     <div ref={dealingRootRef} className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-6 md:p-8">
       <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="h-fit rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-slate-50 to-slate-100 p-4 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 lg:sticky lg:top-6">
           <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300/80">Dealing Menu</div>
           <div className="mt-3 space-y-1.5">
-            {menuItems.map((item) => {
+            {allowedMenuItems.map((item) => {
               const active = activeMenu === item;
               return (
                 <button
@@ -4077,6 +4086,7 @@ export function DealingDepartmentPage() {
         </div>
       </div>
     </div>
+    )
   );
 }
 

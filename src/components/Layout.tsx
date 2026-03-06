@@ -2,7 +2,8 @@ import React, { useState, useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { DashboardHeader } from "./dashboard/DashboardHeader";
-import { hasAccess, isAuthenticated } from "@/lib/auth";
+import { getCurrentUser, hasAccess, isAuthenticated } from "@/lib/auth";
+import { getDefaultRouteForUser } from "@/lib/permissions";
 import { LiveChatAgent } from "./LiveChatAgent";
 
 export const Layout: React.FC = () => {
@@ -29,9 +30,13 @@ export const Layout: React.FC = () => {
 
   const isSettings = location.pathname.startsWith("/settings");
   const loggedIn = isAuthenticated();
+  const currentUser = loggedIn ? getCurrentUser() : null;
 
   if (!loggedIn) {
     return <Navigate to="/login" replace />;
+  }
+  if (location.pathname === "/" && !hasAccess("Dashboard")) {
+    return <Navigate to={getDefaultRouteForUser(currentUser)} replace />;
   }
 
   return (
@@ -43,7 +48,7 @@ export const Layout: React.FC = () => {
           <Outlet />
         </main>
       </div>
-      <LiveChatAgent />
+      {hasAccess("LiveAgent") ? <LiveChatAgent /> : null}
     </div>
   );
 };

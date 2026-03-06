@@ -1,4 +1,5 @@
 export type AgentRole = "user" | "assistant";
+import { getAuthToken } from "@/lib/auth";
 
 export interface AgentChatMessage {
   role: AgentRole;
@@ -49,7 +50,10 @@ export interface AgentLiveSnapshot {
 }
 
 export async function fetchAgentCapabilities(): Promise<AgentCapabilities> {
-  const resp = await fetch("/api/agent/capabilities");
+  const token = getAuthToken();
+  const resp = await fetch("/api/agent/capabilities", {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
   if (!resp.ok) throw new Error(`Capabilities ${resp.status}`);
   return resp.json();
 }
@@ -64,6 +68,7 @@ export async function sendAgentChat(payload: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
+      ...(getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {}),
     },
     body: JSON.stringify(payload),
   });

@@ -5,10 +5,24 @@ import { AccountsDepartment } from "@/components/dashboard/AccountsDepartment";
 import { MarketingDepartment } from "@/components/dashboard/MarketingDepartment";
 import { HRDepartment } from "@/components/dashboard/HRDepartment";
 import { DealingDepartmentPage } from "@/pages/departments/DealingDepartmentPage";
+import { hasAccess } from "@/lib/auth";
+import { DEALING_TAB_KEYS } from "@/lib/permissions";
+import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 
 export const DepartmentPages: React.FC = () => {
   const { dept } = useParams<{ dept?: string }>();
   const selected = (dept || "dealing").toLowerCase();
+  const canDealing = hasAccess("Dealing") || DEALING_TAB_KEYS.some((item) => hasAccess(item.key));
+  const canViewSelected =
+    (selected === "dealing" && canDealing) ||
+    (selected === "backoffice" && hasAccess("Backoffice")) ||
+    (selected === "accounts" && hasAccess("Accounts")) ||
+    (selected === "marketing" && hasAccess("Marketing")) ||
+    (selected === "hr" && hasAccess("HR"));
+
+  if (["dealing", "backoffice", "accounts", "marketing", "hr"].includes(selected) && !canViewSelected) {
+    return <UnauthorizedPage />;
+  }
 
   const commonProps = {
     selectedEntity: "all",
