@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import marketingApi from './api.js';
 import agentRouter from "./agent/router.js";
+import authRouter from "./auth/router.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -212,6 +213,7 @@ app.all('/ws/dashboard/negotiate', (req, res) => {
 // Mount marketing API
 app.use('/api', marketingApi);
 app.use("/api/agent", agentRouter);
+app.use("/api/auth", authRouter);
 
 // Serve the development copy of account-alerts.html for quick testing
 app.get('/account-alerts.html', (req, res) => {

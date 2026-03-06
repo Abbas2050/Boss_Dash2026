@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Shield, UserPlus, Search, Trash2, Pencil, CheckCircle2 } from "lucide-react";
-import { AuthUser, deleteUser, getCurrentUser, getUsers, upsertUser } from "@/lib/auth";
+import { AuthUser, deleteUser, getCurrentUser, getUsers, refreshUsers, upsertUser } from "@/lib/auth";
 
 const pages = ["Dealing", "Backoffice", "HR", "Marketing", "Accounts", "Settings", "Alerts"];
 
@@ -30,7 +30,14 @@ export const UserManagementPage: React.FC = () => {
   const [error, setError] = useState("");
   const currentUser = getCurrentUser();
 
-  const reload = () => setUsers(getUsers());
+  const reload = async () => {
+    const list = await refreshUsers();
+    setUsers(list);
+  };
+
+  useEffect(() => {
+    reload().catch((err) => setError(err?.message || "Failed to load users"));
+  }, []);
 
   const visibleUsers = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -55,7 +62,7 @@ export const UserManagementPage: React.FC = () => {
 
   const resetForm = () => setForm(blankForm);
 
-  const submit = () => {
+  const submit = async () => {
     setError("");
     if (!form.name.trim() || !form.email.trim()) {
       setError("Name and email are required.");
@@ -72,33 +79,39 @@ export const UserManagementPage: React.FC = () => {
       return;
     }
 
-    if (editId) {
-      const old = users.find((u) => u.id === editId);
-      if (!old) return;
-      upsertUser({
-        ...old,
-        ...form,
-        password: form.password.trim() ? form.password : old.password,
-      });
-      setEditId(null);
-    } else {
-      upsertUser({
-        id: String(Date.now()),
-        ...form,
-      });
+    try {
+      if (editId) {
+        const old = users.find((u) => u.id === editId);
+        if (!old) return;
+        await upsertUser({
+          ...old,
+          ...form,
+          password: form.password.trim() ? form.password : undefined,
+        });
+        setEditId(null);
+      } else {
+        await upsertUser({
+          ...form,
+        });
+      }
+      resetForm();
+      await reload();
+    } catch (err: any) {
+      setError(err?.message || "Unable to save user.");
     }
-
-    resetForm();
-    reload();
   };
 
-  const remove = (id: string) => {
+  const remove = async (id: string) => {
     if (currentUser?.id === id) {
       setError("You cannot delete your currently logged-in account.");
       return;
     }
-    deleteUser(id);
-    reload();
+    try {
+      await deleteUser(id);
+      await reload();
+    } catch (err: any) {
+      setError(err?.message || "Unable to delete user.");
+    }
   };
 
   const toggleAccess = (page: string) => {

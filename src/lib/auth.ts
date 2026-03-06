@@ -5,25 +5,26 @@ export interface AuthUser {
   role: string;
   access: string[];
   status: "active" | "suspended";
-  password: string;
 }
 
-const USERS_KEY = "slc.users.v1";
-const SESSION_KEY = "slc.session.v1";
+export interface AuthUpsertInput {
+  id?: string;
+  name: string;
+  email: string;
+  role: string;
+  access: string[];
+  status: "active" | "suspended";
+  password?: string;
+}
 
-const DEFAULT_ACCESS = ["Dealing", "Accounts", "Settings", "Backoffice", "HR", "Marketing", "Alerts"];
+const USERS_KEY = "slc.users.v2";
+const SESSION_KEY = "slc.session.v2";
 
-const seedUsers: AuthUser[] = [
-  {
-    id: "1",
-    name: "Abbas",
-    email: "abbas@skylinks.capital",
-    role: "Super Admin",
-    access: DEFAULT_ACCESS,
-    status: "active",
-    password: "admin123",
-  },
-];
+type SessionPayload = {
+  token: string;
+  user: AuthUser;
+  at: number;
+};
 
 function read<T>(key: string): T | null {
   try {
@@ -38,51 +39,106 @@ function write(key: string, value: unknown) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-function ensureSeed() {
-  const users = read<AuthUser[]>(USERS_KEY);
-  if (!users || users.length === 0) {
-    write(USERS_KEY, seedUsers);
+function getSession(): SessionPayload | null {
+  return read<SessionPayload>(SESSION_KEY);
+}
+
+function setSession(session: SessionPayload | null) {
+  if (!session) {
+    localStorage.removeItem(SESSION_KEY);
+    return;
   }
+  write(SESSION_KEY, session);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getSession()?.token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export function getUsers(): AuthUser[] {
-  ensureSeed();
   return read<AuthUser[]>(USERS_KEY) || [];
 }
 
-export function upsertUser(next: AuthUser): void {
-  const users = getUsers();
-  const idx = users.findIndex((u) => u.id === next.id);
-  if (idx >= 0) users[idx] = next;
-  else users.unshift(next);
+export async function refreshUsers(): Promise<AuthUser[]> {
+  const res = await fetch("/api/auth/users", {
+    headers: {
+      Accept: "application/json",
+      ...authHeaders(),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Users API ${res.status}`);
+  }
+  const users = (await res.json()) as AuthUser[];
   write(USERS_KEY, users);
+  return users;
 }
 
-export function deleteUser(id: string): void {
-  const users = getUsers().filter((u) => u.id !== id);
-  write(USERS_KEY, users);
+export async function upsertUser(next: AuthUpsertInput): Promise<AuthUser> {
+  const isUpdate = Boolean(next.id);
+  const endpoint = isUpdate ? `/api/auth/users/${encodeURIComponent(String(next.id))}` : "/api/auth/users";
+  const method = isUpdate ? "PUT" : "POST";
+  const body = {
+    name: next.name,
+    email: next.email,
+    role: next.role,
+    status: next.status,
+    access: next.access,
+    ...(next.password ? { password: next.password } : {}),
+  };
+
+  const res = await fetch(endpoint, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Save user failed (${res.status})`);
+  }
+  const json = (await res.json()) as { user: AuthUser };
+  await refreshUsers().catch(() => undefined);
+  return json.user;
 }
 
-export function setUsers(users: AuthUser[]): void {
-  write(USERS_KEY, users);
+export async function deleteUser(id: string): Promise<void> {
+  const res = await fetch(`/api/auth/users/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: {
+      Accept: "application/json",
+      ...authHeaders(),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || `Delete user failed (${res.status})`);
+  }
+  await refreshUsers().catch(() => undefined);
 }
 
-export function authenticate(identity: string, password: string): AuthUser | null {
-  const id = identity.trim().toLowerCase();
-  const user = getUsers().find(
-    (u) =>
-      (u.email || "").toLowerCase() === id &&
-      u.password === password &&
-      u.status === "active"
-  );
-  return user || null;
-}
+export async function login(identity: string, password: string): Promise<AuthUser | null> {
+  const email = identity.trim().toLowerCase();
+  const res = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) return null;
 
-export function login(identity: string, password: string): AuthUser | null {
-  const user = authenticate(identity, password);
-  if (!user) return null;
-  write(SESSION_KEY, { userId: user.id, at: Date.now() });
-  return user;
+  const payload = (await res.json()) as { token: string; user: AuthUser };
+  if (!payload?.token || !payload?.user) return null;
+
+  setSession({ token: payload.token, user: payload.user, at: Date.now() });
+  write(USERS_KEY, [payload.user]);
+  return payload.user;
 }
 
 export function logout(): void {
@@ -90,13 +146,13 @@ export function logout(): void {
 }
 
 export function getCurrentUser(): AuthUser | null {
-  const session = read<{ userId: string }>(SESSION_KEY);
-  if (!session?.userId) return null;
-  return getUsers().find((u) => u.id === session.userId && u.status === "active") || null;
+  const session = getSession();
+  return session?.user || null;
 }
 
 export function isAuthenticated(): boolean {
-  return !!getCurrentUser();
+  const session = getSession();
+  return Boolean(session?.token && session?.user);
 }
 
 export function hasAccess(page: string): boolean {

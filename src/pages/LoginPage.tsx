@@ -7,11 +7,15 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const onSubmit = (e: React.FormEvent) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setError("");
-    const user = login(email, password);
+    setIsSubmitting(true);
+    const user = await login(email, password);
+    setIsSubmitting(false);
     if (!user) {
       setError("Invalid credentials or suspended user.");
       return;
@@ -41,8 +45,12 @@ export default function LoginPage() {
           required
         />
         {error && <div className="text-sm text-destructive">{error}</div>}
-        <button type="submit" className="w-full rounded-lg bg-primary text-primary-foreground py-2 font-medium">
-          Login
+        <button
+          type="submit"
+          disabled={isSubmitting}
+          className="w-full rounded-lg bg-primary text-primary-foreground py-2 font-medium disabled:opacity-60"
+        >
+          {isSubmitting ? "Signing in..." : "Login"}
         </button>
       </form>
     </div>
