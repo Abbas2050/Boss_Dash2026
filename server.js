@@ -14,6 +14,10 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const REST_PROXY_TARGET = process.env.REST_PROXY_TARGET || 'https://portal.skylinkscapital.com';
+const WALLET_PROXY_TARGET = process.env.WALLET_PROXY_TARGET || 'https://crm.skylinkscapital.com';
+
+app.set('trust proxy', true);
 
 app.disable('x-powered-by');
 app.use(cors({
@@ -27,6 +31,57 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+function buildProxyHeaders(req) {
+  const headers = { ...req.headers };
+  delete headers.host;
+  delete headers.connection;
+  delete headers['content-length'];
+  return headers;
+}
+
+function buildProxyBody(req) {
+  if (req.method === 'GET' || req.method === 'HEAD') return undefined;
+  const body = req.body;
+  if (body == null) return undefined;
+  if (typeof body === 'string') return body;
+  return JSON.stringify(body);
+}
+
+async function proxyHttp(req, res, options) {
+  try {
+    const incomingPath = req.originalUrl;
+    const rewrittenPath = options.stripPrefix
+      ? incomingPath.replace(new RegExp(`^${options.stripPrefix}`), '')
+      : incomingPath;
+    const targetUrl = `${options.targetBase.replace(/\/+$/, '')}${rewrittenPath}`;
+
+    const upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers: buildProxyHeaders(req),
+      body: buildProxyBody(req),
+    });
+
+    res.status(upstream.status);
+    upstream.headers.forEach((value, key) => {
+      if (key.toLowerCase() === 'transfer-encoding') return;
+      res.setHeader(key, value);
+    });
+
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    res.send(buffer);
+  } catch (error) {
+    res.status(502).json({
+      error: 'proxy_error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+app.use('/rest', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
+app.use('/api/wallet', (req, res) =>
+  proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
+);
 
 // Simple SSE mock for development to emit sample alerts (mounted under /api so Vite proxy works)
 // SSE mock: supports periodic automatic events and a manual trigger endpoint
@@ -118,7 +173,10 @@ app.get('/api/signalr/token', (req, res) => {
 // - websocket endpoint: /ws/dashboard (expects SignalR JSON protocol with RS delimiters)
 app.all('/ws/dashboard/negotiate', (req, res) => {
   const connectionId = Math.random().toString(36).slice(2, 10);
-  const baseUrl = `${req.protocol}://${req.hostname}:${PORT}`;
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || req.protocol || 'http';
+  const host = req.get('host') || req.hostname;
+  const baseUrl = `${protocol}://${host}`;
   // Return a negotiate-like payload compatible with @microsoft/signalr client
   res.json({
     connectionId,

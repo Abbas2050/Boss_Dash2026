@@ -140,8 +140,7 @@ export interface Transaction {
 }
 
 export async function fetchTransactions(body: TransactionRequest): Promise<Transaction[]> {
-  // In dev, use proxy; in prod, use full URL
-  const baseUrl = import.meta.env.DEV ? '/rest/transactions' : import.meta.env.VITE_API_URL;
+  const baseUrl = '/rest/transactions';
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
@@ -169,8 +168,7 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
 }
 
 export async function fetchUsers(body: UserRequest): Promise<User[]> {
-  const usersBase = import.meta.env.VITE_API_URL?.replace('/transactions', '/users');
-  const baseUrl = import.meta.env.DEV ? '/rest/users' : usersBase;
+  const baseUrl = '/rest/users';
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
@@ -198,8 +196,7 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
 }
 
 export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
-  const accountsBase = import.meta.env.VITE_API_URL?.replace('/transactions', '/accounts');
-  const baseUrl = import.meta.env.DEV ? '/rest/accounts' : accountsBase;
+  const baseUrl = '/rest/accounts';
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
@@ -227,8 +224,7 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
 }
 
 export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
-  const tradesBase = import.meta.env.VITE_API_TRADES_URL || import.meta.env.VITE_API_URL?.replace('/transactions', '/trades');
-  const baseUrl = import.meta.env.DEV ? '/rest/trades' : tradesBase;
+  const baseUrl = '/rest/trades';
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
@@ -262,8 +258,7 @@ export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
 export async function updateAccountLeverage(
   request: LeverageUpdateRequest
 ): Promise<AccountUpdateResponse> {
-  const accountsBase = import.meta.env.VITE_API_URL?.replace('/transactions', '/accounts');
-  const baseUrl = import.meta.env.DEV ? '/rest/accounts' : accountsBase;
+  const baseUrl = '/rest/accounts';
   const accountId = `${request.serverId}-${request.login}`;
   const url = `${baseUrl}/${accountId}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;

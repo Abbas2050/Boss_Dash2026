@@ -18,7 +18,7 @@ export interface LPAccountRequest {
 
 export async function fetchLPAccounts(): Promise<LPAccount[]> {
   // TODO: Replace with real API endpoint
-  const baseUrl = import.meta.env.DEV ? "/rest/lp-accounts" : (import.meta.env.VITE_API_URL?.replace("/transactions", "/lp-accounts"));
+  const baseUrl = "/rest/lp-accounts";
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 
@@ -35,7 +35,7 @@ export async function fetchLPAccounts(): Promise<LPAccount[]> {
 
 export async function createLPAccount(body: LPAccountRequest): Promise<LPAccount> {
   // TODO: Replace with real API endpoint
-  const baseUrl = import.meta.env.DEV ? "/rest/lp-accounts" : (import.meta.env.VITE_API_URL?.replace("/transactions", "/lp-accounts"));
+  const baseUrl = "/rest/lp-accounts";
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
   const token = import.meta.env.VITE_API_TOKEN;
 

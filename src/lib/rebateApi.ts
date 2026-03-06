@@ -45,12 +45,7 @@ const formatDateAsDDMMYYYY = (date: Date) => {
 };
 
 const getRestBase = () => {
-  if ((import.meta as any).env?.DEV) return "/rest";
-  const configured = String(API_URL || "");
-  if (!configured) return "";
-  return configured.includes("/transactions")
-    ? configured.replace(/\/transactions.*$/i, "")
-    : configured.replace(/\/+$/, "");
+  return "/rest";
 };
 
 const getAuthHeaders = () => ({
