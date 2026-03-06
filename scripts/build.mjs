@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 
 await build({
+  configFile: false,
   root: rootDir,
   plugins: [react()],
   resolve: {
