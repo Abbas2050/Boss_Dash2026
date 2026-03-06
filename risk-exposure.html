@@ -76,6 +76,7 @@
         .gold-subtotal td:first-child { color: #e0af68; border-left: 3px solid #e0af68; padding-left: 7px; }
         .pinned-divider { border-bottom: 2px solid rgba(224, 175, 104, 0.5) !important; }
 
+        .cs-badge { font-size: 10px; color: #e0af68; background: rgba(224,175,104,0.15); padding: 1px 4px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
         .loading { text-align: center; padding: 60px; color: #565f89; font-size: 14px; }
     </style>
 </head>
@@ -93,6 +94,10 @@
         <a href="/account-alerts.html">Account Alerts</a>
         <a href="/deal-matching.html">Deal Matching</a>
         <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -118,6 +123,16 @@
                 <div class="kpi-value" id="kpiSymbols">-</div>
             </div>
             <div class="kpi-card">
+                <div class="kpi-label">Client Positions</div>
+                <div class="kpi-value" id="kpiClientPos">-</div>
+                <div class="kpi-sub" id="kpiClientPosSub">&nbsp;</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">LP Positions</div>
+                <div class="kpi-value" id="kpiLpPos">-</div>
+                <div class="kpi-sub" id="kpiLpPosSub">&nbsp;</div>
+            </div>
+            <div class="kpi-card">
                 <div class="kpi-label">Total Uncovered</div>
                 <div class="kpi-value" id="kpiUncovered">-</div>
                 <div class="kpi-sub" id="kpiUncoveredSub">&nbsp;</div>
@@ -140,6 +155,7 @@
 
         function isGoldSymbol(symbol) {
             const s = symbol.toUpperCase();
+            // XAUUSD = spot, GOLDFT = aggregated futures (includes CME GC contracts)
             return s === 'XAUUSD' || s.startsWith('GOLD');
         }
 
@@ -167,25 +183,47 @@
             // Symbols
             document.getElementById('kpiSymbols').textContent = rows.length;
 
-            // Total Uncovered (sum of absolute values)
-            const totalUncovered = rows.reduce((sum, r) => sum + Math.abs(r.uncovered), 0);
+            // Net gold symbols together (spot + futures arb hedge each other)
+            const goldRows = rows.filter(r => isGoldSymbol(r.symbol));
+            const nonGoldRows = rows.filter(r => !isGoldSymbol(r.symbol));
+            const goldNetUncovered = goldRows.reduce((s, r) => s + r.uncovered, 0);
+
+            // Total Uncovered: |gold net| + sum of |each non-gold|
+            const totalUncovered = Math.abs(goldNetUncovered) + nonGoldRows.reduce((sum, r) => sum + Math.abs(r.uncovered), 0);
+
+            // Client Positions
+            const totals = data.totals || {};
+            document.getElementById('kpiClientPos').textContent = totals.clientPositions != null ? totals.clientPositions.toLocaleString() : '-';
+            document.getElementById('kpiClientPosSub').textContent = totalUncovered > 0 ? totalUncovered.toFixed(2) + ' lots uncovered' : 'fully covered';
+
+            // LP Positions
+            document.getElementById('kpiLpPos').textContent = totals.lpPositions != null ? totals.lpPositions.toLocaleString() : '-';
+            const totalLpCoverage = Math.abs((totals.clientNet || 0) - (totals.uncovered || 0));
+            document.getElementById('kpiLpPosSub').textContent = totalLpCoverage > 0 ? totalLpCoverage.toFixed(2) + ' lots covered' : 'no coverage';
+
+            // Total Uncovered
             const kpiUncoveredEl = document.getElementById('kpiUncovered');
             kpiUncoveredEl.textContent = totalUncovered.toFixed(2);
             kpiUncoveredEl.className = 'kpi-value' + (totalUncovered > 0 ? ' danger' : '');
-            document.getElementById('kpiUncoveredSub').textContent = totalUncovered > 0 ? 'lots' : 'fully covered';
+            const uncoveredSymbols = nonGoldRows.filter(r => Math.abs(r.uncovered) > 0.001).length + (Math.abs(goldNetUncovered) > 0.001 ? 1 : 0);
+            document.getElementById('kpiUncoveredSub').textContent = totalUncovered > 0 ? uncoveredSymbols + ' symbol' + (uncoveredSymbols !== 1 ? 's' : '') : 'fully covered';
 
-            // Largest Exposure
-            let maxRow = null;
+            // Largest Exposure: gold competes as one group vs individual non-gold
+            let maxLabel = null;
             let maxAbs = 0;
-            rows.forEach(r => {
+            if (Math.abs(goldNetUncovered) > maxAbs) {
+                maxAbs = Math.abs(goldNetUncovered);
+                maxLabel = 'GOLD (net)';
+            }
+            nonGoldRows.forEach(r => {
                 const a = Math.abs(r.uncovered);
-                if (a > maxAbs) { maxAbs = a; maxRow = r; }
+                if (a > maxAbs) { maxAbs = a; maxLabel = r.symbol; }
             });
             const kpiLargestEl = document.getElementById('kpiLargest');
-            if (maxRow && maxAbs > 0) {
-                kpiLargestEl.textContent = maxAbs.toFixed(2);
+            if (maxLabel && maxAbs > 0) {
+                kpiLargestEl.textContent = maxLabel;
                 kpiLargestEl.className = 'kpi-value danger';
-                document.getElementById('kpiLargestSub').textContent = maxRow.symbol;
+                document.getElementById('kpiLargestSub').textContent = maxAbs.toFixed(2) + ' lots uncovered';
             } else {
                 kpiLargestEl.textContent = '-';
                 kpiLargestEl.className = 'kpi-value';
@@ -203,9 +241,10 @@
 
             updateKpis(data);
 
-            // Partition into gold (pinned) + rest, each sorted by |uncovered| desc
-            const gold = [...data.rows].filter(r => isGoldSymbol(r.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
-            const rest = [...data.rows].filter(r => !isGoldSymbol(r.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
+            // Filter out blank symbols, partition into gold (pinned) + rest
+            const rows = data.rows.filter(r => r.symbol && r.symbol.trim());
+            const gold = [...rows].filter(r => isGoldSymbol(r.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
+            const rest = [...rows].filter(r => !isGoldSymbol(r.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
             const sorted = [...gold, ...rest];
 
             let html = '<table><thead><tr>';
@@ -223,7 +262,8 @@
                     html += '<td><span class="dir-sell">SELL</span></td>';
                 else
                     html += '<td></td>';
-                html += `<td>${formatVal(row.clientNet)}</td>`;
+                const csBadge = row.contractSizeMultiplier && row.contractSizeMultiplier !== 1 ? `<span class="cs-badge">x${row.contractSizeMultiplier}</span>` : '';
+                html += `<td>${formatVal(row.clientNet)}${csBadge}</td>`;
                 html += `<td>${formatVal(lpCoverage)}</td>`;
                 html += `<td>${formatVal(row.uncovered)}</td>`;
                 html += `<td>${formatCovPct(row.clientNet, row.uncovered)}</td>`;

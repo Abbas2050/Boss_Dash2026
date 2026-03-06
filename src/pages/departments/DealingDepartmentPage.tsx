@@ -36,6 +36,7 @@ type CoverageRow = {
   direction?: "BUY" | "SELL" | "";
   clientNet: number;
   uncovered: number;
+  contractSizeMultiplier?: number;
   lpNets?: Record<string, number>;
 };
 
@@ -45,8 +46,25 @@ type CoverageData = {
   totals: {
     clientNet: number;
     uncovered: number;
+    clientPositions?: number;
+    lpPositions?: number;
     lpNets?: Record<string, number>;
   };
+};
+
+type ContractSizeEntry = {
+  id: number;
+  symbol: string;
+  clientContractSize: number;
+  lpContractSize: number;
+  multiplier: number;
+};
+
+type ContractSizeDetectResponse = {
+  symbol?: string;
+  clientContractSize: number;
+  lpContractSize: number;
+  multiplier?: number;
 };
 
 type MetricsItem = {
@@ -651,6 +669,16 @@ const formatCoverageVal = (value: number) => {
   return <span className="text-rose-700 dark:text-rose-300">{value.toFixed(2)}</span>;
 };
 
+const renderContractSizeBadge = (multiplier?: number) => {
+  const m = Number(multiplier);
+  if (!Number.isFinite(m) || m === 0 || Math.abs(m - 1) < 0.000001) return null;
+  return (
+    <span className="ml-1 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+      x{m.toFixed(4)}
+    </span>
+  );
+};
+
 const formatPctClass = (value: number) => {
   if (!Number.isFinite(value)) return "text-slate-500";
   if (value >= 90) return "text-emerald-700 dark:text-emerald-300";
@@ -815,6 +843,18 @@ export function DealingDepartmentPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
   const [metricsRefreshKey, setMetricsRefreshKey] = useState(0);
+  const [contractSizes, setContractSizes] = useState<ContractSizeEntry[]>([]);
+  const [contractSizesLoading, setContractSizesLoading] = useState(false);
+  const [contractSizesError, setContractSizesError] = useState<string | null>(null);
+  const [contractSizesLastUpdated, setContractSizesLastUpdated] = useState<Date | null>(null);
+  const [contractSizesRefreshKey, setContractSizesRefreshKey] = useState(0);
+  const [contractSymbolInput, setContractSymbolInput] = useState("");
+  const [contractClientCsInput, setContractClientCsInput] = useState("");
+  const [contractLpCsInput, setContractLpCsInput] = useState("");
+  const [contractFormMessage, setContractFormMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  const [contractEditingId, setContractEditingId] = useState<number | null>(null);
+  const [contractEditClientCs, setContractEditClientCs] = useState("");
+  const [contractEditLpCs, setContractEditLpCs] = useState("");
   const [swapRows, setSwapRows] = useState<SwapPosition[]>([]);
   const [swapLoading, setSwapLoading] = useState(false);
   const [swapError, setSwapError] = useState<string | null>(null);
@@ -872,6 +912,8 @@ export function DealingDepartmentPage() {
       ? coverageLoading
       : activeMenu === "Metrics"
         ? metricsLoading
+      : activeMenu === "Contract Sizes"
+        ? contractSizesLoading
       : activeMenu === "Swap Tracker"
         ? swapLoading
         : activeMenu === "History"
@@ -983,6 +1025,7 @@ export function DealingDepartmentPage() {
     "Risk Exposure",
     "Coverage",
     "Metrics",
+    "Contract Sizes",
     "Deal Matching",
     "Clients NOP",
     "Rebate Calculator",
@@ -997,6 +1040,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Metrics") {
       setMetricsRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Contract Sizes") {
+      setContractSizesRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Swap Tracker") {
@@ -1595,6 +1642,129 @@ export function DealingDepartmentPage() {
   }, [activeMenu, metricsRefreshKey]);
 
   useEffect(() => {
+    if (activeMenu !== "Contract Sizes") {
+      setContractSizesError(null);
+      return;
+    }
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize` : "/api/ContractSize";
+    let cancelled = false;
+    const load = async () => {
+      setContractSizesLoading(true);
+      setContractSizesError(null);
+      try {
+        const resp = await fetch(endpoint);
+        if (!resp.ok) throw new Error(`ContractSize ${resp.status}`);
+        const data = (await resp.json()) as ContractSizeEntry[];
+        if (cancelled) return;
+        setContractSizes(Array.isArray(data) ? data : []);
+        setContractSizesLastUpdated(new Date());
+      } catch (e: any) {
+        if (!cancelled) setContractSizesError(e?.message || "Failed to load contract size multipliers.");
+      } finally {
+        if (!cancelled) setContractSizesLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMenu, contractSizesRefreshKey]);
+
+  const contractMultiplierValue = useMemo(() => {
+    const clientCs = Number(contractClientCsInput);
+    const lpCs = Number(contractLpCsInput);
+    if (!Number.isFinite(clientCs) || !Number.isFinite(lpCs) || lpCs <= 0) return null;
+    return clientCs / lpCs;
+  }, [contractClientCsInput, contractLpCsInput]);
+
+  const detectContractSizes = async () => {
+    const symbol = contractSymbolInput.trim().toUpperCase();
+    if (!symbol) {
+      setContractFormMessage({ text: "Enter a symbol first.", ok: false });
+      return;
+    }
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/detect/${encodeURIComponent(symbol)}` : `/api/ContractSize/detect/${encodeURIComponent(symbol)}`;
+    try {
+      const resp = await fetch(endpoint);
+      if (!resp.ok) throw new Error(`Detect ${resp.status}`);
+      const data = (await resp.json()) as Partial<ContractSizeDetectResponse>;
+      setContractClientCsInput(Number(data.clientContractSize || 0) > 0 ? String(data.clientContractSize) : "");
+      setContractLpCsInput(Number(data.lpContractSize || 0) > 0 ? String(data.lpContractSize) : "");
+      const ok = Number(data.clientContractSize || 0) > 0 && Number(data.lpContractSize || 0) > 0;
+      setContractFormMessage({
+        text: `Detected: Client CS=${Number(data.clientContractSize || 0)}, LP CS=${Number(data.lpContractSize || 0)}`,
+        ok,
+      });
+    } catch (e: any) {
+      setContractFormMessage({ text: e?.message || "Detection failed.", ok: false });
+    }
+  };
+
+  const addContractSizeEntry = async () => {
+    const symbol = contractSymbolInput.trim().toUpperCase();
+    const clientContractSize = Number(contractClientCsInput);
+    const lpContractSize = Number(contractLpCsInput);
+    if (!symbol || !Number.isFinite(clientContractSize) || !Number.isFinite(lpContractSize) || lpContractSize <= 0) {
+      setContractFormMessage({ text: "Symbol, client CS, and LP CS (> 0) are required.", ok: false });
+      return;
+    }
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize` : "/api/ContractSize";
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, clientContractSize, lpContractSize }),
+      });
+      if (!resp.ok) throw new Error(await resp.text().catch(() => `Add ${resp.status}`));
+      setContractFormMessage({ text: `Added ${symbol}.`, ok: true });
+      setContractSymbolInput("");
+      setContractClientCsInput("");
+      setContractLpCsInput("");
+      setContractSizesRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      setContractFormMessage({ text: e?.message || "Failed to add multiplier.", ok: false });
+    }
+  };
+
+  const saveContractSizeEdit = async (id: number) => {
+    const clientContractSize = Number(contractEditClientCs);
+    const lpContractSize = Number(contractEditLpCs);
+    if (!Number.isFinite(clientContractSize) || !Number.isFinite(lpContractSize) || lpContractSize <= 0) {
+      setContractSizesError("Invalid values. LP CS must be > 0.");
+      return;
+    }
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/${id}` : `/api/ContractSize/${id}`;
+    try {
+      const resp = await fetch(endpoint, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: "", clientContractSize, lpContractSize }),
+      });
+      if (!resp.ok) throw new Error(await resp.text().catch(() => `Update ${resp.status}`));
+      setContractEditingId(null);
+      setContractSizesRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      setContractSizesError(e?.message || "Failed to update multiplier.");
+    }
+  };
+
+  const deleteContractSizeEntry = async (id: number) => {
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/${id}` : `/api/ContractSize/${id}`;
+    try {
+      const resp = await fetch(endpoint, { method: "DELETE" });
+      if (!resp.ok) throw new Error(`Delete ${resp.status}`);
+      setContractSizesRefreshKey((k) => k + 1);
+    } catch (e: any) {
+      setContractSizesError(e?.message || "Failed to delete multiplier.");
+    }
+  };
+
+  useEffect(() => {
     if (activeMenu !== "Swap Tracker") {
       setSwapError(null);
       return;
@@ -1849,17 +2019,26 @@ export function DealingDepartmentPage() {
     const rows = coverageData?.rows || [];
     const activeLps = coverageData?.lpNames?.length || 0;
     const symbolCount = rows.length;
-    const totalUncovered = rows.reduce((sum, row) => sum + Math.abs(row.uncovered), 0);
+    const goldRows = rows.filter((row) => isGoldSymbol(row.symbol));
+    const nonGoldRows = rows.filter((row) => !isGoldSymbol(row.symbol));
+    const goldNetUncovered = goldRows.reduce((sum, row) => sum + row.uncovered, 0);
+    const totalUncovered = Math.abs(goldNetUncovered) + nonGoldRows.reduce((sum, row) => sum + Math.abs(row.uncovered), 0);
     let largestSymbol = "-";
     let largestExposure = 0;
-    rows.forEach((row) => {
+    if (Math.abs(goldNetUncovered) > largestExposure) {
+      largestExposure = Math.abs(goldNetUncovered);
+      largestSymbol = "GOLD (net)";
+    }
+    nonGoldRows.forEach((row) => {
       const abs = Math.abs(row.uncovered);
       if (abs > largestExposure) {
         largestExposure = abs;
         largestSymbol = row.symbol;
       }
     });
-    return { activeLps, symbolCount, totalUncovered, largestExposure, largestSymbol };
+    const clientPositions = Number(coverageData?.totals?.clientPositions || 0);
+    const lpPositions = Number(coverageData?.totals?.lpPositions || 0);
+    return { activeLps, symbolCount, totalUncovered, largestExposure, largestSymbol, clientPositions, lpPositions };
   }, [coverageData]);
 
   useEffect(() => {
@@ -2157,6 +2336,8 @@ export function DealingDepartmentPage() {
       return [
         { label: "Active LPs", value: riskKpis.activeLps.toLocaleString() },
         { label: "Symbols", value: riskKpis.symbolCount.toLocaleString() },
+        { label: "Client Positions", value: riskKpis.clientPositions.toLocaleString() },
+        { label: "LP Positions", value: riskKpis.lpPositions.toLocaleString() },
         { label: "Total Uncovered", value: riskKpis.totalUncovered.toFixed(2) },
         { label: "Largest Exposure", value: riskKpis.largestExposure > 0 ? `${riskKpis.largestExposure.toFixed(2)} (${riskKpis.largestSymbol})` : "-" },
       ];
@@ -2171,6 +2352,19 @@ export function DealingDepartmentPage() {
         { label: "Total Equity", value: `$${(metricsData?.totals?.equity || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
         { label: "Total Margin", value: `$${(metricsData?.totals?.margin || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
         { label: "Avg Margin Level", value: `${avgMarginLevel.toFixed(2)}%` },
+      ];
+    }
+
+    if (activeMenu === "Contract Sizes") {
+      const total = contractSizes.length;
+      const avgMultiplier = total
+        ? contractSizes.reduce((sum, item) => sum + (Number.isFinite(item.multiplier) ? item.multiplier : 0), 0) / total
+        : 0;
+      return [
+        { label: "Multipliers", value: total.toLocaleString() },
+        { label: "Avg Multiplier", value: avgMultiplier.toFixed(4) },
+        { label: "Max Multiplier", value: (total ? Math.max(...contractSizes.map((item) => Number(item.multiplier) || 0)) : 0).toFixed(4) },
+        { label: "Min Multiplier", value: (total ? Math.min(...contractSizes.map((item) => Number(item.multiplier) || 0)) : 0).toFixed(4) },
       ];
     }
 
@@ -2248,7 +2442,7 @@ export function DealingDepartmentPage() {
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
       { label: "Total Uncovered", value: (overviewData.coverage?.totals?.uncovered || 0).toFixed(2) },
     ];
-  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData]);
+  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData, contractSizes]);
 
   const rebateSymbolTotals = useMemo(() => {
     const bySymbol = new Map<
@@ -2586,7 +2780,10 @@ export function DealingDepartmentPage() {
                                 <span className="text-slate-500">-</span>
                               )}
                             </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.clientNet)}</td>
+                            <td className="border-t border-slate-800 px-3 py-2 text-right">
+                              {formatCoverageVal(row.clientNet)}
+                              {renderContractSizeBadge(row.contractSizeMultiplier)}
+                            </td>
                             <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.uncovered)}</td>
                             {(coverageData?.lpNames || []).map((lp) => (
                               <td key={`${row.symbol}-${lp}-${idx}`} className="border-t border-slate-800 px-3 py-2 text-right">
@@ -2698,7 +2895,10 @@ export function DealingDepartmentPage() {
                                 <span className="text-slate-500">-</span>
                               )}
                             </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.clientNet)}</td>
+                            <td className="border-t border-slate-800 px-3 py-2 text-right">
+                              {formatCoverageVal(row.clientNet)}
+                              {renderContractSizeBadge(row.contractSizeMultiplier)}
+                            </td>
                             <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(lpCoverage)}</td>
                             <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.uncovered)}</td>
                             <td className={`border-t border-slate-800 px-3 py-2 text-right ${formatPctClass(pct)}`}>
@@ -2839,6 +3039,185 @@ export function DealingDepartmentPage() {
                   </div>
                 </div>
               </div>
+            </section>
+          ) : activeMenu === "Contract Sizes" ? (
+            <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
+              <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Contract Size Multipliers</h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Normalize client lots to LP-equivalent lots when contract sizes differ between servers.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {contractSizesLastUpdated && <span className="text-xs text-slate-500 dark:text-slate-400">Updated {contractSizesLastUpdated.toLocaleTimeString()}</span>}
+                  <button
+                    type="button"
+                    onClick={() => setContractSizesRefreshKey((k) => k + 1)}
+                    className="inline-flex items-center gap-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-200 hover:bg-cyan-500/20"
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${contractSizesLoading ? "animate-spin" : ""}`} />
+                    Refresh
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-6">
+                  <input
+                    value={contractSymbolInput}
+                    onChange={(e) => setContractSymbolInput(e.target.value.toUpperCase())}
+                    placeholder="Symbol (e.g. US30)"
+                    className="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={detectContractSizes}
+                    className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-500/20 dark:text-amber-300"
+                  >
+                    Detect
+                  </button>
+                  <input
+                    value={contractClientCsInput}
+                    onChange={(e) => setContractClientCsInput(e.target.value)}
+                    placeholder="Client CS"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  />
+                  <input
+                    value={contractLpCsInput}
+                    onChange={(e) => setContractLpCsInput(e.target.value)}
+                    placeholder="LP CS"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    className="rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  />
+                  <input
+                    readOnly
+                    value={contractMultiplierValue === null ? "-" : contractMultiplierValue.toFixed(4)}
+                    className="rounded border border-slate-300 bg-slate-100 px-2 py-1.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900/80 dark:text-slate-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={addContractSizeEntry}
+                    className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
+                  >
+                    Add
+                  </button>
+                </div>
+                {contractFormMessage && (
+                  <div className={`mt-2 text-xs ${contractFormMessage.ok ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>
+                    {contractFormMessage.text}
+                  </div>
+                )}
+              </div>
+
+              {contractSizesError && (
+                <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{contractSizesError}</div>
+              )}
+
+              <div className="overflow-x-auto rounded-lg border border-slate-800">
+                <table data-table-kind="contract-sizes" className="min-w-full text-xs">
+                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">ID</th>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
+                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Client CS</th>
+                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">LP CS</th>
+                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Multiplier</th>
+                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {contractSizes.map((entry) => {
+                      const editing = contractEditingId === entry.id;
+                      return (
+                        <tr key={entry.id} className="bg-slate-50 dark:bg-slate-950/30">
+                          <td className="border-t border-slate-800 px-3 py-2">{entry.id}</td>
+                          <td className="border-t border-slate-800 px-3 py-2 font-mono text-amber-700 dark:text-amber-300">{entry.symbol}</td>
+                          <td className="border-t border-slate-800 px-3 py-2 text-right">
+                            {editing ? (
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={contractEditClientCs}
+                                onChange={(e) => setContractEditClientCs(e.target.value)}
+                                className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                              />
+                            ) : (
+                              entry.clientContractSize
+                            )}
+                          </td>
+                          <td className="border-t border-slate-800 px-3 py-2 text-right">
+                            {editing ? (
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={contractEditLpCs}
+                                onChange={(e) => setContractEditLpCs(e.target.value)}
+                                className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                              />
+                            ) : (
+                              entry.lpContractSize
+                            )}
+                          </td>
+                          <td className="border-t border-slate-800 px-3 py-2 text-right font-semibold text-cyan-700 dark:text-cyan-300">{entry.multiplier.toFixed(4)}</td>
+                          <td className="border-t border-slate-800 px-3 py-2 text-right">
+                            {editing ? (
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => void saveContractSizeEdit(entry.id)}
+                                  className="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300"
+                                >
+                                  Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setContractEditingId(null)}
+                                  className="rounded border border-slate-400/40 bg-slate-500/10 px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-500/20 dark:text-slate-200"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex justify-end gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setContractEditingId(entry.id);
+                                    setContractEditClientCs(String(entry.clientContractSize));
+                                    setContractEditLpCs(String(entry.lpContractSize));
+                                  }}
+                                  className="rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[11px] font-medium text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-300"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void deleteContractSizeEntry(entry.id)}
+                                  className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-500/20 dark:text-rose-300"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {!contractSizesLoading && !contractSizes.length && (
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+                  No contract size multipliers configured.
+                </div>
+              )}
             </section>
           ) : activeMenu === "Swap Tracker" ? (
             <section
@@ -3065,12 +3444,12 @@ export function DealingDepartmentPage() {
                           ) : (
                             <>
                               <td className="border-t border-slate-800 px-3 py-2 text-left">
-                                <input
-                                  type="date"
-                                  value={historyStartPeriodEdits[item.lpName] ?? epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from) || toYmd(fromDate)}
-                                  onChange={(e) =>
-                                    setHistoryStartPeriodEdits((prev) => ({
-                                      ...prev,
+                                  <input
+                                    type="date"
+                                  value={(historyStartPeriodEdits[item.lpName] ?? epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from)) || toYmd(fromDate)}
+                                    onChange={(e) =>
+                                      setHistoryStartPeriodEdits((prev) => ({
+                                        ...prev,
                                       [item.lpName]: e.target.value,
                                     }))
                                   }

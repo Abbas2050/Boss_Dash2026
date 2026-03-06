@@ -40,12 +40,10 @@ function createClientAndPropertyId() {
     };
   }
 
-  // Fallback to ADC (Application Default Credentials).
-  debug("Using application default credentials");
-  return {
-    propertyId,
-    client: new BetaAnalyticsDataClient(),
-  };
+  // Do not fallback to ADC in this app; require explicit env-based credentials.
+  throw new Error(
+    "GA4 credentials are not configured. Set GA4_SERVICE_ACCOUNT_JSON or GA4_KEY_FILE/GOOGLE_APPLICATION_CREDENTIALS.",
+  );
 }
 
 function mapRows(rows, mapper) {
