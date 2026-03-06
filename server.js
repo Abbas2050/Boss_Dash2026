@@ -16,6 +16,10 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 const REST_PROXY_TARGET = process.env.REST_PROXY_TARGET || 'https://portal.skylinkscapital.com';
 const WALLET_PROXY_TARGET = process.env.WALLET_PROXY_TARGET || 'https://crm.skylinkscapital.com';
+const BACKEND_API_TARGET =
+  process.env.BACKEND_API_BASE_URL ||
+  process.env.VITE_BACKEND_BASE_URL ||
+  'https://api.skylinkscapital.com';
 
 app.set('trust proxy', true);
 
@@ -37,6 +41,7 @@ function buildProxyHeaders(req) {
   delete headers.host;
   delete headers.connection;
   delete headers['content-length'];
+  delete headers['accept-encoding'];
   return headers;
 }
 
@@ -64,7 +69,11 @@ async function proxyHttp(req, res, options) {
 
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => {
-      if (key.toLowerCase() === 'transfer-encoding') return;
+      const lower = key.toLowerCase();
+      if (lower === 'transfer-encoding') return;
+      if (lower === 'content-encoding') return;
+      if (lower === 'content-length') return;
+      if (lower === 'connection') return;
       res.setHeader(key, value);
     });
 
@@ -82,6 +91,20 @@ app.use('/rest', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARG
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
 );
+[
+  '/Metrics',
+  '/Coverage',
+  '/Swap',
+  '/History',
+  '/Report',
+  '/Deal',
+  '/Position',
+  '/Account',
+  '/ContractSize',
+  '/api/ContractSize',
+].forEach((prefix) => {
+  app.use(prefix, (req, res) => proxyHttp(req, res, { targetBase: BACKEND_API_TARGET }));
+});
 
 // Simple SSE mock for development to emit sample alerts (mounted under /api so Vite proxy works)
 // SSE mock: supports periodic automatic events and a manual trigger endpoint
@@ -173,10 +196,6 @@ app.get('/api/signalr/token', (req, res) => {
 // - websocket endpoint: /ws/dashboard (expects SignalR JSON protocol with RS delimiters)
 app.all('/ws/dashboard/negotiate', (req, res) => {
   const connectionId = Math.random().toString(36).slice(2, 10);
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
-  const protocol = forwardedProto || req.protocol || 'http';
-  const host = req.get('host') || req.hostname;
-  const baseUrl = `${protocol}://${host}`;
   // Return a negotiate-like payload compatible with @microsoft/signalr client
   res.json({
     connectionId,
@@ -185,7 +204,8 @@ app.all('/ws/dashboard/negotiate', (req, res) => {
     availableTransports: [
       { transport: 'WebSockets', transferFormats: ['Text'] }
     ],
-    url: `${baseUrl}/ws/dashboard`
+    // Keep relative so browser preserves https scheme under reverse proxy.
+    url: `/ws/dashboard`
   });
 });
 
