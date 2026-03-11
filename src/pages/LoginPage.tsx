@@ -15,13 +15,18 @@ export default function LoginPage() {
     if (isSubmitting) return;
     setError("");
     setIsSubmitting(true);
-    const user = await login(email, password);
-    setIsSubmitting(false);
-    if (!user) {
-      setError("Invalid credentials or suspended user.");
-      return;
+    try {
+      const user = await login(email, password);
+      if (!user) {
+        setError("Login failed. Please try again.");
+        return;
+      }
+      navigate(getDefaultRouteForUser(user));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Login failed. Please try again.");
+    } finally {
+      setIsSubmitting(false);
     }
-    navigate(getDefaultRouteForUser(user));
   };
 
   return (

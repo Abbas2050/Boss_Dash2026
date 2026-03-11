@@ -9,6 +9,9 @@ import { WebSocketServer } from 'ws';
 import marketingApi from './api.js';
 import agentRouter from "./agent/router.js";
 import authRouter from "./auth/router.js";
+import docusignRouter from "./docusign/router.js";
+import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
+import oauthRouter from "./oauth/router.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -214,6 +217,8 @@ app.all('/ws/dashboard/negotiate', (req, res) => {
 app.use('/api', marketingApi);
 app.use("/api/agent", agentRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/docusign", docusignRouter);
+app.use("/oauth", oauthRouter);
 
 // Serve the development copy of account-alerts.html for quick testing
 app.get('/account-alerts.html', (req, res) => {
@@ -265,4 +270,5 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () => {
   console.log(`Express + mock SignalR server running on http://localhost:${PORT}`);
+  startDocusignApprovedSyncScheduler();
 });

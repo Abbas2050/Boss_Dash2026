@@ -26,6 +26,19 @@ type SessionPayload = {
   at: number;
 };
 
+type AuthApiError = {
+  error?: string;
+  message?: string;
+};
+
+function mapLoginErrorMessage(status: number, code?: string): string {
+  if (code === "email_password_required") return "Email and password are required.";
+  if (code === "invalid_credentials") return "Invalid email or password.";
+  if (code === "user_suspended") return "Your account is suspended. Contact an administrator.";
+  if (status === 500) return "Login service is temporarily unavailable. Please try again.";
+  return "Login failed. Please try again.";
+}
+
 function read<T>(key: string): T | null {
   try {
     const raw = localStorage.getItem(key);
@@ -135,7 +148,16 @@ export async function login(identity: string, password: string): Promise<AuthUse
     },
     body: JSON.stringify({ email, password }),
   });
-  if (!res.ok) return null;
+  if (!res.ok) {
+    let code = "";
+    try {
+      const json = (await res.json()) as AuthApiError;
+      code = String(json?.error || "");
+    } catch {
+      // Ignore parse issues and fallback to status-based message.
+    }
+    throw new Error(mapLoginErrorMessage(res.status, code));
+  }
 
   const payload = (await res.json()) as { token: string; user: AuthUser };
   if (!payload?.token || !payload?.user) return null;

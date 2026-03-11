@@ -16,10 +16,15 @@ import {
   Camera,
   Maximize2,
   Minimize2,
+  FileSignature,
+  Clock3,
+  CircleCheckBig,
+  Activity,
 } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { fetchUsers, fetchTransactions, fetchAccounts } from '@/lib/api';
+import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 
@@ -87,6 +92,9 @@ export function BackOfficeDepartment({
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
   const [cashflowFullscreen, setCashflowFullscreen] = useState(false);
   const [snapshottingCashflow, setSnapshottingCashflow] = useState(false);
+  const [docusignOverview, setDocusignOverview] = useState<DocusignOverview | null>(null);
+  const [docusignLoading, setDocusignLoading] = useState(false);
+  const [docusignError, setDocusignError] = useState<string | null>(null);
 
   const formatTxDate = (value: string) => {
     const d = new Date(value);
@@ -510,6 +518,46 @@ export function BackOfficeDepartment({
     return () => clearInterval(iv);
   }, [refreshKey]);
 
+  useEffect(() => {
+    if (variant !== 'full') return;
+
+    let cancelled = false;
+
+    const loadDocusignOverview = async () => {
+      try {
+        if (!cancelled) setDocusignLoading(true);
+        const data = await fetchDocusignOverview();
+        if (cancelled) return;
+        setDocusignOverview(data);
+        setDocusignError(null);
+      } catch (error: any) {
+        if (cancelled) return;
+        setDocusignError(error?.message || 'Failed to load Docusign status.');
+      } finally {
+        if (!cancelled) setDocusignLoading(false);
+      }
+    };
+
+    loadDocusignOverview();
+    const iv = setInterval(loadDocusignOverview, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [refreshKey, variant]);
+
+  const formatStatusDate = (value: string | null | undefined) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString(undefined, {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
   return (
     <DepartmentCard title="Back Office" icon={Settings}>
       <div className="space-y-4">
@@ -840,6 +888,136 @@ export function BackOfficeDepartment({
                 </div>
               </>
             )}
+            </div>
+          </section>
+        )}
+
+        {variant === 'full' && (
+          <section className="rounded-2xl border border-border/50 bg-card/40 p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">4. Docusign</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">Signature Operations</div>
+              </div>
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <Activity className={`h-3.5 w-3.5 ${docusignLoading ? 'animate-pulse' : ''}`} />
+                {docusignLoading ? 'Refreshing' : formatStatusDate(docusignOverview?.system?.latestUpdatedAt)}
+              </div>
+            </div>
+
+            {docusignError && (
+              <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                {docusignError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+              <div className="rounded-lg border border-sky-500/20 bg-sky-500/10 p-3">
+                <div className="flex items-center gap-2 text-[11px] text-sky-700 dark:text-sky-300">
+                  <FileSignature className="h-3.5 w-3.5" /> Sent for Signature
+                </div>
+                <div className="mt-2 font-mono text-2xl font-semibold text-sky-900 dark:text-sky-100">{docusignOverview?.summary.sent ?? 0}</div>
+              </div>
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
+                <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-300">
+                  <Clock3 className="h-3.5 w-3.5" /> Pending Signature
+                </div>
+                <div className="mt-2 font-mono text-2xl font-semibold text-amber-900 dark:text-amber-100">{docusignOverview?.summary.pending ?? 0}</div>
+              </div>
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+                <div className="flex items-center gap-2 text-[11px] text-emerald-700 dark:text-emerald-300">
+                  <CircleCheckBig className="h-3.5 w-3.5" /> Signed Completed
+                </div>
+                <div className="mt-2 font-mono text-2xl font-semibold text-emerald-900 dark:text-emerald-100">{docusignOverview?.summary.completed ?? 0}</div>
+              </div>
+              <div className="rounded-lg border border-primary/20 bg-primary/10 p-3">
+                <div className="text-[11px] text-muted-foreground">System Status</div>
+                <div className={`mt-2 inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${docusignOverview?.system.status === 'operational' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'}`}>
+                  {docusignOverview?.system.status === 'operational' ? 'Working Fine' : 'Needs Attention'}
+                </div>
+                <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                  <div>Core Config: {docusignOverview?.system.hasCoreConfig ? 'Yes' : 'No'}</div>
+                  <div>OAuth: {docusignOverview?.system.oauthEnabled ? 'Enabled' : 'Disabled'}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] text-violet-800 dark:text-violet-300">CRM Applications (Status: Pending)</div>
+                <div className="font-mono text-lg font-semibold text-violet-900 dark:text-violet-100">{docusignOverview?.pendingApplicationsCount ?? 0}</div>
+              </div>
+              {docusignOverview?.system.pendingApplicationsError && (
+                <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+                  Pending applications fetch issue: {docusignOverview.system.pendingApplicationsError}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <div className="rounded-lg border border-amber-500/20 bg-background/40 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
+                  <Clock3 className="h-3.5 w-3.5" /> Pending Clients
+                </div>
+                <div className="max-h-56 space-y-2 overflow-y-auto">
+                  {(docusignOverview?.pendingClients || []).length === 0 && (
+                    <div className="text-[11px] text-muted-foreground">No pending signatures.</div>
+                  )}
+                  {(docusignOverview?.pendingClients || []).map((client) => (
+                    <div key={`ds-pending-${client.applicationId}`} className="rounded-md border border-border/40 bg-secondary/20 p-2 text-xs">
+                      <div className="font-medium text-foreground">{client.name || client.email}</div>
+                      <div className="text-muted-foreground">{client.email}</div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                        <span>App ID: {client.applicationId}</span>
+                        <span>{formatStatusDate(client.updatedAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-emerald-500/20 bg-background/40 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                  <CircleCheckBig className="h-3.5 w-3.5" /> Completed Signatures
+                </div>
+                <div className="max-h-56 space-y-2 overflow-y-auto">
+                  {(docusignOverview?.completedClients || []).length === 0 && (
+                    <div className="text-[11px] text-muted-foreground">No completed signatures yet.</div>
+                  )}
+                  {(docusignOverview?.completedClients || []).map((client) => (
+                    <div key={`ds-completed-${client.applicationId}`} className="rounded-md border border-border/40 bg-secondary/20 p-2 text-xs">
+                      <div className="font-medium text-foreground">{client.name || client.email}</div>
+                      <div className="text-muted-foreground">{client.email}</div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                        <span>App ID: {client.applicationId}</span>
+                        <span>{formatStatusDate(client.updatedAt)}</span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">CRM Upload: {client.crmUploadStatus || 'pending'}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-violet-500/20 bg-background/40 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-violet-700 dark:text-violet-300">
+                  <Users className="h-3.5 w-3.5" /> Pending Applications
+                </div>
+                <div className="max-h-56 space-y-2 overflow-y-auto">
+                  {(docusignOverview?.pendingApplications || []).length === 0 && (
+                    <div className="text-[11px] text-muted-foreground">No pending applications in CRM.</div>
+                  )}
+                  {(docusignOverview?.pendingApplications || []).map((app) => (
+                    <div key={`ds-app-pending-${app.applicationId}`} className="rounded-md border border-border/40 bg-secondary/20 p-2 text-xs">
+                      <div className="font-medium text-foreground">{app.fullName || `User ID ${app.userId ?? '-'}`}</div>
+                      <div className="text-muted-foreground">Created By: {app.createdBy || '-'}</div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                        <span>App ID: {app.applicationId}</span>
+                        <span>{formatStatusDate(app.createdAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </section>
         )}

@@ -328,7 +328,8 @@ export function AccountsDepartment({
   }, [refreshKey, isLpMode]);
 
   const periodLabel = 'Today';
-  const lpPlusPspDifference = lpEquitySummary.difference + metrics.totalBalance;
+  const lpPlusPspDifference = lpEquitySummary.difference + metrics.totalBalance + cryptoReceivable + bankReceivable;
+  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -363,8 +364,16 @@ export function AccountsDepartment({
               </div>
             </div>
             <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20">
-              <div className="text-xs text-muted-foreground mb-1">equity difference</div>
-              <div className={`font-mono font-semibold text-lg ${lpPlusPspDifference >= 0 ? 'text-success' : 'text-destructive'}`}>
+              <div
+                className="text-xs text-muted-foreground mb-1 cursor-help"
+                title={equityDifferenceTooltip}
+              >
+                Equity Difference
+              </div>
+              <div
+                className={`font-mono font-semibold text-lg ${lpPlusPspDifference >= 0 ? 'text-success' : 'text-destructive'}`}
+                title={equityDifferenceTooltip}
+              >
                 ${lpPlusPspDifference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
             </div>
