@@ -219,13 +219,15 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       return res.status(401).json({ ok: false, error: "unauthorized_webhook", reason: authCheck.reason });
     }
 
-    const applicationId = String(req.body?.applicationId || req.body?.id || "").trim();
-    let userId = Number(req.body?.userId || req.body?.user?.id || 0) || null;
-    let signerEmail = String(req.body?.email || req.body?.applicantEmail || "").trim().toLowerCase();
-    let signerName = String(req.body?.name || req.body?.applicantName || "").trim();
-    const templateId = String(req.body?.templateId || "").trim() || undefined;
-    const roleName = String(req.body?.roleName || req.body?.templateRole || "").trim() || undefined;
-    const docType = String(req.body?.docType || "approve-form").trim() || "approve-form";
+    // Merge body and query params — FXBO may send via form-encoded body, JSON body, or query string
+    const p = Object.assign({}, req.query || {}, req.body || {});
+    const applicationId = String(p.applicationId || p.id || "").trim();
+    let userId = Number(p.userId || p.user?.id || 0) || null;
+    let signerEmail = String(p.email || p.applicantEmail || "").trim().toLowerCase();
+    let signerName = String(p.name || p.applicantName || "").trim();
+    const templateId = String(p.templateId || "").trim() || undefined;
+    const roleName = String(p.roleName || p.templateRole || "").trim() || undefined;
+    const docType = String(p.docType || "approve-form").trim() || "approve-form";
 
     if ((!signerEmail || !signerName) && applicationId) {
       const applicationApplicant = await fetchCrmApplicationApplicantById(applicationId);
