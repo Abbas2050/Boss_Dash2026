@@ -233,8 +233,8 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // SPA fallback: serve dist/index.html for all non-API GET requests
-// This allows React Router to handle client-side navigation
-app.get('*', (req, res) => {
+// Express 5 requires /*splat instead of bare * wildcard
+app.get('/*splat', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
