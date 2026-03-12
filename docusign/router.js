@@ -95,6 +95,24 @@ function getApplicationFullName(application) {
   return value;
 }
 
+function isLikelyPlaceholder(value) {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  return /^%[^%]+%$/.test(v) || /^\{\{[^}]+\}\}$/.test(v);
+}
+
+function normalizeWebhookText(value) {
+  const v = String(value || "").trim();
+  return isLikelyPlaceholder(v) ? "" : v;
+}
+
+function normalizeWebhookEmail(value) {
+  const email = normalizeWebhookText(value).toLowerCase();
+  // Keep validation intentionally simple; invalid values should trigger CRM fallback.
+  if (!email || !email.includes("@") || email.startsWith("%") || email.includes(" ")) return "";
+  return email;
+}
+
 router.get("/health", async (_req, res) => {
   try {
     await initDocusignStore();
@@ -223,8 +241,8 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
     const p = Object.assign({}, req.query || {}, req.body || {});
     const applicationId = String(p.applicationId || p.id || "").trim();
     let userId = Number(p.userId || p.user?.id || 0) || null;
-    let signerEmail = String(p.email || p.applicantEmail || "").trim().toLowerCase();
-    let signerName = String(p.name || p.applicantName || "").trim();
+    let signerEmail = normalizeWebhookEmail(p.email || p.applicantEmail || "");
+    let signerName = normalizeWebhookText(p.name || p.applicantName || "");
     const templateId = String(p.templateId || "").trim() || undefined;
     const roleName = String(p.roleName || p.templateRole || "").trim() || undefined;
     const docType = String(p.docType || "approve-form").trim() || "approve-form";
@@ -233,16 +251,16 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       const applicationApplicant = await fetchCrmApplicationApplicantById(applicationId);
       if (applicationApplicant) {
         if (!userId && applicationApplicant.userId) userId = applicationApplicant.userId;
-        if (!signerEmail) signerEmail = applicationApplicant.email;
-        if (!signerName) signerName = applicationApplicant.fullName;
+        if (!signerEmail) signerEmail = normalizeWebhookEmail(applicationApplicant.email);
+        if (!signerName) signerName = normalizeWebhookText(applicationApplicant.fullName);
       }
     }
 
     if ((!signerEmail || !signerName) && userId) {
       const crmUser = await fetchCrmUserById(userId);
       if (crmUser) {
-        if (!signerEmail) signerEmail = crmUser.email;
-        if (!signerName) signerName = `${crmUser.firstName} ${crmUser.lastName}`.trim();
+        if (!signerEmail) signerEmail = normalizeWebhookEmail(crmUser.email);
+        if (!signerName) signerName = normalizeWebhookText(`${crmUser.firstName} ${crmUser.lastName}`.trim());
       }
     }
 
