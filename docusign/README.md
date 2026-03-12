@@ -107,7 +107,7 @@ The integration will try common FXBO application endpoints first to resolve appl
 
 1. Receives approved application webhook from FXBO.
 2. Creates and sends a DocuSign envelope from template.
-3. Stores mapping in SQLite (`docusign_envelope_map` in `crm_mt5.db`).
+3. Stores mapping in MySQL (`docusign_envelope_map` in `AUTH_DB_NAME`).
 4. Accepts DocuSign Connect status updates and tracks envelope status.
 
 ## Real CRM approved sync flow

@@ -1,54 +1,85 @@
-import sqlite3 from "sqlite3";
+import mysql from "mysql2/promise";
 
-const sqlite = sqlite3.verbose();
-const db = new sqlite.Database("./crm_mt5.db");
+const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
+const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
+const AUTH_DB_NAME = process.env.AUTH_DB_NAME;
+const AUTH_DB_USER = process.env.AUTH_DB_USER;
+const AUTH_DB_PASSWORD = process.env.AUTH_DB_PASSWORD;
 
-function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) return reject(err);
-      resolve({ lastID: this.lastID, changes: this.changes });
-    });
-  });
-}
-
-function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) return reject(err);
-      resolve(row || null);
-    });
-  });
-}
-
-function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows || []);
-    });
-  });
-}
+let pool = null;
 
 let initialized = false;
 
+function hasDbConfig() {
+  return Boolean(AUTH_DB_HOST && AUTH_DB_NAME && AUTH_DB_USER && AUTH_DB_PASSWORD);
+}
+
+async function query(sql, params = []) {
+  if (!pool) {
+    throw new Error("DocuSign DB pool is not initialized.");
+  }
+  const [rows] = await pool.query(sql, params);
+  return rows;
+}
+
+async function run(sql, params = []) {
+  if (!pool) {
+    throw new Error("DocuSign DB pool is not initialized.");
+  }
+  const [result] = await pool.query(sql, params);
+  return {
+    lastID: result?.insertId ?? null,
+    changes: result?.affectedRows ?? 0,
+  };
+}
+
+async function get(sql, params = []) {
+  const rows = await query(sql, params);
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+async function all(sql, params = []) {
+  const rows = await query(sql, params);
+  return Array.isArray(rows) ? rows : [];
+}
+
 export async function initDocusignStore() {
   if (initialized) return;
+
+  if (!hasDbConfig()) {
+    throw new Error("DocuSign DB env vars are missing. Expected AUTH_DB_HOST, AUTH_DB_NAME, AUTH_DB_USER, AUTH_DB_PASSWORD.");
+  }
+
+  if (!pool) {
+    pool = mysql.createPool({
+      host: AUTH_DB_HOST,
+      port: AUTH_DB_PORT,
+      database: AUTH_DB_NAME,
+      user: AUTH_DB_USER,
+      password: AUTH_DB_PASSWORD,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+  }
+
   await run(`
     CREATE TABLE IF NOT EXISTS docusign_envelope_map (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id TEXT NOT NULL UNIQUE,
-      applicant_email TEXT NOT NULL,
-      applicant_name TEXT,
-      envelope_id TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'sent',
-      template_id TEXT,
-      doc_type TEXT,
-      crm_upload_status TEXT NOT NULL DEFAULT 'pending',
-      raw_payload TEXT,
-      last_error TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      application_id VARCHAR(255) NOT NULL,
+      applicant_email VARCHAR(255) NOT NULL,
+      applicant_name VARCHAR(255) NULL,
+      envelope_id VARCHAR(255) NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'sent',
+      template_id VARCHAR(255) NULL,
+      doc_type VARCHAR(100) NULL,
+      crm_upload_status VARCHAR(50) NOT NULL DEFAULT 'pending',
+      raw_payload LONGTEXT NULL,
+      last_error TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_docusign_application_id (application_id)
     )
   `);
 
@@ -92,14 +123,14 @@ export async function upsertEnvelopeMap(input) {
         raw_payload,
         updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(application_id) DO UPDATE SET
-        applicant_email = excluded.applicant_email,
-        applicant_name = excluded.applicant_name,
-        envelope_id = excluded.envelope_id,
-        status = excluded.status,
-        template_id = excluded.template_id,
-        doc_type = excluded.doc_type,
-        raw_payload = excluded.raw_payload,
+      ON DUPLICATE KEY UPDATE
+        applicant_email = VALUES(applicant_email),
+        applicant_name = VALUES(applicant_name),
+        envelope_id = VALUES(envelope_id),
+        status = VALUES(status),
+        template_id = VALUES(template_id),
+        doc_type = VALUES(doc_type),
+        raw_payload = VALUES(raw_payload),
         updated_at = CURRENT_TIMESTAMP
     `,
     [
