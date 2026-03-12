@@ -17,7 +17,7 @@ function canUseLiveAgent(payload) {
   if (!payload) return false;
   if (payload.role === "Super Admin") return true;
   const access = Array.isArray(payload.access) ? payload.access : [];
-  return access.includes("LiveAgent");
+  return access.includes("LiveAgent") || access.includes("Backoffice");
 }
 
 function requireLiveAgentAccess(req, res, next) {
