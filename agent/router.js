@@ -15,7 +15,7 @@ function parseToken(req) {
 
 function canUseLiveAgent(payload) {
   if (!payload) return false;
-  if (payload.role === "Super Admin") return true;
+  if (String(payload.role || "").trim().toLowerCase() === "super admin") return true;
   const access = Array.isArray(payload.access) ? payload.access : [];
   return access.includes("LiveAgent") || access.includes("Backoffice");
 }
@@ -31,7 +31,10 @@ function requireLiveAgentAccess(req, res, next) {
     if (!canUseLiveAgent(payload)) return res.status(403).json({ error: "forbidden" });
     req.auth = payload;
     next();
-  } catch {
+  } catch (error) {
+    if (error?.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "expired_token" });
+    }
     return res.status(401).json({ error: "invalid_token" });
   }
 }

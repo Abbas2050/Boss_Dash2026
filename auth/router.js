@@ -15,7 +15,7 @@ const AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET;
 const SEED_NAME = process.env.AUTH_SEED_NAME || "Abbas";
 const SEED_EMAIL = process.env.AUTH_SEED_EMAIL || "abbas@skylinks.capital";
 const SEED_PASSWORD = process.env.AUTH_SEED_PASSWORD || "admin123";
-const JWT_EXPIRES_IN = process.env.AUTH_JWT_EXPIRES_IN || "12h";
+const JWT_EXPIRES_IN = process.env.AUTH_JWT_EXPIRES_IN || "30d";
 
 let pool = null;
 let initPromise = null;
@@ -113,22 +113,49 @@ function signUserToken(user) {
   );
 }
 
-function authRequired(req, res, next) {
+async function authRequired(req, res, next) {
   const raw = req.headers.authorization || "";
   const token = raw.startsWith("Bearer ") ? raw.slice(7) : "";
   if (!token) return res.status(401).json({ error: "missing_token" });
+
   try {
+    await ensureInitialized();
+
     const payload = jwt.verify(token, AUTH_JWT_SECRET);
-    req.auth = payload;
+    const [rows] = await pool.query(
+      "SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1",
+      [payload.sub]
+    );
+
+    if (!rows.length) return res.status(401).json({ error: "user_not_found" });
+
+    const user = toAuthUser(rows[0]);
+    if (user.status !== "active") return res.status(403).json({ error: "user_suspended" });
+
+    // Always authorize based on latest DB role/access, not stale JWT claims.
+    req.auth = {
+      ...payload,
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      access: user.access,
+      status: user.status,
+      name: user.name,
+    };
+
     next();
-  } catch {
+  } catch (error) {
+    if (error?.name === "TokenExpiredError") {
+      return res.status(401).json({ error: "expired_token" });
+    }
     return res.status(401).json({ error: "invalid_token" });
   }
 }
 
 function hasSettingsAccess(payload) {
   const access = Array.isArray(payload?.access) ? payload.access : [];
-  return payload?.role === "Super Admin" || access.includes("Settings");
+  const role = String(payload?.role || "").trim().toLowerCase();
+  return role === "super admin" || access.includes("Settings");
 }
 
 router.post("/login", async (req, res) => {
