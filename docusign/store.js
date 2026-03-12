@@ -184,7 +184,7 @@ export async function listEnvelopeMaps(limit = 100) {
     `
       SELECT *
       FROM docusign_envelope_map
-      ORDER BY datetime(updated_at) DESC, id DESC
+      ORDER BY updated_at DESC, id DESC
       LIMIT ?
     `,
     [safeLimit]
