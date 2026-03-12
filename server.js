@@ -104,6 +104,7 @@ app.use('/api/wallet', (req, res) =>
   '/Report',
   '/Deal',
   '/Position',
+  '/Bonus',
   '/Account',
   '/ContractSize',
   '/api/ContractSize',

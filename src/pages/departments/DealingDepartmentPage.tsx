@@ -1,10 +1,10 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Bell, Camera, Info, Maximize2, Minimize2, RefreshCw } from "lucide-react";
+﻿import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Bell, Camera, ChevronDown, ChevronRight, Info, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/dealingApi";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
 import { hasAccess } from "@/lib/auth";
-import { DEALING_TABS } from "@/lib/permissions";
+import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
   ALERT_EVENT_KEYS,
@@ -52,6 +52,122 @@ type CoverageData = {
     clientPositions?: number;
     lpPositions?: number;
     lpNets?: Record<string, number>;
+  };
+};
+
+type BonusDashboardResponse = {
+  positionMatchTable?: CoverageData;
+  PositionMatchTable?: CoverageData;
+  equity?: {
+    client?: {
+      totalEquity?: number;
+      totalBalance?: number;
+      totalCredit?: number;
+      totalMargin?: number;
+      accounts?: Array<{
+        login?: number | string;
+        equity?: number;
+        balance?: number;
+        credit?: number;
+        margin?: number;
+        marginFree?: number;
+        marginLevel?: number;
+      }>;
+    };
+    lp?: {
+      equity?: number;
+      balance?: number;
+      margin?: number;
+      freeMargin?: number;
+      marginLevel?: number;
+    };
+    difference?: number;
+  };
+};
+
+type BonusStatusResponse = {
+  xtbConnected?: boolean;
+  bonusManagerConnected?: boolean;
+};
+
+type BonusPnlSummaryResponse = {
+  grossPnl?: number;
+  lpReceivable?: number;
+  lpRealizedPnl?: number;
+  lpRealizedSwap?: number;
+  fromUtc?: string;
+  toUtc?: string;
+};
+
+type BonusPnlDailyResponse = {
+  fromUtc?: string;
+  toUtc?: string;
+  grossPnl?: number;
+  client?: {
+    total?: number;
+    realizedPnl?: number;
+    realizedSwap?: number;
+    unrealizedPnl?: number;
+    unrealizedSwap?: number;
+    closedDealCount?: number;
+    openPositionCount?: number;
+  };
+  lp?: {
+    total?: number;
+    rawTotal?: number;
+    realizedPnl?: number;
+    realizedSwap?: number;
+    realizedCommission?: number;
+    unrealizedPnl?: number;
+    unrealizedSwap?: number;
+    closedDealCount?: number;
+    openPositionCount?: number;
+    closedDeals?: Array<{
+      deal?: number | string;
+      symbol?: string;
+      direction?: string;
+      volume?: number;
+      profit?: number;
+      swap?: number;
+      commission?: number;
+      comment?: string;
+      time?: string;
+    }>;
+    openPositions?: Array<{
+      ticket?: number | string;
+      time?: string;
+      symbol?: string;
+      direction?: string;
+      volume?: number;
+      openPrice?: number;
+      currentPrice?: number;
+      profit?: number;
+      swap?: number;
+    }>;
+  };
+  cost?: {
+    creditCost?: number;
+    creditSettled?: number;
+    creditUnsettled?: number;
+    withdrawalCharges?: number;
+    withdrawalTotal?: number;
+    withdrawalCount?: number;
+    settledTransactionCount?: number;
+    unsettledAccountCount?: number;
+    settledDetails?: Array<{
+      login?: number | string;
+      dealTicket?: number | string;
+      actionType?: string;
+      amount?: number;
+      comment?: string;
+      time?: string;
+    }>;
+    unsettledDetails?: Array<{
+      login?: number | string;
+      balance?: number;
+      equity?: number;
+      margin?: number;
+    }>;
   };
 };
 
@@ -661,6 +777,12 @@ const toYmd = (date: Date) => {
 const toReadable = (date: Date) =>
   date.toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" });
 
+const pickProp = <T,>(obj: any, camel: string, pascal: string, fallback: T): T => {
+  if (obj == null || typeof obj !== "object") return fallback;
+  const value = obj[camel] ?? obj[pascal];
+  return (value ?? fallback) as T;
+};
+
 const isGoldSymbol = (symbol: string) => {
   const s = String(symbol || "").toUpperCase();
   return s === "XAUUSD" || s.startsWith("GOLD");
@@ -700,6 +822,17 @@ const formatMaybeNumber = (value: unknown, digits = 2) => {
   const n = Number(value);
   if (!Number.isFinite(n)) return "-";
   return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+
+const signedValueClass = (value: number) => {
+  if (value > 0.005) return "text-emerald-700 dark:text-emerald-300";
+  if (value < -0.005) return "text-rose-700 dark:text-rose-300";
+  return "text-slate-700 dark:text-slate-300";
+};
+
+const signedValueText = (value: number, digits = 2) => {
+  if (!Number.isFinite(value)) return "-";
+  return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
 
 const REBATE_RULES_SAMPLE_CSV = `symbol,rate_per_lot
@@ -775,6 +908,7 @@ const escapeCsv = (value: string | number | null | undefined) => {
 };
 
 const ALERT_EVENT_SET = new Set<string>(ALERT_EVENT_KEYS as readonly string[]);
+type BonusSubTab = (typeof BONUS_SUB_TABS)[number];
 
 const getAlertsHubConfig = () => {
   const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
@@ -846,6 +980,44 @@ export function DealingDepartmentPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
   const [metricsRefreshKey, setMetricsRefreshKey] = useState(0);
+  const [bonusSubTab, setBonusSubTab] = useState<BonusSubTab>("Bonus Coverage");
+  const [bonusShowOverview, setBonusShowOverview] = useState(true);
+  const [bonusDashboard, setBonusDashboard] = useState<BonusDashboardResponse | null>(null);
+  const [bonusStatus, setBonusStatus] = useState<BonusStatusResponse | null>(null);
+  const [bonusPnlSummary, setBonusPnlSummary] = useState<BonusPnlSummaryResponse | null>(null);
+  const [bonusPnlDaily, setBonusPnlDaily] = useState<BonusPnlDailyResponse | null>(null);
+  const [bonusPnlExpanded, setBonusPnlExpanded] = useState<{
+    lpClosedDeals: boolean;
+    lpOpenPositions: boolean;
+    creditSettled: boolean;
+    creditUnsettled: boolean;
+  }>({
+    lpClosedDeals: false,
+    lpOpenPositions: false,
+    creditSettled: false,
+    creditUnsettled: false,
+  });
+  const [bonusEquityClientTableExpanded, setBonusEquityClientTableExpanded] = useState(true);
+  const [bonusLoading, setBonusLoading] = useState(false);
+  const [bonusError, setBonusError] = useState<string | null>(null);
+  const [bonusLastUpdated, setBonusLastUpdated] = useState<Date | null>(null);
+  const [bonusRefreshKey, setBonusRefreshKey] = useState(0);
+  // Bonus table search/sort/page state
+  const [bonusCoverageSearch, setBonusCoverageSearch] = useState("");
+  const [bonusCoverageSort, setBonusCoverageSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "symbol", dir: "asc" });
+  const [bonusCoveragePage, setBonusCoveragePage] = useState(0);
+  const [bonusRiskSearch, setBonusRiskSearch] = useState("");
+  const [bonusRiskSort, setBonusRiskSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "uncovered", dir: "desc" });
+  const [bonusRiskPage, setBonusRiskPage] = useState(0);
+  const [bonusPnlDealsSearch, setBonusPnlDealsSearch] = useState("");
+  const [bonusPnlDealsSort, setBonusPnlDealsSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "profit", dir: "asc" });
+  const [bonusPnlDealsPage, setBonusPnlDealsPage] = useState(0);
+  const [bonusPnlPosSearch, setBonusPnlPosSearch] = useState("");
+  const [bonusPnlPosSort, setBonusPnlPosSort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "profit", dir: "asc" });
+  const [bonusPnlPosPage, setBonusPnlPosPage] = useState(0);
+  const [bonusEquitySearch, setBonusEquitySearch] = useState("");
+  const [bonusEquitySort, setBonusEquitySort] = useState<{ key: string; dir: "asc" | "desc" }>({ key: "equity", dir: "desc" });
+  const [bonusEquityPage, setBonusEquityPage] = useState(0);
   const [contractSizes, setContractSizes] = useState<ContractSizeEntry[]>([]);
   const [contractSizesLoading, setContractSizesLoading] = useState(false);
   const [contractSizesError, setContractSizesError] = useState<string | null>(null);
@@ -918,6 +1090,8 @@ export function DealingDepartmentPage() {
       ? coverageLoading
       : activeMenu === "Metrics"
         ? metricsLoading
+      : activeMenu === "Bonus"
+        ? bonusLoading
       : activeMenu === "Contract Sizes"
         ? contractSizesLoading
       : activeMenu === "Swap Tracker"
@@ -1027,9 +1201,20 @@ export function DealingDepartmentPage() {
   }, [fromDate, toDate, refreshKey]);
 
   const menuItems = DEALING_TABS as readonly string[];
+  const bonusRootAccess = hasAccess("Dealing:Bonus");
+  const allowedBonusSubTabs = useMemo(
+    () => BONUS_SUB_TABS.filter((tab) => bonusRootAccess || hasAccess(`Dealing:${tab}`)),
+    [bonusRootAccess]
+  );
   const allowedMenuItems = useMemo(
-    () => menuItems.filter((item) => hasAccess(`Dealing:${item}`)),
-    [menuItems]
+    () =>
+      menuItems.filter((item) => {
+        if (item === "Bonus") {
+          return bonusRootAccess || allowedBonusSubTabs.length > 0;
+        }
+        return hasAccess(`Dealing:${item}`);
+      }),
+    [menuItems, bonusRootAccess, allowedBonusSubTabs]
   );
 
   useEffect(() => {
@@ -1039,6 +1224,26 @@ export function DealingDepartmentPage() {
     }
   }, [allowedMenuItems, activeMenu]);
 
+  useEffect(() => {
+    if (activeMenu !== "Bonus") return;
+    if (!allowedBonusSubTabs.length) return;
+    if (!allowedBonusSubTabs.includes(bonusSubTab)) {
+      setBonusSubTab(allowedBonusSubTabs[0]);
+    }
+  }, [activeMenu, allowedBonusSubTabs, bonusSubTab]);
+
+  useEffect(() => {
+    if (activeMenu !== "Bonus") return;
+    if (bonusSubTab !== "Bonus PNL") {
+      setBonusPnlExpanded({
+        lpClosedDeals: false,
+        lpOpenPositions: false,
+        creditSettled: false,
+        creditUnsettled: false,
+      });
+    }
+  }, [activeMenu, bonusSubTab]);
+
   const handlePageRefresh = () => {
     if (activeMenu === "Coverage" || activeMenu === "Risk Exposure") {
       setCoverageRefreshKey((k) => k + 1);
@@ -1046,6 +1251,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Metrics") {
       setMetricsRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Bonus") {
+      setBonusRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Contract Sizes") {
@@ -1513,6 +1722,8 @@ export function DealingDepartmentPage() {
     historyDealsData?.deals?.length,
     historyVolumeData?.items?.length,
     rebateCalcRows.length,
+    bonusSubTab,
+    bonusDashboard,
   ]);
 
   useEffect(() => {
@@ -2302,6 +2513,167 @@ export function DealingDepartmentPage() {
     };
   }, [activeMenu, nopRefreshKey]);
 
+  useEffect(() => {
+    if (activeMenu !== "Bonus") {
+      setBonusError(null);
+      return;
+    }
+
+    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+    const dashboardEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/dashboard` : "/Bonus/dashboard";
+    const statusEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/status` : "/Bonus/status";
+    const pnlSummaryEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-summary` : "/Bonus/pnl-summary";
+
+    let cancelled = false;
+
+    const loadBonus = async () => {
+      setBonusLoading(true);
+      setBonusError(null);
+      try {
+        const requests: Promise<Response>[] = [fetch(dashboardEndpoint)];
+        if (bonusSubTab === "Bonus Equity") {
+          requests.push(fetch(statusEndpoint));
+          requests.push(fetch(pnlSummaryEndpoint));
+        }
+        if (bonusSubTab === "Bonus PNL") {
+          requests.push(fetch(pnlSummaryEndpoint));
+          const params = new URLSearchParams({
+            from: toYmd(fromDate),
+            to: toYmd(toDate),
+          });
+          const pnlDailyEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-daily?${params}` : `/Bonus/pnl-daily?${params}`;
+          requests.push(fetch(pnlDailyEndpoint));
+        }
+
+        const settled = await Promise.allSettled(requests);
+        if (cancelled) return;
+
+        const dashboardResp = settled[0];
+        if (dashboardResp.status !== "fulfilled" || !dashboardResp.value.ok) {
+          const code = dashboardResp.status === "fulfilled" ? dashboardResp.value.status : "network";
+          throw new Error(`Bonus dashboard ${code}`);
+        }
+
+        const dashboardJson = (await dashboardResp.value.json()) as BonusDashboardResponse;
+        if (cancelled) return;
+        setBonusDashboard(dashboardJson || null);
+
+        let ptr = 1;
+        if (bonusSubTab === "Bonus Equity") {
+          const statusResp = settled[ptr++];
+          if (statusResp?.status === "fulfilled" && statusResp.value.ok) {
+            setBonusStatus((await statusResp.value.json()) as BonusStatusResponse);
+          } else {
+            setBonusStatus(null);
+          }
+
+          const pnlSummaryResp = settled[ptr++];
+          if (pnlSummaryResp?.status === "fulfilled" && pnlSummaryResp.value.ok) {
+            setBonusPnlSummary((await pnlSummaryResp.value.json()) as BonusPnlSummaryResponse);
+          } else {
+            setBonusPnlSummary(null);
+          }
+        }
+
+        if (bonusSubTab === "Bonus PNL") {
+          const pnlSummaryResp = settled[ptr++];
+          if (pnlSummaryResp?.status === "fulfilled" && pnlSummaryResp.value.ok) {
+            setBonusPnlSummary((await pnlSummaryResp.value.json()) as BonusPnlSummaryResponse);
+          } else {
+            setBonusPnlSummary(null);
+          }
+
+          const pnlDailyResp = settled[ptr++];
+          if (pnlDailyResp?.status === "fulfilled" && pnlDailyResp.value.ok) {
+            setBonusPnlDaily((await pnlDailyResp.value.json()) as BonusPnlDailyResponse);
+          } else {
+            const code = pnlDailyResp?.status === "fulfilled" ? pnlDailyResp.value.status : "network";
+            throw new Error(`Bonus PNL daily ${code}`);
+          }
+        } else {
+          setBonusPnlDaily(null);
+          if (bonusSubTab !== "Bonus Equity") {
+            setBonusPnlSummary(null);
+          }
+        }
+
+        setBonusLastUpdated(new Date());
+      } catch (e: any) {
+        if (!cancelled) setBonusError(e?.message || "Failed to load bonus data.");
+      } finally {
+        if (!cancelled) setBonusLoading(false);
+      }
+    };
+
+    void loadBonus();
+    const iv = bonusSubTab === "Bonus PNL" ? null : setInterval(() => void loadBonus(), 15000);
+
+    return () => {
+      cancelled = true;
+      if (iv) clearInterval(iv);
+    };
+  }, [activeMenu, bonusSubTab, bonusRefreshKey, fromDate, toDate]);
+
+  const bonusPositionMatchTable = useMemo(
+    () => pickProp<CoverageData | null>(bonusDashboard, "positionMatchTable", "PositionMatchTable", null),
+    [bonusDashboard]
+  );
+
+  const bonusCoverageRows = useMemo(() => {
+    const rows = Array.isArray(bonusPositionMatchTable?.rows) ? bonusPositionMatchTable.rows : [];
+    return [...rows]
+      .filter((row) => String(row.symbol || "").trim())
+      .sort((a, b) => String(a.symbol || "").localeCompare(String(b.symbol || "")));
+  }, [bonusPositionMatchTable]);
+
+  const bonusRiskRows = useMemo(() => {
+    return [...bonusCoverageRows].sort((a, b) => Math.abs(Number(b.uncovered) || 0) - Math.abs(Number(a.uncovered) || 0));
+  }, [bonusCoverageRows]);
+
+  const bonusLpNames = bonusPositionMatchTable?.lpNames || [];
+  const bonusTotals = bonusPositionMatchTable?.totals || { clientNet: 0, uncovered: 0, clientPositions: 0, lpPositions: 0, lpNets: {} };
+
+  const bonusRiskTotalUncoveredAbs = useMemo(
+    () => bonusRiskRows.reduce((sum, row) => sum + Math.abs(Number(row.uncovered) || 0), 0),
+    [bonusRiskRows]
+  );
+
+  const bonusRiskUncoveredSymbols = useMemo(
+    () => bonusRiskRows.filter((row) => Math.abs(Number(row.uncovered) || 0) > 0.001).length,
+    [bonusRiskRows]
+  );
+
+  const bonusRiskLargest = bonusRiskRows[0] || null;
+
+  const bonusEquityClient = bonusDashboard?.equity?.client || {};
+  const bonusEquityLp = bonusDashboard?.equity?.lp || {};
+  const bonusEquityClientAccounts = Array.isArray(bonusEquityClient.accounts) ? bonusEquityClient.accounts : [];
+  const bonusEquityVisibleAccounts = bonusEquityClientAccounts.filter((account) => Math.abs(Number(account?.equity) || 0) > 0);
+
+  const bonusEquityClientWithdrawable = useMemo(() => {
+    return bonusEquityClientAccounts.reduce((sum, account) => {
+      const balance = Number(account?.balance) || 0;
+      if (balance < 0) return sum;
+      const equity = Number(account?.equity) || 0;
+      const credit = Number(account?.credit) || 0;
+      return sum + (equity - credit);
+    }, 0);
+  }, [bonusEquityClientAccounts]);
+
+  const bonusEquityLpWithdrawable = Number(bonusEquityLp.equity) || 0;
+  const bonusEquityWithdrawableDifference = bonusEquityLpWithdrawable - bonusEquityClientWithdrawable;
+
+  const bonusClientMarginLevel = useMemo(() => {
+    const totalMargin = Number(bonusEquityClient.totalMargin) || 0;
+    const totalEquity = Number(bonusEquityClient.totalEquity) || 0;
+    if (totalMargin <= 0) return null;
+    return (totalEquity / totalMargin) * 100;
+  }, [bonusEquityClient.totalMargin, bonusEquityClient.totalEquity]);
+
+  const bonusPnlClient = bonusPnlDaily?.client || {};
+  const bonusPnlLp = bonusPnlDaily?.lp || {};
+  const bonusPnlCost = bonusPnlDaily?.cost || {};
+
   const summaryCards = useMemo(() => {
     if (activeMenu === "Rebate Calculator") {
       const totals = rebateCalcRows.reduce(
@@ -2358,6 +2730,46 @@ export function DealingDepartmentPage() {
         { label: "Total Equity", value: `$${(metricsData?.totals?.equity || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
         { label: "Total Margin", value: `$${(metricsData?.totals?.margin || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
         { label: "Avg Margin Level", value: `${avgMarginLevel.toFixed(2)}%` },
+      ];
+    }
+
+    if (activeMenu === "Bonus") {
+      if (bonusSubTab === "Bonus Coverage") {
+        return [
+          { label: "LPs", value: String(bonusPositionMatchTable?.lpNames?.length || 0) },
+          { label: "Symbols", value: String(bonusCoverageRows.length) },
+          { label: "Client Net", value: (Number(bonusPositionMatchTable?.totals?.clientNet || 0)).toFixed(2) },
+          { label: "Uncovered", value: (Number(bonusPositionMatchTable?.totals?.uncovered || 0)).toFixed(2) },
+        ];
+      }
+
+      if (bonusSubTab === "Bonus Risk") {
+        const totalUncovered = bonusRiskRows.reduce((sum, row) => sum + Math.abs(Number(row.uncovered) || 0), 0);
+        const largest = bonusRiskRows[0];
+        return [
+          { label: "LPs", value: String(bonusPositionMatchTable?.lpNames?.length || 0) },
+          { label: "Symbols", value: String(bonusRiskRows.length) },
+          { label: "Total Uncovered", value: totalUncovered.toFixed(2) },
+          { label: "Largest Exposure", value: largest ? `${largest.symbol} (${Math.abs(Number(largest.uncovered) || 0).toFixed(2)})` : "-" },
+        ];
+      }
+
+      if (bonusSubTab === "Bonus PNL") {
+        return [
+          { label: "Gross PnL", value: formatMaybeNumber(bonusPnlDaily?.grossPnl, 2) },
+          { label: "Client Total", value: formatMaybeNumber(bonusPnlDaily?.client?.total, 2) },
+          { label: "LP Total", value: formatMaybeNumber(bonusPnlDaily?.lp?.total, 2) },
+          { label: "LP Receivable", value: formatMaybeNumber(bonusPnlSummary?.lpReceivable, 2) },
+        ];
+      }
+
+      const bonusClient = bonusDashboard?.equity?.client || {};
+      const bonusLp = bonusDashboard?.equity?.lp || {};
+      return [
+        { label: "Client Equity", value: formatMaybeNumber(bonusClient.totalEquity, 2) },
+        { label: "LP Equity", value: formatMaybeNumber(bonusLp.equity, 2) },
+        { label: "Difference", value: formatMaybeNumber(bonusDashboard?.equity?.difference, 2) },
+        { label: "LP Receivable", value: formatMaybeNumber(bonusPnlSummary?.lpReceivable, 2) },
       ];
     }
 
@@ -2448,7 +2860,7 @@ export function DealingDepartmentPage() {
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
       { label: "Total Uncovered", value: (overviewData.coverage?.totals?.uncovered || 0).toFixed(2) },
     ];
-  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData, contractSizes]);
+  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData, contractSizes, bonusSubTab, bonusPositionMatchTable, bonusCoverageRows, bonusRiskRows, bonusPnlDaily, bonusPnlSummary, bonusDashboard]);
 
   const rebateSymbolTotals = useMemo(() => {
     const bySymbol = new Map<
@@ -2589,6 +3001,90 @@ export function DealingDepartmentPage() {
           <div className="mt-3 space-y-1.5">
             {allowedMenuItems.map((item) => {
               const active = activeMenu === item;
+              if (item === "Bonus") {
+                return (
+                  <div key={item}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveMenu("Bonus");
+                        setBonusShowOverview(true);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition ${
+                        active
+                          ? "border-violet-500/40 bg-violet-500/10 text-violet-800 dark:border-violet-400/50 dark:bg-violet-500/15 dark:text-violet-100"
+                          : "border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:text-slate-100"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className={`h-1.5 w-1.5 rounded-full ${bonusStatus?.xtbConnected && bonusStatus?.bonusManagerConnected ? "bg-emerald-400" : "bg-amber-400"}`} />
+                        Bonus
+                      </span>
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform ${active ? "rotate-0" : "-rotate-90"} ${active ? "text-violet-500 dark:text-violet-400" : "text-slate-400"}`} />
+                    </button>
+                    {active && allowedBonusSubTabs.length > 0 && (
+                      <div className="ml-3 mt-1 space-y-1 border-l-2 border-violet-500/20 pl-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBonusSubTab("Bonus Coverage");
+                            setBonusShowOverview(false);
+                          }}
+                          className={`w-full rounded-md px-2.5 py-1.5 text-left text-xs transition ${
+                            bonusSubTab === "Bonus Coverage"
+                              ? "bg-violet-500/15 font-semibold text-violet-700 dark:text-violet-200"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          Coverage
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBonusSubTab("Bonus Risk");
+                            setBonusShowOverview(false);
+                          }}
+                          className={`w-full rounded-md px-2.5 py-1.5 text-left text-xs transition ${
+                            bonusSubTab === "Bonus Risk"
+                              ? "bg-violet-500/15 font-semibold text-violet-700 dark:text-violet-200"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          Risk
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBonusSubTab("Bonus PNL");
+                            setBonusShowOverview(false);
+                          }}
+                          className={`w-full rounded-md px-2.5 py-1.5 text-left text-xs transition ${
+                            bonusSubTab === "Bonus PNL"
+                              ? "bg-violet-500/15 font-semibold text-violet-700 dark:text-violet-200"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          P&amp;L
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBonusSubTab("Bonus Equity");
+                            setBonusShowOverview(false);
+                          }}
+                          className={`w-full rounded-md px-2.5 py-1.5 text-left text-xs transition ${
+                            bonusSubTab === "Bonus Equity"
+                              ? "bg-violet-500/15 font-semibold text-violet-700 dark:text-violet-200"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+                          }`}
+                        >
+                          Equity
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              }
               return (
                 <button
                   key={item}
@@ -2658,7 +3154,7 @@ export function DealingDepartmentPage() {
                 </div>
               </div>
             </section>
-          ) : (
+          ) : activeMenu !== "Bonus" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs text-slate-600 dark:text-slate-400">
@@ -2694,20 +3190,22 @@ export function DealingDepartmentPage() {
                 </div>
               </div>
             </section>
-          )}
+          ) : null}
 
           {error && (
             <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>
           )}
 
-          <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {summaryCards.map((card) => (
-              <div key={card.label} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
-                <div className="text-xs text-slate-500 dark:text-slate-400">{card.label}</div>
-                <div className="mt-2 font-mono text-xl font-semibold text-slate-900 dark:text-slate-100">{card.value}</div>
-              </div>
-            ))}
-          </section>
+          {activeMenu !== "Bonus" && (
+            <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              {summaryCards.map((card) => (
+                <div key={card.label} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{card.label}</div>
+                  <div className="mt-2 font-mono text-xl font-semibold text-slate-900 dark:text-slate-100">{card.value}</div>
+                </div>
+              ))}
+            </section>
+          )}
 
           {activeMenu === "Coverage" ? (
             <section
@@ -3049,7 +3547,908 @@ export function DealingDepartmentPage() {
                 </div>
               </div>
             </section>
-          ) : activeMenu === "Contract Sizes" ? (
+          ) : activeMenu === "Bonus" ? (() => {
+            // ── shared helpers for bonus tables ──────────────────────────────
+            const TABLE_PAGE_SIZE = 20;
+            const bonusSortFn = (arr: Array<Record<string, any>>, key: string, dir: "asc" | "desc") =>
+              [...arr].sort((a, b) => {
+                const av = a[key]; const bv = b[key];
+                const an = Number(av); const bn = Number(bv);
+                const cmp = Number.isFinite(an) && Number.isFinite(bn) ? an - bn : String(av ?? "").localeCompare(String(bv ?? ""));
+                return dir === "asc" ? cmp : -cmp;
+              });
+
+            const SortTh = ({ col, label, sortState, onSort, className = "" }: { col: string; label: string; sortState: { key: string; dir: "asc" | "desc" }; onSort: (k: string) => void; className?: string }) => (
+              <th
+                className={`cursor-pointer select-none px-3 py-2.5 text-xs font-semibold uppercase tracking-wide transition hover:text-violet-400 ${className}`}
+                onClick={() => onSort(col)}
+              >
+                <span className="inline-flex items-center gap-1">
+                  {label}
+                  {sortState.key === col ? (sortState.dir === "asc" ? " ↑" : " ↓") : <span className="text-slate-600 dark:text-slate-600">⇅</span>}
+                </span>
+              </th>
+            );
+
+            const Pagination = ({ page, total, pageSize, onPage }: { page: number; total: number; pageSize: number; onPage: (p: number) => void }) => {
+              const pages = Math.ceil(total / pageSize);
+              if (pages <= 1) return null;
+              return (
+                <div className="flex items-center gap-2 px-2 py-2 text-xs text-slate-500 dark:text-slate-400">
+                  <button disabled={page === 0} onClick={() => onPage(0)} className="rounded px-1.5 py-0.5 hover:bg-slate-200 disabled:opacity-30 dark:hover:bg-slate-800">«</button>
+                  <button disabled={page === 0} onClick={() => onPage(page - 1)} className="rounded px-1.5 py-0.5 hover:bg-slate-200 disabled:opacity-30 dark:hover:bg-slate-800">‹</button>
+                  <span>Page {page + 1} / {pages}</span>
+                  <button disabled={page >= pages - 1} onClick={() => onPage(page + 1)} className="rounded px-1.5 py-0.5 hover:bg-slate-200 disabled:opacity-30 dark:hover:bg-slate-800">›</button>
+                  <button disabled={page >= pages - 1} onClick={() => onPage(pages - 1)} className="rounded px-1.5 py-0.5 hover:bg-slate-200 disabled:opacity-30 dark:hover:bg-slate-800">»</button>
+                  <span className="ml-2 text-slate-400">{total} rows</span>
+                </div>
+              );
+            };
+
+            // ── status badge ──────────────────────────────────────────────────
+            const connXtb = bonusStatus?.xtbConnected;
+            const connMgr = bonusStatus?.bonusManagerConnected;
+            const grossPnlVal = Number(bonusPnlDaily?.grossPnl ?? bonusPnlSummary?.grossPnl) || 0;
+            const clientEquity = Number(bonusEquityClient.totalEquity) || 0;
+            const lpEquity = Number(bonusEquityLp.equity) || 0;
+            const equityDiff = Number(bonusDashboard?.equity?.difference) || 0;
+            const totalClientPos = Number(bonusTotals.clientPositions) || 0;
+            const totalLpPos = Number(bonusTotals.lpPositions) || 0;
+
+            // ── OVERVIEW page ─────────────────────────────────────────────────
+            const OverviewPage = () => (
+              <div className="space-y-5">
+                {/* Header hero */}
+                <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-900 via-violet-800 to-indigo-900 p-6 text-white shadow-xl">
+                  <div className="pointer-events-none absolute -right-20 -top-20 h-72 w-72 rounded-full bg-white/5 blur-3xl" />
+                  <div className="pointer-events-none absolute -left-10 bottom-0 h-48 w-48 rounded-full bg-violet-400/10 blur-2xl" />
+                  <div className="relative">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div>
+                        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-violet-300">Bonus Department</div>
+                        <h2 className="mt-1 text-2xl font-bold">Bonus Manager Dashboard</h2>
+                        <p className="mt-1 text-sm text-violet-200">XTB / XOpenHub 50% profit-share model • Real-time exposure tracking</p>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${connXtb ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40" : "bg-rose-500/20 text-rose-300 ring-1 ring-rose-500/40"}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${connXtb ? "bg-emerald-400" : "bg-rose-400"} animate-pulse`} />
+                          XTB API {connXtb ? "Live" : "Offline"}
+                        </div>
+                        <div className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${connMgr ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-500/40" : "bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/40"}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${connMgr ? "bg-emerald-400" : "bg-amber-400"} animate-pulse`} />
+                          Bonus Mgr {connMgr ? "Active" : "Standby"}
+                        </div>
+                        {bonusLastUpdated && <span className="text-xs text-violet-300">Updated {bonusLastUpdated.toLocaleTimeString()}</span>}
+                        <button type="button" onClick={() => setBonusRefreshKey((k) => k + 1)} className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20 transition">
+                          <RefreshCw className={`h-3 w-3 ${bonusLoading ? "animate-spin" : ""}`} />
+                          Refresh
+                        </button>
+                      </div>
+                    </div>
+                    {/* Gross PnL hero metric */}
+                    <div className="mt-5 flex flex-wrap gap-4">
+                      <div className="rounded-xl bg-white/10 px-5 py-3 backdrop-blur-sm">
+                        <div className="text-[10px] uppercase tracking-widest text-violet-300">Monthly Gross PnL</div>
+                        <div className={`mt-1 text-3xl font-bold tabular-nums ${grossPnlVal >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signedValueText(grossPnlVal)}</div>
+                        <div className="mt-0.5 text-[10px] text-violet-300">{bonusPnlSummary?.fromUtc && `${bonusPnlSummary.fromUtc?.slice(0, 10)} – ${bonusPnlSummary.toUtc?.slice(0, 10)}`}</div>
+                      </div>
+                      <div className="rounded-xl bg-white/10 px-5 py-3 backdrop-blur-sm">
+                        <div className="text-[10px] uppercase tracking-widest text-violet-300">LP Receivable (×0.5)</div>
+                        <div className={`mt-1 text-3xl font-bold tabular-nums ${(Number(bonusPnlSummary?.lpReceivable) || 0) >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signedValueText(Number(bonusPnlSummary?.lpReceivable) || 0)}</div>
+                        <div className="mt-0.5 text-[10px] text-violet-300">PnL {signedValueText(Number(bonusPnlSummary?.lpRealizedPnl) || 0)} + Swap {signedValueText(Number(bonusPnlSummary?.lpRealizedSwap) || 0)}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* KPI grid */}
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  {[
+                    { label: "Client Equity", value: formatDollar(clientEquity), sub: `Bal ${formatDollar(Number(bonusEquityClient.totalBalance) || 0)}`, accent: "text-violet-600 dark:text-violet-300" },
+                    { label: "LP Equity (XTB)", value: formatDollar(lpEquity), sub: `Free ${formatDollar(Number(bonusEquityLp.freeMargin) || 0)}`, accent: "text-indigo-600 dark:text-indigo-300" },
+                    { label: "Equity Diff (LP−Client)", value: formatDollar(equityDiff), sub: equityDiff >= 0 ? "LP surplus" : "Client surplus", accent: equityDiff >= 0 ? "text-emerald-600 dark:text-emerald-300" : "text-rose-600 dark:text-rose-300" },
+                    { label: "Uncovered Exposure", value: `${bonusRiskTotalUncoveredAbs.toFixed(2)} lots`, sub: `${bonusRiskUncoveredSymbols} symbol${bonusRiskUncoveredSymbols !== 1 ? "s" : ""}`, accent: bonusRiskTotalUncoveredAbs > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600 dark:text-emerald-300" },
+                  ].map((kpi) => (
+                    <div key={kpi.label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+                      <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{kpi.label}</div>
+                      <div className={`mt-1.5 text-xl font-bold tabular-nums ${kpi.accent}`}>{kpi.value}</div>
+                      <div className="mt-0.5 text-xs text-slate-500">{kpi.sub}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Positions + Coverage row */}
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  {/* Open positions card */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Open Positions</div>
+                        <div className="text-[11px] text-slate-500">Client vs LP</div>
+                      </div>
+                      <button type="button" onClick={() => { setBonusSubTab("Bonus Risk"); setBonusShowOverview(false); }} className="rounded-md bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50">View Risk →</button>
+                    </div>
+                    <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-slate-800">
+                      <div className="p-5 text-center">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">Client</div>
+                        <div className="mt-2 text-3xl font-bold text-violet-700 dark:text-violet-300">{totalClientPos.toLocaleString()}</div>
+                        <div className="mt-1 text-xs text-slate-500">{bonusCoverageRows.length} symbols</div>
+                      </div>
+                      <div className="p-5 text-center">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">LP</div>
+                        <div className="mt-2 text-3xl font-bold text-indigo-700 dark:text-indigo-300">{totalLpPos.toLocaleString()}</div>
+                        <div className="mt-1 text-xs text-slate-500">{bonusLpNames.length} LP{bonusLpNames.length !== 1 ? "s" : ""}</div>
+                      </div>
+                    </div>
+                    {/* Coverage bar */}
+                    {(Number(bonusTotals.clientNet) || 0) !== 0 && (
+                      <div className="border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+                        <div className="mb-1 flex justify-between text-[10px] text-slate-500">
+                          <span>Coverage</span>
+                          <span className="font-semibold">{(() => { const cn = Number(bonusTotals.clientNet) || 0; const uc = Number(bonusTotals.uncovered) || 0; return cn === 0 ? "-" : `${(((cn - uc) / cn) * 100).toFixed(1)}%`; })()}</span>
+                        </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-500"
+                            style={{ width: `${Math.min(100, Math.max(0, (() => { const cn = Number(bonusTotals.clientNet) || 0; const uc = Number(bonusTotals.uncovered) || 0; return cn === 0 ? 0 : ((cn - uc) / cn) * 100; })()))}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Equity balance card */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Equity Balance</div>
+                        <div className="text-[11px] text-slate-500">Client vs LP withdrawable</div>
+                      </div>
+                      <button type="button" onClick={() => { setBonusSubTab("Bonus Equity"); setBonusShowOverview(false); }} className="rounded-md bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50">View Equity →</button>
+                    </div>
+                    <div className="grid grid-cols-2 divide-x divide-slate-100 dark:divide-slate-800">
+                      <div className="p-5">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">Client Withdrawable</div>
+                        <div className="mt-2 text-2xl font-bold text-violet-700 dark:text-violet-300">{formatDollar(bonusEquityClientWithdrawable)}</div>
+                        <div className="mt-1 text-xs text-slate-500">Equity − Credit − Margin</div>
+                      </div>
+                      <div className="p-5">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-400">LP Withdrawable</div>
+                        <div className="mt-2 text-2xl font-bold text-indigo-700 dark:text-indigo-300">{formatDollar(bonusEquityLpWithdrawable)}</div>
+                        <div className="mt-1 text-xs text-slate-500">Equity − Margin</div>
+                      </div>
+                    </div>
+                    <div className="border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-slate-500">Withdrawable difference (LP − Client)</span>
+                        <span className={`text-sm font-semibold ${bonusEquityWithdrawableDifference >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}>{formatDollar(bonusEquityWithdrawableDifference)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Top risk symbols */}
+                {bonusRiskRows.length > 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 dark:border-slate-800">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Top Risk Exposures</div>
+                        <div className="text-[11px] text-slate-500">Symbols with largest uncovered lots</div>
+                      </div>
+                      <button type="button" onClick={() => { setBonusSubTab("Bonus Coverage"); setBonusShowOverview(false); }} className="rounded-md bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:bg-violet-900/30 dark:text-violet-300 dark:hover:bg-violet-900/50">Full Coverage →</button>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                          <tr>
+                            <th className="px-4 py-2.5 text-left font-semibold uppercase">Symbol</th>
+                            <th className="px-4 py-2.5 text-left font-semibold uppercase">Dir</th>
+                            <th className="px-4 py-2.5 text-right font-semibold uppercase">Client Net</th>
+                            <th className="px-4 py-2.5 text-right font-semibold uppercase">Uncovered</th>
+                            <th className="px-4 py-2.5 text-right font-semibold uppercase">Coverage %</th>
+                            <th className="px-4 py-2.5 text-right font-semibold uppercase">Risk Bar</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                          {bonusRiskRows.slice(0, 8).map((row, idx) => {
+                            const cn = Number(row.clientNet) || 0;
+                            const uc = Number(row.uncovered) || 0;
+                            const pct = cn === 0 ? NaN : ((cn - uc) / cn) * 100;
+                            const barW = Math.min(100, Math.max(0, !Number.isFinite(pct) ? 0 : pct));
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                                <td className="px-4 py-2.5 font-mono font-semibold text-violet-700 dark:text-violet-200">{row.symbol}</td>
+                                <td className="px-4 py-2.5">{row.direction === "BUY" ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">BUY</span> : row.direction === "SELL" ? <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">SELL</span> : "-"}</td>
+                                <td className="px-4 py-2.5 text-right tabular-nums">{cn.toFixed(2)}</td>
+                                <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${Math.abs(uc) > 0.001 ? "text-rose-600 dark:text-rose-400" : "text-slate-400"}`}>{uc.toFixed(2)}</td>
+                                <td className={`px-4 py-2.5 text-right ${!Number.isFinite(pct) ? "text-slate-400" : pct >= 95 ? "text-emerald-600 dark:text-emerald-400" : pct >= 70 ? "text-amber-600 dark:text-amber-400" : "text-rose-600 dark:text-rose-400"}`}>{Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "—"}</td>
+                                <td className="px-4 py-2.5">
+                                  <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800">
+                                    <div className={`h-full rounded-full ${barW >= 95 ? "bg-emerald-500" : barW >= 70 ? "bg-amber-500" : "bg-rose-500"}`} style={{ width: `${barW}%` }} />
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {bonusError && <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-600 dark:text-rose-300">{bonusError}</div>}
+                {bonusLoading && <div className="text-center text-xs text-violet-500 py-4">Loading bonus data…</div>}
+              </div>
+            );
+
+            // ── COVERAGE subtab ───────────────────────────────────────────────
+            const CoverageTab = () => {
+              const q = bonusCoverageSearch.toLowerCase();
+              const filtered = bonusCoverageRows.filter((r) => !q || String(r.symbol || "").toLowerCase().includes(q));
+              const sorted = bonusSortFn(filtered, bonusCoverageSort.key, bonusCoverageSort.dir);
+              const page = Math.min(bonusCoveragePage, Math.max(0, Math.ceil(sorted.length / TABLE_PAGE_SIZE) - 1));
+              const pageRows = sorted.slice(page * TABLE_PAGE_SIZE, (page + 1) * TABLE_PAGE_SIZE);
+              const onSort = (k: string) => { setBonusCoverageSort((prev) => ({ key: k, dir: prev.key === k ? (prev.dir === "asc" ? "desc" : "asc") : "asc" })); setBonusCoveragePage(0); };
+              const s = bonusCoverageSort;
+              return (
+                <div className="space-y-4">
+                  {/* KPI strip */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    {[
+                      { label: "Symbols", value: String(bonusCoverageRows.length), accent: "text-violet-700 dark:text-violet-300" },
+                      { label: "Client Net (total)", value: `${(Number(bonusTotals.clientNet) || 0).toFixed(2)} lots`, accent: "text-slate-700 dark:text-slate-200" },
+                      { label: "Uncovered", value: `${bonusRiskTotalUncoveredAbs.toFixed(2)} lots`, accent: bonusRiskTotalUncoveredAbs > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600 dark:text-emerald-300" },
+                      { label: "Active LPs", value: String(bonusLpNames.length), accent: "text-indigo-700 dark:text-indigo-300" },
+                    ].map((c) => (
+                      <div key={c.label} className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900/60">
+                        <div className="text-[11px] uppercase tracking-wide text-slate-400">{c.label}</div>
+                        <div className={`mt-1 text-lg font-bold ${c.accent}`}>{c.value}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Table */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Position Match Table</span>
+                      <input value={bonusCoverageSearch} onChange={(e) => { setBonusCoverageSearch(e.target.value); setBonusCoveragePage(0); }} placeholder="Search symbol…" className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                          <tr>
+                            <SortTh col="symbol" label="Symbol" sortState={s} onSort={onSort} className="text-left" />
+                            <SortTh col="direction" label="Side" sortState={s} onSort={onSort} className="text-left" />
+                            <SortTh col="clientNet" label="Client Net" sortState={s} onSort={onSort} className="text-right" />
+                            <SortTh col="uncovered" label="Uncovered" sortState={s} onSort={onSort} className="text-right" />
+                            {bonusLpNames.map((lp) => <SortTh key={lp} col={`lp_${lp}`} label={lp} sortState={s} onSort={onSort} className="text-right" />)}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                          {pageRows.map((row, idx) => (
+                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+                              <td className="px-3 py-2.5 font-mono font-semibold text-violet-700 dark:text-violet-200">{row.symbol}</td>
+                              <td className="px-3 py-2.5">{row.direction === "BUY" ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">BUY</span> : row.direction === "SELL" ? <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">SELL</span> : <span className="text-slate-400">—</span>}</td>
+                              <td className="px-3 py-2.5 text-right tabular-nums">{(Number(row.clientNet) || 0).toFixed(2)}</td>
+                              <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${Math.abs(Number(row.uncovered) || 0) > 0.001 ? "text-rose-600 dark:text-rose-400" : "text-slate-400"}`}>{(Number(row.uncovered) || 0).toFixed(2)}</td>
+                              {bonusLpNames.map((lp) => <td key={lp} className="px-3 py-2.5 text-right tabular-nums text-indigo-700 dark:text-indigo-300">{(Number(row.lpNets?.[lp]) || 0).toFixed(2)}</td>)}
+                            </tr>
+                          ))}
+                          {!pageRows.length && <tr><td colSpan={4 + bonusLpNames.length} className="px-4 py-8 text-center text-slate-400">No matching symbols</td></tr>}
+                        </tbody>
+                        <tfoot className="bg-violet-50 text-violet-800 dark:bg-violet-900/20 dark:text-violet-200 font-semibold">
+                          <tr>
+                            <td className="px-3 py-2.5 uppercase text-xs tracking-wide">TOTAL</td>
+                            <td />
+                            <td className="px-3 py-2.5 text-right tabular-nums">{(Number(bonusTotals.clientNet) || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">{(Number(bonusTotals.uncovered) || 0).toFixed(2)}</td>
+                            {bonusLpNames.map((lp) => <td key={lp} className="px-3 py-2.5 text-right tabular-nums">{(Number(bonusTotals.lpNets?.[lp]) || 0).toFixed(2)}</td>)}
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                    <Pagination page={page} total={sorted.length} pageSize={TABLE_PAGE_SIZE} onPage={setBonusCoveragePage} />
+                  </div>
+                </div>
+              );
+            };
+
+            // ── RISK subtab ───────────────────────────────────────────────────
+            const RiskTab = () => {
+              const q = bonusRiskSearch.toLowerCase();
+              const filtered = bonusRiskRows.filter((r) => !q || String(r.symbol || "").toLowerCase().includes(q));
+              const sorted = bonusSortFn(filtered as any[], bonusRiskSort.key, bonusRiskSort.dir);
+              const page = Math.min(bonusRiskPage, Math.max(0, Math.ceil(sorted.length / TABLE_PAGE_SIZE) - 1));
+              const pageRows = sorted.slice(page * TABLE_PAGE_SIZE, (page + 1) * TABLE_PAGE_SIZE);
+              const onSort = (k: string) => { setBonusRiskSort((prev) => ({ key: k, dir: prev.key === k ? (prev.dir === "asc" ? "desc" : "asc") : "asc" })); setBonusRiskPage(0); };
+              const s = bonusRiskSort;
+
+              const maxUncovered = Math.max(...bonusRiskRows.map((r) => Math.abs(Number(r.uncovered) || 0)), 1);
+              return (
+                <div className="space-y-4">
+                  {/* KPI strip */}
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    {[
+                      { label: "Active LPs", value: bonusLpNames.length, sub: bonusLpNames.join(", ") || "—", accent: "border-violet-500/30 bg-violet-50 dark:bg-violet-900/20", vClass: "text-violet-700 dark:text-violet-300" },
+                      { label: "Symbols Tracked", value: bonusRiskRows.length, sub: `${bonusRiskUncoveredSymbols} at risk`, accent: "border-indigo-500/30 bg-indigo-50 dark:bg-indigo-900/20", vClass: "text-indigo-700 dark:text-indigo-300" },
+                      { label: "Client Positions", value: totalClientPos.toLocaleString(), sub: `${(Number(bonusTotals.clientNet) || 0).toFixed(2)} lots net`, accent: "border-slate-200 bg-slate-50 dark:bg-slate-900/40", vClass: "text-slate-700 dark:text-slate-200" },
+                      { label: "LP Positions", value: totalLpPos.toLocaleString(), sub: `${((Number(bonusTotals.clientNet) || 0) - (Number(bonusTotals.uncovered) || 0)).toFixed(2)} lots covered`, accent: "border-slate-200 bg-slate-50 dark:bg-slate-900/40", vClass: "text-slate-700 dark:text-slate-200" },
+                      { label: "Total Uncovered", value: bonusRiskTotalUncoveredAbs.toFixed(2), sub: `${bonusRiskUncoveredSymbols} symbol${bonusRiskUncoveredSymbols !== 1 ? "s" : ""} exposed`, accent: bonusRiskTotalUncoveredAbs > 0 ? "border-rose-400/30 bg-rose-50 dark:bg-rose-900/20" : "border-emerald-400/30 bg-emerald-50 dark:bg-emerald-900/20", vClass: bonusRiskTotalUncoveredAbs > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600 dark:text-emerald-300" },
+                      { label: "Largest Exposure", value: bonusRiskLargest && Math.abs(Number(bonusRiskLargest.uncovered) || 0) > 0 ? bonusRiskLargest.symbol : "None", sub: bonusRiskLargest && Math.abs(Number(bonusRiskLargest.uncovered) || 0) > 0 ? `${Math.abs(Number(bonusRiskLargest.uncovered) || 0).toFixed(2)} lots` : "Fully hedged", accent: bonusRiskLargest && Math.abs(Number(bonusRiskLargest.uncovered) || 0) > 0 ? "border-orange-400/30 bg-orange-50 dark:bg-orange-900/20" : "border-emerald-400/30 bg-emerald-50 dark:bg-emerald-900/20", vClass: bonusRiskLargest && Math.abs(Number(bonusRiskLargest.uncovered) || 0) > 0 ? "text-orange-600 dark:text-orange-300" : "text-emerald-600 dark:text-emerald-300" },
+                    ].map((c) => (
+                      <div key={c.label} className={`rounded-xl border p-3 ${c.accent}`}>
+                        <div className="text-[11px] uppercase tracking-wide text-slate-500">{c.label}</div>
+                        <div className={`mt-1.5 text-xl font-bold ${c.vClass}`}>{c.value}</div>
+                        <div className="mt-0.5 text-[11px] text-slate-400 truncate">{c.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Risk heatmap bar + table */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Risk Exposure Table</span>
+                      <input value={bonusRiskSearch} onChange={(e) => { setBonusRiskSearch(e.target.value); setBonusRiskPage(0); }} placeholder="Search symbol…" className="w-44 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                          <tr>
+                            <SortTh col="symbol" label="Symbol" sortState={s} onSort={onSort} className="text-left" />
+                            <SortTh col="direction" label="Side" sortState={s} onSort={onSort} className="text-left" />
+                            <SortTh col="clientNet" label="Client Net" sortState={s} onSort={onSort} className="text-right" />
+                            <SortTh col="lpCoverage" label="LP Coverage" sortState={s} onSort={onSort} className="text-right" />
+                            <SortTh col="uncovered" label="Uncovered" sortState={s} onSort={onSort} className="text-right" />
+                            <th className="px-3 py-2.5 text-right text-xs font-semibold uppercase tracking-wide">Coverage %</th>
+                            <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wide">Risk Bar</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                          {pageRows.map((row, idx) => {
+                            const cn = Number(row.clientNet) || 0;
+                            const uc = Number(row.uncovered) || 0;
+                            const lpCov = cn - uc;
+                            const pct = cn === 0 ? NaN : ((cn - uc) / cn) * 100;
+                            const barRisk = Math.min(100, Math.max(0, (Math.abs(uc) / maxUncovered) * 100));
+                            return (
+                              <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+                                <td className="px-3 py-2.5 font-mono font-semibold text-violet-700 dark:text-violet-200">{row.symbol}</td>
+                                <td className="px-3 py-2.5">{row.direction === "BUY" ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">BUY</span> : row.direction === "SELL" ? <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">SELL</span> : <span className="text-slate-400">—</span>}</td>
+                                <td className="px-3 py-2.5 text-right tabular-nums">{cn.toFixed(2)}</td>
+                                <td className="px-3 py-2.5 text-right tabular-nums text-indigo-600 dark:text-indigo-300">{lpCov.toFixed(2)}</td>
+                                <td className={`px-3 py-2.5 text-right tabular-nums font-semibold ${Math.abs(uc) > 0.001 ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>{uc.toFixed(2)}</td>
+                                <td className={`px-3 py-2.5 text-right font-medium ${!Number.isFinite(pct) ? "text-slate-400" : pct >= 95 ? "text-emerald-600 dark:text-emerald-400" : pct >= 70 ? "text-amber-600 dark:text-amber-400" : "text-rose-600 dark:text-rose-400"}`}>{Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "—"}</td>
+                                <td className="px-3 py-2.5 w-28">
+                                  <div className="h-1.5 w-full rounded-full bg-slate-100 dark:bg-slate-800">
+                                    <div className={`h-full rounded-full ${barRisk <= 20 ? "bg-emerald-500" : barRisk <= 60 ? "bg-amber-500" : "bg-rose-500"}`} style={{ width: `${barRisk}%` }} />
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {!pageRows.length && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No matching symbols</td></tr>}
+                        </tbody>
+                        <tfoot className="bg-violet-50 text-violet-800 dark:bg-violet-900/20 dark:text-violet-200 font-semibold">
+                          <tr>
+                            <td className="px-3 py-2.5 text-xs uppercase tracking-wide">TOTAL</td>
+                            <td />
+                            <td className="px-3 py-2.5 text-right tabular-nums">{(Number(bonusTotals.clientNet) || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">{((Number(bonusTotals.clientNet) || 0) - (Number(bonusTotals.uncovered) || 0)).toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">{(Number(bonusTotals.uncovered) || 0).toFixed(2)}</td>
+                            <td className="px-3 py-2.5 text-right">{(Number(bonusTotals.clientNet) || 0) === 0 ? "—" : `${((((Number(bonusTotals.clientNet) || 0) - (Number(bonusTotals.uncovered) || 0)) / (Number(bonusTotals.clientNet) || 1)) * 100).toFixed(1)}%`}</td>
+                            <td />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                    <Pagination page={page} total={sorted.length} pageSize={TABLE_PAGE_SIZE} onPage={setBonusRiskPage} />
+                  </div>
+                </div>
+              );
+            };
+
+            // ── PNL subtab ────────────────────────────────────────────────────
+            const PnlTab = () => {
+              // Deals table
+              const deals = Array.isArray(bonusPnlLp.closedDeals) ? bonusPnlLp.closedDeals : [];
+              const dq = bonusPnlDealsSearch.toLowerCase();
+              const dFiltered = deals.filter((d) => !dq || String(d.symbol || "").toLowerCase().includes(dq) || String(d.deal || "").includes(dq));
+              const dSorted = bonusSortFn(dFiltered as any[], bonusPnlDealsSort.key, bonusPnlDealsSort.dir);
+              const dPage = Math.min(bonusPnlDealsPage, Math.max(0, Math.ceil(dSorted.length / TABLE_PAGE_SIZE) - 1));
+              const dRows = dSorted.slice(dPage * TABLE_PAGE_SIZE, (dPage + 1) * TABLE_PAGE_SIZE);
+              const onDSort = (k: string) => { setBonusPnlDealsSort((p) => ({ key: k, dir: p.key === k ? (p.dir === "asc" ? "desc" : "asc") : "asc" })); setBonusPnlDealsPage(0); };
+              const ds = bonusPnlDealsSort;
+
+              // Positions table
+              const positions = Array.isArray(bonusPnlLp.openPositions) ? bonusPnlLp.openPositions : [];
+              const pq = bonusPnlPosSearch.toLowerCase();
+              const pFiltered = positions.filter((p) => !pq || String(p.symbol || "").toLowerCase().includes(pq) || String(p.ticket || "").includes(pq));
+              const pSorted = bonusSortFn(pFiltered as any[], bonusPnlPosSort.key, bonusPnlPosSort.dir);
+              const pPage = Math.min(bonusPnlPosPage, Math.max(0, Math.ceil(pSorted.length / TABLE_PAGE_SIZE) - 1));
+              const pRows = pSorted.slice(pPage * TABLE_PAGE_SIZE, (pPage + 1) * TABLE_PAGE_SIZE);
+              const onPSort = (k: string) => { setBonusPnlPosSort((p) => ({ key: k, dir: p.key === k ? (p.dir === "asc" ? "desc" : "asc") : "asc" })); setBonusPnlPosPage(0); };
+              const ps = bonusPnlPosSort;
+
+              const gPnl = Number(bonusPnlDaily?.grossPnl) || 0;
+
+              return (
+                <div className="space-y-4">
+                  {/* Hero PnL banner */}
+                  <div className={`relative overflow-hidden rounded-2xl p-5 ${gPnl >= 0 ? "bg-gradient-to-br from-emerald-900 to-teal-900" : "bg-gradient-to-br from-rose-900 to-red-900"}`}>
+                    <div className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full bg-white/5 blur-2xl" />
+                    <div className="relative">
+                      <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-white/60">Gross PnL (Period)</div>
+                      <div className={`mt-1 text-4xl font-bold tabular-nums ${gPnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signedValueText(gPnl)}</div>
+                      <div className="mt-2 text-xs text-white/60">{bonusPnlDaily?.fromUtc && `${bonusPnlDaily.fromUtc.slice(0, 10)} → ${bonusPnlDaily.toUtc?.slice(0, 10)}`}</div>
+                      <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-white/80">
+                        <span>LP×50% <strong className={signedValueClass(Number(bonusPnlLp.total) || 0)}>{signedValueText(Number(bonusPnlLp.total) || 0)}</strong></span>
+                        <span className="text-white/40">–</span>
+                        <span>Client <strong className={signedValueClass(Number(bonusPnlClient.total) || 0)}>{signedValueText(Number(bonusPnlClient.total) || 0)}</strong></span>
+                        <span className="text-white/40">–</span>
+                        <span>Commission <strong className="text-white/90">{signedValueText(Math.abs(Number(bonusPnlLp.realizedCommission) || 0))}</strong></span>
+                        <span className="text-white/40">–</span>
+                        <span>Credit Cost <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.creditCost) || 0)}</strong></span>
+                        <span className="text-white/40">+</span>
+                        <span>Withdrawal Charges <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.withdrawalCharges) || 0)}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Client / LP side-by-side breakdowns */}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    {/* Client PnL */}
+                    <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                      <div className="border-b border-slate-100 bg-gradient-to-r from-violet-50 to-transparent px-4 py-3 dark:border-slate-800 dark:from-violet-900/20">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Client Gross PnL (MT5)</div>
+                        <div className={`mt-0.5 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlClient.total) || 0)}`}>{signedValueText(Number(bonusPnlClient.total) || 0)}</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-px bg-slate-100 dark:bg-slate-800">
+                        {[
+                          { label: "Realized PnL", val: Number(bonusPnlClient.realizedPnl) || 0 },
+                          { label: "Realized Swap", val: Number(bonusPnlClient.realizedSwap) || 0 },
+                          { label: "Unrealized PnL", val: Number(bonusPnlClient.unrealizedPnl) || 0 },
+                          { label: "Unrealized Swap", val: Number(bonusPnlClient.unrealizedSwap) || 0 },
+                        ].map((item) => (
+                          <div key={item.label} className="bg-white px-4 py-3 dark:bg-slate-900/60">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">{item.label}</div>
+                            <div className={`mt-0.5 font-semibold tabular-nums ${signedValueClass(item.val)}`}>{signedValueText(item.val)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-4 border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500 dark:border-slate-800">
+                        <span>Closed Deals: <strong className="text-slate-700 dark:text-slate-200">{Number(bonusPnlClient.closedDealCount) || 0}</strong></span>
+                        <span>Open Positions: <strong className="text-slate-700 dark:text-slate-200">{Number(bonusPnlClient.openPositionCount) || 0}</strong></span>
+                      </div>
+                    </div>
+
+                    {/* LP PnL */}
+                    <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                      <div className="border-b border-slate-100 bg-gradient-to-r from-indigo-50 to-transparent px-4 py-3 dark:border-slate-800 dark:from-indigo-900/20">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">LP PnL ×50% (XTB / XOpenHub)</div>
+                        <div className={`mt-0.5 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlLp.total) || 0)}`}>{signedValueText(Number(bonusPnlLp.total) || 0)}</div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-px bg-slate-100 dark:bg-slate-800">
+                        {[
+                          { label: "Realized PnL", val: Number(bonusPnlLp.realizedPnl) || 0 },
+                          { label: "Realized Swap", val: Number(bonusPnlLp.realizedSwap) || 0 },
+                          { label: "Unrealized PnL", val: Number(bonusPnlLp.unrealizedPnl) || 0 },
+                          { label: "Unrealized Swap", val: Number(bonusPnlLp.unrealizedSwap) || 0 },
+                        ].map((item) => (
+                          <div key={item.label} className="bg-white px-4 py-3 dark:bg-slate-900/60">
+                            <div className="text-[10px] uppercase tracking-wide text-slate-400">{item.label}</div>
+                            <div className={`mt-0.5 font-semibold tabular-nums ${signedValueClass(item.val)}`}>{signedValueText(item.val)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-4 border-t border-slate-100 px-4 py-2.5 text-xs text-slate-500 dark:border-slate-800">
+                        <span>Raw Total: <strong className={`${signedValueClass(Number(bonusPnlLp.rawTotal) || 0)}`}>{signedValueText(Number(bonusPnlLp.rawTotal) || 0)}</strong></span>
+                        <span>Commission: <strong className="text-slate-700 dark:text-slate-200">{signedValueText(Number(bonusPnlLp.realizedCommission) || 0)}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cost cards row */}
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                    {[
+                      { label: "Credit Settled", val: Number(bonusPnlCost.creditSettled) || 0, sub: `${Number(bonusPnlCost.settledTransactionCount) || 0} transactions`, color: "from-teal-50 dark:from-teal-900/20 border-teal-200 dark:border-teal-800" },
+                      { label: "Credit Unsettled", val: Number(bonusPnlCost.creditUnsettled) || 0, sub: `${Number(bonusPnlCost.unsettledAccountCount) || 0} accounts (bal < 0)`, color: "from-orange-50 dark:from-orange-900/20 border-orange-200 dark:border-orange-800" },
+                      { label: "Withdrawal Charges (1.26%)", val: Number(bonusPnlCost.withdrawalCharges) || 0, sub: `${signedValueText(Number(bonusPnlCost.withdrawalTotal) || 0)} total · ${Number(bonusPnlCost.withdrawalCount) || 0} withdrawals`, color: "from-blue-50 dark:from-blue-900/20 border-blue-200 dark:border-blue-800" },
+                    ].map((c) => (
+                      <div key={c.label} className={`rounded-xl border bg-gradient-to-br ${c.color} to-transparent p-4`}>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">{c.label}</div>
+                        <div className={`mt-1.5 text-2xl font-bold tabular-nums ${signedValueClass(c.val)}`}>{signedValueText(c.val)}</div>
+                        <div className="mt-1 text-xs text-slate-500">{c.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* LP Closed Deals table */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                      <button type="button" onClick={() => setBonusPnlExpanded((p) => ({ ...p, lpClosedDeals: !p.lpClosedDeals }))} className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300 hover:text-violet-500 transition">
+                        {bonusPnlExpanded.lpClosedDeals ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        LP Closed Deals
+                        <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">{deals.length}</span>
+                      </button>
+                      {bonusPnlExpanded.lpClosedDeals && (
+                        <input value={bonusPnlDealsSearch} onChange={(e) => { setBonusPnlDealsSearch(e.target.value); setBonusPnlDealsPage(0); }} placeholder="Search symbol or deal…" className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
+                      )}
+                    </div>
+                    {bonusPnlExpanded.lpClosedDeals && (
+                      <>
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                              <tr>
+                                <SortTh col="deal" label="Deal" sortState={ds} onSort={onDSort} className="text-left" />
+                                <SortTh col="symbol" label="Symbol" sortState={ds} onSort={onDSort} className="text-left" />
+                                <SortTh col="direction" label="Dir" sortState={ds} onSort={onDSort} className="text-left" />
+                                <SortTh col="volume" label="Volume" sortState={ds} onSort={onDSort} className="text-right" />
+                                <SortTh col="profit" label="Profit" sortState={ds} onSort={onDSort} className="text-right" />
+                                <SortTh col="swap" label="Swap" sortState={ds} onSort={onDSort} className="text-right" />
+                                <SortTh col="commission" label="Comm." sortState={ds} onSort={onDSort} className="text-right" />
+                                <th className="px-3 py-2.5 text-left text-xs font-semibold uppercase">Comment</th>
+                                <SortTh col="time" label="Time" sortState={ds} onSort={onDSort} className="text-left" />
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {dRows.map((d, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+                                  <td className="px-3 py-2 text-slate-500">{d.deal ?? "—"}</td>
+                                  <td className="px-3 py-2 font-mono font-semibold text-amber-700 dark:text-amber-300">{d.symbol || "—"}</td>
+                                  <td className="px-3 py-2">{(d.direction || "").toLowerCase() === "buy" ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">BUY</span> : <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">SELL</span>}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{formatMaybeNumber(d.volume, 4)}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums font-medium ${signedValueClass(Number(d.profit) || 0)}`}>{signedValueText(Number(d.profit) || 0)}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums ${signedValueClass(Number(d.swap) || 0)}`}>{signedValueText(Number(d.swap) || 0)}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums ${signedValueClass(Number(d.commission) || 0)}`}>{signedValueText(Number(d.commission) || 0)}</td>
+                                  <td className="px-3 py-2 text-slate-400 max-w-[140px] truncate">{d.comment || "—"}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-slate-400">{d.time || "—"}</td>
+                                </tr>
+                              ))}
+                              {!dRows.length && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No deals match filter</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                        <Pagination page={dPage} total={dSorted.length} pageSize={TABLE_PAGE_SIZE} onPage={setBonusPnlDealsPage} />
+                      </>
+                    )}
+                  </div>
+
+                  {/* LP Open Positions table */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                      <button type="button" onClick={() => setBonusPnlExpanded((p) => ({ ...p, lpOpenPositions: !p.lpOpenPositions }))} className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300 hover:text-violet-500 transition">
+                        {bonusPnlExpanded.lpOpenPositions ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        LP Open Positions
+                        <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">{positions.length}</span>
+                      </button>
+                      {bonusPnlExpanded.lpOpenPositions && (
+                        <input value={bonusPnlPosSearch} onChange={(e) => { setBonusPnlPosSearch(e.target.value); setBonusPnlPosPage(0); }} placeholder="Search symbol or ticket…" className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
+                      )}
+                    </div>
+                    {bonusPnlExpanded.lpOpenPositions && (
+                      <>
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                              <tr>
+                                <SortTh col="ticket" label="Ticket" sortState={ps} onSort={onPSort} className="text-left" />
+                                <SortTh col="time" label="Open Time" sortState={ps} onSort={onPSort} className="text-left" />
+                                <SortTh col="symbol" label="Symbol" sortState={ps} onSort={onPSort} className="text-left" />
+                                <SortTh col="direction" label="Dir" sortState={ps} onSort={onPSort} className="text-left" />
+                                <SortTh col="volume" label="Volume" sortState={ps} onSort={onPSort} className="text-right" />
+                                <SortTh col="openPrice" label="Open" sortState={ps} onSort={onPSort} className="text-right" />
+                                <SortTh col="currentPrice" label="Current" sortState={ps} onSort={onPSort} className="text-right" />
+                                <SortTh col="profit" label="Profit" sortState={ps} onSort={onPSort} className="text-right" />
+                                <SortTh col="swap" label="Swap" sortState={ps} onSort={onPSort} className="text-right" />
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {pRows.map((pos, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+                                  <td className="px-3 py-2 text-slate-500">{pos.ticket ?? "—"}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-slate-400">{pos.time || "—"}</td>
+                                  <td className="px-3 py-2 font-mono font-semibold text-amber-700 dark:text-amber-300">{pos.symbol || "—"}</td>
+                                  <td className="px-3 py-2">{(pos.direction || "").toLowerCase() === "buy" ? <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">BUY</span> : <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">SELL</span>}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{formatMaybeNumber(pos.volume, 4)}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{formatMaybeNumber(pos.openPrice, 5)}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{formatMaybeNumber(pos.currentPrice, 5)}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums font-medium ${signedValueClass(Number(pos.profit) || 0)}`}>{signedValueText(Number(pos.profit) || 0)}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums ${signedValueClass(Number(pos.swap) || 0)}`}>{signedValueText(Number(pos.swap) || 0)}</td>
+                                </tr>
+                              ))}
+                              {!pRows.length && <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">No open positions</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                        <Pagination page={pPage} total={pSorted.length} pageSize={TABLE_PAGE_SIZE} onPage={setBonusPnlPosPage} />
+                      </>
+                    )}
+                  </div>
+
+                  {/* Credit settled/unsettled detail collapsibles */}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                      <button type="button" onClick={() => setBonusPnlExpanded((p) => ({ ...p, creditSettled: !p.creditSettled }))} className="flex w-full items-center gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-teal-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-teal-300 hover:text-teal-500 transition">
+                        {bonusPnlExpanded.creditSettled ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        Credit Settled Details
+                        <span className="ml-1 rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700 dark:bg-teal-900/40 dark:text-teal-200">{Array.isArray(bonusPnlCost.settledDetails) ? bonusPnlCost.settledDetails.length : 0}</span>
+                      </button>
+                      {bonusPnlExpanded.creditSettled && (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Login</th>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Deal</th>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Type</th>
+                                <th className="px-3 py-2.5 text-right font-semibold uppercase">Amount</th>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Comment</th>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Time</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {(bonusPnlCost.settledDetails || []).map((item, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                                  <td className="px-3 py-2">{item.login ?? "—"}</td>
+                                  <td className="px-3 py-2 text-slate-400">{item.dealTicket ?? "—"}</td>
+                                  <td className="px-3 py-2">{item.actionType || "—"}</td>
+                                  <td className={`px-3 py-2 text-right tabular-nums font-medium ${signedValueClass(Number(item.amount) || 0)}`}>{signedValueText(Number(item.amount) || 0)}</td>
+                                  <td className="px-3 py-2 text-slate-400 max-w-[120px] truncate">{item.comment || "—"}</td>
+                                  <td className="px-3 py-2 whitespace-nowrap text-slate-400">{item.time || "—"}</td>
+                                </tr>
+                              ))}
+                              {!(bonusPnlCost.settledDetails || []).length && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">No settled credit transactions</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                      <button type="button" onClick={() => setBonusPnlExpanded((p) => ({ ...p, creditUnsettled: !p.creditUnsettled }))} className="flex w-full items-center gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-orange-700 dark:border-slate-800 dark:bg-slate-900/40 dark:text-orange-300 hover:text-orange-500 transition">
+                        {bonusPnlExpanded.creditUnsettled ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        Credit Unsettled Accounts
+                        <span className="ml-1 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold text-orange-700 dark:bg-orange-900/40 dark:text-orange-200">{Array.isArray(bonusPnlCost.unsettledDetails) ? bonusPnlCost.unsettledDetails.length : 0}</span>
+                      </button>
+                      {bonusPnlExpanded.creditUnsettled && (
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                              <tr>
+                                <th className="px-3 py-2.5 text-left font-semibold uppercase">Login</th>
+                                <th className="px-3 py-2.5 text-right font-semibold uppercase">Balance</th>
+                                <th className="px-3 py-2.5 text-right font-semibold uppercase">Equity</th>
+                                <th className="px-3 py-2.5 text-right font-semibold uppercase">Margin</th>
+                                <th className="px-3 py-2.5 text-right font-semibold uppercase">Unsettled</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {(bonusPnlCost.unsettledDetails || []).map((item, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                                  <td className="px-3 py-2">{item.login ?? "—"}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums text-rose-600 dark:text-rose-400">{signedValueText(Number(item.balance) || 0)}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{signedValueText(Number(item.equity) || 0)}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums">{signedValueText(Number(item.margin) || 0)}</td>
+                                  <td className="px-3 py-2 text-right tabular-nums font-medium text-rose-600 dark:text-rose-400">{signedValueText(Math.abs(Number(item.balance) || 0))}</td>
+                                </tr>
+                              ))}
+                              {!(bonusPnlCost.unsettledDetails || []).length && <tr><td colSpan={5} className="px-4 py-6 text-center text-slate-400">No unsettled credit accounts</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Formula breakdown */}
+                  <div className="rounded-xl border border-violet-200 bg-violet-50/40 p-4 dark:border-violet-800/40 dark:bg-violet-900/10">
+                    <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Gross PnL Formula Breakdown</div>
+                    <div className="space-y-1 text-xs">
+                      {[
+                        { label: "LP PnL ×50%", val: Number(bonusPnlLp.total) || 0 },
+                        { label: "− Client Gross PnL", val: Number(bonusPnlClient.total) || 0 },
+                        { label: "− LP Commission (100%)", val: -Math.abs(Number(bonusPnlLp.realizedCommission) || 0) },
+                        { label: "− Credit Cost (Settled + Unsettled)", val: Number(bonusPnlCost.creditCost) || 0 },
+                        { label: "+ Withdrawal Charges (1.26%)", val: Number(bonusPnlCost.withdrawalCharges) || 0 },
+                      ].map((item) => (
+                        <div key={item.label} className="flex items-center justify-between rounded px-3 py-1.5 hover:bg-violet-100/60 dark:hover:bg-violet-900/20">
+                          <span className="text-slate-500 dark:text-slate-400">{item.label}</span>
+                          <span className={`font-semibold ${signedValueClass(item.val)}`}>{signedValueText(item.val)}</span>
+                        </div>
+                      ))}
+                      <div className="mt-2 flex items-center justify-between rounded-lg bg-violet-100 px-3 py-2 dark:bg-violet-900/30">
+                        <span className="font-semibold text-violet-700 dark:text-violet-200">= Gross PnL</span>
+                        <span className={`text-lg font-bold tabular-nums ${signedValueClass(gPnl)}`}>{signedValueText(gPnl)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            };
+
+            // ── EQUITY subtab ─────────────────────────────────────────────────
+            const EquityTab = () => {
+              const accounts = bonusEquityVisibleAccounts;
+              const eq = bonusEquitySearch.toLowerCase();
+              const eFiltered = accounts.filter((a) => !eq || String(a.login ?? "").includes(eq));
+              const eSorted = bonusSortFn(eFiltered as any[], bonusEquitySort.key, bonusEquitySort.dir);
+              const ePage = Math.min(bonusEquityPage, Math.max(0, Math.ceil(eSorted.length / TABLE_PAGE_SIZE) - 1));
+              const eRows = eSorted.slice(ePage * TABLE_PAGE_SIZE, (ePage + 1) * TABLE_PAGE_SIZE);
+              const onESort = (k: string) => { setBonusEquitySort((p) => ({ key: k, dir: p.key === k ? (p.dir === "asc" ? "desc" : "asc") : "asc" })); setBonusEquityPage(0); };
+              const es = bonusEquitySort;
+
+              return (
+                <div className="space-y-4">
+                  {/* Connection status bar */}
+                  <div className="flex flex-wrap gap-3">
+                    {[
+                      { label: "XTB API", ok: connXtb, okText: "Connected & Live", failText: "Disconnected" },
+                      { label: "Bonus Manager", ok: connMgr, okText: "Active", failText: "Not Configured" },
+                    ].map((s) => (
+                      <div key={s.label} className={`flex items-center gap-2.5 rounded-xl border px-4 py-2.5 ${s.ok ? "border-emerald-200 bg-emerald-50 dark:border-emerald-800/40 dark:bg-emerald-900/20" : "border-amber-200 bg-amber-50 dark:border-amber-800/40 dark:bg-amber-900/20"}`}>
+                        <span className={`h-2 w-2 rounded-full ${s.ok ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
+                        <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{s.label}</span>
+                        <span className={`text-xs font-semibold ${s.ok ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}`}>{s.ok ? s.okText : s.failText}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Equity comparison cards */}
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div className="relative overflow-hidden rounded-xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white p-4 dark:border-violet-800/40 dark:from-violet-900/20 dark:to-slate-900/60">
+                      <div className="text-[10px] uppercase tracking-widest text-violet-500">Client Equity (MT5)</div>
+                      <div className="mt-2 text-2xl font-bold text-violet-700 dark:text-violet-300">{formatDollar(clientEquity)}</div>
+                      <div className="mt-3 space-y-1 text-xs">
+                        {[["Balance", Number(bonusEquityClient.totalBalance) || 0], ["Credit", Number(bonusEquityClient.totalCredit) || 0], ["Margin", Number(bonusEquityClient.totalMargin) || 0]].map(([l, v]) => (
+                          <div key={String(l)} className="flex justify-between">
+                            <span className="text-slate-500">{String(l)}</span>
+                            <span className="font-medium tabular-nums">{formatDollar(Number(v))}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between border-t border-violet-100/60 pt-1 dark:border-violet-800/20">
+                          <span className="text-slate-500">Margin Level</span>
+                          <span className="font-medium">{bonusClientMarginLevel == null ? "—" : `${bonusClientMarginLevel.toFixed(2)}%`}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="relative overflow-hidden rounded-xl border border-indigo-200 bg-gradient-to-br from-indigo-50 to-white p-4 dark:border-indigo-800/40 dark:from-indigo-900/20 dark:to-slate-900/60">
+                      <div className="text-[10px] uppercase tracking-widest text-indigo-500">LP Equity (XTB)</div>
+                      <div className="mt-2 text-2xl font-bold text-indigo-700 dark:text-indigo-300">{formatDollar(lpEquity)}</div>
+                      <div className="mt-3 space-y-1 text-xs">
+                        {[["Balance", Number(bonusEquityLp.balance) || 0], ["Margin", Number(bonusEquityLp.margin) || 0], ["Free Margin", Number(bonusEquityLp.freeMargin) || 0]].map(([l, v]) => (
+                          <div key={String(l)} className="flex justify-between">
+                            <span className="text-slate-500">{String(l)}</span>
+                            <span className="font-medium tabular-nums">{formatDollar(Number(v))}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between border-t border-indigo-100/60 pt-1 dark:border-indigo-800/20">
+                          <span className="text-slate-500">Margin Level</span>
+                          <span className="font-medium">{formatMaybeNumber(bonusEquityLp.marginLevel, 2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className={`relative overflow-hidden rounded-xl border p-4 ${equityDiff >= 0 ? "border-emerald-200 bg-gradient-to-br from-emerald-50 to-white dark:border-emerald-800/40 dark:from-emerald-900/20" : "border-rose-200 bg-gradient-to-br from-rose-50 to-white dark:border-rose-800/40 dark:from-rose-900/20"} dark:to-slate-900/60`}>
+                      <div className={`text-[10px] uppercase tracking-widest ${equityDiff >= 0 ? "text-emerald-500" : "text-rose-500"}`}>Equity Difference (LP − Client)</div>
+                      <div className={`mt-2 text-2xl font-bold ${equityDiff >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>{formatDollar(equityDiff)}</div>
+                      <div className="mt-3 space-y-1 text-xs">
+                        {[["Client Withdrawable", bonusEquityClientWithdrawable], ["LP Withdrawable", bonusEquityLpWithdrawable], ["WD Difference", bonusEquityWithdrawableDifference]].map(([l, v]) => (
+                          <div key={String(l)} className="flex justify-between">
+                            <span className="text-slate-500">{String(l)}</span>
+                            <span className={`font-medium tabular-nums ${l === "WD Difference" ? (Number(v) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400") : ""}`}>{formatDollar(Number(v))}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Monthly PnL summary */}
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">Monthly Gross PnL</div>
+                      <div className={`mt-2 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlSummary?.grossPnl) || 0)}`}>{signedValueText(Number(bonusPnlSummary?.grossPnl) || 0)}</div>
+                      <div className="mt-1.5 text-xs text-slate-500">{bonusPnlSummary?.fromUtc?.slice(0, 10) || "—"} → {bonusPnlSummary?.toUtc?.slice(0, 10) || "—"}</div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                      <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">LP Receivable (PnL + Swap) ×50%</div>
+                      <div className={`mt-2 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlSummary?.lpReceivable) || 0)}`}>{signedValueText(Number(bonusPnlSummary?.lpReceivable) || 0)}</div>
+                      <div className="mt-1.5 flex gap-3 text-xs text-slate-500">
+                        <span>PnL: <strong className={signedValueClass(Number(bonusPnlSummary?.lpRealizedPnl) || 0)}>{signedValueText(Number(bonusPnlSummary?.lpRealizedPnl) || 0)}</strong></span>
+                        <span>Swap: <strong className={signedValueClass(Number(bonusPnlSummary?.lpRealizedSwap) || 0)}>{signedValueText(Number(bonusPnlSummary?.lpRealizedSwap) || 0)}</strong></span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Client accounts table */}
+                  <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900/60 overflow-hidden">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                      <button type="button" onClick={() => setBonusEquityClientTableExpanded((v) => !v)} className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300 hover:text-violet-500 transition">
+                        {bonusEquityClientTableExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                        Bonus Client Accounts
+                        <span className="ml-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">{accounts.length}</span>
+                      </button>
+                      {bonusEquityClientTableExpanded && (
+                        <input value={bonusEquitySearch} onChange={(e) => { setBonusEquitySearch(e.target.value); setBonusEquityPage(0); }} placeholder="Search login…" className="w-40 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100" />
+                      )}
+                    </div>
+                    {bonusEquityClientTableExpanded && (
+                      <>
+                        <div className="overflow-x-auto">
+                          <table className="min-w-full text-xs">
+                            <thead className="bg-slate-50 text-slate-500 dark:bg-slate-900/50 dark:text-slate-400">
+                              <tr>
+                                <SortTh col="login" label="Login" sortState={es} onSort={onESort} className="text-left" />
+                                <SortTh col="equity" label="Equity" sortState={es} onSort={onESort} className="text-right" />
+                                <SortTh col="balance" label="Balance" sortState={es} onSort={onESort} className="text-right" />
+                                <SortTh col="credit" label="Credit" sortState={es} onSort={onESort} className="text-right" />
+                                <SortTh col="margin" label="Margin" sortState={es} onSort={onESort} className="text-right" />
+                                <SortTh col="marginFree" label="Free Margin" sortState={es} onSort={onESort} className="text-right" />
+                                <SortTh col="marginLevel" label="Margin %" sortState={es} onSort={onESort} className="text-right" />
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {eRows.map((acc, idx) => (
+                                <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-900/40 transition-colors">
+                                  <td className="px-3 py-2.5 font-mono font-semibold text-violet-700 dark:text-violet-200">{acc.login ?? "—"}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatMaybeNumber(acc.equity, 2)}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums">{formatMaybeNumber(acc.balance, 2)}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums">{formatMaybeNumber(acc.credit, 2)}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums">{formatMaybeNumber(acc.margin, 2)}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums">{formatMaybeNumber(acc.marginFree, 2)}</td>
+                                  <td className="px-3 py-2.5 text-right tabular-nums">{Number(acc.marginLevel) ? `${formatMaybeNumber(acc.marginLevel, 2)}%` : "—"}</td>
+                                </tr>
+                              ))}
+                              {!eRows.length && <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No accounts match search</td></tr>}
+                            </tbody>
+                          </table>
+                        </div>
+                        <Pagination page={ePage} total={eSorted.length} pageSize={TABLE_PAGE_SIZE} onPage={setBonusEquityPage} />
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            };
+
+            // ── Wrapper ───────────────────────────────────────────────────────
+            return (
+              <div className="space-y-4">
+                {/* Page header with refresh */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200/60 bg-gradient-to-r from-violet-50 to-indigo-50 px-4 py-3 dark:border-violet-800/30 dark:from-violet-900/20 dark:to-indigo-900/20">
+                  <div>
+                    <h2 className="text-sm font-bold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+                      Bonus Manager · {bonusShowOverview ? "Overview" : bonusSubTab === "Bonus Coverage" ? "Coverage" : bonusSubTab === "Bonus Risk" ? "Risk Exposure" : bonusSubTab === "Bonus PNL" ? "P&L Analysis" : "Equity Monitor"}
+                    </h2>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      {toReadable(fromDate)} — {toReadable(toDate)}
+                      {bonusLastUpdated && <> · Updated {bonusLastUpdated.toLocaleTimeString()}</>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {bonusError && <span className="rounded-md bg-rose-100 px-2.5 py-1 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-300">{bonusError}</span>}
+                    <button type="button" onClick={() => setBonusRefreshKey((k) => k + 1)} className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/60 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800/40 dark:bg-slate-900 dark:text-violet-300 dark:hover:bg-violet-900/20 transition">
+                      <RefreshCw className={`h-3.5 w-3.5 ${bonusLoading ? "animate-spin" : ""}`} /> Refresh
+                    </button>
+                  </div>
+                </div>
+
+                {!allowedBonusSubTabs.length ? (
+                  <div className="rounded-lg border border-amber-400/30 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">No Bonus subtab access granted.</div>
+                ) : bonusShowOverview ? (
+                  <OverviewPage />
+                ) : bonusSubTab === "Bonus Coverage" ? (
+                  <CoverageTab />
+                ) : bonusSubTab === "Bonus Risk" ? (
+                  <RiskTab />
+                ) : bonusSubTab === "Bonus PNL" ? (
+                  <PnlTab />
+                ) : bonusSubTab === "Bonus Equity" ? (
+                  <EquityTab />
+                ) : (
+                  <OverviewPage />
+                )}
+              </div>
+            );
+          })()
+          : activeMenu === "Contract Sizes" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
               <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                 <div>

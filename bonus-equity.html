@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bonus Equity Dashboard</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Consolas, monospace; background: #0d0d14; color: #c8c8d0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 16px; }
+        .header { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+        .header h1 { font-size: 16px; color: #c0caf5; font-weight: 600; }
+        .header .toolbar { display: flex; gap: 8px; }
+        .toolbar button {
+            background: #1a1b26; border: 1px solid #292e42; color: #7aa2f7; padding: 4px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px;
+        }
+        .toolbar button:hover { background: #1f2335; border-color: #7aa2f7; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 8px; }
+        .status-dot.connected { background: #9ece6a; }
+        .status-dot.disconnected { background: #f7768e; }
+        .status-text { font-size: 11px; color: #565f89; margin-left: 4px; }
+        .last-update { font-size: 11px; color: #565f89; margin-left: auto; }
+
+        .conn-status { display: flex; gap: 16px; margin-bottom: 12px; }
+        .conn-badge { display: flex; align-items: center; gap: 6px; background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 6px 12px; font-size: 12px; }
+        .conn-badge .dot { width: 6px; height: 6px; border-radius: 50%; }
+        .conn-badge .dot.on { background: #9ece6a; }
+        .conn-badge .dot.off { background: #f7768e; }
+
+        /* Equity comparison cards */
+        .equity-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+        .equity-card { background: #1a1b26; border: 1px solid #292e42; border-radius: 8px; padding: 16px; }
+        .equity-label { font-size: 11px; color: #565f89; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .equity-value { font-size: 22px; font-weight: 700; }
+        .equity-sub { font-size: 12px; color: #565f89; margin-top: 4px; }
+        .equity-sub span { color: #888; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #c0caf5; }
+
+        /* Withdrawable equity summary */
+        .wd-row { display: flex; gap: 16px; margin-bottom: 16px; }
+        .wd-box {
+            flex: 1; border: 1px solid #292e42; border-radius: 6px;
+            background: #1a1b26; text-align: center; padding: 16px 12px;
+        }
+        .wd-box .wd-label {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.5px; color: #7aa2f7; margin-bottom: 8px;
+        }
+        .wd-box .wd-value {
+            font-size: 22px; font-weight: 700; color: #c0caf5;
+        }
+
+        /* Client accounts table */
+        table { border-collapse: collapse; width: 100%; font-size: 13px; }
+        thead th {
+            background: #13131d; color: #7aa2f7; font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 8px 10px; text-align: right; border-bottom: 1px solid #292e42;
+            position: sticky; top: 0; z-index: 1;
+        }
+        thead th:first-child { text-align: left; }
+        tbody tr { border-bottom: 1px solid #1a1b26; }
+        tbody tr:hover { background: #1a1b2a; }
+        tbody td { padding: 6px 10px; text-align: right; white-space: nowrap; }
+        tbody td:first-child { text-align: left; color: #c0caf5; font-weight: 600; }
+
+        .num { text-align: right; font-variant-numeric: tabular-nums; }
+        .empty { text-align: center; color: #414868; padding: 30px; font-size: 13px; }
+        .section-title { font-size: 13px; color: #565f89; text-transform: uppercase; letter-spacing: 1px; margin: 20px 0 8px; }
+
+        /* Collapsible sections */
+        .collapse-toggle {
+            font-size: 13px; color: #565f89; text-transform: uppercase; letter-spacing: 1px;
+            margin: 20px 0 8px; cursor: pointer; user-select: none;
+        }
+        .collapse-toggle:hover { color: #7aa2f7; }
+        .collapse-toggle::before { content: '\25BC '; font-size: 10px; }
+        .collapse-toggle.collapsed::before { content: '\25B6 '; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html" class="active">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <div class="header">
+            <h1>Bonus Equity Dashboard</h1>
+            <span class="status-dot disconnected" id="signalrDot"></span>
+            <span class="status-text" id="signalrStatus">Connecting...</span>
+            <div class="toolbar">
+                <button onclick="refreshAll()">Refresh</button>
+            </div>
+            <span class="last-update" id="lastUpdate"></span>
+        </div>
+
+        <div class="conn-status">
+            <div class="conn-badge">
+                <span class="dot off" id="xtbDot"></span>
+                <span>XTB API: <strong id="xtbStatus">Unknown</strong></span>
+            </div>
+            <div class="conn-badge">
+                <span class="dot off" id="bmDot"></span>
+                <span>Bonus Manager: <strong id="bmStatus">Unknown</strong></span>
+            </div>
+        </div>
+
+        <!-- Equity Comparison Cards -->
+        <div class="equity-row">
+            <div class="equity-card">
+                <div class="equity-label">Bonus Client Equity (MT5)</div>
+                <div class="equity-value neutral" id="clientEquity">-</div>
+                <div class="equity-sub">Bal: <span id="clientBalance">-</span> | Credit: <span id="clientCredit">-</span> | Margin: <span id="clientMargin">-</span> | Margin %: <span id="clientMarginLevel">-</span></div>
+            </div>
+            <div class="equity-card">
+                <div class="equity-label">Bonus LP Equity (XTB)</div>
+                <div class="equity-value neutral" id="lpEquity">-</div>
+                <div class="equity-sub">Bal: <span id="lpBalance">-</span> | Margin: <span id="lpMargin">-</span> | Free: <span id="lpFreeMargin">-</span> | Margin %: <span id="lpMarginLevel">-</span></div>
+            </div>
+            <div class="equity-card">
+                <div class="equity-label">Equity Difference (LP - Client)</div>
+                <div class="equity-value neutral" id="difference">-</div>
+                <div class="equity-sub">&nbsp;</div>
+            </div>
+        </div>
+
+        <!-- Withdrawable Equity Summary -->
+        <div class="wd-row">
+            <div class="wd-box">
+                <div class="wd-label">Client Withdrawable Equity</div>
+                <div class="wd-value" id="clientWdEquity">-</div>
+            </div>
+            <div class="wd-box">
+                <div class="wd-label">LP Withdrawable Equity</div>
+                <div class="wd-value" id="lpWdEquity">-</div>
+            </div>
+            <div class="wd-box">
+                <div class="wd-label">WD Equity Difference (LP - Client)</div>
+                <div class="wd-value" id="wdDifference">-</div>
+            </div>
+        </div>
+
+        <!-- Monthly PnL & LP Receivable -->
+        <div class="wd-row">
+            <div class="wd-box">
+                <div class="wd-label">This Month's Gross PnL</div>
+                <div class="wd-value" id="monthlyPnl">-</div>
+                <div class="equity-sub" id="monthlyPnlPeriod" style="margin-top:6px">&nbsp;</div>
+            </div>
+            <div class="wd-box">
+                <div class="wd-label">LP Receivable (PnL + Swap) x 50%</div>
+                <div class="wd-value" id="lpReceivable">-</div>
+                <div class="equity-sub" id="lpReceivableSub" style="margin-top:6px">&nbsp;</div>
+            </div>
+        </div>
+
+        <!-- Client Accounts (collapsible) -->
+        <div class="collapse-toggle" onclick="toggleSection('clientSection', this)">Bonus Client Accounts</div>
+        <div id="clientSection">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="text-align:left">Login</th>
+                        <th class="num">Equity</th>
+                        <th class="num">Balance</th>
+                        <th class="num">Credit</th>
+                        <th class="num">Margin</th>
+                        <th class="num">Free Margin</th>
+                        <th class="num">Margin Level</th>
+                    </tr>
+                </thead>
+                <tbody id="clientBody">
+                    <tr><td colspan="7" class="empty">No bonus manager connected</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script>
+        let connection;
+        const fmt = (v, d = 2) => v != null ? Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : '-';
+        const prop = (obj, camel, pascal) => obj[camel] ?? obj[pascal];
+
+        function toggleSection(id, toggle) {
+            const el = document.getElementById(id);
+            if (el.style.display === 'none') {
+                el.style.display = '';
+                toggle.classList.remove('collapsed');
+            } else {
+                el.style.display = 'none';
+                toggle.classList.add('collapsed');
+            }
+        }
+
+        function setSignalRStatus(connected) {
+            document.getElementById('signalrDot').className = 'status-dot ' + (connected ? 'connected' : 'disconnected');
+            document.getElementById('signalrStatus').textContent = connected ? 'Live' : 'Disconnected';
+        }
+
+        // ---- Equity Cards ----
+        function updateEquityCards(equity) {
+            if (!equity) return;
+            const c = prop(equity, 'client', 'Client') || {};
+            const l = prop(equity, 'lp', 'Lp') || {};
+            const diff = prop(equity, 'difference', 'Difference') ?? 0;
+
+            document.getElementById('clientEquity').textContent = fmt(prop(c, 'totalEquity', 'TotalEquity'));
+            document.getElementById('clientBalance').textContent = fmt(prop(c, 'totalBalance', 'TotalBalance'));
+            document.getElementById('clientCredit').textContent = fmt(prop(c, 'totalCredit', 'TotalCredit'));
+            document.getElementById('clientMargin').textContent = fmt(prop(c, 'totalMargin', 'TotalMargin'));
+
+            const clientMarginVal = prop(c, 'totalMargin', 'TotalMargin') || 0;
+            const clientEquityVal = prop(c, 'totalEquity', 'TotalEquity') || 0;
+            document.getElementById('clientMarginLevel').textContent = clientMarginVal > 0
+                ? fmt((clientEquityVal / clientMarginVal) * 100) + '%' : '-';
+
+            document.getElementById('lpEquity').textContent = fmt(prop(l, 'equity', 'Equity'));
+            document.getElementById('lpBalance').textContent = fmt(prop(l, 'balance', 'Balance'));
+            document.getElementById('lpMargin').textContent = fmt(prop(l, 'margin', 'Margin'));
+            document.getElementById('lpFreeMargin').textContent = fmt(prop(l, 'freeMargin', 'FreeMargin'));
+            document.getElementById('lpMarginLevel').textContent = fmt(prop(l, 'marginLevel', 'MarginLevel')) + '%';
+
+            const diffEl = document.getElementById('difference');
+            diffEl.textContent = fmt(diff);
+            diffEl.className = 'equity-value ' + (diff > 0 ? 'positive' : diff < 0 ? 'negative' : 'neutral');
+
+            // Client withdrawable = sum of (Equity - Credit) for accounts with balance >= 0
+            const clientAccts = prop(c, 'accounts', 'Accounts') || [];
+            const clientWd = clientAccts.reduce((sum, a) => {
+                if ((prop(a, 'balance', 'Balance') || 0) < 0) return sum;
+                return sum + (prop(a, 'equity', 'Equity') || 0) - (prop(a, 'credit', 'Credit') || 0);
+            }, 0);
+            // LP withdrawable = Equity (XTB account has no credit facility)
+            const lpWd = prop(l, 'equity', 'Equity') || 0;
+            const wdDiff = lpWd - clientWd;
+
+            document.getElementById('clientWdEquity').textContent = fmt(clientWd);
+            document.getElementById('lpWdEquity').textContent = fmt(lpWd);
+
+            const wdDiffEl = document.getElementById('wdDifference');
+            wdDiffEl.textContent = fmt(wdDiff);
+            wdDiffEl.style.color = wdDiff > 0 ? '#9ece6a' : wdDiff < 0 ? '#f7768e' : '#c0caf5';
+        }
+
+        // ---- Client Accounts Table ----
+        function updateClientTable(accounts) {
+            const body = document.getElementById('clientBody');
+            if (!accounts || accounts.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" class="empty">No bonus client accounts</td></tr>';
+                return;
+            }
+            const visible = accounts.filter(a => (prop(a, 'equity', 'Equity') || 0) !== 0);
+            if (visible.length === 0) {
+                body.innerHTML = '<tr><td colspan="7" class="empty">All accounts have 0 equity</td></tr>';
+                return;
+            }
+            body.innerHTML = visible.map(a => `<tr>
+                <td>${prop(a, 'login', 'Login') || ''}</td>
+                <td class="num">${fmt(prop(a, 'equity', 'Equity'))}</td>
+                <td class="num">${fmt(prop(a, 'balance', 'Balance'))}</td>
+                <td class="num">${fmt(prop(a, 'credit', 'Credit'))}</td>
+                <td class="num">${fmt(prop(a, 'margin', 'Margin'))}</td>
+                <td class="num">${fmt(prop(a, 'marginFree', 'MarginFree'))}</td>
+                <td class="num">${fmt(prop(a, 'marginLevel', 'MarginLevel'))}%</td>
+            </tr>`).join('');
+        }
+
+        // ---- Connection Status ----
+        function updateConnectionStatus(status) {
+            if (!status) return;
+            const xtbOn = prop(status, 'xtbConnected', 'XtbConnected');
+            const bmOn = prop(status, 'bonusManagerConnected', 'BonusManagerConnected');
+            document.getElementById('xtbDot').className = 'dot ' + (xtbOn ? 'on' : 'off');
+            document.getElementById('xtbStatus').textContent = xtbOn ? 'Connected' : 'Disconnected';
+            document.getElementById('bmDot').className = 'dot ' + (bmOn ? 'on' : 'off');
+            document.getElementById('bmStatus').textContent = bmOn ? 'Connected' : 'Not configured';
+        }
+
+        // ---- Full dashboard update ----
+        function applyDashboardUpdate(data) {
+            const equity = prop(data, 'equity', 'Equity');
+            updateEquityCards(equity);
+
+            // Client accounts from equity response
+            const clientAccounts = prop(equity?.client || equity?.Client || {}, 'accounts', 'Accounts');
+            updateClientTable(clientAccounts);
+
+            document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        // ---- Monthly PnL & LP Receivable ----
+        async function refreshPnlSummary() {
+            try {
+                const resp = await fetch('/Bonus/pnl-summary');
+                if (!resp.ok) return;
+                const d = await resp.json();
+
+                const pnlEl = document.getElementById('monthlyPnl');
+                pnlEl.textContent = fmt(d.grossPnl);
+                pnlEl.style.color = d.grossPnl > 0 ? '#9ece6a' : d.grossPnl < 0 ? '#f7768e' : '#c0caf5';
+                document.getElementById('monthlyPnlPeriod').textContent = `${d.fromUtc} to ${d.toUtc}`;
+
+                const recEl = document.getElementById('lpReceivable');
+                recEl.textContent = fmt(d.lpReceivable);
+                recEl.style.color = d.lpReceivable > 0 ? '#9ece6a' : d.lpReceivable < 0 ? '#f7768e' : '#c0caf5';
+                document.getElementById('lpReceivableSub').innerHTML =
+                    `PnL: <span>${fmt(d.lpRealizedPnl)}</span> | Swap: <span>${fmt(d.lpRealizedSwap)}</span>`;
+            } catch (e) {
+                console.error('PnL summary fetch failed:', e);
+            }
+        }
+
+        async function refreshAll() {
+            try {
+                const [dashRes, statusRes] = await Promise.all([
+                    fetch('/Bonus/dashboard'),
+                    fetch('/Bonus/status')
+                ]);
+                if (dashRes.ok) applyDashboardUpdate(await dashRes.json());
+                if (statusRes.ok) updateConnectionStatus(await statusRes.json());
+            } catch (e) {
+                console.error('Refresh failed:', e);
+            }
+            refreshPnlSummary();
+        }
+
+        async function startSignalR() {
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl('/ws/dashboard')
+                .withAutomaticReconnect([0, 1000, 2000, 5000, 10000])
+                .build();
+
+            connection.on('BonusDashboardUpdate', (data) => {
+                applyDashboardUpdate(data);
+            });
+
+            connection.onreconnecting(() => setSignalRStatus(false));
+            connection.onreconnected(() => {
+                setSignalRStatus(true);
+                refreshAll();
+            });
+            connection.onclose(() => setSignalRStatus(false));
+
+            try {
+                await connection.start();
+                setSignalRStatus(true);
+            } catch (e) {
+                setSignalRStatus(false);
+                console.error('SignalR connection failed:', e);
+            }
+        }
+
+        refreshAll();
+        startSignalR();
+
+        // Refresh status periodically (every 15s)
+        setInterval(async () => {
+            try {
+                const r = await fetch('/Bonus/status');
+                if (r.ok) updateConnectionStatus(await r.json());
+            } catch {}
+        }, 15000);
+    </script>
+</body>
+</html>

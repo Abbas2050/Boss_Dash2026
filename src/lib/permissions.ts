@@ -4,6 +4,7 @@ export const DEALING_TABS = [
   "Dealing",
   "Risk Exposure",
   "Coverage",
+  "Bonus",
   "Metrics",
   "Contract Sizes",
   "Deal Matching",
@@ -12,6 +13,8 @@ export const DEALING_TABS = [
   "History",
   "Swap Tracker",
 ] as const;
+
+export const BONUS_SUB_TABS = ["Bonus Coverage", "Bonus Risk", "Bonus PNL", "Bonus Equity"] as const;
 
 export type DealingTab = (typeof DEALING_TABS)[number];
 
@@ -37,7 +40,12 @@ export const DEPARTMENT_KEYS = [
 export const DEALING_TAB_KEYS = DEALING_TABS.map((tab) => ({
   key: `Dealing:${tab}`,
   label: tab,
-}));
+})).concat(
+  BONUS_SUB_TABS.map((tab) => ({
+    key: `Dealing:${tab}`,
+    label: tab,
+  }))
+);
 
 export const NOTIFICATION_KEYS = [
   { key: "Notifications:UserChangeAlert", label: "User Change Alert" },

@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bonus PnL Calculator</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Consolas, monospace; background: #0d0d14; color: #c8c8d0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 16px; max-width: 1100px; margin: 0 auto; }
+        .header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+        .header h1 { font-size: 16px; color: #c0caf5; font-weight: 600; }
+
+        .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .controls label { font-size: 12px; color: #565f89; }
+        .controls input[type="date"] {
+            background: #1a1b26; border: 1px solid #292e42; color: #c0caf5;
+            padding: 6px 10px; border-radius: 4px; font-size: 13px; font-family: inherit;
+        }
+        .controls button {
+            background: #7aa2f7; color: #1a1b26; border: none; padding: 6px 16px;
+            border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600;
+        }
+        .controls button:hover { background: #89b4fa; }
+        .controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #c0caf5; }
+
+        /* Gross PnL hero card */
+        .gross-card {
+            background: #1a1b26; border: 2px solid #292e42; border-radius: 10px;
+            padding: 24px; margin-bottom: 16px; text-align: center;
+        }
+        .gross-label { font-size: 12px; color: #565f89; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+        .gross-value { font-size: 36px; font-weight: 700; }
+        .gross-formula { font-size: 12px; color: #565f89; margin-top: 8px; }
+        .gross-formula span { color: #888; }
+
+        /* Section cards */
+        .section-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+        .section-card {
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 8px; padding: 16px;
+        }
+        .section-title {
+            font-size: 12px; color: #7aa2f7; text-transform: uppercase; letter-spacing: 1px;
+            margin-bottom: 12px; font-weight: 600;
+            border-bottom: 1px solid #292e42; padding-bottom: 8px;
+        }
+        .section-total {
+            font-size: 20px; font-weight: 700; margin-bottom: 12px;
+        }
+
+        /* Breakdown rows */
+        .breakdown { display: flex; flex-direction: column; gap: 6px; }
+        .b-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+        .b-label { color: #888; }
+        .b-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+        .b-count { font-size: 11px; color: #565f89; }
+        .b-divider { border-top: 1px solid #292e42; margin: 4px 0; }
+
+        /* Cost section - full width */
+        .cost-section { margin-bottom: 12px; }
+        .cost-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+        .date-range { font-size: 12px; color: #565f89; margin-bottom: 16px; }
+        .loading { text-align: center; color: #565f89; padding: 40px; font-size: 14px; }
+        .error { text-align: center; color: #f7768e; padding: 20px; font-size: 13px; }
+
+        /* Detail toggle tables */
+        .detail-toggle {
+            font-size: 13px; color: #565f89; text-transform: uppercase; letter-spacing: 1px;
+            cursor: pointer; user-select: none; padding: 4px 0; margin-bottom: 8px;
+        }
+        .detail-toggle:hover { color: #7aa2f7; }
+        .detail-toggle::before { content: '\25B6 '; font-size: 10px; }
+        .detail-toggle.expanded::before { content: '\25BC '; }
+        .detail-hidden { display: none; }
+        .detail-visible { display: block; }
+
+        table { border-collapse: collapse; width: 100%; font-size: 13px; }
+        thead th {
+            background: #13131d; color: #7aa2f7; font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 8px 10px; border-bottom: 1px solid #292e42;
+            position: sticky; top: 0; z-index: 1;
+        }
+        tbody tr { border-bottom: 1px solid #1a1b26; }
+        tbody tr:hover { background: #1a1b2a; }
+        tbody td { padding: 6px 10px; white-space: nowrap; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html" class="active">Bonus PnL</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <div class="header">
+            <h1>Bonus PnL Calculator</h1>
+            <div class="controls">
+                <label>From:</label>
+                <input type="date" id="fromDate" />
+                <label>To:</label>
+                <input type="date" id="toDate" />
+                <button id="calcBtn" onclick="calculate()">Calculate</button>
+            </div>
+        </div>
+
+        <div id="dateRange" class="date-range"></div>
+        <div id="result"></div>
+    </div>
+
+    <script>
+        const fmt = (v, d = 2) => v != null ? Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : '-';
+        const colorClass = (v) => v > 0.005 ? 'positive' : v < -0.005 ? 'negative' : 'neutral';
+        const colorVal = (v, d = 2) => `<span class="${colorClass(v)}">${fmt(v, d)}</span>`;
+        function escHtml(s) { if (!s) return ''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+        function toggleDetail(id) {
+            const el = document.getElementById(id);
+            const toggle = el.previousElementSibling;
+            if (el.classList.contains('detail-hidden')) {
+                el.classList.remove('detail-hidden');
+                el.classList.add('detail-visible');
+                toggle.classList.add('expanded');
+            } else {
+                el.classList.remove('detail-visible');
+                el.classList.add('detail-hidden');
+                toggle.classList.remove('expanded');
+            }
+        }
+
+        // Default: 1st of this month → today
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        const today = now.toISOString().split('T')[0];
+        document.getElementById('fromDate').value = monthStart;
+        document.getElementById('toDate').value = today;
+
+        async function calculate() {
+            const from = document.getElementById('fromDate').value;
+            const to = document.getElementById('toDate').value;
+            const btn = document.getElementById('calcBtn');
+
+            if (!from) { alert('Select a From date'); return; }
+
+            btn.disabled = true;
+            btn.textContent = 'Calculating...';
+            document.getElementById('result').innerHTML = '<div class="loading">Calculating PnL...</div>';
+
+            try {
+                const params = new URLSearchParams({ from });
+                if (to) params.set('to', to);
+
+                const resp = await fetch(`/Bonus/pnl-daily?${params}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+
+                const data = await resp.json();
+                renderResult(data);
+            } catch (e) {
+                document.getElementById('result').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Calculate';
+            }
+        }
+
+        function renderResult(d) {
+            const c = d.client;
+            const l = d.lp;
+            const cost = d.cost;
+
+            document.getElementById('dateRange').textContent = `Period: ${d.fromUtc} to ${d.toUtc} UTC`;
+
+            document.getElementById('result').innerHTML = `
+                <!-- Gross PnL Hero -->
+                <div class="gross-card">
+                    <div class="gross-label">Gross PnL</div>
+                    <div class="gross-value ${colorClass(d.grossPnl)}">${fmt(d.grossPnl)}</div>
+                    <div class="gross-formula">
+                        LP 50% <span>${fmt(l.total)}</span>
+                        - Client Gross <span>${fmt(c.total)}</span>
+                        - Commission <span>${fmt(Math.abs(l.realizedCommission))}</span>
+                        - Credit Cost <span>${fmt(cost.creditCost)}</span>
+                        + Withdrawal Charges <span>${fmt(cost.withdrawalCharges)}</span>
+                    </div>
+                </div>
+
+                <!-- Client PnL / LP PnL side by side -->
+                <div class="section-row">
+                    <!-- Client PnL -->
+                    <div class="section-card">
+                        <div class="section-title">Client Gross PnL (MT5 - All Groups incl. C-Book)</div>
+                        <div class="section-total ${colorClass(c.total)}">${fmt(c.total)}</div>
+                        <div class="breakdown">
+                            <div class="b-row">
+                                <span class="b-label">Realized PnL</span>
+                                <span class="b-value">${colorVal(c.realizedPnl)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Realized Swap</span>
+                                <span class="b-value">${colorVal(c.realizedSwap)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Unrealized PnL</span>
+                                <span class="b-value">${colorVal(c.unrealizedPnl)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Unrealized Swap</span>
+                                <span class="b-value">${colorVal(c.unrealizedSwap)}</span>
+                            </div>
+                            <div class="b-divider"></div>
+                            <div class="b-row">
+                                <span class="b-label">Closed Deals</span>
+                                <span class="b-count">${c.closedDealCount}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Open Positions</span>
+                                <span class="b-count">${c.openPositionCount}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- LP PnL -->
+                    <div class="section-card">
+                        <div class="section-title">LP PnL x 50% (XTB / XOpenHub)</div>
+                        <div class="section-total ${colorClass(l.total)}">${fmt(l.total)}</div>
+                        <div class="breakdown">
+                            <div class="b-row">
+                                <span class="b-label">Raw Total (before x0.5)</span>
+                                <span class="b-value ${colorClass(l.rawTotal)}">${fmt(l.rawTotal)}</span>
+                            </div>
+                            <div class="b-divider"></div>
+                            <div class="b-row">
+                                <span class="b-label">Realized PnL</span>
+                                <span class="b-value">${colorVal(l.realizedPnl)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Realized Swap</span>
+                                <span class="b-value">${colorVal(l.realizedSwap)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Realized Commission</span>
+                                <span class="b-value">${colorVal(l.realizedCommission)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Unrealized PnL</span>
+                                <span class="b-value">${colorVal(l.unrealizedPnl)}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Unrealized Swap</span>
+                                <span class="b-value">${colorVal(l.unrealizedSwap)}</span>
+                            </div>
+                            <div class="b-divider"></div>
+                            <div class="b-row">
+                                <span class="b-label">Closed Deals</span>
+                                <span class="b-count">${l.closedDealCount}</span>
+                            </div>
+                            <div class="b-row">
+                                <span class="b-label">Open Positions</span>
+                                <span class="b-count">${l.openPositionCount}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- LP Closed Deals Detail -->
+                <div class="section-card" style="margin-bottom:12px">
+                    <div class="detail-toggle" onclick="toggleDetail('lpDealsDetail')">
+                        LP Closed Deals Detail (${l.closedDealCount} trades)
+                    </div>
+                    <div id="lpDealsDetail" class="detail-hidden">
+                        ${l.closedDeals && l.closedDeals.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left">Deal</th>
+                                    <th style="text-align:left">Symbol</th>
+                                    <th style="text-align:left">Dir</th>
+                                    <th style="text-align:right">Volume</th>
+                                    <th style="text-align:right">Profit</th>
+                                    <th style="text-align:right">Swap</th>
+                                    <th style="text-align:right">Commission</th>
+                                    <th style="text-align:left">Comment</th>
+                                    <th style="text-align:left">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${l.closedDeals.map(d => `
+                                <tr>
+                                    <td style="text-align:left">${d.deal}</td>
+                                    <td style="text-align:left;color:#e0af68">${d.symbol}</td>
+                                    <td style="text-align:left;color:${d.direction==='Buy'?'#9ece6a':'#f7768e'}">${d.direction}</td>
+                                    <td style="text-align:right">${fmt(d.volume, 4)}</td>
+                                    <td style="text-align:right" class="${colorClass(d.profit)}">${fmt(d.profit)}</td>
+                                    <td style="text-align:right" class="${colorClass(d.swap)}">${fmt(d.swap)}</td>
+                                    <td style="text-align:right" class="${colorClass(d.commission)}">${fmt(d.commission)}</td>
+                                    <td style="text-align:left;color:#565f89;font-size:12px">${escHtml(d.comment)}</td>
+                                    <td style="text-align:left;color:#565f89;font-size:12px">${d.time}</td>
+                                </tr>`).join('')}
+                            </tbody>
+                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No closed deals in period</div>'}
+                    </div>
+                </div>
+
+                <!-- LP Open Positions Detail -->
+                <div class="section-card" style="margin-bottom:12px">
+                    <div class="detail-toggle" onclick="toggleDetail('lpPositionsDetail')">
+                        LP Open Positions Detail (${l.openPositionCount} positions)
+                    </div>
+                    <div id="lpPositionsDetail" class="detail-hidden">
+                        ${l.openPositions && l.openPositions.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left">Ticket</th>
+                                    <th style="text-align:left">Time</th>
+                                    <th style="text-align:left">Symbol</th>
+                                    <th style="text-align:left">Dir</th>
+                                    <th style="text-align:right">Volume</th>
+                                    <th style="text-align:right">Open Price</th>
+                                    <th style="text-align:right">Current</th>
+                                    <th style="text-align:right">Profit</th>
+                                    <th style="text-align:right">Swap</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${l.openPositions.map(p => `
+                                <tr>
+                                    <td style="text-align:left">${p.ticket}</td>
+                                    <td style="text-align:left;color:#565f89;font-size:12px">${p.time}</td>
+                                    <td style="text-align:left;color:#e0af68">${p.symbol}</td>
+                                    <td style="text-align:left;color:${p.direction==='Buy'?'#9ece6a':'#f7768e'}">${p.direction}</td>
+                                    <td style="text-align:right">${fmt(p.volume, 4)}</td>
+                                    <td style="text-align:right">${fmt(p.openPrice, 5)}</td>
+                                    <td style="text-align:right">${fmt(p.currentPrice, 5)}</td>
+                                    <td style="text-align:right" class="${colorClass(p.profit)}">${fmt(p.profit)}</td>
+                                    <td style="text-align:right" class="${colorClass(p.swap)}">${fmt(p.swap)}</td>
+                                </tr>`).join('')}
+                            </tbody>
+                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No open positions</div>'}
+                    </div>
+                </div>
+
+                <!-- Costs -->
+                <div class="cost-section">
+                    <div class="cost-grid">
+                        <div class="section-card">
+                            <div class="section-title">Credit Settled</div>
+                            <div class="section-total ${colorClass(cost.creditSettled)}">${fmt(cost.creditSettled)}</div>
+                            <div class="breakdown">
+                                <div class="b-row">
+                                    <span class="b-label">Matching Transactions</span>
+                                    <span class="b-count">${cost.settledTransactionCount}</span>
+                                </div>
+                                <div class="b-row">
+                                    <span class="b-label b-count">Keywords: neg/negative + bal/balance + adj/adjustment</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="section-card">
+                            <div class="section-title">Credit Unsettled</div>
+                            <div class="section-total ${colorClass(-cost.creditUnsettled)}">${fmt(cost.creditUnsettled)}</div>
+                            <div class="breakdown">
+                                <div class="b-row">
+                                    <span class="b-label">Accounts (bal &lt; 0)</span>
+                                    <span class="b-count">${cost.unsettledAccountCount}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="section-card">
+                            <div class="section-title">Withdrawal Charges (1.26%)</div>
+                            <div class="section-total ${colorClass(cost.withdrawalCharges)}">${fmt(cost.withdrawalCharges)}</div>
+                            <div class="breakdown">
+                                <div class="b-row">
+                                    <span class="b-label">Total Withdrawals</span>
+                                    <span class="b-value">${fmt(cost.withdrawalTotal)}</span>
+                                </div>
+                                <div class="b-row">
+                                    <span class="b-label">Withdrawal Count</span>
+                                    <span class="b-count">${cost.withdrawalCount}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Credit Settled Details -->
+                <div class="section-card" style="margin-bottom:12px">
+                    <div class="detail-toggle" onclick="toggleDetail('settledDetail')">
+                        Credit Settled Details (${cost.settledTransactionCount} records)
+                    </div>
+                    <div id="settledDetail" class="detail-hidden">
+                        ${cost.settledDetails && cost.settledDetails.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left">Login</th>
+                                    <th style="text-align:left">Deal</th>
+                                    <th style="text-align:left">Type</th>
+                                    <th style="text-align:right">Amount</th>
+                                    <th style="text-align:left">Comment</th>
+                                    <th style="text-align:left">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${cost.settledDetails.map(s => `
+                                <tr>
+                                    <td style="text-align:left">${s.login}</td>
+                                    <td style="text-align:left">${s.dealTicket}</td>
+                                    <td style="text-align:left">${s.actionType}</td>
+                                    <td style="text-align:right" class="${colorClass(s.amount)}">${fmt(s.amount)}</td>
+                                    <td style="text-align:left;color:#888;font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.comment)}</td>
+                                    <td style="text-align:left;color:#565f89;font-size:12px">${s.time}</td>
+                                </tr>`).join('')}
+                            </tbody>
+                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No settled credit transactions found</div>'}
+                    </div>
+                </div>
+
+                <!-- Credit Unsettled Details -->
+                <div class="section-card" style="margin-bottom:12px">
+                    <div class="detail-toggle" onclick="toggleDetail('unsettledDetail')">
+                        Credit Unsettled Details (${cost.unsettledDetails && cost.unsettledDetails.length} accounts)
+                    </div>
+                    <div id="unsettledDetail" class="detail-hidden">
+                        ${cost.unsettledDetails && cost.unsettledDetails.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th style="text-align:left">Login</th>
+                                    <th style="text-align:right">Balance</th>
+                                    <th style="text-align:right">Equity</th>
+                                    <th style="text-align:right">Margin</th>
+                                    <th style="text-align:right">Unsettled Amount</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${cost.unsettledDetails.map(u => `
+                                <tr>
+                                    <td style="text-align:left">${u.login}</td>
+                                    <td style="text-align:right" class="negative">${fmt(u.balance)}</td>
+                                    <td style="text-align:right">${fmt(u.equity)}</td>
+                                    <td style="text-align:right">${fmt(u.margin)}</td>
+                                    <td style="text-align:right">${fmt(Math.abs(u.balance))}</td>
+                                </tr>`).join('')}
+                            </tbody>
+                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No unsettled credit accounts found</div>'}
+                    </div>
+                </div>
+
+                <!-- Formula breakdown -->
+                <div class="section-card" style="margin-bottom:12px">
+                    <div class="section-title">Gross PnL Formula Breakdown</div>
+                    <div class="breakdown">
+                        <div class="b-row">
+                            <span class="b-label">LP PnL (50%)</span>
+                            <span class="b-value">${colorVal(l.total)}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label">- Client Gross PnL</span>
+                            <span class="b-value">${colorVal(c.total)}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label">= Difference</span>
+                            <span class="b-value">${colorVal(l.total - c.total)}</span>
+                        </div>
+                        <div class="b-divider"></div>
+                        <div class="b-row">
+                            <span class="b-label">- LP Commission (100%)</span>
+                            <span class="b-value">${colorVal(Math.abs(l.realizedCommission))}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label">- Credit Cost (Settled + Unsettled)</span>
+                            <span class="b-value">${colorVal(cost.creditCost)}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label">+ Withdrawal Charges</span>
+                            <span class="b-value">${colorVal(cost.withdrawalCharges)}</span>
+                        </div>
+                        <div class="b-divider"></div>
+                        <div class="b-row" style="font-size:15px">
+                            <span class="b-label" style="color:#7aa2f7;font-weight:600">= Gross PnL</span>
+                            <span class="b-value" style="font-size:18px">${colorVal(d.grossPnl)}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Auto-calculate on load
+        calculate();
+    </script>
+</body>
+</html>
