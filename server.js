@@ -229,8 +229,14 @@ app.get('/account-alerts.html', (req, res) => {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-// Serve static files (optional, for production)
+// Serve static files from Vite build output
 app.use(express.static(path.join(__dirname, 'dist')));
+
+// SPA fallback: serve dist/index.html for all non-API GET requests
+// This allows React Router to handle client-side navigation
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
 
 // Create HTTP server and attach WebSocket mock
 const server = http.createServer(app);
