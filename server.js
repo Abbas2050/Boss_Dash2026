@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import marketingApi from './api.js';
 import agentRouter from "./agent/router.js";
 import authRouter from "./auth/router.js";
+import clientProfileRouter from "./clientProfileRouter.js";
 import docusignRouter from "./docusign/router.js";
 import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import oauthRouter from "./oauth/router.js";
@@ -219,6 +220,7 @@ app.all('/ws/dashboard/negotiate', (req, res) => {
 app.use('/api', marketingApi);
 app.use("/api/agent", agentRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/ClientProfile", clientProfileRouter);
 app.use("/api/docusign", docusignRouter);
 app.use("/oauth", oauthRouter);
 
@@ -229,6 +231,19 @@ app.get('/account-alerts.html', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+// Global JSON error handler — catches any unhandled Express errors
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  console.error('[server error]', err?.message || err);
+  if (res.headersSent) return;
+  res.status(500).json({
+    error: 'internal_server_error',
+    message: process.env.NODE_ENV === 'production'
+      ? 'An unexpected error occurred'
+      : (err?.message || String(err)),
+  });
+});
 
 // Serve static files from Vite build output
 app.use(express.static(path.join(__dirname, 'dist')));

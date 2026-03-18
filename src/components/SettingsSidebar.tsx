@@ -39,7 +39,7 @@ function Item({
 }
 
 export const SettingsSidebar: React.FC = () => (
-  <aside className="w-64 bg-card/70 h-full flex flex-col py-6 px-4 shadow-lg border-r border-border/40 backdrop-blur-xl">
+  <aside className="hidden lg:flex lg:w-64 bg-card/70 h-full lg:sticky lg:top-[72px] flex-col py-6 px-4 shadow-lg border-r border-border/40 backdrop-blur-xl">
     <h2 className="text-foreground text-lg font-semibold mb-3">Settings</h2>
     <p className="text-xs text-muted-foreground mb-5">Configure integrations, alerts and access.</p>
 

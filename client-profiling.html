@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SLC - Client Profiling</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Consolas, monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px 24px; }
+
+        .header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+        .header h1 { font-size: 18px; color: #c0caf5; font-weight: 600; }
+        .controls { display: flex; gap: 10px; align-items: center; }
+        .controls select, .controls button {
+            background: #1a1b26; border: 1px solid #292e42; color: #c0caf5;
+            padding: 6px 12px; border-radius: 4px; font-size: 13px; font-family: inherit; cursor: pointer;
+        }
+        .controls button { background: #7aa2f7; color: #1a1b26; font-weight: 600; border: none; }
+        .controls button:hover { background: #89b4fa; }
+        .generated { font-size: 11px; color: #565f89; margin-left: auto; }
+
+        /* Rankings grid - 2x2 on wide screens, stacks on narrow */
+        .rankings {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 1400px) { .rankings { grid-template-columns: 1fr; } }
+
+        .card {
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 10px;
+            padding: 0; overflow: hidden;
+        }
+        .card-header {
+            display: flex; align-items: center; gap: 10px;
+            padding: 14px 18px; border-bottom: 1px solid #292e42;
+            background: #16161e;
+        }
+        .card-icon {
+            width: 32px; height: 32px; border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px; font-weight: 700; flex-shrink: 0;
+        }
+        .card-icon.equity { background: rgba(158,206,106,0.12); color: #9ece6a; }
+        .card-icon.open { background: rgba(122,162,247,0.12); color: #7aa2f7; }
+        .card-icon.active { background: rgba(224,175,104,0.12); color: #e0af68; }
+        .card-icon.realized { background: rgba(187,154,247,0.12); color: #bb9af7; }
+        .card-title {
+            font-size: 13px; color: #c0caf5; font-weight: 600;
+        }
+        .card-subtitle {
+            font-size: 11px; color: #565f89; margin-top: 2px;
+        }
+        .card-body { padding: 0; overflow-x: auto; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead th {
+            background: #13131d; color: #565f89; font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 10px 14px; border-bottom: 1px solid #292e42; text-align: right; white-space: nowrap;
+        }
+        thead th:first-child, thead th:nth-child(2), thead th:nth-child(3) { text-align: left; }
+        tbody td {
+            padding: 10px 14px; text-align: right; white-space: nowrap;
+            border-bottom: 1px solid #1e1e2e; font-variant-numeric: tabular-nums;
+        }
+        tbody td:first-child, tbody td:nth-child(2), tbody td:nth-child(3) { text-align: left; }
+        tbody tr:last-child td { border-bottom: none; }
+        .rank-table tbody tr { cursor: pointer; transition: background 0.15s; }
+        .rank-table tbody tr:hover { background: #1f2335; }
+        .rank-table tbody tr.selected { background: #1f2335; box-shadow: inset 3px 0 0 #7aa2f7; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #c0caf5; }
+        .muted { color: #565f89; }
+        .rank-num { color: #e0af68; font-weight: 700; }
+
+        .loading { text-align: center; color: #565f89; padding: 30px; font-size: 13px; }
+        .error { text-align: center; color: #f7768e; padding: 20px; font-size: 13px; }
+
+        /* Detail panel */
+        #detailPanel { display: none; }
+        #detailPanel.visible { display: block; }
+        #detailPanel > .card-header { background: #13131d; }
+
+        .detail-header {
+            display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+        }
+        .detail-header h2 { font-size: 15px; color: #c0caf5; }
+        .detail-header .login-badge {
+            background: #24283b; color: #7aa2f7; padding: 3px 10px; border-radius: 4px; font-size: 12px;
+        }
+        .detail-header .group-badge {
+            background: #1e1e2e; color: #565f89; padding: 3px 10px; border-radius: 4px; font-size: 12px;
+        }
+        .detail-close {
+            margin-left: auto; background: none; border: 1px solid #414868; color: #565f89;
+            padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
+        }
+        .detail-close:hover { color: #c0caf5; border-color: #c0caf5; }
+
+        .detail-body { padding: 18px; }
+
+        .metrics-bar {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px; margin-bottom: 18px;
+        }
+        .metric {
+            background: #13131d; border: 1px solid #292e42; border-radius: 8px; padding: 14px;
+        }
+        .metric-label { font-size: 10px; color: #565f89; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .metric-value { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+        .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+        .detail-grid .card { border-color: #1e1e2e; }
+        .detail-grid .card-body { padding: 0; }
+        .detail-grid .card-header { padding: 12px 18px; }
+
+        .period-controls { display: flex; gap: 6px; padding: 0 18px 12px; }
+        .period-btn {
+            background: #24283b; border: 1px solid #292e42; color: #565f89;
+            padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: inherit;
+        }
+        .period-btn.active { background: #7aa2f7; color: #1a1b26; border-color: #7aa2f7; font-weight: 600; }
+        .period-btn:hover { color: #c0caf5; }
+
+        .summary-row {
+            display: flex; gap: 20px; flex-wrap: wrap; padding: 12px 18px;
+            border-top: 1px solid #292e42; font-size: 12px;
+        }
+        .summary-item span { color: #565f89; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html" class="active">Client Profiling</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <div class="header">
+            <h1>Client Profiling</h1>
+            <div class="controls">
+                <input type="date" id="profFrom" style="background:#1a1b26; border:1px solid #292e42; color:#c0caf5; padding:6px 10px; border-radius:4px; font-size:13px; font-family:inherit;">
+                <input type="date" id="profTo" style="background:#1a1b26; border:1px solid #292e42; color:#c0caf5; padding:6px 10px; border-radius:4px; font-size:13px; font-family:inherit;">
+                <select id="countSelect">
+                    <option value="5">Top 5</option>
+                    <option value="10">Top 10</option>
+                    <option value="15">Top 15</option>
+                    <option value="20">Top 20</option>
+                </select>
+                <button onclick="loadRankings()">Refresh</button>
+            </div>
+            <div class="generated" id="generatedAt"></div>
+        </div>
+
+        <div class="rankings" id="rankings">
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon equity">$</div>
+                    <div>
+                        <div class="card-title">Highest Equity</div>
+                        <div class="card-subtitle">Clients ranked by account equity</div>
+                    </div>
+                </div>
+                <div class="card-body" id="equityTable"><div class="loading">Loading...</div></div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon open">O</div>
+                    <div>
+                        <div class="card-title">Largest Open Positions</div>
+                        <div class="card-subtitle">Clients ranked by open volume (lots)</div>
+                    </div>
+                </div>
+                <div class="card-body" id="volumeTable"><div class="loading">Loading...</div></div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon active">A</div>
+                    <div>
+                        <div class="card-title" id="activeTitle">Most Active</div>
+                        <div class="card-subtitle" id="activeSubtitle">Realized + open volume combined</div>
+                    </div>
+                </div>
+                <div class="card-body" id="dailyVolumeTable"><div class="loading">Loading...</div></div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-icon realized">R</div>
+                    <div>
+                        <div class="card-title" id="realizedTitle">Highest Realized Volume</div>
+                        <div class="card-subtitle" id="realizedSubtitle">Clients ranked by closed trade lots</div>
+                    </div>
+                </div>
+                <div class="card-body" id="dailyRealizedTable"><div class="loading">Loading...</div></div>
+            </div>
+        </div>
+
+        <div id="detailPanel" class="card">
+            <div class="card-header">
+                <div class="detail-header" style="width:100%">
+                    <h2 id="detailName"></h2>
+                    <span class="login-badge" id="detailLogin"></span>
+                    <span class="group-badge" id="detailGroup"></span>
+                    <button class="detail-close" onclick="closeDetail()">Close</button>
+                </div>
+            </div>
+            <div class="detail-body">
+                <div class="metrics-bar" id="detailMetrics"></div>
+                <div class="detail-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Open Positions</div>
+                        </div>
+                        <div class="card-body" id="positionsTable"><div class="loading">Select a client above</div></div>
+                        <div class="summary-row" id="posSummary"></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <div class="card-title">Top Symbols (Closed Trades)</div>
+                        </div>
+                        <div class="period-controls" id="periodControls"></div>
+                        <div class="card-body" id="symbolsTable"><div class="loading">Select a client above</div></div>
+                        <div class="summary-row" id="dealSummary"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const fmt = (v, d = 2) => v != null ? Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) : '-';
+        const fmtLots = (v) => fmt(v, 2);
+        const colorClass = (v) => v > 0.005 ? 'positive' : v < -0.005 ? 'negative' : 'neutral';
+        const fmtMl = (v) => v > 99999 ? 'INF' : fmt(v, 2) + '%';
+
+        let selectedLogin = null;
+        let selectedDays = 30;
+
+        async function loadRankings() {
+            const count = document.getElementById('countSelect').value;
+            const from = document.getElementById('profFrom').value;
+            const to = document.getElementById('profTo').value;
+            document.getElementById('equityTable').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('volumeTable').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('dailyVolumeTable').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('dailyRealizedTable').innerHTML = '<div class="loading">Loading...</div>';
+
+            try {
+                const params = new URLSearchParams({ count });
+                if (from) params.set('from', from);
+                if (to) params.set('to', to);
+                const resp = await fetch(`/api/ClientProfile/top-clients?${params}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+
+                document.getElementById('generatedAt').textContent = `Updated: ${data.generatedAt} UTC | Deals: ${data.fromDate} to ${data.toDate}`;
+
+                // Determine period label for card titles
+                const isToday = data.fromDate === data.toDate && data.fromDate === new Date().toISOString().split('T')[0];
+                const periodLabel = isToday ? 'Today' : `${data.fromDate} - ${data.toDate}`;
+                const periodShort = isToday ? 'Today' : 'Period';
+                document.getElementById('activeTitle').textContent = `Most Active - ${periodLabel}`;
+                document.getElementById('activeSubtitle').textContent = `Realized + open volume combined`;
+                document.getElementById('realizedTitle').textContent = `Highest Realized Volume - ${periodLabel}`;
+                document.getElementById('realizedSubtitle').textContent = `Clients ranked by closed trade lots`;
+
+                renderEquityTable(data.topByEquity, periodShort);
+                renderVolumeTable(data.topByVolume, periodShort);
+                renderDailyVolumeTable(data.topByDailyVolume, periodShort);
+                renderDailyRealizedTable(data.topByDailyRealized, periodShort);
+            } catch (e) {
+                document.getElementById('equityTable').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+                document.getElementById('volumeTable').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+                document.getElementById('dailyVolumeTable').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+                document.getElementById('dailyRealizedTable').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+            }
+        }
+
+        function renderEquityTable(clients, period) {
+            if (!clients.length) {
+                document.getElementById('equityTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No clients found</div>';
+                return;
+            }
+            document.getElementById('equityTable').innerHTML = `
+                <table class="rank-table">
+                    <thead><tr>
+                        <th>#</th><th>Login</th><th>Name</th><th>Equity</th><th>Balance</th>
+                        <th>Margin Lvl</th><th>Floating</th><th>Pos</th><th>Open Vol</th><th>${period} Realized Vol</th>
+                    </tr></thead>
+                    <tbody>${clients.map(c => `
+                        <tr onclick="loadDetail(${c.login}, '${esc(c.name)}')" class="${c.login === selectedLogin ? 'selected' : ''}">
+                            <td class="rank-num">${c.rank}</td>
+                            <td class="muted">${c.login}</td>
+                            <td>${esc(c.name)}</td>
+                            <td class="positive" style="font-weight:600">${fmt(c.equity)}</td>
+                            <td>${fmt(c.balance)}</td>
+                            <td>${fmtMl(c.marginLevel)}</td>
+                            <td class="${colorClass(c.floatingPnl)}">${fmt(c.floatingPnl)}</td>
+                            <td class="muted">${c.openPositionCount}</td>
+                            <td>${fmtLots(c.totalOpenLots)}</td>
+                            <td>${fmtLots(c.dailyRealizedLots)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>`;
+        }
+
+        function renderVolumeTable(clients, period) {
+            if (!clients.length) {
+                document.getElementById('volumeTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No clients found</div>';
+                return;
+            }
+            document.getElementById('volumeTable').innerHTML = `
+                <table class="rank-table">
+                    <thead><tr>
+                        <th>#</th><th>Login</th><th>Name</th><th>Open Vol</th><th>${period} Realized Vol</th><th>Equity</th>
+                        <th>Floating</th><th>Pos</th>
+                    </tr></thead>
+                    <tbody>${clients.map(c => `
+                        <tr onclick="loadDetail(${c.login}, '${esc(c.name)}')" class="${c.login === selectedLogin ? 'selected' : ''}">
+                            <td class="rank-num">${c.rank}</td>
+                            <td class="muted">${c.login}</td>
+                            <td>${esc(c.name)}</td>
+                            <td class="positive" style="font-weight:600">${fmtLots(c.totalOpenLots)}</td>
+                            <td>${fmtLots(c.dailyRealizedLots)}</td>
+                            <td>${fmt(c.equity)}</td>
+                            <td class="${colorClass(c.floatingPnl)}">${fmt(c.floatingPnl)}</td>
+                            <td class="muted">${c.openPositionCount}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>`;
+        }
+
+        function renderDailyVolumeTable(clients, period) {
+            if (!clients || !clients.length) {
+                document.getElementById('dailyVolumeTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No clients found</div>';
+                return;
+            }
+            document.getElementById('dailyVolumeTable').innerHTML = `
+                <table class="rank-table">
+                    <thead><tr>
+                        <th>#</th><th>Login</th><th>Name</th><th>Total Vol</th><th>Realized</th><th>Open</th><th>Equity</th><th>Floating</th>
+                    </tr></thead>
+                    <tbody>${clients.map(c => `
+                        <tr onclick="loadDetail(${c.login}, '${esc(c.name)}')" class="${c.login === selectedLogin ? 'selected' : ''}">
+                            <td class="rank-num">${c.rank}</td>
+                            <td class="muted">${c.login}</td>
+                            <td>${esc(c.name)}</td>
+                            <td class="positive" style="font-weight:600">${fmtLots(c.totalDailyVolume)}</td>
+                            <td>${fmtLots(c.dailyRealizedLots)}</td>
+                            <td>${fmtLots(c.openLots)}</td>
+                            <td>${fmt(c.equity)}</td>
+                            <td class="${colorClass(c.floatingPnl)}">${fmt(c.floatingPnl)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>`;
+        }
+
+        function renderDailyRealizedTable(clients, period) {
+            if (!clients || !clients.length) {
+                document.getElementById('dailyRealizedTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No closed trades in period</div>';
+                return;
+            }
+            document.getElementById('dailyRealizedTable').innerHTML = `
+                <table class="rank-table">
+                    <thead><tr>
+                        <th>#</th><th>Login</th><th>Name</th><th>Realized Vol</th><th>Open Vol</th><th>Equity</th><th>Floating</th>
+                    </tr></thead>
+                    <tbody>${clients.map(c => `
+                        <tr onclick="loadDetail(${c.login}, '${esc(c.name)}')" class="${c.login === selectedLogin ? 'selected' : ''}">
+                            <td class="rank-num">${c.rank}</td>
+                            <td class="muted">${c.login}</td>
+                            <td>${esc(c.name)}</td>
+                            <td class="positive" style="font-weight:600">${fmtLots(c.dailyRealizedLots)}</td>
+                            <td>${fmtLots(c.openLots)}</td>
+                            <td>${fmt(c.equity)}</td>
+                            <td class="${colorClass(c.floatingPnl)}">${fmt(c.floatingPnl)}</td>
+                        </tr>
+                    `).join('')}</tbody>
+                </table>`;
+        }
+
+        async function loadDetail(login, name) {
+            selectedLogin = login;
+            document.querySelectorAll('.rank-table tbody tr').forEach(tr => {
+                tr.classList.toggle('selected', tr.onclick?.toString().includes(login));
+            });
+
+            const panel = document.getElementById('detailPanel');
+            panel.classList.add('visible');
+            document.getElementById('detailName').textContent = name || login;
+            document.getElementById('detailLogin').textContent = `#${login}`;
+            document.getElementById('detailGroup').textContent = '';
+            document.getElementById('detailMetrics').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('symbolsTable').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('positionsTable').innerHTML = '<div class="loading">Loading...</div>';
+            document.getElementById('dealSummary').innerHTML = '';
+            document.getElementById('posSummary').innerHTML = '';
+
+            renderPeriodControls();
+            await fetchDetail(login);
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function renderPeriodControls() {
+            const periods = [7, 30, 90, 180, 365];
+            const labels = ['7d', '30d', '90d', '6m', '1y'];
+            document.getElementById('periodControls').innerHTML = periods.map((d, i) =>
+                `<button class="period-btn ${d === selectedDays ? 'active' : ''}" onclick="changePeriod(${d})">${labels[i]}</button>`
+            ).join('');
+        }
+
+        function changePeriod(days) {
+            selectedDays = days;
+            renderPeriodControls();
+            if (selectedLogin) fetchDetail(selectedLogin);
+        }
+
+        async function fetchDetail(login) {
+            try {
+                const resp = await fetch(`/api/ClientProfile/${login}/detail?days=${selectedDays}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const data = await resp.json();
+                renderDetail(data);
+            } catch (e) {
+                document.getElementById('detailMetrics').innerHTML = `<div class="error">Error: ${e.message}</div>`;
+            }
+        }
+
+        function renderDetail(data) {
+            document.getElementById('detailName').textContent = data.name;
+            document.getElementById('detailGroup').textContent = data.group;
+
+            const acc = data.account;
+            document.getElementById('detailMetrics').innerHTML = [
+                { label: 'Equity', value: fmt(acc.equity), cls: 'positive' },
+                { label: 'Balance', value: fmt(acc.balance), cls: 'neutral' },
+                { label: 'Credit', value: fmt(acc.credit), cls: 'neutral' },
+                { label: 'Margin', value: fmt(acc.margin), cls: 'neutral' },
+                { label: 'Free Margin', value: fmt(acc.marginFree), cls: 'neutral' },
+                { label: 'Margin Level', value: fmtMl(acc.marginLevel), cls: acc.marginLevel < 150 ? 'negative' : 'positive' },
+                { label: 'Leverage', value: '1:' + acc.marginLeverage, cls: 'neutral' },
+                { label: 'Floating PnL', value: fmt(acc.floatingPnl), cls: colorClass(acc.floatingPnl) },
+                { label: 'Swap', value: fmt(acc.swap), cls: colorClass(acc.swap) },
+            ].map(m => `
+                <div class="metric">
+                    <div class="metric-label">${m.label}</div>
+                    <div class="metric-value ${m.cls}">${m.value}</div>
+                </div>
+            `).join('');
+
+            // Top Symbols
+            if (data.topSymbols.length === 0) {
+                document.getElementById('symbolsTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No closed trades in this period</div>';
+            } else {
+                document.getElementById('symbolsTable').innerHTML = `
+                    <table>
+                        <thead><tr>
+                            <th>Symbol</th><th>Lots</th><th>Daily Avg</th><th>Deals</th><th>Realized PnL</th><th>Swap</th><th>Commission</th>
+                        </tr></thead>
+                        <tbody>${data.topSymbols.map(s => {
+                            const dailyAvg = data.summary.periodDays > 0 ? s.totalLots / data.summary.periodDays : 0;
+                            return `<tr>
+                                <td style="color:#e0af68;font-weight:600">${s.symbol}</td>
+                                <td>${fmtLots(s.totalLots)}</td>
+                                <td class="muted">${fmtLots(dailyAvg)}</td>
+                                <td class="muted">${s.dealCount}</td>
+                                <td class="${colorClass(s.realizedPnl)}">${fmt(s.realizedPnl)}</td>
+                                <td class="${colorClass(s.swap)}">${fmt(s.swap)}</td>
+                                <td class="muted">${fmt(s.commission)}</td>
+                            </tr>`;
+                        }).join('')}</tbody>
+                    </table>`;
+            }
+
+            // Deal summary
+            const ds = data.summary;
+            document.getElementById('dealSummary').innerHTML = `
+                <div class="summary-item"><span>Closed Deals:</span> ${ds.periodClosedDeals}</div>
+                <div class="summary-item"><span>Traded Lots:</span> ${fmtLots(ds.periodTradedLots)}</div>
+                <div class="summary-item"><span>Daily Avg:</span> ${fmtLots(ds.dailyAvgLots)} lots/day</div>
+                <div class="summary-item"><span>Period:</span> ${ds.periodDays} days</div>
+            `;
+
+            // Open Positions
+            if (data.openPositions.length === 0) {
+                document.getElementById('positionsTable').innerHTML = '<div class="muted" style="padding:20px;text-align:center">No open positions</div>';
+            } else {
+                document.getElementById('positionsTable').innerHTML = `
+                    <table>
+                        <thead><tr>
+                            <th>Symbol</th><th>Buy</th><th>Sell</th><th>Net</th><th>#</th><th>Profit</th><th>Swap</th>
+                        </tr></thead>
+                        <tbody>${data.openPositions.map(p => `
+                            <tr>
+                                <td style="color:#e0af68;font-weight:600">${p.symbol}</td>
+                                <td class="positive">${fmtLots(p.buyLots)}</td>
+                                <td class="negative">${fmtLots(p.sellLots)}</td>
+                                <td class="${p.netLots > 0 ? 'positive' : p.netLots < 0 ? 'negative' : 'muted'}" style="font-weight:700">${fmtLots(Math.abs(p.netLots))} ${p.netDirection}</td>
+                                <td class="muted">${p.positionCount}</td>
+                                <td class="${colorClass(p.profit)}">${fmt(p.profit)}</td>
+                                <td class="${colorClass(p.swap)}">${fmt(p.swap)}</td>
+                            </tr>
+                        `).join('')}</tbody>
+                    </table>`;
+            }
+
+            // Position summary
+            document.getElementById('posSummary').innerHTML = `
+                <div class="summary-item"><span>Positions:</span> ${ds.totalOpenPositions}</div>
+                <div class="summary-item"><span>Open Lots:</span> ${fmtLots(ds.totalOpenLots)}</div>
+                <div class="summary-item"><span>Floating:</span> <span class="${colorClass(ds.totalFloatingPnl)}">${fmt(ds.totalFloatingPnl)}</span></div>
+                <div class="summary-item"><span>Swap:</span> <span class="${colorClass(ds.totalSwap)}">${fmt(ds.totalSwap)}</span></div>
+            `;
+        }
+
+        function closeDetail() {
+            selectedLogin = null;
+            document.getElementById('detailPanel').classList.remove('visible');
+            document.querySelectorAll('.rank-table tbody tr').forEach(tr => tr.classList.remove('selected'));
+        }
+
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        // Init dates to today
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('profFrom').value = today;
+        document.getElementById('profTo').value = today;
+
+        loadRankings();
+    </script>
+</body>
+</html>

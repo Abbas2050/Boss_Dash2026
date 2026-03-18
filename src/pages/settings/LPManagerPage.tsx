@@ -236,7 +236,7 @@ export const LPManagerPage: React.FC = () => {
   return (
     <>
     <div className="bg-background min-h-screen">
-      <main className="p-8">
+      <main className="p-3 sm:p-4 md:p-6 lg:p-8">
         <h1 className="text-2xl font-bold text-primary mb-6">LP Account Manager</h1>
 
         <div className="mb-4 text-sm text-foreground/80">

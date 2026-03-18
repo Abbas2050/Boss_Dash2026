@@ -31,7 +31,7 @@ export const CoveragePage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="p-8">
+      <main className="p-3 sm:p-4 md:p-6 lg:p-8">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-foreground">Position Match Table</h1>
           <div className="flex items-center gap-4 mt-2">

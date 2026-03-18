@@ -178,23 +178,23 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
           API Error: {errorMessage}
         </div>
       )}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
         {stats.map((stat, index) => (
           <div 
             key={stat.label}
-            className="cyber-card p-5 flex items-center gap-4 group hover:scale-[1.02] transition-all duration-300 hover:shadow-lg hover:shadow-primary/10"
+            className="cyber-card p-3 sm:p-4 md:p-5 flex items-center gap-2 sm:gap-3 md:gap-4 group hover:scale-[1.02] transition-all duration-300 hover:shadow-lg hover:shadow-primary/10"
             style={{ animationDelay: `${index * 100}ms` }}
           >
-            <div className="p-3 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 group-hover:from-primary/30 group-hover:to-primary/10 transition-all duration-300 shadow-inner">
-              <stat.icon className="w-5 h-5 text-primary" />
+            <div className="p-2 sm:p-2.5 md:p-3 rounded-xl bg-gradient-to-br from-primary/20 to-primary/5 group-hover:from-primary/30 group-hover:to-primary/10 transition-all duration-300 shadow-inner">
+              <stat.icon className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-xs text-muted-foreground uppercase tracking-wider flex items-center gap-2">
+              <p className="text-[10px] sm:text-xs leading-tight text-muted-foreground uppercase tracking-wider flex items-center gap-1.5 sm:gap-2">
                 {stat.label}
                 {isLoading && <span className="text-[10px] text-primary">loading...</span>}
               </p>
               <div className="flex items-baseline gap-2 mt-0.5">
-                <span className="font-mono text-xl font-bold tracking-tight truncate">{stat.value}</span>
+                <span className="font-mono text-lg sm:text-xl font-bold tracking-tight truncate">{stat.value}</span>
               </div>
             </div>
           </div>

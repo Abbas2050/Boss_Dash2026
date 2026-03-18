@@ -5,6 +5,9 @@ import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
 import { hasAccess } from "@/lib/auth";
 import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
+import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
+import { ClientProfilingTab } from "@/pages/departments/dealing/ClientProfilingTab";
+import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
   ALERT_EVENT_KEYS,
@@ -93,10 +96,25 @@ type BonusStatusResponse = {
 type BonusPnlSummaryResponse = {
   grossPnl?: number;
   lpReceivable?: number;
+  lpReceivableHwm?: number;
   lpRealizedPnl?: number;
   lpRealizedSwap?: number;
+  lpUnrealizedPnl?: number;
+  watermarkIn?: number;
   fromUtc?: string;
   toUtc?: string;
+};
+
+type BonusPnlMonthlyReportMonth = {
+  grossPnl?: number;
+  watermarkIn?: number;
+  watermarkOut?: number;
+  effectiveLpTotal?: number;
+  lpRawTotal?: number;
+};
+
+type BonusPnlMonthlyReportResponse = {
+  months?: BonusPnlMonthlyReportMonth[];
 };
 
 type BonusPnlDailyResponse = {
@@ -371,17 +389,6 @@ type NopReportData = {
 };
 
 type FullscreenTableKey = "coverage" | "risk" | "metrics" | "swap" | "history";
-type ColumnFilterOperator = "contains" | "eq" | "neq";
-
-const TABLE_ENHANCER_SELECTOR = "table.min-w-full";
-
-const normalizeFilterValue = (value: unknown) => String(value ?? "").trim().toLowerCase();
-
-const parseMaybeNumber = (raw: string) => {
-  const cleaned = raw.replace(/[$,%\s,]/g, "").trim();
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
-};
 
 const csvEscape = (value: string) => {
   const v = String(value ?? "");
@@ -397,312 +404,6 @@ const exportRowsToCsv = (filePrefix: string, headers: string[], rows: string[][]
   link.download = `${filePrefix}-${stamp}.csv`;
   link.click();
   URL.revokeObjectURL(link.href);
-};
-
-const mountTableEnhancer = (table: HTMLTableElement) => {
-  const thead = table.querySelector("thead");
-  const tbody = table.querySelector("tbody");
-  if (!thead || !tbody) return () => undefined;
-
-  const headerRows = Array.from(thead.querySelectorAll("tr"));
-  const headerRow = headerRows[headerRows.length - 1] as HTMLTableRowElement | undefined;
-  if (!headerRow) return () => undefined;
-
-  const ths = Array.from(headerRow.querySelectorAll("th"));
-  if (!ths.length) return () => undefined;
-
-  const headers = ths.map((th, idx) => {
-    const txt = (th.textContent || "").trim();
-    return txt || `Column ${idx + 1}`;
-  });
-  const tableKind = String(table.dataset.tableKind || "").toLowerCase();
-
-  const filterState = headers.map(() => ({ op: "contains" as ColumnFilterOperator, value: "" }));
-  let globalQuery = "";
-  let sortIndex = -1;
-  let sortDir: "asc" | "desc" = "asc";
-
-  const wrapper = table.parentElement;
-  if (!wrapper) return () => undefined;
-
-  const toolbar = document.createElement("div");
-  toolbar.className = "mb-2 flex flex-wrap items-center gap-2";
-
-  const globalInput = document.createElement("input");
-  globalInput.type = "text";
-  globalInput.placeholder = "Search all columns...";
-  globalInput.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100";
-
-  const clearBtn = document.createElement("button");
-  clearBtn.type = "button";
-  clearBtn.textContent = "Clear Filters";
-  clearBtn.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200";
-
-  const exportBtn = document.createElement("button");
-  exportBtn.type = "button";
-  exportBtn.textContent = "Export Excel";
-  exportBtn.className = "rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-300";
-  const showHiddenBtn = document.createElement("button");
-  showHiddenBtn.type = "button";
-  showHiddenBtn.textContent = "Show hidden data";
-  showHiddenBtn.className = "rounded-md border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200";
-  let showHiddenData = false;
-
-  toolbar.appendChild(globalInput);
-  toolbar.appendChild(clearBtn);
-  toolbar.appendChild(exportBtn);
-  toolbar.appendChild(showHiddenBtn);
-  wrapper.parentElement?.insertBefore(toolbar, wrapper);
-
-  const filterRow = document.createElement("tr");
-  filterRow.className = "bg-slate-100/80 dark:bg-slate-900/70";
-
-  headers.forEach((_, idx) => {
-    const th = document.createElement("th");
-    th.className = "px-2 py-1";
-
-    const row = document.createElement("div");
-    row.className = "flex items-center gap-1";
-
-    const op = document.createElement("select");
-    op.className = "rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900";
-    [
-      { v: "contains", t: "~" },
-      { v: "eq", t: "=" },
-      { v: "neq", t: "!=" },
-    ].forEach((item) => {
-      const option = document.createElement("option");
-      option.value = item.v;
-      option.textContent = item.t;
-      op.appendChild(option);
-    });
-
-    const input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "filter";
-    input.className = "w-full min-w-[64px] rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900";
-
-    row.appendChild(op);
-    row.appendChild(input);
-    th.appendChild(row);
-    filterRow.appendChild(th);
-
-    op.addEventListener("change", () => {
-      filterState[idx].op = op.value as ColumnFilterOperator;
-      applyState();
-    });
-    input.addEventListener("input", () => {
-      filterState[idx].value = input.value;
-      applyState();
-    });
-  });
-
-  thead.appendChild(filterRow);
-
-  const indicators: HTMLSpanElement[] = [];
-  ths.forEach((th, idx) => {
-    th.style.cursor = "pointer";
-    const indicator = document.createElement("span");
-    indicator.className = "ml-1 text-[10px] text-slate-400";
-    indicator.textContent = "-";
-    th.appendChild(indicator);
-    indicators.push(indicator);
-    th.addEventListener("click", () => {
-      if (sortIndex === idx) {
-        sortDir = sortDir === "asc" ? "desc" : "asc";
-      } else {
-        sortIndex = idx;
-        sortDir = "asc";
-      }
-      applyState();
-    });
-  });
-
-  const getRows = () =>
-    Array.from(tbody.querySelectorAll("tr")).map((tr, index) => {
-      const cells = Array.from(tr.querySelectorAll("td,th")).map((cell) => (cell.textContent || "").trim());
-      return { tr: tr as HTMLTableRowElement, cells, index };
-    });
-  const isTotalLabel = (txt: string) => {
-    const t = String(txt || "").toUpperCase();
-    return t === "TOTAL" || t === "GOLD TOTAL";
-  };
-  const getNumberAt = (row: { cells: string[] }, colName: string) => {
-    const idx = headers.findIndex((h) => h.toLowerCase() === colName.toLowerCase());
-    if (idx < 0) return null;
-    return parseMaybeNumber(row.cells[idx] || "");
-  };
-
-  const applyState = () => {
-    const rows = getRows();
-    const normalizedGlobal = normalizeFilterValue(globalQuery);
-    const rowHiddenByDefault = new Set<HTMLTableRowElement>();
-    const hiddenCols = new Set<number>();
-
-    if (!showHiddenData) {
-      if (tableKind === "coverage" || tableKind === "risk") {
-        rows.forEach((row) => {
-          const label = row.cells[0] || "";
-          if (isTotalLabel(label)) return;
-          const clientNet = getNumberAt(row, "Client Net");
-          if (clientNet === 0) rowHiddenByDefault.add(row.tr);
-        });
-      }
-      if (tableKind === "metrics") {
-        rows.forEach((row) => {
-          const label = row.cells[0] || "";
-          if (isTotalLabel(label)) return;
-          const equity = getNumberAt(row, "Equity");
-          if (equity === 0) rowHiddenByDefault.add(row.tr);
-        });
-      }
-      if (tableKind === "coverage") {
-        for (let col = 4; col < headers.length; col += 1) {
-          let nonZeroFound = false;
-          for (const row of rows) {
-            const label = row.cells[0] || "";
-            if (isTotalLabel(label)) continue;
-            const n = parseMaybeNumber(row.cells[col] || "");
-            if (n !== null && n !== 0) {
-              nonZeroFound = true;
-              break;
-            }
-          }
-          if (!nonZeroFound) hiddenCols.add(col);
-        }
-      }
-    }
-
-    let visible = rows.filter((row) => {
-      if (rowHiddenByDefault.has(row.tr)) return false;
-      const globalPass = !normalizedGlobal || row.cells.some((c) => normalizeFilterValue(c).includes(normalizedGlobal));
-      if (!globalPass) return false;
-
-      for (let i = 0; i < filterState.length; i += 1) {
-        const value = normalizeFilterValue(filterState[i].value);
-        if (!value) continue;
-        const cellRaw = row.cells[i] || "";
-        const cell = normalizeFilterValue(cellRaw);
-        const op = filterState[i].op;
-
-        if (op === "contains" && !cell.includes(value)) return false;
-        if (op === "eq") {
-          const nCell = parseMaybeNumber(cellRaw);
-          const nValue = parseMaybeNumber(filterState[i].value);
-          if (nCell !== null && nValue !== null) {
-            if (nCell !== nValue) return false;
-          } else if (cell !== value) return false;
-        }
-        if (op === "neq") {
-          const nCell = parseMaybeNumber(cellRaw);
-          const nValue = parseMaybeNumber(filterState[i].value);
-          if (nCell !== null && nValue !== null) {
-            if (nCell === nValue) return false;
-          } else if (cell === value) return false;
-        }
-      }
-      return true;
-    });
-
-    if (sortIndex >= 0) {
-      visible = [...visible].sort((a, b) => {
-        const aRaw = a.cells[sortIndex] || "";
-        const bRaw = b.cells[sortIndex] || "";
-        const aNum = parseMaybeNumber(aRaw);
-        const bNum = parseMaybeNumber(bRaw);
-        let cmp = 0;
-        if (aNum !== null && bNum !== null) {
-          cmp = aNum - bNum;
-        } else {
-          cmp = aRaw.localeCompare(bRaw, undefined, { numeric: true, sensitivity: "base" });
-        }
-        if (cmp === 0) cmp = a.index - b.index;
-        return sortDir === "asc" ? cmp : -cmp;
-      });
-    }
-
-    const visibleSet = new Set(visible.map((r) => r.tr));
-    const hidden = rows.filter((r) => !visibleSet.has(r.tr));
-
-    [...visible, ...hidden].forEach((row) => {
-      row.tr.style.display = visibleSet.has(row.tr) ? "" : "none";
-      tbody.appendChild(row.tr);
-      Array.from(row.tr.querySelectorAll("td,th")).forEach((cell, idx) => {
-        (cell as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
-      });
-    });
-    ths.forEach((th, idx) => {
-      (th as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
-    });
-    Array.from(filterRow.querySelectorAll("th")).forEach((th, idx) => {
-      (th as HTMLElement).style.display = hiddenCols.has(idx) ? "none" : "";
-    });
-
-    indicators.forEach((indicator, idx) => {
-      if (idx !== sortIndex) indicator.textContent = "-";
-      else indicator.textContent = sortDir === "asc" ? "^" : "v";
-    });
-  };
-
-  globalInput.addEventListener("input", () => {
-    globalQuery = globalInput.value;
-    applyState();
-  });
-
-  clearBtn.addEventListener("click", () => {
-    globalQuery = "";
-    globalInput.value = "";
-    sortIndex = -1;
-    sortDir = "asc";
-    filterState.forEach((f) => {
-      f.op = "contains";
-      f.value = "";
-    });
-    Array.from(filterRow.querySelectorAll("select")).forEach((s) => ((s as HTMLSelectElement).value = "contains"));
-    Array.from(filterRow.querySelectorAll("input")).forEach((s) => ((s as HTMLInputElement).value = ""));
-    applyState();
-  });
-
-  exportBtn.addEventListener("click", () => {
-    const visibleRows = getRows().filter((r) => r.tr.style.display !== "none");
-    const hiddenCols = new Set<number>();
-    ths.forEach((th, idx) => {
-      if ((th as HTMLElement).style.display === "none") hiddenCols.add(idx);
-    });
-    const visibleColIndexes = headers.map((_, idx) => idx).filter((idx) => !hiddenCols.has(idx));
-    const exportHeaders = visibleColIndexes.map((idx) => headers[idx]);
-    const csvRows = visibleRows.map((r) => visibleColIndexes.map((idx) => r.cells[idx] || ""));
-    if (!csvRows.length) return;
-    exportRowsToCsv("dealing-table", exportHeaders, csvRows);
-  });
-  showHiddenBtn.addEventListener("click", () => {
-    showHiddenData = !showHiddenData;
-    showHiddenBtn.textContent = showHiddenData ? "Hide hidden data" : "Show hidden data";
-    applyState();
-  });
-
-  applyState();
-
-  return () => {
-    toolbar.remove();
-    filterRow.remove();
-    ths.forEach((th) => {
-      th.style.cursor = "";
-    });
-    indicators.forEach((indicator) => indicator.remove());
-    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
-      (row as HTMLTableRowElement).style.display = "";
-      Array.from((row as HTMLTableRowElement).querySelectorAll("td,th")).forEach((cell) => {
-        (cell as HTMLElement).style.display = "";
-      });
-    });
-    ths.forEach((th) => {
-      (th as HTMLElement).style.display = "";
-    });
-    Array.from(filterRow.querySelectorAll("th")).forEach((th) => {
-      (th as HTMLElement).style.display = "";
-    });
-  };
 };
 
 const DEFAULT_METRICS: DealingMetrics = {
@@ -835,40 +536,6 @@ const signedValueText = (value: number, digits = 2) => {
   return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
 
-const REBATE_RULES_SAMPLE_CSV = `symbol,rate_per_lot
-XAUUSD,2.00
-EURUSD,1.00
-GBPUSD,1.00
-US30,0.50
-*,0.00
-`;
-
-const normalizeRebateSymbol = (symbol: string) => {
-  const upper = String(symbol || "").trim().toUpperCase();
-  if (!upper) return "";
-  const dot = upper.indexOf(".");
-  return dot === -1 ? upper : upper.slice(0, dot);
-};
-
-const wildcardToRegex = (pattern: string) => {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${escaped.replace(/\*/g, ".*")}$`, "i");
-};
-
-const getRateForSymbol = (symbol: string, rules: RebateRule[], defaultRatePerLot: number) => {
-  const normalized = normalizeRebateSymbol(symbol);
-  for (const rule of rules) {
-    const target = normalizeRebateSymbol(rule.symbolPattern);
-    if (!target) continue;
-    if (target.includes("*")) {
-      if (wildcardToRegex(target).test(normalized)) return rule.ratePerLot;
-      continue;
-    }
-    if (target === normalized) return rule.ratePerLot;
-  }
-  return Number.isFinite(defaultRatePerLot) && defaultRatePerLot > 0 ? defaultRatePerLot : 0;
-};
-
 const getPositionLots = (position: { lots?: number; volume?: number; volumeExt?: number }) => {
   const lots = Number(position.lots) || 0;
   if (lots > 0) return lots;
@@ -986,6 +653,7 @@ export function DealingDepartmentPage() {
   const [bonusStatus, setBonusStatus] = useState<BonusStatusResponse | null>(null);
   const [bonusPnlSummary, setBonusPnlSummary] = useState<BonusPnlSummaryResponse | null>(null);
   const [bonusPnlDaily, setBonusPnlDaily] = useState<BonusPnlDailyResponse | null>(null);
+  const [bonusPnlMonthlyReport, setBonusPnlMonthlyReport] = useState<BonusPnlMonthlyReportResponse | null>(null);
   const [bonusPnlExpanded, setBonusPnlExpanded] = useState<{
     lpClosedDeals: boolean;
     lpOpenPositions: boolean;
@@ -1701,30 +1369,6 @@ export function DealingDepartmentPage() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [fullscreenTable]);
-  useEffect(() => {
-    const root = dealingRootRef.current;
-    if (!root) return;
-
-    const tables = Array.from(root.querySelectorAll(TABLE_ENHANCER_SELECTOR)) as HTMLTableElement[];
-    if (!tables.length) return;
-
-    const cleanups = tables.map((table) => mountTableEnhancer(table));
-    return () => {
-      cleanups.forEach((cleanup) => cleanup());
-    };
-  }, [
-    activeMenu,
-    historyTab,
-    coverageData?.rows?.length,
-    metricsData?.items?.length,
-    swapRows.length,
-    historyAggregateData?.items?.length,
-    historyDealsData?.deals?.length,
-    historyVolumeData?.items?.length,
-    rebateCalcRows.length,
-    bonusSubTab,
-    bonusDashboard,
-  ]);
 
   useEffect(() => {
     if (activeMenu !== "Coverage" && activeMenu !== "Risk Exposure") {
@@ -2541,8 +2185,8 @@ export function DealingDepartmentPage() {
             from: toYmd(fromDate),
             to: toYmd(toDate),
           });
-          const pnlDailyEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-daily?${params}` : `/Bonus/pnl-daily?${params}`;
-          requests.push(fetch(pnlDailyEndpoint));
+          const pnlSmartEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-smart?${params}` : `/Bonus/pnl-smart?${params}`;
+          requests.push(fetch(pnlSmartEndpoint));
         }
 
         const settled = await Promise.allSettled(requests);
@@ -2583,15 +2227,29 @@ export function DealingDepartmentPage() {
             setBonusPnlSummary(null);
           }
 
-          const pnlDailyResp = settled[ptr++];
-          if (pnlDailyResp?.status === "fulfilled" && pnlDailyResp.value.ok) {
-            setBonusPnlDaily((await pnlDailyResp.value.json()) as BonusPnlDailyResponse);
+          const pnlSmartResp = settled[ptr++];
+          if (pnlSmartResp?.status === "fulfilled" && pnlSmartResp.value.ok) {
+            setBonusPnlDaily((await pnlSmartResp.value.json()) as BonusPnlDailyResponse);
+            // Background fetch HWM monthly-report for HWM-adjusted values
+            setBonusPnlMonthlyReport(null);
+            const hwmEndpoint = backendBaseUrl
+              ? `${backendBaseUrl}/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`
+              : `/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`;
+            fetch(hwmEndpoint)
+              .then((r) => (r.ok ? r.json() : null))
+              .then((hwmData) => {
+                if (!cancelled && hwmData?.months?.length > 0) {
+                  setBonusPnlMonthlyReport(hwmData as BonusPnlMonthlyReportResponse);
+                }
+              })
+              .catch(() => undefined);
           } else {
-            const code = pnlDailyResp?.status === "fulfilled" ? pnlDailyResp.value.status : "network";
-            throw new Error(`Bonus PNL daily ${code}`);
+            const code = pnlSmartResp?.status === "fulfilled" ? pnlSmartResp.value.status : "network";
+            throw new Error(`Bonus PNL ${code}`);
           }
         } else {
           setBonusPnlDaily(null);
+          setBonusPnlMonthlyReport(null);
           if (bonusSubTab !== "Bonus Equity") {
             setBonusPnlSummary(null);
           }
@@ -2648,7 +2306,10 @@ export function DealingDepartmentPage() {
   const bonusEquityClient = bonusDashboard?.equity?.client || {};
   const bonusEquityLp = bonusDashboard?.equity?.lp || {};
   const bonusEquityClientAccounts = Array.isArray(bonusEquityClient.accounts) ? bonusEquityClient.accounts : [];
-  const bonusEquityVisibleAccounts = bonusEquityClientAccounts.filter((account) => Math.abs(Number(account?.equity) || 0) > 0);
+  const bonusEquityVisibleAccounts = useMemo(
+    () => bonusEquityClientAccounts.filter((account) => Math.abs(Number(account?.equity) || 0) > 0),
+    [bonusEquityClientAccounts]
+  );
 
   const bonusEquityClientWithdrawable = useMemo(() => {
     return bonusEquityClientAccounts.reduce((sum, account) => {
@@ -2889,6 +2550,21 @@ export function DealingDepartmentPage() {
     return Array.from(bySymbol.values()).sort((a, b) => b.commission - a.commission);
   }, [rebateCalcRows]);
 
+  const rebateCalcTotals = useMemo(
+    () =>
+      rebateCalcRows.reduce(
+        (acc, row) => ({
+          trades: acc.trades + row.trades,
+          tradedLots: acc.tradedLots + row.tradedLots,
+          eligibleLots: acc.eligibleLots + row.eligibleLots,
+          ineligibleLots: acc.ineligibleLots + row.ineligibleLots,
+          commission: acc.commission + row.mt5CommissionUsd,
+        }),
+        { trades: 0, tradedLots: 0, eligibleLots: 0, ineligibleLots: 0, commission: 0 }
+      ),
+    [rebateCalcRows]
+  );
+
   const riskCoverageRows = useMemo(() => {
     const coverageRows = Array.isArray(overviewData.coverage?.rows) ? overviewData.coverage.rows : [];
     const coverageMap = new Map(
@@ -2920,6 +2596,405 @@ export function DealingDepartmentPage() {
       .map(toDisplayRow);
     return [...priority, ...others];
   }, [overviewData.coverage?.rows, topSymbols]);
+
+  const coverageTableRows = useMemo(() => [...coverageRows.gold, ...coverageRows.rest], [coverageRows]);
+
+  const coverageTableColumns = useMemo<SortableTableColumn<CoverageRow>[]>(() => {
+    const lpNames = coverageData?.lpNames || [];
+    const base: SortableTableColumn<CoverageRow>[] = [
+      {
+        key: "symbol",
+        label: "Symbol",
+        sortValue: (row) => row.symbol,
+        searchValue: (row) => row.symbol,
+        cellClassName: "font-mono text-slate-900 dark:text-slate-100",
+        render: (row) => row.symbol,
+      },
+      {
+        key: "direction",
+        label: "Buy/Sell",
+        sortValue: (row) => row.direction || "",
+        searchValue: (row) => row.direction || "",
+        render: (row) =>
+          row.direction === "BUY" ? (
+            <span className="font-semibold text-emerald-700 dark:text-emerald-300">BUY</span>
+          ) : row.direction === "SELL" ? (
+            <span className="font-semibold text-rose-700 dark:text-rose-300">SELL</span>
+          ) : (
+            <span className="text-slate-500">-</span>
+          ),
+      },
+      {
+        key: "clientNet",
+        label: "Client Net",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => Number(row.clientNet) || 0,
+        searchValue: (row) => String(row.clientNet),
+        render: (row) => (
+          <>
+            {formatCoverageVal(row.clientNet)}
+            {renderContractSizeBadge(row.contractSizeMultiplier)}
+          </>
+        ),
+      },
+      {
+        key: "uncovered",
+        label: "Uncovered",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => Number(row.uncovered) || 0,
+        searchValue: (row) => String(row.uncovered),
+        render: (row) => formatCoverageVal(row.uncovered),
+      },
+    ];
+
+    const dynamicLpCols: SortableTableColumn<CoverageRow>[] = lpNames.map((lp) => ({
+      key: `lp_${lp}`,
+      label: lp,
+      headerClassName: "text-right",
+      cellClassName: "text-right",
+      sortValue: (row) => Number(row.lpNets?.[lp]) || 0,
+      searchValue: (row) => String(row.lpNets?.[lp] || 0),
+      render: (row) => formatCoverageVal(row.lpNets?.[lp] || 0),
+    }));
+
+    return [...base, ...dynamicLpCols];
+  }, [coverageData?.lpNames]);
+
+  const riskTableColumns = useMemo<SortableTableColumn<CoverageRow>[]>(
+    () => [
+      {
+        key: "symbol",
+        label: "Symbol",
+        sortValue: (row) => row.symbol,
+        searchValue: (row) => row.symbol,
+        cellClassName: "font-mono text-slate-900 dark:text-slate-100",
+        render: (row) => row.symbol,
+      },
+      {
+        key: "direction",
+        label: "Direction",
+        sortValue: (row) => row.direction || "",
+        searchValue: (row) => row.direction || "",
+        render: (row) =>
+          row.direction === "BUY" ? (
+            <span className="font-semibold text-emerald-700 dark:text-emerald-300">BUY</span>
+          ) : row.direction === "SELL" ? (
+            <span className="font-semibold text-rose-700 dark:text-rose-300">SELL</span>
+          ) : (
+            <span className="text-slate-500">-</span>
+          ),
+      },
+      {
+        key: "clientNet",
+        label: "Client Net",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => Number(row.clientNet) || 0,
+        searchValue: (row) => String(row.clientNet),
+        render: (row) => (
+          <>
+            {formatCoverageVal(row.clientNet)}
+            {renderContractSizeBadge(row.contractSizeMultiplier)}
+          </>
+        ),
+      },
+      {
+        key: "lpCoverage",
+        label: "LP Coverage",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (Number(row.clientNet) || 0) - (Number(row.uncovered) || 0),
+        searchValue: (row) => String((Number(row.clientNet) || 0) - (Number(row.uncovered) || 0)),
+        render: (row) => formatCoverageVal((Number(row.clientNet) || 0) - (Number(row.uncovered) || 0)),
+      },
+      {
+        key: "uncovered",
+        label: "Uncovered",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => Number(row.uncovered) || 0,
+        searchValue: (row) => String(row.uncovered),
+        render: (row) => formatCoverageVal(row.uncovered),
+      },
+      {
+        key: "coveragePct",
+        label: "Coverage %",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => {
+          const clientNet = Number(row.clientNet) || 0;
+          if (clientNet === 0) return NaN;
+          return ((clientNet - (Number(row.uncovered) || 0)) / clientNet) * 100;
+        },
+        searchValue: (row) => {
+          const clientNet = Number(row.clientNet) || 0;
+          if (clientNet === 0) return "-";
+          return (((clientNet - (Number(row.uncovered) || 0)) / clientNet) * 100).toFixed(1);
+        },
+        render: (row) => {
+          const clientNet = Number(row.clientNet) || 0;
+          const pct = clientNet === 0 ? NaN : ((clientNet - (Number(row.uncovered) || 0)) / clientNet) * 100;
+          return <span className={formatPctClass(pct)}>{Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "-"}</span>;
+        },
+      },
+    ],
+    []
+  );
+
+  const metricsTableColumns = useMemo<SortableTableColumn<MetricsItem>[]>(
+    () => [
+      {
+        key: "lp",
+        label: "LP",
+        sortValue: (row) => row.lp,
+        searchValue: (row) => `${row.lp} ${row.login}`,
+        cellClassName: "font-mono text-slate-900 dark:text-slate-100",
+        render: (row) => row.lp,
+      },
+      {
+        key: "login",
+        label: "Login",
+        sortValue: (row) => String(row.login),
+        searchValue: (row) => String(row.login),
+        cellClassName: "text-slate-500 dark:text-slate-400",
+        render: (row) => row.login,
+      },
+      { key: "equity", label: "Equity", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.equity, searchValue: (row) => String(row.equity), render: (row) => formatDollar(row.equity) },
+      { key: "realEquity", label: "Real Equity", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.realEquity, searchValue: (row) => String(row.realEquity), render: (row) => formatDollar(row.realEquity) },
+      { key: "credit", label: "Credit", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.credit, searchValue: (row) => String(row.credit), render: (row) => formatDollar(row.credit) },
+      { key: "balance", label: "Balance", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.balance, searchValue: (row) => String(row.balance), render: (row) => formatDollar(row.balance) },
+      { key: "margin", label: "Margin", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.margin, searchValue: (row) => String(row.margin), render: (row) => formatDollar(row.margin) },
+      { key: "freeMargin", label: "Free Margin", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.freeMargin, searchValue: (row) => String(row.freeMargin), render: (row) => formatDollar(row.freeMargin) },
+      {
+        key: "marginLevel",
+        label: "Margin Level %",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => row.marginLevel,
+        searchValue: (row) => String(row.marginLevel),
+        render: (row) => (
+          <span
+            className={
+              row.marginLevel === 0
+                ? "text-slate-500"
+                : row.marginLevel >= 100
+                  ? "text-emerald-700 dark:text-emerald-300"
+                  : "text-rose-700 dark:text-rose-300"
+            }
+          >
+            {row.marginLevel.toFixed(2)}%
+          </span>
+        ),
+      },
+    ],
+    []
+  );
+
+  const historyDealsColumns = useMemo<SortableTableColumn<HistoryDeal>[]>(
+    () => [
+      { key: "dealTicket", label: "Ticket", sortValue: (row) => Number(row.dealTicket) || 0, searchValue: (row) => String(row.dealTicket), render: (row) => row.dealTicket },
+      { key: "symbol", label: "Symbol", sortValue: (row) => row.symbol, searchValue: (row) => row.symbol, cellClassName: "font-mono", render: (row) => row.symbol },
+      { key: "timeString", label: "Time", sortValue: (row) => row.timeString, searchValue: (row) => row.timeString, cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.timeString },
+      { key: "direction", label: "Direction", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.direction, searchValue: (row) => row.direction, render: (row) => <span className={row.direction === "Buy" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}>{row.direction}</span> },
+      { key: "entry", label: "Entry", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.entry, searchValue: (row) => row.entry, render: (row) => row.entry },
+      { key: "volume", label: "Volume", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.volume, searchValue: (row) => String(row.volume), render: (row) => row.volume.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: "price", label: "Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.price, searchValue: (row) => String(row.price), render: (row) => row.price.toLocaleString(undefined, { maximumFractionDigits: 5 }) },
+      { key: "contractSize", label: "Contract Size", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.contractSize, searchValue: (row) => String(row.contractSize), render: (row) => row.contractSize.toLocaleString() },
+      { key: "marketValue", label: "Market Value", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.marketValue, searchValue: (row) => String(row.marketValue), render: (row) => row.marketValue.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+      { key: "profit", label: "Profit", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.profit, searchValue: (row) => String(row.profit), render: (row) => <span className={signedValueClass(row.profit)}>{row.profit.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> },
+      { key: "commission", label: "Commission", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.commission, searchValue: (row) => String(row.commission), render: (row) => <span className={signedValueClass(row.commission)}>{row.commission.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> },
+      { key: "fee", label: "Fee", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.fee, searchValue: (row) => String(row.fee), render: (row) => <span className={signedValueClass(row.fee)}>{row.fee.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> },
+      { key: "swap", label: "Swap", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.swap, searchValue: (row) => String(row.swap), render: (row) => <span className={signedValueClass(row.swap)}>{row.swap.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> },
+      { key: "lpCommission", label: "LP Comm", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.lpCommission, searchValue: (row) => String(row.lpCommission), render: (row) => row.lpCommission.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: "lpCommPerLot", label: "LP Comm/Lot", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.lpCommPerLot, searchValue: (row) => String(row.lpCommPerLot), render: (row) => row.lpCommPerLot.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+    ],
+    []
+  );
+
+  const historyVolumeColumns = useMemo<SortableTableColumn<HistoryVolumeItem>[]>(
+    () => [
+      { key: "lpName", label: "LP Name", sortValue: (row) => row.lpName, searchValue: (row) => row.lpName, cellClassName: "font-mono", render: (row) => row.lpName },
+      { key: "login", label: "Login", sortValue: (row) => String(row.login), searchValue: (row) => String(row.login), render: (row) => row.login },
+      { key: "source", label: "Source", sortValue: (row) => row.source || "", searchValue: (row) => row.source || "", cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.source || "-" },
+      { key: "tradeCount", label: "Trade Count", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.tradeCount, searchValue: (row) => String(row.tradeCount), render: (row) => row.tradeCount.toLocaleString() },
+      { key: "totalLots", label: "Total Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.totalLots, searchValue: (row) => String(row.totalLots), render: (row) => row.totalLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { key: "notionalUsd", label: "Notional (USD)", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.notionalUsd, searchValue: (row) => String(row.notionalUsd), render: (row) => row.notionalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+      { key: "volumeYards", label: "Volume (Yards)", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.volumeYards, searchValue: (row) => String(row.volumeYards), render: (row) => row.volumeYards.toLocaleString(undefined, { maximumFractionDigits: 4 }) },
+    ],
+    []
+  );
+
+  const historyAggregateColumns = useMemo<SortableTableColumn<HistoryAggregateItem>[]>(
+    () => [
+      {
+        key: "lpName",
+        label: "LP Name",
+        sortValue: (row) => row.lpName,
+        searchValue: (row) => `${row.lpName} ${row.login} ${row.source || ""}`,
+        cellClassName: "font-mono text-slate-900 dark:text-slate-100",
+        render: (row) => row.lpName,
+      },
+      {
+        key: "login",
+        label: "Login",
+        sortValue: (row) => String(row.login),
+        searchValue: (row) => String(row.login),
+        render: (row) => row.login,
+      },
+      {
+        key: "source",
+        label: "Source",
+        sortValue: (row) => row.source || "",
+        searchValue: (row) => row.source || "",
+        cellClassName: "text-slate-500 dark:text-slate-400",
+        render: (row) => row.source || "-",
+      },
+      {
+        key: "startPeriod",
+        label: "Start Period",
+        sortValue: (row) => Number(row.effectiveFrom) || 0,
+        searchValue: (row) =>
+          (historyStartPeriodEdits[row.lpName] ?? epochSecondsToInputDate(row.effectiveFrom ?? historyTimestamps.from)) || toYmd(fromDate),
+        render: (row) =>
+          row.isError ? (
+            <span className="text-rose-700 dark:text-rose-300">{row.errorMessage || "Error"}</span>
+          ) : (
+            <input
+              type="date"
+              value={(historyStartPeriodEdits[row.lpName] ?? epochSecondsToInputDate(row.effectiveFrom ?? historyTimestamps.from)) || toYmd(fromDate)}
+              onChange={(e) =>
+                setHistoryStartPeriodEdits((prev) => ({
+                  ...prev,
+                  [row.lpName]: e.target.value,
+                }))
+              }
+              disabled={historySavingLp === row.lpName}
+              className="w-[132px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+            />
+          ),
+      },
+      {
+        key: "startEquity",
+        label: "Start Equity",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.startEquity),
+        searchValue: (row) => String(row.startEquity || ""),
+        render: (row) => (row.isError ? "-" : row.startEquity.toLocaleString()),
+      },
+      {
+        key: "endEquity",
+        label: "End Equity",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.endEquity),
+        searchValue: (row) => String(row.endEquity || ""),
+        render: (row) => (row.isError ? "-" : row.endEquity.toLocaleString()),
+      },
+      {
+        key: "credit",
+        label: "Credit",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.credit),
+        searchValue: (row) => String(row.credit || ""),
+        render: (row) => (row.isError ? "-" : row.credit.toLocaleString()),
+      },
+      {
+        key: "deposit",
+        label: "Deposit",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.deposit),
+        searchValue: (row) => String(row.deposit || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.deposit)}>{row.deposit.toLocaleString()}</span>),
+      },
+      {
+        key: "withdrawal",
+        label: "Withdrawal",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.withdrawal),
+        searchValue: (row) => String(row.withdrawal || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.withdrawal)}>{row.withdrawal.toLocaleString()}</span>),
+      },
+      {
+        key: "netDeposits",
+        label: "Net Deposits",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.netDeposits),
+        searchValue: (row) => String(row.netDeposits || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.netDeposits)}>{row.netDeposits.toLocaleString()}</span>),
+      },
+      {
+        key: "grossProfit",
+        label: "Gross P/L",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.grossProfit),
+        searchValue: (row) => String(row.grossProfit || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.grossProfit)}>{row.grossProfit.toLocaleString()}</span>),
+      },
+      {
+        key: "totalCommission",
+        label: "Commission",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.totalCommission),
+        searchValue: (row) => String(row.totalCommission || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.totalCommission)}>{row.totalCommission.toLocaleString()}</span>),
+      },
+      {
+        key: "totalSwap",
+        label: "Swap",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.totalSwap),
+        searchValue: (row) => String(row.totalSwap || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.totalSwap)}>{row.totalSwap.toLocaleString()}</span>),
+      },
+      {
+        key: "netPL",
+        label: "Net P/L",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.netPL),
+        searchValue: (row) => String(row.netPL || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.netPL)}>{row.netPL.toLocaleString()}</span>),
+      },
+      {
+        key: "realLpPL",
+        label: "Real LP P/L",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.realLpPL),
+        searchValue: (row) => String(row.realLpPL || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.realLpPL)}>{row.realLpPL.toLocaleString()}</span>),
+      },
+      {
+        key: "ntpPercent",
+        label: "NTP %",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.ntpPercent),
+        searchValue: (row) => String(row.ntpPercent || ""),
+        render: (row) => (row.isError ? "-" : <span className="text-amber-700 dark:text-amber-300">{row.ntpPercent.toFixed(1)}%</span>),
+      },
+      {
+        key: "lpPL",
+        label: "LP P/L (Rev Share)",
+        headerClassName: "text-right",
+        cellClassName: "text-right",
+        sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.lpPL),
+        searchValue: (row) => String(row.lpPL || ""),
+        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.lpPL)}>{row.lpPL.toLocaleString()}</span>),
+      },
+    ],
+    [fromDate, historySavingLp, historyStartPeriodEdits, historyTimestamps.from]
+  );
 
   useEffect(() => {
     if (activeMenu !== "Dealing" || liveEnabledEvents.length === 0) {
@@ -2994,7 +3069,7 @@ export function DealingDepartmentPage() {
     !allowedMenuItems.length ? (
       <UnauthorizedPage title="No Dealing Tabs Authorized" />
     ) : (
-    <div ref={dealingRootRef} className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-6 md:p-8">
+    <div ref={dealingRootRef} className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-3 sm:p-4 md:p-6 lg:p-8">
       <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="h-fit rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-slate-50 to-slate-100 p-4 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 lg:sticky lg:top-6">
           <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300/80">Dealing Menu</div>
@@ -3154,7 +3229,7 @@ export function DealingDepartmentPage() {
                 </div>
               </div>
             </section>
-          ) : activeMenu !== "Bonus" ? (
+          ) : activeMenu !== "Bonus" && activeMenu !== "Client Profiling" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs text-slate-600 dark:text-slate-400">
@@ -3196,7 +3271,7 @@ export function DealingDepartmentPage() {
             <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>
           )}
 
-          {activeMenu !== "Bonus" && (
+          {activeMenu !== "Bonus" && activeMenu !== "Client Profiling" && (
             <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {summaryCards.map((card) => (
                 <div key={card.label} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
@@ -3257,78 +3332,21 @@ export function DealingDepartmentPage() {
                 </div>
               )}
 
-              <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "coverage" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                <table data-table-kind="coverage" className="min-w-full text-xs">
-                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                    <tr>
-                      <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
-                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Buy/Sell</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Client Net</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Uncovered</th>
-                      {(coverageData?.lpNames || []).map((lp) => (
-                        <th key={lp} className="px-3 py-2 text-right font-semibold uppercase tracking-wide">{lp}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...coverageRows.gold, ...coverageRows.rest].map((row, idx) => {
-                      const isGold = isGoldSymbol(row.symbol);
-                      const isGoldEnd = isGold && idx === coverageRows.gold.length - 1 && coverageRows.gold.length > 0;
-                      return (
-                        <Fragment key={`${row.symbol}-${idx}`}>
-                          <tr className={isGold ? "bg-amber-100/50 dark:bg-amber-500/5" : "bg-slate-50 dark:bg-slate-950/30"}>
-                            <td className="sticky left-0 border-t border-slate-800 bg-inherit px-3 py-2 font-mono text-slate-900 dark:text-slate-100">{row.symbol}</td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-left">
-                              {row.direction === "BUY" ? (
-                                <span className="font-semibold text-emerald-700 dark:text-emerald-300">BUY</span>
-                              ) : row.direction === "SELL" ? (
-                                <span className="font-semibold text-rose-700 dark:text-rose-300">SELL</span>
-                              ) : (
-                                <span className="text-slate-500">-</span>
-                              )}
-                            </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">
-                              {formatCoverageVal(row.clientNet)}
-                              {renderContractSizeBadge(row.contractSizeMultiplier)}
-                            </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.uncovered)}</td>
-                            {(coverageData?.lpNames || []).map((lp) => (
-                              <td key={`${row.symbol}-${lp}-${idx}`} className="border-t border-slate-800 px-3 py-2 text-right">
-                                {formatCoverageVal(row.lpNets?.[lp] || 0)}
-                              </td>
-                            ))}
-                          </tr>
-                          {isGoldEnd && (
-                            <tr className="bg-amber-500/15 font-semibold">
-                              <td className="sticky left-0 border-t border-amber-500/40 bg-amber-500/15 px-3 py-2 text-amber-200">GOLD TOTAL</td>
-                              <td className="border-t border-amber-500/40 px-3 py-2" />
-                              <td className="border-t border-amber-500/40 px-3 py-2 text-right">{formatCoverageVal(coverageGoldTotals.clientNet)}</td>
-                              <td className="border-t border-amber-500/40 px-3 py-2 text-right">{formatCoverageVal(coverageGoldTotals.uncovered)}</td>
-                              {(coverageData?.lpNames || []).map((lp) => (
-                                <td key={`gold-total-${lp}`} className="border-t border-amber-500/40 px-3 py-2 text-right">
-                                  {formatCoverageVal(coverageGoldTotals.lpTotals[lp] || 0)}
-                                </td>
-                              ))}
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
-                      <td className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2">TOTAL</td>
-                      <td className="px-3 py-2" />
-                      <td className="px-3 py-2 text-right">{formatCoverageVal(coverageData?.totals?.clientNet || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatCoverageVal(coverageData?.totals?.uncovered || 0)}</td>
-                      {(coverageData?.lpNames || []).map((lp) => (
-                        <td key={`total-${lp}`} className="px-3 py-2 text-right">
-                          {formatCoverageVal(coverageData?.totals?.lpNets?.[lp] || 0)}
-                        </td>
-                      ))}
-                    </tr>
-                  </tfoot>
-                </table>
+              <div className={`${fullscreenTable === "coverage" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                <SortableTable
+                  rows={coverageTableRows}
+                  columns={coverageTableColumns}
+                  exportFilePrefix="dealing-coverage"
+                  emptyText="No coverage rows available."
+                  rowClassName={(row) => (isGoldSymbol(row.symbol) ? "bg-amber-100/50 dark:bg-amber-500/5" : "bg-slate-50 dark:bg-slate-950/30")}
+                />
+              </div>
+              <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
+                <span className="text-slate-500 dark:text-slate-400">Client Net {formatCoverageVal(coverageData?.totals?.clientNet || 0)} | Uncovered {formatCoverageVal(coverageData?.totals?.uncovered || 0)}</span>
+                {coverageRows.gold.length > 0 && (
+                  <span className="ml-3 text-amber-700 dark:text-amber-300">Gold Total: {formatCoverageVal(coverageGoldTotals.clientNet)} / {formatCoverageVal(coverageGoldTotals.uncovered)}</span>
+                )}
               </div>
               {!coverageLoading && !coverageData?.rows?.length && (
                 <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">No coverage rows available.</div>
@@ -3373,63 +3391,20 @@ export function DealingDepartmentPage() {
                   <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{coverageError}</div>
                 )}
 
-                <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "risk" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table data-table-kind="risk" className="min-w-full text-xs">
-                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Direction</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Client Net</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">LP Coverage</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Uncovered</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Coverage %</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {riskRows.map((row, idx) => {
-                        const isGold = isGoldSymbol(row.symbol);
-                        const lpCoverage = row.clientNet - row.uncovered;
-                        const pct = row.clientNet === 0 ? NaN : ((row.clientNet - row.uncovered) / row.clientNet) * 100;
-                        return (
-                          <tr key={`${row.symbol}-${idx}`} className={isGold ? "bg-amber-100/50 dark:bg-amber-500/5" : "bg-slate-50 dark:bg-slate-950/30"}>
-                            <td className="sticky left-0 border-t border-slate-800 bg-inherit px-3 py-2 font-mono text-slate-900 dark:text-slate-100">{row.symbol}</td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-left">
-                              {row.direction === "BUY" ? (
-                                <span className="font-semibold text-emerald-700 dark:text-emerald-300">BUY</span>
-                              ) : row.direction === "SELL" ? (
-                                <span className="font-semibold text-rose-700 dark:text-rose-300">SELL</span>
-                              ) : (
-                                <span className="text-slate-500">-</span>
-                              )}
-                            </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">
-                              {formatCoverageVal(row.clientNet)}
-                              {renderContractSizeBadge(row.contractSizeMultiplier)}
-                            </td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(lpCoverage)}</td>
-                            <td className="border-t border-slate-800 px-3 py-2 text-right">{formatCoverageVal(row.uncovered)}</td>
-                            <td className={`border-t border-slate-800 px-3 py-2 text-right ${formatPctClass(pct)}`}>
-                              {Number.isFinite(pct) ? `${pct.toFixed(1)}%` : "-"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                    <tfoot>
-                      <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
-                        <td className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2">TOTAL</td>
-                        <td className="px-3 py-2" />
-                        <td className="px-3 py-2 text-right">{formatCoverageVal(coverageData?.totals?.clientNet || 0)}</td>
-                        <td className="px-3 py-2 text-right">{formatCoverageVal((coverageData?.totals?.clientNet || 0) - (coverageData?.totals?.uncovered || 0))}</td>
-                        <td className="px-3 py-2 text-right">{formatCoverageVal(coverageData?.totals?.uncovered || 0)}</td>
-                        <td className={`px-3 py-2 text-right ${formatPctClass((coverageData?.totals?.clientNet || 0) === 0 ? NaN : (((coverageData?.totals?.clientNet || 0) - (coverageData?.totals?.uncovered || 0)) / (coverageData?.totals?.clientNet || 0)) * 100)}`}>
-                          {(coverageData?.totals?.clientNet || 0) === 0
-                            ? "-"
-                            : `${((((coverageData?.totals?.clientNet || 0) - (coverageData?.totals?.uncovered || 0)) / (coverageData?.totals?.clientNet || 0)) * 100).toFixed(1)}%`}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                <div className={`${fullscreenTable === "risk" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                  <SortableTable
+                    rows={riskRows}
+                    columns={riskTableColumns}
+                    exportFilePrefix="dealing-risk"
+                    emptyText="No risk rows available."
+                    rowClassName={(row) => (isGoldSymbol(row.symbol) ? "bg-amber-100/50 dark:bg-amber-500/5" : "bg-slate-50 dark:bg-slate-950/30")}
+                  />
+                </div>
+                <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                  <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
+                  <span className="text-slate-500 dark:text-slate-400">
+                    Client Net {formatCoverageVal(coverageData?.totals?.clientNet || 0)} | LP Coverage {formatCoverageVal((coverageData?.totals?.clientNet || 0) - (coverageData?.totals?.uncovered || 0))} | Uncovered {formatCoverageVal(coverageData?.totals?.uncovered || 0)}
+                  </span>
                 </div>
                 {!coverageLoading && !riskRows.length && (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">No risk rows available.</div>
@@ -3468,57 +3443,20 @@ export function DealingDepartmentPage() {
               {metricsError && (
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{metricsError}</div>
               )}
-              <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "metrics" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                <table data-table-kind="metrics" className="min-w-full text-xs">
-                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                    <tr>
-                      <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">LP</th>
-                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Equity</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Real Equity</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Credit</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Balance</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Margin</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Free Margin</th>
-                      <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Margin Level %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(metricsData?.items || []).map((item) => (
-                      <tr key={`${item.lp}-${item.login}`} className="bg-slate-50 dark:bg-slate-950/30">
-                        <td className="sticky left-0 border-t border-slate-800 bg-inherit px-3 py-2 font-mono text-slate-900 dark:text-slate-100">{item.lp}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-slate-500 dark:text-slate-400">{item.login}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.equity)}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.realEquity)}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.credit)}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.balance)}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.margin)}</td>
-                        <td className="border-t border-slate-800 px-3 py-2 text-right">{formatDollar(item.freeMargin)}</td>
-                        <td
-                          className={`border-t border-slate-800 px-3 py-2 text-right ${
-                            item.marginLevel === 0 ? "text-slate-500" : item.marginLevel >= 100 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"
-                          }`}
-                        >
-                          {item.marginLevel.toFixed(2)}%
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
-                      <td className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2">TOTAL</td>
-                      <td className="px-3 py-2" />
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.equity || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.realEquity || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.credit || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.balance || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.margin || 0)}</td>
-                      <td className="px-3 py-2 text-right">{formatDollar(metricsData?.totals?.freeMargin || 0)}</td>
-                      <td className="px-3 py-2 text-right text-slate-500">-</td>
-                    </tr>
-                  </tfoot>
-                </table>
+              <div className={`${fullscreenTable === "metrics" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                <SortableTable
+                  rows={metricsData?.items || []}
+                  columns={metricsTableColumns}
+                  exportFilePrefix="dealing-metrics"
+                  emptyText="No LP accounts found."
+                />
               </div>
+              {(metricsData?.totals || null) && (
+                <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                  <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
+                  <span className="text-slate-500 dark:text-slate-400">Equity {formatDollar(metricsData?.totals?.equity || 0)} | Real Equity {formatDollar(metricsData?.totals?.realEquity || 0)} | Credit {formatDollar(metricsData?.totals?.credit || 0)} | Balance {formatDollar(metricsData?.totals?.balance || 0)} | Margin {formatDollar(metricsData?.totals?.margin || 0)} | Free Margin {formatDollar(metricsData?.totals?.freeMargin || 0)}</span>
+                </div>
+              )}
               {!metricsLoading && !(metricsData?.items || []).length && (
                 <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">No LP accounts found.</div>
               )}
@@ -3970,28 +3908,66 @@ export function DealingDepartmentPage() {
 
               const gPnl = Number(bonusPnlDaily?.grossPnl) || 0;
 
+              // HWM-adjusted values from monthly report (last month entry)
+              const hwmMonths = Array.isArray(bonusPnlMonthlyReport?.months) ? bonusPnlMonthlyReport.months : [];
+              const hwm = hwmMonths.length > 0 ? hwmMonths[hwmMonths.length - 1] : null;
+              const adjustedGrossPnl = hwm ? (Number(hwm.grossPnl) ?? gPnl) : gPnl;
+              const effectiveLpTotal = hwm ? (Number(hwm.effectiveLpTotal) ?? (Number(bonusPnlLp.total) || 0)) : (Number(bonusPnlLp.total) || 0);
+              const hwmActiveBlocked = hwm != null && adjustedGrossPnl === 0 && gPnl !== 0;
+              const hasHwmImpact = hwm != null && Math.abs(adjustedGrossPnl - gPnl) > 0.01;
+              const displayGrossPnl = hwm ? adjustedGrossPnl : gPnl;
+
               return (
                 <div className="space-y-4">
                   {/* Hero PnL banner */}
-                  <div className={`relative overflow-hidden rounded-2xl p-5 ${gPnl >= 0 ? "bg-gradient-to-br from-emerald-900 to-teal-900" : "bg-gradient-to-br from-rose-900 to-red-900"}`}>
-                    <div className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full bg-white/5 blur-2xl" />
-                    <div className="relative">
-                      <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-white/60">Gross PnL (Period)</div>
-                      <div className={`mt-1 text-4xl font-bold tabular-nums ${gPnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signedValueText(gPnl)}</div>
-                      <div className="mt-2 text-xs text-white/60">{bonusPnlDaily?.fromUtc && `${bonusPnlDaily.fromUtc.slice(0, 10)} → ${bonusPnlDaily.toUtc?.slice(0, 10)}`}</div>
-                      <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-white/80">
-                        <span>LP×50% <strong className={signedValueClass(Number(bonusPnlLp.total) || 0)}>{signedValueText(Number(bonusPnlLp.total) || 0)}</strong></span>
-                        <span className="text-white/40">–</span>
-                        <span>Client <strong className={signedValueClass(Number(bonusPnlClient.total) || 0)}>{signedValueText(Number(bonusPnlClient.total) || 0)}</strong></span>
-                        <span className="text-white/40">–</span>
-                        <span>Commission <strong className="text-white/90">{signedValueText(Math.abs(Number(bonusPnlLp.realizedCommission) || 0))}</strong></span>
-                        <span className="text-white/40">–</span>
-                        <span>Credit Cost <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.creditCost) || 0)}</strong></span>
-                        <span className="text-white/40">+</span>
-                        <span>Withdrawal Charges <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.withdrawalCharges) || 0)}</strong></span>
+                  {hwmActiveBlocked ? (
+                    <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-950 to-indigo-950 p-5">
+                      <div className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full bg-white/5 blur-2xl" />
+                      <div className="relative">
+                        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-white/60">Bonus PnL This Month</div>
+                        <div className="mt-1 text-4xl font-bold tabular-nums text-violet-300">$0.00</div>
+                        <div className="mt-2 text-xs text-white/60">{bonusPnlDaily?.fromUtc && `${bonusPnlDaily.fromUtc.slice(0, 10)} → ${bonusPnlDaily.toUtc?.slice(0, 10)}`}</div>
+                        <div className="mt-3 rounded-xl border border-violet-500/30 bg-violet-900/50 px-4 py-3">
+                          <div className="text-sm font-semibold text-violet-200">High Water Mark Active</div>
+                          <div className="mt-1.5 text-xs text-violet-300/80 leading-relaxed">
+                            LP made a profit of{" "}
+                            <span className="font-semibold text-emerald-300">{signedValueText(Number(hwm?.watermarkOut) || 0)}</span>{" "}
+                            this month, building the watermark buffer. No bonus PnL is due until LP losses exceed this buffer.
+                          </div>
+                          <div className="mt-2 text-xs text-violet-400">
+                            Gross PnL (before HWM):{" "}
+                            <span className={`font-semibold ${signedValueClass(gPnl)}`}>{signedValueText(gPnl)}</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className={`relative overflow-hidden rounded-2xl p-5 ${displayGrossPnl >= 0 ? "bg-gradient-to-br from-emerald-900 to-teal-900" : "bg-gradient-to-br from-rose-900 to-red-900"}`}>
+                      <div className="pointer-events-none absolute -right-10 -top-10 h-44 w-44 rounded-full bg-white/5 blur-2xl" />
+                      <div className="relative">
+                        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-white/60">Gross PnL{hwm ? " (with HWM)" : " (Period)"}</div>
+                        <div className={`mt-1 text-4xl font-bold tabular-nums ${displayGrossPnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>{signedValueText(displayGrossPnl)}</div>
+                        <div className="mt-2 text-xs text-white/60">{bonusPnlDaily?.fromUtc && `${bonusPnlDaily.fromUtc.slice(0, 10)} → ${bonusPnlDaily.toUtc?.slice(0, 10)}`}</div>
+                        <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-white/80">
+                          <span>LP×50% <strong className={signedValueClass(Number(bonusPnlLp.total) || 0)}>{signedValueText(Number(bonusPnlLp.total) || 0)}</strong></span>
+                          <span className="text-white/40">–</span>
+                          <span>Client <strong className={signedValueClass(Number(bonusPnlClient.total) || 0)}>{signedValueText(Number(bonusPnlClient.total) || 0)}</strong></span>
+                          <span className="text-white/40">–</span>
+                          <span>Commission <strong className="text-white/90">{signedValueText(Math.abs(Number(bonusPnlLp.realizedCommission) || 0))}</strong></span>
+                          <span className="text-white/40">–</span>
+                          <span>Credit Cost <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.creditCost) || 0)}</strong></span>
+                          <span className="text-white/40">+</span>
+                          <span>Withdrawal Charges <strong className="text-white/90">{signedValueText(Number(bonusPnlCost.withdrawalCharges) || 0)}</strong></span>
+                        </div>
+                        {hasHwmImpact && (
+                          <div className="mt-2 text-xs text-white/50">
+                            Before HWM: <span className={signedValueClass(gPnl)}>{signedValueText(gPnl)}</span>
+                            {" · "}HWM impact: <span className={signedValueClass(adjustedGrossPnl - gPnl)}>{signedValueText(adjustedGrossPnl - gPnl)}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Client / LP side-by-side breakdowns */}
                   <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -4259,6 +4235,34 @@ export function DealingDepartmentPage() {
                         <span className="font-semibold text-violet-700 dark:text-violet-200">= Gross PnL</span>
                         <span className={`text-lg font-bold tabular-nums ${signedValueClass(gPnl)}`}>{signedValueText(gPnl)}</span>
                       </div>
+                      {hwm && (
+                        <>
+                          <div className="mt-3 border-t border-violet-200/60 pt-3 dark:border-violet-800/40">
+                            <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400">High Water Mark Adjustment</div>
+                            {[
+                              { label: "Watermark buffer in", val: Number(hwm.watermarkIn) || 0, color: "text-violet-600 dark:text-violet-300" },
+                              { label: "LP Raw PnL this month", val: Number(hwm.lpRawTotal) || (Number(bonusPnlLp.rawTotal) || 0), color: signedValueClass(Number(hwm.lpRawTotal) || 0) },
+                              { label: "Effective LP (50%) after HWM", val: effectiveLpTotal, color: signedValueClass(effectiveLpTotal) },
+                              { label: "Watermark buffer out", val: Number(hwm.watermarkOut) || 0, color: "text-violet-600 dark:text-violet-300" },
+                            ].map((item) => (
+                              <div key={item.label} className="flex items-center justify-between rounded px-3 py-1.5 hover:bg-violet-100/60 dark:hover:bg-violet-900/20">
+                                <span className="text-violet-500 dark:text-violet-400">{item.label}</span>
+                                <span className={`font-semibold ${item.color}`}>{signedValueText(Number(item.val))}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-1 flex items-center justify-between rounded-lg bg-violet-200/60 px-3 py-2 dark:bg-violet-800/30">
+                            <span className="font-semibold text-violet-800 dark:text-violet-200">= Bonus PnL (with HWM)</span>
+                            <span className={`text-lg font-bold tabular-nums ${signedValueClass(adjustedGrossPnl)}`}>{signedValueText(adjustedGrossPnl)}</span>
+                          </div>
+                          {hwmActiveBlocked && (
+                            <div className="mt-2 rounded-lg border border-violet-400/30 bg-violet-100/60 px-3 py-2.5 text-xs text-violet-600 dark:border-violet-700/40 dark:bg-violet-900/20 dark:text-violet-300 leading-relaxed">
+                              LP profited this month — profits are banked into the watermark buffer ({signedValueText(Number(hwm.watermarkOut) || 0)}).
+                              No bonus PnL is payable until future LP losses exceed this buffer.
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -4347,14 +4351,42 @@ export function DealingDepartmentPage() {
                       <div className={`mt-2 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlSummary?.grossPnl) || 0)}`}>{signedValueText(Number(bonusPnlSummary?.grossPnl) || 0)}</div>
                       <div className="mt-1.5 text-xs text-slate-500">{bonusPnlSummary?.fromUtc?.slice(0, 10) || "—"} → {bonusPnlSummary?.toUtc?.slice(0, 10) || "—"}</div>
                     </div>
-                    <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
-                      <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300">LP Receivable (PnL + Swap) ×50%</div>
-                      <div className={`mt-2 text-2xl font-bold tabular-nums ${signedValueClass(Number(bonusPnlSummary?.lpReceivable) || 0)}`}>{signedValueText(Number(bonusPnlSummary?.lpReceivable) || 0)}</div>
-                      <div className="mt-1.5 flex gap-3 text-xs text-slate-500">
-                        <span>PnL: <strong className={signedValueClass(Number(bonusPnlSummary?.lpRealizedPnl) || 0)}>{signedValueText(Number(bonusPnlSummary?.lpRealizedPnl) || 0)}</strong></span>
-                        <span>Swap: <strong className={signedValueClass(Number(bonusPnlSummary?.lpRealizedSwap) || 0)}>{signedValueText(Number(bonusPnlSummary?.lpRealizedSwap) || 0)}</strong></span>
-                      </div>
-                    </div>
+                    {(() => {
+                      const _wiAmt = Number(bonusPnlSummary?.watermarkIn) || 0;
+                      const _hwmRcv = bonusPnlSummary?.lpReceivableHwm !== undefined ? Number(bonusPnlSummary.lpReceivableHwm) : (Number(bonusPnlSummary?.lpReceivable) || 0);
+                      const _hwmCardActive = _wiAmt > 0 && _hwmRcv === 0;
+                      const _lpRcv = Number(bonusPnlSummary?.lpReceivable) || 0;
+                      const _lpPnl = Number(bonusPnlSummary?.lpRealizedPnl) || 0;
+                      const _lpSwap = Number(bonusPnlSummary?.lpRealizedSwap) || 0;
+                      const _lpUnreal = Number(bonusPnlSummary?.lpUnrealizedPnl) || 0;
+                      return (
+                        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                          <div className={`text-xs font-semibold uppercase tracking-wide ${_hwmCardActive ? "text-violet-600 dark:text-violet-400" : "text-indigo-700 dark:text-indigo-300"}`}>LP Receivable (PnL + Swap) ×50%</div>
+                          <div className={`mt-2 text-2xl font-bold tabular-nums ${_hwmCardActive ? "text-violet-500 dark:text-violet-400" : signedValueClass(_hwmRcv)}`}>{signedValueText(_hwmRcv)}</div>
+                          {_hwmCardActive ? (
+                            <div className="mt-1.5 space-y-0.5 text-xs">
+                              <div className="text-violet-500 dark:text-violet-400">HWM Active — buffer: <strong>{signedValueText(_wiAmt)}</strong></div>
+                              <div className="flex flex-wrap gap-2 text-slate-400 dark:text-slate-500">
+                                <span>Before HWM: <strong className={signedValueClass(_lpRcv)}>{signedValueText(_lpRcv)}</strong></span>
+                                <span>PnL: <strong className={signedValueClass(_lpPnl)}>{signedValueText(_lpPnl)}</strong></span>
+                                <span>Swap: <strong className={signedValueClass(_lpSwap)}>{signedValueText(_lpSwap)}</strong></span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-1.5 space-y-0.5 text-xs text-slate-500">
+                              <div className="flex flex-wrap gap-3">
+                                <span>PnL: <strong className={signedValueClass(_lpPnl)}>{signedValueText(_lpPnl)}</strong></span>
+                                <span>Swap: <strong className={signedValueClass(_lpSwap)}>{signedValueText(_lpSwap)}</strong></span>
+                                <span>Unrealized: <strong className={signedValueClass(_lpUnreal)}>{signedValueText(_lpUnreal)}</strong></span>
+                              </div>
+                              {_wiAmt > 0 && (
+                                <div className="text-violet-500 dark:text-violet-400">HWM buffer: <strong>{signedValueText(_wiAmt)}</strong></div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Client accounts table */}
@@ -4816,196 +4848,52 @@ export function DealingDepartmentPage() {
               )}
 
               {historyTab === "aggregate" && (
-                <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table data-table-kind="history-aggregate" className="min-w-full text-xs">
-                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2 text-left font-semibold uppercase tracking-wide">LP Name</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Source</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Start Period</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Start Equity</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">End Equity</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Credit</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Deposit</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Withdrawal</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Net Deposits</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Gross P/L</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Commission</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Swap</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Net P/L</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Real LP P/L</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">NTP %</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">LP P/L (Rev Share)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(historyAggregateData?.items || []).map((item, idx) => (
-                        <tr key={`${item.lpName}-${item.login}-${idx}`} className={item.isError ? "opacity-50" : "bg-slate-50 dark:bg-slate-950/30"}>
-                          <td className="sticky left-0 border-t border-slate-800 bg-inherit px-3 py-2 font-mono text-slate-900 dark:text-slate-100">{item.lpName}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-left">{item.login}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-left text-slate-500 dark:text-slate-400">{item.source || "-"}</td>
-                          {item.isError ? (
-                            <td colSpan={14} className="border-t border-slate-800 px-3 py-2 text-left text-rose-700 dark:text-rose-300">
-                              {item.errorMessage || "Error"}
-                            </td>
-                          ) : (
-                            <>
-                              <td className="border-t border-slate-800 px-3 py-2 text-left">
-                                  <input
-                                    type="date"
-                                  value={(historyStartPeriodEdits[item.lpName] ?? epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from)) || toYmd(fromDate)}
-                                    onChange={(e) =>
-                                      setHistoryStartPeriodEdits((prev) => ({
-                                        ...prev,
-                                      [item.lpName]: e.target.value,
-                                    }))
-                                  }
-                                  disabled={historySavingLp === item.lpName}
-                                  className="w-[132px] rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
-                                />
-                              </td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.startEquity.toLocaleString()}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.endEquity.toLocaleString()}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.credit.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.deposit > 0 ? "text-emerald-700 dark:text-emerald-300" : item.deposit < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.deposit.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.withdrawal > 0 ? "text-emerald-700 dark:text-emerald-300" : item.withdrawal < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.withdrawal.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.netDeposits > 0 ? "text-emerald-700 dark:text-emerald-300" : item.netDeposits < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.netDeposits.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.grossProfit > 0 ? "text-emerald-700 dark:text-emerald-300" : item.grossProfit < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.grossProfit.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.totalCommission > 0 ? "text-emerald-700 dark:text-emerald-300" : item.totalCommission < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.totalCommission.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.totalSwap > 0 ? "text-emerald-700 dark:text-emerald-300" : item.totalSwap < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.totalSwap.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.netPL > 0 ? "text-emerald-700 dark:text-emerald-300" : item.netPL < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.netPL.toLocaleString()}</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.realLpPL > 0 ? "text-emerald-700 dark:text-emerald-300" : item.realLpPL < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.realLpPL.toLocaleString()}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right text-amber-700 dark:text-amber-300">{item.ntpPercent.toFixed(1)}%</td>
-                              <td className={`border-t border-slate-800 px-3 py-2 text-right ${item.lpPL > 0 ? "text-emerald-700 dark:text-emerald-300" : item.lpPL < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{item.lpPL.toLocaleString()}</td>
-                            </>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                    {historyAggregateData?.totals && (
-                      <tfoot>
-                        <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
-                          <td className="sticky left-0 bg-slate-100 dark:bg-slate-900/95 px-3 py-2">TOTAL</td>
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.startEquity.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.endEquity.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.credit.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.deposit.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.withdrawal.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.netDeposits.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.grossProfit.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.totalCommission.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.totalSwap.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.netPL.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.realLpPL.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right" />
-                          <td className="px-3 py-2 text-right">{historyAggregateData.totals.lpPL.toLocaleString()}</td>
-                        </tr>
-                      </tfoot>
-                    )}
-                  </table>
+                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                  <SortableTable
+                    rows={historyAggregateData?.items || []}
+                    columns={historyAggregateColumns}
+                    exportFilePrefix="history-revenue-share"
+                    emptyText="No revenue-share rows available for this range."
+                    rowClassName={(row) => (row.isError ? "bg-slate-50 opacity-50 dark:bg-slate-950/30" : "bg-slate-50 dark:bg-slate-950/30")}
+                  />
+                  {historyAggregateData?.totals && (
+                    <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                      <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
+                      <span className="text-slate-500 dark:text-slate-400">
+                        StartEq {historyAggregateData.totals.startEquity.toLocaleString()} | EndEq {historyAggregateData.totals.endEquity.toLocaleString()} | Credit {historyAggregateData.totals.credit.toLocaleString()} | Deposit {historyAggregateData.totals.deposit.toLocaleString()} | Withdrawal {historyAggregateData.totals.withdrawal.toLocaleString()} | NetDep {historyAggregateData.totals.netDeposits.toLocaleString()} | Gross {historyAggregateData.totals.grossProfit.toLocaleString()} | Commission {historyAggregateData.totals.totalCommission.toLocaleString()} | Swap {historyAggregateData.totals.totalSwap.toLocaleString()} | NetPL {historyAggregateData.totals.netPL.toLocaleString()} | RealLP {historyAggregateData.totals.realLpPL.toLocaleString()} | LPPL {historyAggregateData.totals.lpPL.toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
               {historyTab === "deals" && (
-                <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table data-table-kind="history-deals" className="min-w-full text-xs">
-                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Ticket</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Time</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Direction</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Entry</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Volume</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Price</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Contract Size</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Market Value</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Profit</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Commission</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Fee</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Swap</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">LP Comm</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">LP Comm/Lot</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(historyDealsData?.deals || []).map((d, idx) => (
-                        <tr key={`${d.dealTicket}-${idx}`} className="bg-slate-50 dark:bg-slate-950/30">
-                          <td className="border-t border-slate-800 px-3 py-2">{d.dealTicket}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 font-mono">{d.symbol}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-slate-500 dark:text-slate-400">{d.timeString}</td>
-                          <td className={`border-t border-slate-800 px-3 py-2 text-right ${d.direction === "Buy" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>{d.direction}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.entry}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.volume.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.price.toLocaleString(undefined, { maximumFractionDigits: 5 })}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.contractSize.toLocaleString()}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.marketValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                          <td className={`border-t border-slate-800 px-3 py-2 text-right ${d.profit > 0 ? "text-emerald-700 dark:text-emerald-300" : d.profit < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{d.profit.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className={`border-t border-slate-800 px-3 py-2 text-right ${d.commission > 0 ? "text-emerald-700 dark:text-emerald-300" : d.commission < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{d.commission.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className={`border-t border-slate-800 px-3 py-2 text-right ${d.fee > 0 ? "text-emerald-700 dark:text-emerald-300" : d.fee < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{d.fee.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className={`border-t border-slate-800 px-3 py-2 text-right ${d.swap > 0 ? "text-emerald-700 dark:text-emerald-300" : d.swap < 0 ? "text-rose-700 dark:text-rose-300" : "text-slate-500"}`}>{d.swap.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.lpCommission.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-right">{d.lpCommPerLot.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                  <SortableTable
+                    rows={historyDealsData?.deals || []}
+                    columns={historyDealsColumns}
+                    exportFilePrefix="history-deals"
+                    emptyText="No history deals available for this range."
+                  />
                 </div>
               )}
 
               {historyTab === "volume" && (
-                <div className={`min-h-0 rounded-lg border border-slate-800 ${fullscreenTable === "history" ? "flex-1 overflow-auto" : "overflow-x-auto"}`}>
-                  <table data-table-kind="history-volume" className="min-w-full text-xs">
-                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">LP Name</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
-                        <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Source</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Trade Count</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Total Lots</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Notional (USD)</th>
-                        <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Volume (Yards)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(historyVolumeData?.items || []).map((item, idx) => (
-                        <tr key={`${item.lpName}-${item.login}-${idx}`} className={item.isError ? "opacity-50" : "bg-slate-50 dark:bg-slate-950/30"}>
-                          <td className="border-t border-slate-800 px-3 py-2 font-mono">{item.lpName}</td>
-                          <td className="border-t border-slate-800 px-3 py-2">{item.login}</td>
-                          <td className="border-t border-slate-800 px-3 py-2 text-slate-500 dark:text-slate-400">{item.source || "-"}</td>
-                          {item.isError ? (
-                            <td colSpan={4} className="border-t border-slate-800 px-3 py-2 text-left text-rose-700 dark:text-rose-300">
-                              {item.errorMessage || "Error"}
-                            </td>
-                          ) : (
-                            <>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.tradeCount.toLocaleString()}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.totalLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.notionalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                              <td className="border-t border-slate-800 px-3 py-2 text-right">{item.volumeYards.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-                            </>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                    {historyVolumeData?.totals && (
-                      <tfoot>
-                        <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
-                          <td className="px-3 py-2">TOTAL</td>
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2" />
-                          <td className="px-3 py-2 text-right">{historyVolumeData.totals.tradeCount.toLocaleString()}</td>
-                          <td className="px-3 py-2 text-right">{historyVolumeData.totals.totalLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                          <td className="px-3 py-2 text-right">{historyVolumeData.totals.notionalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                          <td className="px-3 py-2 text-right">{historyVolumeData.totals.volumeYards.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-                        </tr>
-                      </tfoot>
-                    )}
-                  </table>
+                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
+                  <SortableTable
+                    rows={(historyVolumeData?.items || []).filter((item) => !item.isError)}
+                    columns={historyVolumeColumns}
+                    exportFilePrefix="history-volume"
+                    emptyText="No history volume available for this range."
+                  />
+                  {historyVolumeData?.totals && (
+                    <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                      <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
+                      <span className="text-slate-500 dark:text-slate-400">
+                        Trades {historyVolumeData.totals.tradeCount.toLocaleString()} | Lots {historyVolumeData.totals.totalLots.toLocaleString(undefined, { maximumFractionDigits: 2 })} | Notional {historyVolumeData.totals.notionalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })} | Yards {historyVolumeData.totals.volumeYards.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -5202,6 +5090,15 @@ export function DealingDepartmentPage() {
                 </div>
               )}
             </section>
+          ) : activeMenu === "Client Profiling" ? (
+            <ClientProfilingTab
+              fromDate={toYmd(fromDate)}
+              toDate={toYmd(toDate)}
+              refreshKey={refreshKey}
+              onFromDateChange={(value) => setFromDate(new Date(`${value}T00:00:00`))}
+              onToDateChange={(value) => setToDate(new Date(`${value}T00:00:00`))}
+              onRefresh={handlePageRefresh}
+            />
           ) : activeMenu === "Rebate Calculator" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
               <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -5329,12 +5226,12 @@ export function DealingDepartmentPage() {
                       <tr className="bg-slate-200/80 dark:bg-slate-900/95 font-semibold text-slate-700 dark:text-slate-200">
                         <td className="px-3 py-2">TOTAL</td>
                         <td className="px-3 py-2" />
-                        <td className="px-3 py-2 text-right">{rebateCalcRows.reduce((s, r) => s + r.trades, 0).toLocaleString()}</td>
-                        <td className="px-3 py-2 text-right">{rebateCalcRows.reduce((s, r) => s + r.tradedLots, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td className="px-3 py-2 text-right">{rebateCalcRows.reduce((s, r) => s + r.eligibleLots, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                        <td className="px-3 py-2 text-right">{rebateCalcRows.reduce((s, r) => s + r.ineligibleLots, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                        <td className="px-3 py-2 text-right">{rebateCalcTotals.trades.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right">{rebateCalcTotals.tradedLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                        <td className="px-3 py-2 text-right">{rebateCalcTotals.eligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                        <td className="px-3 py-2 text-right">{rebateCalcTotals.ineligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                         <td className="px-3 py-2 text-right" />
-                        <td className="px-3 py-2 text-right">${rebateCalcRows.reduce((s, r) => s + r.mt5CommissionUsd, 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                        <td className="px-3 py-2 text-right">${rebateCalcTotals.commission.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                       </tr>
                     </tfoot>
                   )}

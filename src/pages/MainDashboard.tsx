@@ -16,7 +16,7 @@ export const MainDashboard: React.FC = () => {
 
   return (
     <div className="bg-background min-h-screen">
-      <main className="p-8">
+      <main className="p-3 sm:p-4 md:p-6 lg:p-8">
         <div className="grid grid-cols-12 gap-6">
           {/* Accounts Section */}
           <div className="col-span-12 lg:col-span-6">

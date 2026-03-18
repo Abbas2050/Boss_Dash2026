@@ -110,6 +110,8 @@
         <a href="/bonus-coverage.html">Bonus Coverage</a>
         <a href="/bonus-risk.html">Bonus Risk</a>
         <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -171,15 +173,10 @@
             </div>
         </div>
 
-        <!-- Monthly PnL & LP Receivable -->
+        <!-- LP Receivable -->
         <div class="wd-row">
             <div class="wd-box">
-                <div class="wd-label">This Month's Gross PnL</div>
-                <div class="wd-value" id="monthlyPnl">-</div>
-                <div class="equity-sub" id="monthlyPnlPeriod" style="margin-top:6px">&nbsp;</div>
-            </div>
-            <div class="wd-box">
-                <div class="wd-label">LP Receivable (PnL + Swap) x 50%</div>
+                <div class="wd-label">LP Receivable</div>
                 <div class="wd-value" id="lpReceivable">-</div>
                 <div class="equity-sub" id="lpReceivableSub" style="margin-top:6px">&nbsp;</div>
             </div>
@@ -327,16 +324,24 @@
                 if (!resp.ok) return;
                 const d = await resp.json();
 
-                const pnlEl = document.getElementById('monthlyPnl');
-                pnlEl.textContent = fmt(d.grossPnl);
-                pnlEl.style.color = d.grossPnl > 0 ? '#9ece6a' : d.grossPnl < 0 ? '#f7768e' : '#c0caf5';
-                document.getElementById('monthlyPnlPeriod').textContent = `${d.fromUtc} to ${d.toUtc}`;
-
+                // LP Receivable card (HWM-aware)
+                const hwmActive = d.watermarkIn > 0 && d.lpReceivableHwm === 0;
+                const receivable = d.lpReceivableHwm;
                 const recEl = document.getElementById('lpReceivable');
-                recEl.textContent = fmt(d.lpReceivable);
-                recEl.style.color = d.lpReceivable > 0 ? '#9ece6a' : d.lpReceivable < 0 ? '#f7768e' : '#c0caf5';
-                document.getElementById('lpReceivableSub').innerHTML =
-                    `PnL: <span>${fmt(d.lpRealizedPnl)}</span> | Swap: <span>${fmt(d.lpRealizedSwap)}</span>`;
+                recEl.textContent = fmt(receivable);
+                recEl.style.color = hwmActive ? '#bb9af7' : (receivable > 0 ? '#9ece6a' : receivable < 0 ? '#f7768e' : '#c0caf5');
+
+                const subEl = document.getElementById('lpReceivableSub');
+                if (hwmActive) {
+                    subEl.innerHTML =
+                        `<span style="color:#bb9af7">HWM Active</span> — buffer: <span>${fmt(d.watermarkIn)}</span><br>` +
+                        `Before HWM: <span>${fmt(d.lpReceivable)}</span> | ` +
+                        `PnL: <span>${fmt(d.lpRealizedPnl)}</span> | Swap: <span>${fmt(d.lpRealizedSwap)}</span>`;
+                } else {
+                    subEl.innerHTML =
+                        `PnL: <span>${fmt(d.lpRealizedPnl)}</span> | Swap: <span>${fmt(d.lpRealizedSwap)}</span> | Unrealized: <span>${fmt(d.lpUnrealizedPnl)}</span>` +
+                        (d.watermarkIn > 0 ? `<br>HWM buffer: <span>${fmt(d.watermarkIn)}</span>` : '');
+                }
             } catch (e) {
                 console.error('PnL summary fetch failed:', e);
             }

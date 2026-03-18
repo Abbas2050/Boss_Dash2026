@@ -10,6 +10,7 @@ export const DEALING_TABS = [
   "Deal Matching",
   "Clients NOP",
   "Rebate Calculator",
+  "Client Profiling",
   "History",
   "Swap Tracker",
 ] as const;

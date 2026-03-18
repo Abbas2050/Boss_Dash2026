@@ -79,6 +79,18 @@ export class SignalRConnectionManager {
       await this.connection.start();
       this.setStatus("connected");
     } catch (error) {
+      // Suppress benign error: component unmounted and called disconnect() while
+      // connect() was still in progress. This is expected on React cleanup.
+      const msg = error instanceof Error ? error.message : String(error);
+      if (
+        msg.includes("stop() was called") ||
+        msg.includes("stop was called") ||
+        msg.includes("timeout occurred") ||
+        msg.includes("Failed to complete negotiation")
+      ) {
+        this.setStatus("disconnected");
+        return;
+      }
       this.emitError(error);
       this.setStatus("disconnected");
       throw error;
@@ -97,7 +109,7 @@ export class SignalRConnectionManager {
         accessTokenFactory: this.options.accessTokenFactory,
       })
       .withAutomaticReconnect(this.options.reconnectDelaysMs || [0, 2000, 5000, 10000])
-      .configureLogging(this.options.logLevel ?? LogLevel.Warning)
+      .configureLogging(this.options.logLevel ?? LogLevel.None)
       .build();
   }
 

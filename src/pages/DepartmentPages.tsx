@@ -30,7 +30,7 @@ export const DepartmentPages: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen p-6 md:p-8">
+    <div className="min-h-screen p-3 sm:p-4 md:p-6 lg:p-8">
       {selected === "dealing" && <DealingDepartmentPage />}
       {selected === "backoffice" && <BackOfficeDepartment {...commonProps} />}
       {selected === "accounts" && <AccountsDepartment {...commonProps} />}

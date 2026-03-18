@@ -106,6 +106,7 @@
     @apply bg-background text-foreground;
     font-family: var(--font-body);
     line-height: 1.5;
+    overflow-x: hidden;
     background-image: 
       radial-gradient(ellipse at top, hsl(222 47% 10%) 0%, transparent 50%),
       radial-gradient(ellipse at bottom right, hsl(186 100% 50% / 0.03) 0%, transparent 50%),

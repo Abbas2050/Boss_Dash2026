@@ -158,12 +158,12 @@ export function FilterSection({
   const hasActiveFilters = selectedEntity !== 'all' || fromDate || toDate;
 
   return (
-    <div className="cyber-card p-4">
-      <div className="flex flex-wrap items-center justify-between gap-4 md:gap-6">
+    <div className="cyber-card p-3 sm:p-4">
+      <div className="flex flex-col items-start gap-3 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
         {/* Left: Entity & Date Filters */}
-        <div className="flex flex-wrap items-center gap-2 md:gap-4 w-full md:w-auto">
+        <div className="flex w-full items-center gap-2 sm:gap-3 md:gap-4 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0 lg:flex-wrap">
           {/* Filter Icon */}
-          <div className="flex items-center gap-2 pr-2 md:pr-4 border-r border-border/50">
+          <div className="flex shrink-0 items-center gap-2 pr-2 md:pr-4 border-r border-border/50">
             <div className="p-2 rounded-lg bg-primary/10">
               <Filter className="w-4 h-4 text-primary" />
             </div>
@@ -171,10 +171,10 @@ export function FilterSection({
           </div>
 
           {/* Entity Selector */}
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Building2 className="w-4 h-4 text-muted-foreground" />
             <Select value={selectedEntity} onValueChange={handleEntityChange}>
-              <SelectTrigger className="w-[180px] h-9 bg-secondary/50 border-border/50 hover:border-primary/50 transition-colors">
+              <SelectTrigger className="h-9 w-[160px] sm:w-[180px] bg-secondary/50 border-border/50 hover:border-primary/50 transition-colors">
                 <SelectValue placeholder="Select Entity" />
               </SelectTrigger>
               <SelectContent className="bg-card border-border/50">
@@ -192,7 +192,7 @@ export function FilterSection({
           </div>
 
           {/* Date Separator */}
-          <div className="h-6 w-px bg-border/50" />
+          <div className="hidden sm:block h-6 w-px bg-border/50" />
 
           {/* From Date */}
           <Popover open={fromOpen} onOpenChange={setFromOpen}>
@@ -200,7 +200,7 @@ export function FilterSection({
               <Button
                 variant="outline"
                 className={cn(
-                  "h-9 justify-start text-left font-normal bg-secondary/50 border-border/50 hover:border-primary/50 hover:bg-secondary/70",
+                  "h-9 min-w-[132px] sm:min-w-[148px] justify-start text-left font-normal bg-secondary/50 border-border/50 hover:border-primary/50 hover:bg-secondary/70",
                   !fromDate && "text-muted-foreground"
                 )}
               >
@@ -220,7 +220,7 @@ export function FilterSection({
           </Popover>
 
           {/* To Label */}
-          <span className="text-xs text-muted-foreground font-mono">TO</span>
+          <span className="shrink-0 text-xs text-muted-foreground font-mono">TO</span>
 
           {/* To Date */}
           <Popover open={toOpen} onOpenChange={setToOpen}>
@@ -228,7 +228,7 @@ export function FilterSection({
               <Button
                 variant="outline"
                 className={cn(
-                  "h-9 justify-start text-left font-normal bg-secondary/50 border-border/50 hover:border-primary/50 hover:bg-secondary/70",
+                  "h-9 min-w-[132px] sm:min-w-[148px] justify-start text-left font-normal bg-secondary/50 border-border/50 hover:border-primary/50 hover:bg-secondary/70",
                   !toDate && "text-muted-foreground"
                 )}
               >
@@ -253,7 +253,7 @@ export function FilterSection({
               variant="ghost"
               size="sm"
               onClick={clearFilters}
-              className="h-9 px-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+              className="h-9 shrink-0 px-2 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
             >
               <X className="w-4 h-4 mr-1" />
               Clear
@@ -262,29 +262,33 @@ export function FilterSection({
         </div>
 
         {/* Right: Quick Filters */}
-        <div className="flex items-center gap-1.5">
-          {quickFilters.map((filter) => (
-            <button
-              key={filter.value}
-              onClick={() => handleQuickFilter(filter.value)}
-              className={cn(
-                "px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200",
-                activeQuickFilter === filter.value
-                  ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
-                  : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent hover:border-border/50"
-              )}
+        <div className="flex w-full items-center gap-2 lg:w-auto lg:max-w-full">
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <div className="flex min-w-max items-center gap-1.5 pb-1">
+            {quickFilters.map((filter) => (
+              <button
+                key={filter.value}
+                onClick={() => handleQuickFilter(filter.value)}
+                className={cn(
+                  "shrink-0 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200",
+                  activeQuickFilter === filter.value
+                    ? "bg-primary text-primary-foreground shadow-lg shadow-primary/25"
+                    : "bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground border border-transparent hover:border-border/50"
+                )}
+              >
+                {filter.label}
+              </button>
+            ))}
+            </div>
+          </div>
+            <Button
+              variant="default"
+              size="sm"
+              className="h-9 shrink-0"
+              onClick={onSubmit}
             >
-              {filter.label}
-            </button>
-          ))}
-          <Button
-            variant="default"
-            size="sm"
-            className="ml-2 h-9"
-            onClick={onSubmit}
-          >
-            Submit
-          </Button>
+              Submit
+            </Button>
         </div>
       </div>
     </div>

@@ -94,6 +94,12 @@
         tbody tr { border-bottom: 1px solid #1a1b26; }
         tbody tr:hover { background: #1a1b2a; }
         tbody td { padding: 6px 10px; white-space: nowrap; }
+
+        /* HWM summary card */
+        .hwm-card {
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 8px;
+            padding: 16px; margin-bottom: 16px;
+        }
     </style>
 </head>
 <body>
@@ -119,6 +125,8 @@
         <a href="/bonus-coverage.html">Bonus Coverage</a>
         <a href="/bonus-risk.html">Bonus Risk</a>
         <a href="/bonus-pnl.html" class="active">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -144,6 +152,7 @@
         const colorClass = (v) => v > 0.005 ? 'positive' : v < -0.005 ? 'negative' : 'neutral';
         const colorVal = (v, d = 2) => `<span class="${colorClass(v)}">${fmt(v, d)}</span>`;
         function escHtml(s) { if (!s) return ''; return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        const BonusGroupFilter = '*,!skylinkscapital\\\\Bonus\\\\BS_A_Cbook';
 
         function toggleDetail(id) {
             const el = document.getElementById(id);
@@ -181,11 +190,27 @@
                 const params = new URLSearchParams({ from });
                 if (to) params.set('to', to);
 
-                const resp = await fetch(`/Bonus/pnl-daily?${params}`);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+                // Fetch single-period first — render immediately
+                const pnlResp = await fetch(`/Bonus/pnl-smart?${params}`);
+                if (!pnlResp.ok) throw new Error(`HTTP ${pnlResp.status}: ${await pnlResp.text()}`);
+                const data = await pnlResp.json();
 
-                const data = await resp.json();
-                renderResult(data);
+                // Render with raw values first (fast)
+                renderResult(data, null);
+
+                // Then fetch HWM in background and re-render with adjusted values
+                fetch(`/Bonus/pnl-monthly-report?from=${from}`)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(hwmData => {
+                        if (hwmData?.months?.length > 0) {
+                            const hwm = {
+                                current: hwmData.months[hwmData.months.length - 1],
+                                totalGrossPnl: hwmData.months.reduce((s, m) => s + m.grossPnl, 0),
+                            };
+                            renderResult(data, hwm);
+                        }
+                    })
+                    .catch(() => {}); // HWM is optional — page works fine without it
             } catch (e) {
                 document.getElementById('result').innerHTML = `<div class="error">Error: ${e.message}</div>`;
             } finally {
@@ -194,18 +219,38 @@
             }
         }
 
-        function renderResult(d) {
+        function renderResult(d, hwm) {
             const c = d.client;
             const l = d.lp;
             const cost = d.cost;
+            const h = hwm?.current;
+
+            // Use HWM-adjusted values when available
+            const effectiveLpTotal = h ? h.effectiveLpTotal : l.total;
+            const adjustedGrossPnl = h ? h.grossPnl : d.grossPnl;
+            const hasWatermark = h && (h.watermarkIn > 0 || h.watermarkOut > 0);
 
             document.getElementById('dateRange').textContent = `Period: ${d.fromUtc} to ${d.toUtc} UTC`;
 
             document.getElementById('result').innerHTML = `
                 <!-- Gross PnL Hero -->
                 <div class="gross-card">
-                    <div class="gross-label">Gross PnL</div>
-                    <div class="gross-value ${colorClass(d.grossPnl)}">${fmt(d.grossPnl)}</div>
+                    ${h && adjustedGrossPnl === 0 && d.grossPnl !== 0 ? `
+                    <div class="gross-label">Bonus PnL This Month</div>
+                    <div class="gross-value" style="color:#bb9af7">$0.00</div>
+                    <div style="margin-top:8px;padding:10px 14px;background:#2e2a4a;border-radius:6px;border:1px solid #3d3660;">
+                        <div style="font-size:13px;color:#bb9af7;font-weight:600;margin-bottom:4px;">High Water Mark Active</div>
+                        <div style="font-size:12px;color:#9890b0;line-height:1.5;">
+                            LP made a profit of <span style="color:#9ece6a;font-weight:600">${fmt(h.watermarkOut)}</span> this month,
+                            building the watermark buffer. No bonus PnL is due until LP losses exceed this buffer.
+                        </div>
+                        <div style="font-size:12px;color:#565f89;margin-top:6px;">
+                            Gross PnL (before HWM): <span class="${colorClass(d.grossPnl)}" style="font-weight:600">${fmt(d.grossPnl)}</span>
+                        </div>
+                    </div>
+                    ` : `
+                    <div class="gross-label">Gross PnL${h ? ' (with HWM)' : ''}</div>
+                    <div class="gross-value ${colorClass(h ? adjustedGrossPnl : d.grossPnl)}">${fmt(h ? adjustedGrossPnl : d.grossPnl)}</div>
                     <div class="gross-formula">
                         LP 50% <span>${fmt(l.total)}</span>
                         - Client Gross <span>${fmt(c.total)}</span>
@@ -213,6 +258,12 @@
                         - Credit Cost <span>${fmt(cost.creditCost)}</span>
                         + Withdrawal Charges <span>${fmt(cost.withdrawalCharges)}</span>
                     </div>
+                    ${h && Math.abs(adjustedGrossPnl - d.grossPnl) > 0.01 ? `
+                    <div style="margin-top:6px;font-size:12px;color:#565f89">
+                        Before HWM: <span class="${colorClass(d.grossPnl)}">${fmt(d.grossPnl)}</span>
+                        &nbsp;|&nbsp; HWM impact: <span class="${colorClass(adjustedGrossPnl - d.grossPnl)}">${fmt(adjustedGrossPnl - d.grossPnl)}</span>
+                    </div>` : ''}
+                    `}
                 </div>
 
                 <!-- Client PnL / LP PnL side by side -->
@@ -290,84 +341,6 @@
                                 <span class="b-count">${l.openPositionCount}</span>
                             </div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- LP Closed Deals Detail -->
-                <div class="section-card" style="margin-bottom:12px">
-                    <div class="detail-toggle" onclick="toggleDetail('lpDealsDetail')">
-                        LP Closed Deals Detail (${l.closedDealCount} trades)
-                    </div>
-                    <div id="lpDealsDetail" class="detail-hidden">
-                        ${l.closedDeals && l.closedDeals.length > 0 ? `
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th style="text-align:left">Deal</th>
-                                    <th style="text-align:left">Symbol</th>
-                                    <th style="text-align:left">Dir</th>
-                                    <th style="text-align:right">Volume</th>
-                                    <th style="text-align:right">Profit</th>
-                                    <th style="text-align:right">Swap</th>
-                                    <th style="text-align:right">Commission</th>
-                                    <th style="text-align:left">Comment</th>
-                                    <th style="text-align:left">Time</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${l.closedDeals.map(d => `
-                                <tr>
-                                    <td style="text-align:left">${d.deal}</td>
-                                    <td style="text-align:left;color:#e0af68">${d.symbol}</td>
-                                    <td style="text-align:left;color:${d.direction==='Buy'?'#9ece6a':'#f7768e'}">${d.direction}</td>
-                                    <td style="text-align:right">${fmt(d.volume, 4)}</td>
-                                    <td style="text-align:right" class="${colorClass(d.profit)}">${fmt(d.profit)}</td>
-                                    <td style="text-align:right" class="${colorClass(d.swap)}">${fmt(d.swap)}</td>
-                                    <td style="text-align:right" class="${colorClass(d.commission)}">${fmt(d.commission)}</td>
-                                    <td style="text-align:left;color:#565f89;font-size:12px">${escHtml(d.comment)}</td>
-                                    <td style="text-align:left;color:#565f89;font-size:12px">${d.time}</td>
-                                </tr>`).join('')}
-                            </tbody>
-                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No closed deals in period</div>'}
-                    </div>
-                </div>
-
-                <!-- LP Open Positions Detail -->
-                <div class="section-card" style="margin-bottom:12px">
-                    <div class="detail-toggle" onclick="toggleDetail('lpPositionsDetail')">
-                        LP Open Positions Detail (${l.openPositionCount} positions)
-                    </div>
-                    <div id="lpPositionsDetail" class="detail-hidden">
-                        ${l.openPositions && l.openPositions.length > 0 ? `
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th style="text-align:left">Ticket</th>
-                                    <th style="text-align:left">Time</th>
-                                    <th style="text-align:left">Symbol</th>
-                                    <th style="text-align:left">Dir</th>
-                                    <th style="text-align:right">Volume</th>
-                                    <th style="text-align:right">Open Price</th>
-                                    <th style="text-align:right">Current</th>
-                                    <th style="text-align:right">Profit</th>
-                                    <th style="text-align:right">Swap</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${l.openPositions.map(p => `
-                                <tr>
-                                    <td style="text-align:left">${p.ticket}</td>
-                                    <td style="text-align:left;color:#565f89;font-size:12px">${p.time}</td>
-                                    <td style="text-align:left;color:#e0af68">${p.symbol}</td>
-                                    <td style="text-align:left;color:${p.direction==='Buy'?'#9ece6a':'#f7768e'}">${p.direction}</td>
-                                    <td style="text-align:right">${fmt(p.volume, 4)}</td>
-                                    <td style="text-align:right">${fmt(p.openPrice, 5)}</td>
-                                    <td style="text-align:right">${fmt(p.currentPrice, 5)}</td>
-                                    <td style="text-align:right" class="${colorClass(p.profit)}">${fmt(p.profit)}</td>
-                                    <td style="text-align:right" class="${colorClass(p.swap)}">${fmt(p.swap)}</td>
-                                </tr>`).join('')}
-                            </tbody>
-                        </table>` : '<div style="color:#565f89;padding:12px;text-align:center">No open positions</div>'}
                     </div>
                 </div>
 
@@ -514,8 +487,48 @@
                             <span class="b-label" style="color:#7aa2f7;font-weight:600">= Gross PnL</span>
                             <span class="b-value" style="font-size:18px">${colorVal(d.grossPnl)}</span>
                         </div>
+                        ${h ? `
+                        <div class="b-divider"></div>
+                        <div style="font-size:11px;color:#bb9af7;text-transform:uppercase;letter-spacing:0.5px;margin:8px 0 4px;font-weight:600">High Water Mark Adjustment</div>
+                        <div class="b-row">
+                            <span class="b-label" style="color:#bb9af7">Watermark buffer in</span>
+                            <span class="b-value" style="color:#bb9af7">${fmt(h.watermarkIn)}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label" style="color:#bb9af7">LP Raw PnL this month</span>
+                            <span class="b-value" style="color:#bb9af7">${colorVal(h.lpRawTotal || (l.rawTotal || 0))}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label" style="color:#bb9af7">Effective LP (50%) after HWM</span>
+                            <span class="b-value" style="color:#bb9af7">${colorVal(effectiveLpTotal)}</span>
+                        </div>
+                        <div class="b-row">
+                            <span class="b-label" style="color:#bb9af7">Watermark buffer out</span>
+                            <span class="b-value" style="color:#bb9af7">${fmt(h.watermarkOut)}</span>
+                        </div>
+                        <div class="b-divider"></div>
+                        <div class="b-row" style="font-size:15px">
+                            <span class="b-label" style="color:#bb9af7;font-weight:600">= Bonus PnL (with HWM)</span>
+                            <span class="b-value" style="font-size:18px">${colorVal(adjustedGrossPnl)}</span>
+                        </div>
+                        ${adjustedGrossPnl === 0 && d.grossPnl !== 0 ? `
+                        <div style="margin-top:6px;padding:8px 10px;background:#2e2a4a;border-radius:4px;font-size:12px;color:#9890b0;line-height:1.4;">
+                            LP profited this month - profits are banked into the watermark buffer (${fmt(h.watermarkOut)}).
+                            No bonus PnL is payable until future LP losses exceed this buffer.
+                        </div>` : ''}
+                        ` : ''}
                     </div>
                 </div>
+
+                ${hwm ? `
+                <div class="hwm-card">
+                    <div class="section-title" style="color:#bb9af7">Cumulative HWM Summary</div>
+                    <div style="text-align:center">
+                        <span style="font-size:12px;color:#565f89">Total HWM-adjusted Gross PnL across all months:</span>
+                        <div style="font-size:22px;font-weight:700;margin-top:4px" class="${colorClass(hwm.totalGrossPnl)}">${fmt(hwm.totalGrossPnl)}</div>
+                    </div>
+                </div>
+                ` : ''}
             `;
         }
 

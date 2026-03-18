@@ -185,7 +185,7 @@ export function MarketingDepartment({
         });
 
         const candidateUrls = marketingBaseUrl
-          ? [`${marketingBaseUrl}/api/marketing-insights?${params.toString()}`, `/api/marketing-insights?${params.toString()}`]
+          ? [`/api/marketing-insights?${params.toString()}`, `${marketingBaseUrl}/api/marketing-insights?${params.toString()}`]
           : [`/api/marketing-insights?${params.toString()}`];
 
         let data: MarketingData | null = null;

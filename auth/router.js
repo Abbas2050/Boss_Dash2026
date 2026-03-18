@@ -118,9 +118,17 @@ async function authRequired(req, res, next) {
   const token = raw.startsWith("Bearer ") ? raw.slice(7) : "";
   if (!token) return res.status(401).json({ error: "missing_token" });
 
+  // Separate DB init errors (503) from auth errors (401)
   try {
     await ensureInitialized();
+  } catch (initErr) {
+    return res.status(503).json({
+      error: "auth_service_unavailable",
+      message: initErr instanceof Error ? initErr.message : String(initErr),
+    });
+  }
 
+  try {
     const payload = jwt.verify(token, AUTH_JWT_SECRET);
     const [rows] = await pool.query(
       "SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1",

@@ -330,16 +330,16 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         
         {/* Timeline Selector */}
         {!fromDate && !toDate && (
-          <div className="flex items-center gap-2">
+          <div className="flex w-full sm:w-auto items-center gap-2">
             <Calendar className="w-4 h-4 text-muted-foreground" />
-            <div className="flex gap-1 p-1 rounded-lg bg-secondary/50 border border-border/30">
+            <div className="flex max-w-full overflow-x-auto gap-1 p-1 rounded-lg bg-secondary/50 border border-border/30">
               {['today', 'week', 'month', 'year'].map(mode => (
                 <Button
                   key={mode}
                   size="sm"
                   variant={timelineMode === mode ? 'default' : 'ghost'}
                   onClick={() => setTimelineMode(mode as any)}
-                  className="text-xs"
+                  className="shrink-0 text-xs"
                 >
                   {mode.charAt(0).toUpperCase() + mode.slice(1)}
                 </Button>

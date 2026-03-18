@@ -21,9 +21,9 @@ export function MetricRow({
   size = 'md'
 }: MetricRowProps) {
   const sizeClasses = {
-    sm: 'text-sm',
-    md: 'text-lg',
-    lg: 'text-2xl',
+    sm: 'text-xs sm:text-sm',
+    md: 'text-base sm:text-lg',
+    lg: 'text-xl sm:text-2xl',
   };
 
   const getTrendIcon = () => {
@@ -39,12 +39,12 @@ export function MetricRow({
   };
 
   return (
-    <div className="flex items-center justify-between py-1.5 group hover:bg-primary/5 px-2 -mx-2 rounded transition-colors">
-      <div className="flex items-center gap-2">
+    <div className="flex items-start sm:items-center justify-between py-1.5 group hover:bg-primary/5 px-2 -mx-2 rounded transition-colors gap-2">
+      <div className="min-w-0 flex flex-1 items-start sm:items-center gap-2">
         {icon && <span className="text-muted-foreground">{icon}</span>}
-        <span className="text-muted-foreground text-sm font-body">{label}</span>
+        <span className="text-muted-foreground text-xs sm:text-sm leading-tight font-body break-words">{label}</span>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="shrink-0 flex items-center gap-2 text-right">
         <span className={`font-mono font-semibold ${sizeClasses[size]}`}>
           {prefix}{typeof value === 'number' ? value.toLocaleString() : value}{suffix}
         </span>

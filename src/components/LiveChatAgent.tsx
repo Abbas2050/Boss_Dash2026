@@ -27,7 +27,7 @@ export function LiveChatAgent() {
     },
   ]);
   const [loading, setLoading] = useState(false);
-  const [capabilityLabel, setCapabilityLabel] = useState("loading...");
+  const [capabilityLabel, setCapabilityLabel] = useState("standby");
   const [live, setLive] = useState<AgentLiveSnapshot | null>(null);
   const [liveStatus, setLiveStatus] = useState<"connecting" | "live" | "error">("connecting");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -35,17 +35,20 @@ export function LiveChatAgent() {
   const toDate = useMemo(() => toYmd(new Date()), []);
 
   useEffect(() => {
+    if (!open) return;
     fetchAgentCapabilities()
       .then((c) => setCapabilityLabel(c.model))
       .catch(() => setCapabilityLabel("fallback"));
-  }, []);
+  }, [open]);
 
   useEffect(() => {
+    if (!open) return;
     const token = getAuthToken();
     if (!token) {
       setLiveStatus("error");
       return;
     }
+    setLiveStatus("connecting");
     const es = new EventSource(`/api/agent/live?fromDate=${fromDate}&toDate=${toDate}&token=${encodeURIComponent(token)}`);
     es.addEventListener("snapshot", (event) => {
       try {
@@ -58,7 +61,7 @@ export function LiveChatAgent() {
     });
     es.addEventListener("error", () => setLiveStatus("error"));
     return () => es.close();
-  }, [fromDate, toDate]);
+  }, [open, fromDate, toDate]);
 
   useEffect(() => {
     if (!scrollerRef.current) return;

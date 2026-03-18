@@ -39,7 +39,7 @@ const Index = () => {
         <div className="absolute inset-0 grid-pattern opacity-30" />
       </div>
       <div className="relative z-10">
-        <main className="p-6 space-y-5">
+        <main className="p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5">
           {/* Filter Section */}
           <FilterSection
             selectedEntity={selectedEntity}
@@ -127,13 +127,13 @@ const Index = () => {
             refreshKey={refreshKey}
           />
           {/* Footer */}
-          <footer className="flex items-center justify-between py-4 border-t border-border/20 text-xs text-muted-foreground">
-            <div className="flex items-center gap-4">
+          <footer className="flex flex-col gap-3 sm:gap-2 sm:flex-row sm:items-center sm:justify-between py-4 border-t border-border/20 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4">
               <span className="font-mono">© 2026 Sky Links Capital</span>
               <span className="w-1 h-1 rounded-full bg-muted-foreground/50" />
               <span>All systems operational</span>
             </div>
-            <div className="flex items-center gap-4 font-mono">
+            <div className="flex flex-wrap items-center gap-3 sm:gap-4 font-mono">
               <span>TLS 1.3 Encrypted</span>
               <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
               <span>ISO 27001 Compliant</span>

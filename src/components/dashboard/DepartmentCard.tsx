@@ -19,24 +19,24 @@ export function DepartmentCard({ title, icon: Icon, children, accentColor = 'pri
   const color = accentColors[accentColor];
   
   return (
-    <div className="cyber-card h-full p-4 corner-accent">
+    <div className="cyber-card h-full p-3 sm:p-4 corner-accent">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-4 pb-3 border-b border-border/50">
+      <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4 pb-2.5 sm:pb-3 border-b border-border/50">
         <div 
-          className="p-2 rounded-lg"
+          className="p-1.5 sm:p-2 rounded-lg"
           style={{ 
             background: `linear-gradient(135deg, ${color}20, transparent)`,
             boxShadow: `0 0 20px ${color}30`
           }}
         >
-          <Icon className="w-5 h-5" style={{ color }} />
+          <Icon className="w-4 h-4 sm:w-5 sm:h-5" style={{ color }} />
         </div>
-        <h2 className="font-display text-sm tracking-wider uppercase" style={{ color }}>
+        <h2 className="min-w-0 truncate font-display text-xs sm:text-sm tracking-[0.08em] sm:tracking-wider uppercase" style={{ color }}>
           {title}
         </h2>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
           <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-          <span className="text-xs text-muted-foreground font-mono">LIVE</span>
+          <span className="hidden sm:inline text-xs text-muted-foreground font-mono">LIVE</span>
         </div>
       </div>
       

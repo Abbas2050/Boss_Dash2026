@@ -42,9 +42,9 @@ export const Layout: React.FC = () => {
   return (
     <div className={theme === "dark" ? "theme-dark" : "theme-light"}>
       <DashboardHeader theme={theme} onThemeToggle={toggleTheme} />
-      <div className="flex">
+      <div className="flex min-w-0 flex-col lg:flex-row">
         {isSettings && hasAccess("Settings") && <SettingsSidebar />}
-        <main className="flex-1">
+        <main className="min-w-0 flex-1 overflow-x-hidden">
           <Outlet />
         </main>
       </div>

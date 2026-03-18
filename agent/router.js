@@ -40,7 +40,15 @@ function requireLiveAgentAccess(req, res, next) {
 }
 
 router.get("/capabilities", requireLiveAgentAccess, (req, res) => {
-  res.json(agentCapabilities());
+  try {
+    res.json(agentCapabilities());
+  } catch (error) {
+    res.json({
+      model: "rule-based-fallback",
+      tools: [],
+      warning: error?.message || "capabilities_unavailable",
+    });
+  }
 });
 
 router.post("/chat", requireLiveAgentAccess, async (req, res) => {
@@ -79,38 +87,47 @@ router.post("/chat", requireLiveAgentAccess, async (req, res) => {
 });
 
 router.get("/live", requireLiveAgentAccess, async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  if (res.flushHeaders) res.flushHeaders();
+  try {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    if (res.flushHeaders) res.flushHeaders();
 
-  const range = dateUtils.buildRange({
-    fromDate: req.query.fromDate,
-    toDate: req.query.toDate,
-  });
+    const range = dateUtils.buildRange({
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+    });
 
-  const send = async () => {
-    try {
-      const snapshot = await getLiveSnapshot(range);
-      res.write(`event: snapshot\n`);
-      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
-    } catch (error) {
-      res.write(`event: error\n`);
-      res.write(`data: ${JSON.stringify({ message: error?.message || "snapshot error" })}\n\n`);
+    const send = async () => {
+      try {
+        const snapshot = await getLiveSnapshot(range);
+        res.write(`event: snapshot\n`);
+        res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      } catch (error) {
+        res.write(`event: error\n`);
+        res.write(`data: ${JSON.stringify({ message: error?.message || "snapshot error" })}\n\n`);
+      }
+    };
+
+    send();
+    const interval = setInterval(send, 15000);
+
+    req.on("close", () => {
+      clearInterval(interval);
+      try {
+        res.end();
+      } catch {
+        // ignore
+      }
+    });
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(200).json({
+        ok: false,
+        warning: error?.message || "live_unavailable",
+      });
     }
-  };
-
-  send();
-  const interval = setInterval(send, 15000);
-
-  req.on("close", () => {
-    clearInterval(interval);
-    try {
-      res.end();
-    } catch {
-      // ignore
-    }
-  });
+  }
 });
 
 export default router;
