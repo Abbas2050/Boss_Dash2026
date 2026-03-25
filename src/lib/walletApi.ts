@@ -14,6 +14,8 @@ export interface WalletBalancesResponse {
     total_balance?: number;
     bank_receivable?: number;
     crypto_receivable?: number;
+    net_all_current_balance?: number;
+    net_balance_after_expected_funds?: number;
   };
   error?: string;
 }

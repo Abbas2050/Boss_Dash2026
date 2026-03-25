@@ -560,31 +560,29 @@ export function BackOfficeDepartment({
 
   return (
     <DepartmentCard title="Back Office" icon={Settings}>
-      <div className="space-y-4">
+      <div className="space-y-5">
         {variant === 'full' && (
-          <section className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-slate-50 via-white to-cyan-50/70 p-4 dark:from-slate-950/80 dark:via-slate-900 dark:to-cyan-950/30">
-            <div className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-cyan-500/10 blur-3xl" />
-            <div className="pointer-events-none absolute -left-10 -bottom-10 h-36 w-36 rounded-full bg-emerald-500/10 blur-3xl" />
-            <div className="relative">
+          <section className="rounded-2xl border border-border/60 bg-card/70 p-5 shadow-sm">
+            <div>
               <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">Backoffice Command</div>
-              <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Operations Snapshot</h2>
-                {isLoading && <span className="animate-pulse text-[11px] text-cyan-700 dark:text-cyan-300">Refreshing</span>}
+              <div className="mt-1 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Operations Snapshot</h2>
+                {isLoading && <span className="animate-pulse rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-700 dark:text-cyan-300">Refreshing</span>}
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
-                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+              <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="rounded-xl border border-border/50 bg-background/80 p-3">
                   <div className="text-[10px] text-slate-500">Clients</div>
                   <div className="mt-1 font-mono text-base font-semibold">{metrics.totalClients.toLocaleString()}</div>
                 </div>
-                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="rounded-xl border border-border/50 bg-background/80 p-3">
                   <div className="text-[10px] text-slate-500">MT5 Accounts</div>
                   <div className="mt-1 font-mono text-base font-semibold">{metrics.totalMT5Accounts.toLocaleString()}</div>
                 </div>
-                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
                   <div className="text-[10px] text-slate-500">Deposits</div>
                   <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{metrics.totalDeposits.toLocaleString()}</div>
                 </div>
-                <div className="rounded-lg border border-slate-200/80 bg-white/80 p-2 dark:border-slate-800 dark:bg-slate-950/60">
+                <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
                   <div className="text-[10px] text-slate-500">Withdrawals</div>
                   <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{metrics.totalWithdrawals.toLocaleString()}</div>
                 </div>
@@ -594,20 +592,20 @@ export function BackOfficeDepartment({
         )}
 
         <div className={variant === 'compact' ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]'}>
-        <section className={variant === 'compact' ? 'h-full rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-slate-50 via-white to-cyan-50/40 p-4 dark:from-slate-950/70 dark:via-slate-900 dark:to-cyan-950/20' : 'h-full rounded-2xl border border-border/50 bg-card/40 p-4'}>
+        <section className={variant === 'compact' ? 'h-full rounded-2xl border border-border/60 bg-card/70 p-4' : 'h-full rounded-2xl border border-border/60 bg-card/70 p-4'}>
           <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">{variant === 'compact' ? 'Operations Overview' : '1. Backoffice Overview'}</div>
-          <div className="grid grid-cols-3 gap-2">
-            <div className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-center">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-xl border border-primary/20 bg-primary/10 p-3 text-center">
               <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
               <div className="font-mono font-semibold">{metrics.totalIBs}</div>
               <div className="text-xs text-muted-foreground">IB events</div>
             </div>
-            <div className="rounded-lg border border-success/20 bg-success/10 p-2 text-center">
+            <div className="rounded-xl border border-success/20 bg-success/10 p-3 text-center">
               <TrendingUp className="mx-auto mb-1 h-4 w-4 text-success" />
               <div className="font-mono font-semibold">{metrics.totalDeposits}</div>
               <div className="text-xs text-muted-foreground">Deposits</div>
             </div>
-            <div className="rounded-lg border border-warning/20 bg-warning/10 p-2 text-center">
+            <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-center">
               <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
               <div className="font-mono font-semibold">{metrics.totalWithdrawals}</div>
               <div className="text-xs text-muted-foreground">Withdrawals</div>
@@ -662,7 +660,7 @@ export function BackOfficeDepartment({
           </div>
         </section>
         {variant === 'full' && (
-        <section className="h-full rounded-2xl border border-border/50 bg-card/40 p-4">
+        <section className="h-full rounded-2xl border border-border/60 bg-card/70 p-3 sm:p-4">
           <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">2. Closing Balance Report</div>
           <div className="mb-3 flex items-center justify-between">
             <div>
@@ -672,12 +670,12 @@ export function BackOfficeDepartment({
             <div className="text-[10px] text-muted-foreground">{reportDate}</div>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
-            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border/40 bg-background/50 p-2">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_240px]">
+            <div className="space-y-1 rounded-xl border border-border/40 bg-background/50 p-2.5">
               {walletError && <div className="text-[11px] text-destructive">{walletError}</div>}
               {pspBalances.length === 0 && !isLoading && !walletError && <div className="text-[11px] text-muted-foreground">No wallet data available.</div>}
               {pspBalances.map((psp) => (
-                <div key={psp.name} className="flex items-center justify-between rounded-md border border-border/40 bg-secondary/30 p-1.5 text-xs">
+                <div key={psp.name} className="flex items-center justify-between rounded-lg border border-border/40 bg-secondary/25 p-2 text-xs">
                   <div className="flex min-w-0 flex-1 items-center gap-2">
                     {psp.status === 'error' ? <AlertCircle className="h-3 w-3 flex-shrink-0 text-destructive" /> : <CheckCircle className="h-3 w-3 flex-shrink-0 text-success" />}
                     <span className="truncate text-foreground">{psp.name}</span>
@@ -689,20 +687,20 @@ export function BackOfficeDepartment({
               ))}
             </div>
 
-            <div className="space-y-2">
-              <div className="rounded-lg border border-primary/20 bg-primary/10 p-2">
+            <div className="space-y-2.5">
+              <div className="rounded-xl border border-primary/20 bg-primary/10 p-3">
                 <div className="text-[10px] text-muted-foreground">Total Combined</div>
                 <div className="mt-1 font-mono text-base font-bold text-primary">
                   ${walletTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
-              <div className="rounded-lg border border-warning/20 bg-warning/10 p-2">
+              <div className="rounded-xl border border-warning/20 bg-warning/10 p-3">
                 <div className="text-[10px] text-muted-foreground">To be received in BANK</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-warning">
                   ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
-              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2">
+              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
                 <div className="text-[10px] text-muted-foreground">To be received in CRYPTO</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-cyan-500">
                   ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -715,10 +713,10 @@ export function BackOfficeDepartment({
         </div>
 
         {variant === 'full' && (
-          <section className="rounded-2xl border border-border/50 bg-card/40 p-4">
+          <section className="rounded-2xl border border-border/60 bg-card/70 p-3 sm:p-4">
             <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">3. Client Cashflow Finder</div>
-            <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-slate-50 via-white to-cyan-50/60 p-3 dark:from-slate-900/60 dark:via-slate-950 dark:to-cyan-950/20">
-            <div className="flex items-center justify-between gap-2">
+            <div className="rounded-xl border border-border/50 bg-background/60 p-3 sm:p-3.5">
+            <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-2">
                 <Search className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                 <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Lookup by CRM ID</span>
@@ -741,7 +739,7 @@ export function BackOfficeDepartment({
                 type="button"
                 onClick={handleLookupClientCashflow}
                 disabled={lookupLoading}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-800 hover:bg-cyan-500/20 disabled:opacity-60 dark:text-cyan-100"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:opacity-60 sm:w-auto"
               >
                 {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
                 {lookupLoading ? 'Searching...' : 'Find Cashflow'}
@@ -756,8 +754,8 @@ export function BackOfficeDepartment({
 
             {lookupResult && (
               <>
-                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-2">
+                <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
                     <div className="flex items-center gap-1 text-[11px] text-emerald-800 dark:text-emerald-300">
                       <ArrowDownToLine className="h-3.5 w-3.5" /> Deposits
                     </div>
@@ -765,7 +763,7 @@ export function BackOfficeDepartment({
                       {lookupResult.deposits.length} tx | ${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2">
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
                     <div className="flex items-center gap-1 text-[11px] text-amber-800 dark:text-amber-300">
                       <ArrowUpToLine className="h-3.5 w-3.5" /> Withdrawals
                     </div>
@@ -775,8 +773,8 @@ export function BackOfficeDepartment({
                   </div>
                 </div>
 
-                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2">
+                <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3">
                     <div className="mb-1 text-[11px] font-semibold text-emerald-800 dark:text-emerald-300">Deposits by PSP</div>
                     <div className="max-h-28 space-y-1 overflow-y-auto">
                       {depositByPsp.length === 0 && <div className="text-[11px] text-slate-500">No deposit PSP data.</div>}
@@ -788,7 +786,7 @@ export function BackOfficeDepartment({
                       ))}
                     </div>
                   </div>
-                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2">
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3">
                     <div className="mb-1 text-[11px] font-semibold text-amber-800 dark:text-amber-300">Withdrawals by PSP</div>
                     <div className="max-h-28 space-y-1 overflow-y-auto">
                       {withdrawalByPsp.length === 0 && <div className="text-[11px] text-slate-500">No withdrawal PSP data.</div>}
@@ -804,7 +802,7 @@ export function BackOfficeDepartment({
 
                 <div
                   className={`mt-3 rounded-lg border border-slate-200 dark:border-slate-800 ${
-                    cashflowFullscreen ? 'fixed inset-3 z-50 overflow-auto bg-white p-3 shadow-2xl dark:bg-slate-950' : 'overflow-x-auto'
+                    cashflowFullscreen ? 'fixed inset-2 z-50 overflow-auto overscroll-contain bg-white p-2.5 shadow-2xl dark:bg-slate-950 sm:inset-3 sm:p-3' : 'overflow-x-auto'
                   }`}
                 >
                   <div className="mb-2 flex items-center justify-end gap-2">
@@ -826,8 +824,8 @@ export function BackOfficeDepartment({
                       {cashflowFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                     </button>
                   </div>
-                  <table className="min-w-full text-xs">
-                    <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                  <table className="min-w-[960px] text-[11px] md:min-w-full md:text-xs">
+                    <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
                       <tr>
                         <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Deposits</th>
                         <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Withdrawals</th>
@@ -893,7 +891,7 @@ export function BackOfficeDepartment({
         )}
 
         {variant === 'full' && (
-          <section className="rounded-2xl border border-border/50 bg-card/40 p-4">
+          <section className="rounded-2xl border border-border/60 bg-card/70 p-3 sm:p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <div className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">4. Docusign</div>
@@ -911,7 +909,7 @@ export function BackOfficeDepartment({
               </div>
             )}
 
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-lg border border-sky-500/20 bg-sky-500/10 p-3">
                 <div className="flex items-center gap-2 text-[11px] text-sky-700 dark:text-sky-300">
                   <FileSignature className="h-3.5 w-3.5" /> Sent for Signature

@@ -1,4 +1,5 @@
 import {
+  autoResolveAndCallEndpoint,
   callAppEndpoint,
   getAccountDetails,
   getBonusMetrics,
@@ -28,6 +29,26 @@ import {
 } from "./metricsService.js";
 
 export const AGENT_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "auto_resolve_and_call_endpoint",
+      description: "Automatically choose the best read-only endpoint for a natural-language question, call it, and return the result.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "User question to map to an endpoint" },
+          query: { type: "object", description: "Optional query-string params" },
+          pathParams: { type: "object", description: "Optional path params for templated paths" },
+          body: { type: "object", description: "Optional body for portal-post endpoints" },
+          confirmEndpointId: { type: "string", description: "Optional endpoint id chosen by the user for disambiguation" },
+          skipConfirmation: { type: "boolean", description: "If true, do not ask endpoint confirmation for close-score matches" },
+          limit: { type: "number", description: "Optional catalog scan limit" },
+        },
+        required: ["question"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -363,6 +384,7 @@ export const AGENT_TOOLS = [
 ];
 
 const registry = {
+  auto_resolve_and_call_endpoint: autoResolveAndCallEndpoint,
   list_app_endpoints: listAppEndpoints,
   call_app_endpoint: callAppEndpoint,
   get_account_details: getAccountDetails,

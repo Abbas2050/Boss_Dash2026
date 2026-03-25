@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { SettingsSidebar } from "./SettingsSidebar";
 import { DashboardHeader } from "./dashboard/DashboardHeader";
-import { getCurrentUser, hasAccess, isAuthenticated } from "@/lib/auth";
+import { getCurrentUser, hasAccess, isAuthenticated, syncCurrentSession } from "@/lib/auth";
 import { getDefaultRouteForUser } from "@/lib/permissions";
 import { LiveChatAgent } from "./LiveChatAgent";
 
@@ -18,6 +18,7 @@ export const Layout: React.FC = () => {
     }
   });
   const location = useLocation();
+  const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
     // Toggle both `dark` and `light` classes on the root for theme-aware CSS
@@ -26,11 +27,27 @@ export const Layout: React.FC = () => {
     try { localStorage.setItem('theme', theme); } catch(e) {}
   }, [theme]);
 
+  useEffect(() => {
+    let mounted = true;
+    syncCurrentSession()
+      .catch(() => undefined)
+      .finally(() => {
+        if (mounted) setAuthChecked(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
   const isSettings = location.pathname.startsWith("/settings");
   const loggedIn = isAuthenticated();
   const currentUser = loggedIn ? getCurrentUser() : null;
+
+  if (!authChecked) {
+    return <div className="p-6 text-sm text-muted-foreground">Checking session...</div>;
+  }
 
   if (!loggedIn) {
     return <Navigate to="/login" replace />;

@@ -2,17 +2,20 @@ import React from "react";
 import { DealingDepartment } from "../components/dashboard/DealingDepartment";
 import { AccountsDepartment } from "../components/dashboard/AccountsDepartment";
 import { NotificationPanel } from "../components/dashboard/NotificationPanel";
-import { hasAccess } from "@/lib/auth";
+import { getCurrentUser, hasAccess } from "@/lib/auth";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
+import { getVisibleDashboardSectionItems } from "@/lib/permissions";
 
 export const MainDashboard: React.FC = () => {
   if (!hasAccess("Dashboard")) {
     return <UnauthorizedPage title="Dashboard Access Required" />;
   }
 
-  const canAccounts = hasAccess("Dashboard:Accounts");
-  const canDealing = hasAccess("Dashboard:Dealing");
-  const canAlerts = hasAccess("Dashboard:Alerts");
+  const currentUser = getCurrentUser();
+  const visibleSections = new Set(getVisibleDashboardSectionItems(currentUser).map((item) => item.key));
+  const canAccounts = visibleSections.has("Dashboard:Accounts");
+  const canDealing = visibleSections.has("Dashboard:Dealing");
+  const canAlerts = visibleSections.has("Dashboard:Alerts");
 
   return (
     <div className="bg-background min-h-screen">

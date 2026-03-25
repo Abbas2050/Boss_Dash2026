@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronDown, ChevronUp, CircleDot, MessageSquare, RefreshCw, SendHorizontal, X } from "lucide-react";
-import { AgentCapabilities, AgentChatMessage, AgentChatResponse, AgentLiveSnapshot, fetchAgentCapabilities, sendAgentChat } from "@/lib/agentApi";
-import { getAuthToken, hasAccess } from "@/lib/auth";
+import { Bot, CircleDot, MessageSquare, SendHorizontal, X } from "lucide-react";
+import { AgentChatMessage, AgentChatResponse, sendAgentChat } from "@/lib/agentApi";
+import { getCurrentUser, hasAccess } from "@/lib/auth";
+import { getVisibleDepartmentItems, getVisibleSettingsMenuItems } from "@/lib/permissions";
 import { useNavigate } from "react-router-dom";
 
 const quickPrompts = [
@@ -13,11 +14,6 @@ const quickPrompts = [
   "How many new clients and MT5 accounts were created?",
   "Give me marketing sessions for current date range.",
 ];
-
-const formatSigned = (value?: number | null) => {
-  const amount = Number(value) || 0;
-  return amount.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 });
-};
 
 type LiveAgentUiMessage = AgentChatMessage & {
   toolsUsed?: string[];
@@ -35,11 +31,6 @@ type ParsedAssistantAnswer = {
 type AgentLinkTarget = {
   label: string;
   path: string;
-};
-
-type AnomalyBadge = {
-  label: string;
-  tone: "critical" | "warning" | "info";
 };
 
 const parseAssistantAnswer = (content: string): ParsedAssistantAnswer | null => {
@@ -63,9 +54,10 @@ const parseAssistantAnswer = (content: string): ParsedAssistantAnswer | null => 
   };
 };
 
-const buildDeepLinks = (toolsUsed: string[]) => {
+const buildDeepLinks = (toolsUsed: string[], options: { departmentPaths: Set<string>; settingsPaths: Set<string>; canUseLiveAgent: boolean }) => {
   const links: AgentLinkTarget[] = [];
   const available = new Set(toolsUsed || []);
+  const canVisit = (path: string) => options.departmentPaths.has(path) || options.settingsPaths.has(path);
   const add = (label: string, path: string, visible = true) => {
     if (!visible) return;
     if (links.some((entry) => entry.path === path)) return;
@@ -73,32 +65,32 @@ const buildDeepLinks = (toolsUsed: string[]) => {
   };
 
   if (available.has("get_dealing_metrics") || available.has("get_live_snapshot")) {
-    add("Open Dealing", "/departments/dealing?tab=dealing", hasAccess("Dealing") || hasAccess("LiveAgent"));
+    add("Open Dealing", "/departments/dealing?tab=dealing", canVisit("/departments/dealing") || options.canUseLiveAgent);
   }
   if (available.has("get_coverage_metrics")) {
-    add("Open Coverage", "/departments/dealing?tab=coverage", hasAccess("Dealing") || hasAccess("LiveAgent"));
-    add("Open Risk Exposure", "/departments/dealing?tab=risk-exposure", hasAccess("Dealing") || hasAccess("LiveAgent"));
+    add("Open Coverage", "/departments/dealing?tab=coverage", canVisit("/departments/dealing") || options.canUseLiveAgent);
+    add("Open Risk Exposure", "/departments/dealing?tab=risk-exposure", canVisit("/departments/dealing") || options.canUseLiveAgent);
   }
   if (available.has("get_swap_metrics")) {
-    add("Open Swap Tracker", "/departments/dealing?tab=swap-tracker", hasAccess("Dealing") || hasAccess("LiveAgent"));
+    add("Open Swap Tracker", "/departments/dealing?tab=swap-tracker", canVisit("/departments/dealing") || options.canUseLiveAgent);
   }
   if (available.has("get_history_aggregate")) {
-    add("Open History", "/departments/dealing?tab=history", hasAccess("Dealing") || hasAccess("LiveAgent"));
+    add("Open History", "/departments/dealing?tab=history", canVisit("/departments/dealing") || options.canUseLiveAgent);
   }
   if (available.has("get_accounts_metrics")) {
-    add("Open Accounts", "/departments/accounts", hasAccess("Accounts"));
+    add("Open Accounts", "/departments/accounts", canVisit("/departments/accounts"));
   }
   if (available.has("get_backoffice_metrics")) {
-    add("Open Backoffice", "/departments/backoffice", hasAccess("Backoffice"));
+    add("Open Backoffice", "/departments/backoffice", canVisit("/departments/backoffice"));
   }
   if (available.has("get_marketing_metrics")) {
-    add("Open Marketing", "/departments/marketing", hasAccess("Marketing"));
+    add("Open Marketing", "/departments/marketing", canVisit("/departments/marketing"));
   }
   if (["get_lp_metrics", "get_lp_equity_summary", "get_lp_accounts"].some((tool) => available.has(tool))) {
-    add("Open LP Manager", "/settings/lp-manager", hasAccess("Settings"));
+    add("Open LP Manager", "/settings/lp-manager", options.settingsPaths.has("/settings/lp-manager"));
   }
   if (available.has("list_swagger_endpoints")) {
-    add("Open Coverage Settings", "/settings/coverage", hasAccess("Settings"));
+    add("Open Coverage Settings", "/settings/coverage", options.settingsPaths.has("/settings/coverage"));
   }
 
   return links;
@@ -272,16 +264,33 @@ const buildSummaryCards = (toolSummaries: AgentChatResponse["toolSummaries"] = [
   });
 };
 
-const toYmd = (d: Date) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+const extractEndpointIdsFromText = (text: string) => {
+  const ids = new Set<string>();
+  const re = /(?:^|[\s|,])([a-z][a-z0-9_]*(?:[.:][a-z0-9_]+)+)/gi;
+  let m;
+  while ((m = re.exec(String(text || ""))) !== null) {
+    ids.add(String(m[1]));
+  }
+  return [...ids].slice(0, 5);
+};
+
+const getEndpointChoices = (message: LiveAgentUiMessage) => {
+  const fromTool = (message.toolSummaries || [])
+    .filter((summary) => summary?.tool === "auto_resolve_and_call_endpoint")
+    .flatMap((summary) => (Array.isArray(summary?.data?.topCandidates) ? summary.data.topCandidates : []))
+    .map((item: any) => String(item?.id || "").trim())
+    .filter(Boolean);
+
+  if (fromTool.length > 0) return [...new Set(fromTool)].slice(0, 5);
+  return extractEndpointIdsFromText(message.content);
 };
 
 export function LiveChatAgent() {
   const navigate = useNavigate();
-  const today = useMemo(() => toYmd(new Date()), []);
+  const currentUser = getCurrentUser();
+  const visibleDepartmentPaths = useMemo(() => new Set(getVisibleDepartmentItems(currentUser).map((item) => item.path)), [currentUser]);
+  const visibleSettingsPaths = useMemo(() => new Set(getVisibleSettingsMenuItems(currentUser).map((item) => item.path)), [currentUser]);
+  const canUseLiveAgent = hasAccess("LiveAgent") || hasAccess("Backoffice");
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<LiveAgentUiMessage[]>([
@@ -291,81 +300,7 @@ export function LiveChatAgent() {
     },
   ]);
   const [loading, setLoading] = useState(false);
-  const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
-  const [capabilityLabel, setCapabilityLabel] = useState("standby");
-  const [showCapabilities, setShowCapabilities] = useState(false);
-  const [live, setLive] = useState<AgentLiveSnapshot | null>(null);
-  const [liveStatus, setLiveStatus] = useState<"connecting" | "live" | "error">("connecting");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const [draftFromDate, setDraftFromDate] = useState(today);
-  const [draftToDate, setDraftToDate] = useState(today);
-  const [fromDate, setFromDate] = useState(today);
-  const [toDate, setToDate] = useState(today);
-  const hasPendingRangeChange = draftFromDate !== fromDate || draftToDate !== toDate;
-  const lastNoticeRef = useRef("");
-
-  const anomalyBadges = useMemo<AnomalyBadge[]>(() => {
-    const badges: AnomalyBadge[] = [];
-    if (liveStatus === "error") {
-      badges.push({ label: "Live stream disconnected", tone: "critical" });
-    }
-    const coveragePct = Number(live?.coverage?.coveragePct);
-    if (Number.isFinite(coveragePct)) {
-      if (coveragePct < 95) badges.push({ label: `Coverage ${coveragePct.toFixed(2)}%`, tone: "critical" });
-      else if (coveragePct < 98) badges.push({ label: `Coverage ${coveragePct.toFixed(2)}%`, tone: "warning" });
-    }
-    const avgMarginLevel = Number(live?.lpMetrics?.avgMarginLevel);
-    if (Number.isFinite(avgMarginLevel)) {
-      if (avgMarginLevel < 120) badges.push({ label: `LP margin ${avgMarginLevel.toFixed(1)}%`, tone: "critical" });
-      else if (avgMarginLevel < 150) badges.push({ label: `LP margin ${avgMarginLevel.toFixed(1)}%`, tone: "warning" });
-    }
-    if ((live?.swap?.dueTonight || 0) > 0) {
-      badges.push({ label: `${live?.swap?.dueTonight} swap charges due`, tone: "info" });
-    }
-    if ((live?.history?.totals?.netPL || 0) < 0) {
-      badges.push({ label: `Net P/L ${formatSigned(live?.history?.totals?.netPL)}`, tone: "warning" });
-    }
-    if ((live?.accounts?.netFlow || 0) < 0) {
-      badges.push({ label: `Net flow ${formatSigned(live?.accounts?.netFlow)}`, tone: "warning" });
-    }
-    const missingDomains = [live?.dealing, live?.coverage, live?.lpMetrics, live?.swap].filter((entry) => !entry).length;
-    if (missingDomains > 0) {
-      badges.push({ label: `${missingDomains} live feed gap${missingDomains === 1 ? "" : "s"}`, tone: "info" });
-    }
-    return badges.slice(0, 4);
-  }, [live, liveStatus]);
-
-  useEffect(() => {
-    if (!open) return;
-    fetchAgentCapabilities()
-      .then((c) => {
-        setCapabilities(c);
-        setCapabilityLabel(c.model);
-      })
-      .catch(() => setCapabilityLabel("fallback"));
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const token = getAuthToken();
-    if (!token) {
-      setLiveStatus("error");
-      return;
-    }
-    setLiveStatus("connecting");
-    const es = new EventSource(`/api/agent/live?fromDate=${fromDate}&toDate=${toDate}&token=${encodeURIComponent(token)}`);
-    es.addEventListener("snapshot", (event) => {
-      try {
-        const parsed = JSON.parse((event as MessageEvent).data) as AgentLiveSnapshot;
-        setLive(parsed);
-        setLiveStatus("live");
-      } catch {
-        setLiveStatus("error");
-      }
-    });
-    es.addEventListener("error", () => setLiveStatus("error"));
-    return () => es.close();
-  }, [open, fromDate, toDate]);
 
   useEffect(() => {
     if (!scrollerRef.current) return;
@@ -377,13 +312,10 @@ export function LiveChatAgent() {
     if (!content || loading) return;
     const nextMessages = [...messages, { role: "user", content } as LiveAgentUiMessage];
     setMessages(nextMessages);
-    setInput("");
     setLoading(true);
     try {
       const resp = await sendAgentChat({
         message: content,
-        fromDate,
-        toDate,
         history: nextMessages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
       });
       setMessages((prev) => [
@@ -406,54 +338,16 @@ export function LiveChatAgent() {
     }
   };
 
-  const applyRange = () => {
-    setFromDate(draftFromDate);
-    setToDate(draftToDate);
-  };
-
-  const resetToToday = () => {
-    setDraftFromDate(today);
-    setDraftToDate(today);
-    setFromDate(today);
-    setToDate(today);
-  };
-
-  const rangeLabel = fromDate === toDate ? fromDate : `${fromDate} to ${toDate}`;
-
-  useEffect(() => {
-    if (!open || anomalyBadges.length === 0) return;
-    const actionable = anomalyBadges.filter((badge) => badge.tone === "critical" || badge.tone === "warning");
-    if (!actionable.length) return;
-    const noticeKey = `${rangeLabel}:${actionable.map((badge) => badge.label).join("|")}`;
-    if (lastNoticeRef.current === noticeKey) return;
-    lastNoticeRef.current = noticeKey;
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content: `Operational notice: ${actionable.map((badge) => badge.label).join("; ")}.`,
-        toolsUsed: ["get_live_snapshot"],
-        at: new Date().toISOString(),
-        toolSummaries: [
-          {
-            tool: "get_live_snapshot",
-            data: {
-              dealing: live?.dealing || null,
-              coverage: live?.coverage || null,
-              lpMetrics: live?.lpMetrics || null,
-              swap: live?.swap || null,
-            },
-          },
-        ],
-      },
-    ]);
-  }, [anomalyBadges, live, open, rangeLabel]);
-
   const renderAssistantContent = (message: LiveAgentUiMessage) => {
     const parsed = parseAssistantAnswer(message.content);
     const toolsUsed = message.toolsUsed?.length ? message.toolsUsed : parsed?.toolsUsed || [];
-    const deepLinks = buildDeepLinks(toolsUsed);
+    const deepLinks = buildDeepLinks(toolsUsed, {
+      departmentPaths: visibleDepartmentPaths,
+      settingsPaths: visibleSettingsPaths,
+      canUseLiveAgent,
+    });
     const summaryCards = buildSummaryCards(message.toolSummaries);
+    const endpointChoices = getEndpointChoices(message);
 
     if (!parsed) {
       return (
@@ -481,6 +375,23 @@ export function LiveChatAgent() {
                   {link.label}
                 </button>
               ))}
+            </div>
+          )}
+          {endpointChoices.length > 0 && /multiple possible endpoints|confirm one endpoint id|confirm endpoint id|low_confidence_match/i.test(message.content) && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Choose Endpoint</div>
+              <div className="flex flex-wrap gap-2">
+                {endpointChoices.map((endpointId) => (
+                  <button
+                    key={endpointId}
+                    type="button"
+                    onClick={() => send(`Use endpoint id ${endpointId}`)}
+                    className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-500/20 dark:text-amber-200"
+                  >
+                    {endpointId}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -547,6 +458,23 @@ export function LiveChatAgent() {
             </div>
           </div>
         )}
+        {endpointChoices.length > 0 && /multiple possible endpoints|confirm one endpoint id|confirm endpoint id|low_confidence_match/i.test(message.content) && (
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Choose Endpoint</div>
+            <div className="flex flex-wrap gap-2">
+              {endpointChoices.map((endpointId) => (
+                <button
+                  key={endpointId}
+                  type="button"
+                  onClick={() => send(`Use endpoint id ${endpointId}`)}
+                  className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700 hover:bg-amber-500/20 dark:text-amber-200"
+                >
+                  {endpointId}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -561,7 +489,6 @@ export function LiveChatAgent() {
         >
           <Bot className="h-4 w-4" />
           <span className="text-sm font-semibold">Live Agent</span>
-          <span className={`h-2 w-2 rounded-full ${liveStatus === "live" ? "bg-emerald-300" : liveStatus === "connecting" ? "bg-amber-300" : "bg-rose-300"}`} />
         </button>
       )}
 
@@ -573,131 +500,13 @@ export function LiveChatAgent() {
                 <MessageSquare className="h-4 w-4 text-cyan-200" />
                 <div>
                   <div className="text-sm font-semibold">Sky Links Live Agent</div>
-                  <div className="text-[11px] text-cyan-100/90">Model: {capabilityLabel} | Range: {rangeLabel}</div>
+                  <div className="text-[11px] text-cyan-100/90">Quick Questions</div>
                 </div>
               </div>
               <button type="button" onClick={() => setOpen(false)} className="rounded border border-white/30 p-1 text-white/90 hover:bg-white/10">
                 <X className="h-4 w-4" />
               </button>
             </div>
-          </div>
-
-          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] dark:border-slate-800 dark:bg-slate-900/40">
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="flex flex-col gap-1 text-slate-500 dark:text-slate-400">
-                <span>From</span>
-                <input
-                  type="date"
-                  value={draftFromDate}
-                  max={draftToDate}
-                  onChange={(e) => setDraftFromDate(e.target.value)}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-slate-500 dark:text-slate-400">
-                <span>To</span>
-                <input
-                  type="date"
-                  value={draftToDate}
-                  min={draftFromDate}
-                  onChange={(e) => setDraftToDate(e.target.value)}
-                  className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={applyRange}
-                disabled={!hasPendingRangeChange}
-                className="inline-flex items-center gap-1 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-medium text-cyan-700 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-cyan-200"
-              >
-                <RefreshCw className="h-3 w-3" />
-                Apply Range
-              </button>
-              <button
-                type="button"
-                onClick={resetToToday}
-                className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-slate-600"
-              >
-                Today
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowCapabilities((value) => !value)}
-                className="ml-auto inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-[11px] font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-slate-600"
-              >
-                {showCapabilities ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                Capabilities {capabilities?.tools?.length ? `(${capabilities.tools.length})` : ""}
-              </button>
-            </div>
-            {anomalyBadges.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {anomalyBadges.map((badge) => (
-                  <span
-                    key={badge.label}
-                    className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-                      badge.tone === "critical"
-                        ? "border-rose-400/40 bg-rose-500/10 text-rose-700 dark:text-rose-200"
-                        : badge.tone === "warning"
-                          ? "border-amber-400/40 bg-amber-500/10 text-amber-700 dark:text-amber-200"
-                          : "border-cyan-400/40 bg-cyan-500/10 text-cyan-700 dark:text-cyan-200"
-                    }`}
-                  >
-                    {badge.label}
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">Equity</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.dealing?.totalEquity?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? "-"}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">Coverage %</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.coverage?.coveragePct?.toFixed(2) ?? "-"}%</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">LP Accounts</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.lpMetrics?.accountCount?.toLocaleString() ?? "-"}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">Swap Due Tonight</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.swap?.dueTonight?.toLocaleString() ?? "-"}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">History Net P/L</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{formatSigned(live?.history?.totals?.netPL)}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">Accounts Net Flow</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{formatSigned(live?.accounts?.netFlow)}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">New Clients</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.backoffice?.totalClients?.toLocaleString() ?? "-"}</div>
-            </div>
-            <div>
-              <div className="text-slate-500 dark:text-slate-400">Marketing Sessions</div>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{live?.marketing?.sessions?.toLocaleString() ?? "-"}</div>
-            </div>
-            </div>
-            {showCapabilities && (
-              <div className="mt-3 rounded-lg border border-slate-200 bg-white/80 px-3 py-2 dark:border-slate-700 dark:bg-slate-950/70">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                  Available Read-Only Tools
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {(capabilities?.tools || []).map((tool) => (
-                    <span
-                      key={tool}
-                      className="rounded-full border border-slate-300 bg-slate-100 px-2 py-1 text-[10px] text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    >
-                      {tool}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
           <div ref={scrollerRef} className="max-h-[48vh] space-y-3 overflow-y-auto px-4 py-3">
@@ -720,8 +529,33 @@ export function LiveChatAgent() {
             )}
           </div>
 
-          <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800">
-            <div className="mb-2 flex flex-wrap gap-2">
+          <div className="border-t border-slate-200 px-4 py-3 dark:border-slate-800 space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey && input.trim()) {
+                    e.preventDefault();
+                    send(input.trim());
+                    setInput("");
+                  }
+                }}
+                placeholder="Ask a question..."
+                disabled={loading}
+                className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder:text-slate-500 disabled:opacity-50"
+              />
+              <button
+                type="button"
+                disabled={loading || !input.trim()}
+                onClick={() => { send(input.trim()); setInput(""); }}
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-cyan-600 text-white hover:bg-cyan-700 disabled:opacity-40"
+              >
+                <SendHorizontal className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-2">
               {quickPrompts.map((prompt) => (
                 <button
                   key={prompt}
@@ -732,25 +566,6 @@ export function LiveChatAgent() {
                   {prompt}
                 </button>
               ))}
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") send(input);
-                }}
-                placeholder="Ask anything about your live operations..."
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none ring-cyan-500/40 placeholder:text-slate-400 focus:ring dark:border-slate-700 dark:bg-slate-900 dark:placeholder:text-slate-500"
-              />
-              <button
-                type="button"
-                onClick={() => send(input)}
-                disabled={loading || !input.trim()}
-                className="inline-flex items-center gap-1 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm font-medium text-cyan-700 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-40 dark:text-cyan-200"
-              >
-                <SendHorizontal className="h-4 w-4" />
-              </button>
             </div>
           </div>
         </div>

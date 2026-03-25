@@ -75,6 +75,8 @@ export function AccountsDepartment({
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
+  const [netAllCurrentBalance, setNetAllCurrentBalance] = useState(0);
+  const [netBalanceAfterExpectedFunds, setNetBalanceAfterExpectedFunds] = useState(0);
   const [reportDate, setReportDate] = useState('—');
   const [reportUpdated, setReportUpdated] = useState('—');
   const [walletError, setWalletError] = useState<string | null>(null);
@@ -187,8 +189,15 @@ export function AccountsDepartment({
 
       setPspBalances(mapped);
       setMetrics(prev => ({ ...prev, totalBalance: total }));
-      setBankReceivable(Number(response.data.bank_receivable ?? 0));
-      setCryptoReceivable(Number(response.data.crypto_receivable ?? 0));
+      const bankValue = Number(response.data.bank_receivable ?? 0);
+      const cryptoValue = Number(response.data.crypto_receivable ?? 0);
+      const netCurrent = Number(response.data.net_all_current_balance ?? total);
+      const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
+
+      setBankReceivable(bankValue);
+      setCryptoReceivable(cryptoValue);
+      setNetAllCurrentBalance(Number.isFinite(netCurrent) ? netCurrent : total);
+      setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
     };
 
     const fetchLpEquitySummary = async () => {
@@ -520,6 +529,14 @@ export function AccountsDepartment({
         <div className="p-2 rounded-md bg-cyan-500/10 border border-cyan-500/20">
           <div className="text-[10px] text-muted-foreground mb-0.5">🔐 To be received in CRYPTO</div>
           <div className="font-mono font-semibold text-cyan-500">${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div className="p-2 rounded-md bg-emerald-500/10 border border-emerald-500/20">
+          <div className="text-[10px] text-muted-foreground mb-0.5">💼 Net all Current Balance</div>
+          <div className="font-mono font-semibold text-emerald-500">${netAllCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div className="p-2 rounded-md bg-indigo-500/10 border border-indigo-500/20">
+          <div className="text-[10px] text-muted-foreground mb-0.5">📈 Net Balance after expected funds</div>
+          <div className="font-mono font-semibold text-indigo-500">${netBalanceAfterExpectedFunds.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
     </DepartmentCard>

@@ -31,10 +31,20 @@ type AuthApiError = {
   message?: string;
 };
 
+export type AuthAuditEvent = {
+  id: number;
+  actorUserId: string | null;
+  action: string;
+  targetUserId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
 function mapLoginErrorMessage(status: number, code?: string): string {
   if (code === "email_password_required") return "Email and password are required.";
   if (code === "invalid_credentials") return "Invalid email or password.";
   if (code === "user_suspended") return "Your account is suspended. Contact an administrator.";
+  if (code === "too_many_attempts" || status === 429) return "Too many login attempts. Please wait and try again.";
   if (status === 500) return "Login service is temporarily unavailable. Please try again.";
   return "Login failed. Please try again.";
 }
@@ -67,6 +77,25 @@ function setSession(session: SessionPayload | null) {
 function authHeaders(): Record<string, string> {
   const token = getSession()?.token;
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function getTokenExpiryMs(token: string): number | null {
+  try {
+    const payloadPart = token.split(".")[1];
+    if (!payloadPart) return null;
+    const decoded = JSON.parse(atob(payloadPart.replace(/-/g, "+").replace(/_/g, "/")));
+    if (typeof decoded?.exp !== "number") return null;
+    return decoded.exp * 1000;
+  } catch {
+    return null;
+  }
+}
+
+function isSessionExpired(session: SessionPayload | null): boolean {
+  if (!session?.token) return true;
+  const expiry = getTokenExpiryMs(session.token);
+  if (!expiry) return false;
+  return Date.now() >= expiry;
 }
 
 export function getAuthToken(): string | null {
@@ -168,7 +197,17 @@ export async function login(identity: string, password: string): Promise<AuthUse
 }
 
 export function logout(): void {
+  const headers = authHeaders();
   localStorage.removeItem(SESSION_KEY);
+  if (headers.Authorization) {
+    fetch("/api/auth/logout", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        ...headers,
+      },
+    }).catch(() => undefined);
+  }
 }
 
 export function getCurrentUser(): AuthUser | null {
@@ -178,7 +217,57 @@ export function getCurrentUser(): AuthUser | null {
 
 export function isAuthenticated(): boolean {
   const session = getSession();
-  return Boolean(session?.token && session?.user);
+  if (!session?.token || !session?.user) return false;
+  if (isSessionExpired(session)) {
+    setSession(null);
+    return false;
+  }
+  return true;
+}
+
+export async function syncCurrentSession(): Promise<AuthUser | null> {
+  const session = getSession();
+  if (!session?.token) return null;
+  if (isSessionExpired(session)) {
+    setSession(null);
+    return null;
+  }
+
+  const res = await fetch("/api/auth/me", {
+    headers: {
+      Accept: "application/json",
+      ...authHeaders(),
+    },
+  });
+
+  if (!res.ok) {
+    setSession(null);
+    throw new Error(`Session check failed (${res.status})`);
+  }
+
+  const payload = (await res.json()) as { user: AuthUser };
+  if (!payload?.user) {
+    setSession(null);
+    return null;
+  }
+
+  setSession({ token: session.token, user: payload.user, at: Date.now() });
+  return payload.user;
+}
+
+export async function fetchAuthAuditEvents(limit = 100): Promise<AuthAuditEvent[]> {
+  const q = Math.min(Math.max(Number(limit) || 100, 1), 500);
+  const res = await fetch(`/api/auth/audit-events?limit=${q}`, {
+    headers: {
+      Accept: "application/json",
+      ...authHeaders(),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`Audit API ${res.status}`);
+  }
+  const rows = (await res.json()) as AuthAuditEvent[];
+  return Array.isArray(rows) ? rows : [];
 }
 
 export function hasAccess(page: string): boolean {

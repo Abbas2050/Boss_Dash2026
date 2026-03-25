@@ -7,8 +7,9 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 // SignalR removed: use SSE/EventSource for real-time alerts
 import { Layout } from "./components/Layout";
 import { LiveAlertsNotifier } from "./components/LiveAlertsNotifier";
-import { hasAccess } from "./lib/auth";
+import { getCurrentUser } from "./lib/auth";
 import { UnauthorizedPage } from "./components/UnauthorizedPage";
+import { canAccessAll, LEGACY_ROUTE_ALIASES, SETTINGS_MENU_ITEMS } from "./lib/permissions";
 
 const Index = lazy(() => import("./pages/Index"));
 const LeverageUpdate = lazy(() => import("./pages/LeverageUpdate"));
@@ -26,8 +27,26 @@ const LoginPage = lazy(() => import("./pages/LoginPage"));
 
 const queryClient = new QueryClient();
 
-function SettingsRoute({ children }: { children: any }) {
-  if (!hasAccess("Settings")) return <UnauthorizedPage title="Settings Access Required" />;
+const settingsPageComponents = {
+  coverage: CoveragePage,
+  "lp-manager": LPManagerPage,
+  "symbol-mapping": SymbolMappingPage,
+  alerts: AlertsSettingsPage,
+  "ws-test": WSTestPage,
+  "user-management": UserManagementPage,
+} as const;
+
+function SettingsRoute({
+  children,
+  requiredPermissions,
+  title,
+}: {
+  children: React.ReactNode;
+  requiredPermissions: readonly string[];
+  title: string;
+}) {
+  const currentUser = getCurrentUser();
+  if (!canAccessAll(currentUser, requiredPermissions)) return <UnauthorizedPage title={title} />;
   return children;
 }
 
@@ -52,28 +71,25 @@ const App = () => (
               <Route path="LPManager" element={<LPManager />} />
 
             {/* Legacy static HTML aliases */}
-            <Route path="coverage.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="risk-exposure.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="metrics.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="contract-sizes.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="history.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="transactions.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="swap-tracker.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="clients-nop%201.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="clients-nop 1.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="bonus-coverage.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="bonus-risk.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="bonus-pnl.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="bonus-equity.html" element={<Navigate to="/departments/dealing" replace />} />
-            <Route path="account-alerts.html" element={<Navigate to="/settings/alerts" replace />} />
+            {LEGACY_ROUTE_ALIASES.map((item) => (
+              <Route key={item.path} path={item.path} element={<Navigate to={item.to} replace />} />
+            ))}
 
               {/* Settings pages (will show sidebar) */}
-              <Route path="settings/coverage" element={<SettingsRoute><CoveragePage /></SettingsRoute>} />
-              <Route path="settings/lp-manager" element={<SettingsRoute><LPManagerPage /></SettingsRoute>} />
-              <Route path="settings/symbol-mapping" element={<SettingsRoute><SymbolMappingPage /></SettingsRoute>} />
-              <Route path="settings/alerts" element={<SettingsRoute><AlertsSettingsPage /></SettingsRoute>} />
-              <Route path="settings/ws-test" element={<SettingsRoute><WSTestPage /></SettingsRoute>} />
-              <Route path="settings/user-management" element={<SettingsRoute><UserManagementPage /></SettingsRoute>} />
+              {SETTINGS_MENU_ITEMS.map((item) => {
+                const PageComponent = settingsPageComponents[item.key];
+                return (
+                  <Route
+                    key={item.key}
+                    path={item.path.replace(/^\//, "")}
+                    element={
+                      <SettingsRoute requiredPermissions={item.requiredPermissions} title={`${item.name} Access Required`}>
+                        <PageComponent />
+                      </SettingsRoute>
+                    }
+                  />
+                );
+              })}
 
               <Route path="*" element={<NotFound />} />
             </Route>

@@ -8,6 +8,7 @@ import { hasAccess } from "@/lib/auth";
 import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
 import { ClientProfilingTab } from "@/pages/departments/dealing/ClientProfilingTab";
+import { DealMatchingTab } from "@/pages/departments/dealing/DealMatchingTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -69,6 +70,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   bonus: "Bonus",
   contracts: "Contract Sizes",
   "contract-sizes": "Contract Sizes",
+  deal: "Deal Matching",
+  "deal-matching": "Deal Matching",
   swap: "Swap Tracker",
   "swap-tracker": "Swap Tracker",
   history: "History",
@@ -698,6 +701,7 @@ export function DealingDepartmentPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
   const [metricsRefreshKey, setMetricsRefreshKey] = useState(0);
+  const metricsRequestRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const [bonusSubTab, setBonusSubTab] = useState<BonusSubTab>("Bonus Coverage");
   const [bonusShowOverview, setBonusShowOverview] = useState(true);
   const [bonusDashboard, setBonusDashboard] = useState<BonusDashboardResponse | null>(null);
@@ -767,6 +771,7 @@ export function DealingDepartmentPage() {
   const [historyShowLowNtpRows, setHistoryShowLowNtpRows] = useState(false);
   const [historySavingLp, setHistorySavingLp] = useState<string | null>(null);
   const [historyStartPeriodEdits, setHistoryStartPeriodEdits] = useState<Record<string, string>>({});
+  const historyRequestRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const [nopData, setNopData] = useState<NopReportData | null>(null);
   const [nopLoading, setNopLoading] = useState(false);
   const [nopError, setNopError] = useState<string | null>(null);
@@ -1521,32 +1526,49 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const metricsEndpoint = `${BACKEND_BASE_URL}/Metrics/lp`;
-    const equitySummaryEndpoint = `${BACKEND_BASE_URL}/Metrics/equity-summary`;
+    const metricsDashboardEndpoint = `${BACKEND_BASE_URL}/Metrics/dashboard`;
     let cancelled = false;
+
+    const describeRateLimit = (resp: Response, label: string) => {
+      if (resp.status !== 429) return `${label} ${resp.status}`;
+      const retryAfter = resp.headers.get("Retry-After");
+      return retryAfter
+        ? `Rate limit reached (429) for ${label}. Retry after ${retryAfter}s.`
+        : `Rate limit reached (429) for ${label}. Please wait a few seconds and try again.`;
+    };
 
     const fetchMetrics = async () => {
       if (cancelled) return;
+      const requestKey = `metrics|${metricsRefreshKey}`;
+      const now = Date.now();
+      if (metricsRequestRef.current.key === requestKey && now - metricsRequestRef.current.at < 1200) {
+        return;
+      }
+      metricsRequestRef.current = { key: requestKey, at: now };
+
       setMetricsLoading(true);
       try {
-        const [metricsResp, equityResp] = await Promise.allSettled([fetch(metricsEndpoint), fetch(equitySummaryEndpoint)]);
+        const resp = await fetch(metricsDashboardEndpoint);
+        if (!resp.ok) throw new Error(describeRateLimit(resp, "Metrics dashboard"));
 
-        if (metricsResp.status !== "fulfilled") {
-          throw metricsResp.reason || new Error("Metrics API request failed");
-        }
-        if (!metricsResp.value.ok) throw new Error(`Metrics API ${metricsResp.value.status}`);
-
-        const data = (await metricsResp.value.json()) as MetricsData;
+        const dashboard = (await resp.json()) as Partial<MetricsData & EquitySummaryData>;
         if (cancelled) return;
-        setMetricsData(data);
-        if (equityResp.status === "fulfilled" && equityResp.value.ok) {
-          const summary = (await equityResp.value.json()) as Partial<EquitySummaryData>;
-          setMetricsEquitySummary({
-            lpWithdrawableEquity: Number(summary.lpWithdrawableEquity) || 0,
-            clientWithdrawableEquity: Number(summary.clientWithdrawableEquity) || 0,
-            difference: Number(summary.difference) || 0,
-          });
-        }
+        setMetricsData({
+          items: Array.isArray(dashboard.items) ? dashboard.items : [],
+          totals: {
+            equity: Number(dashboard.totals?.equity) || 0,
+            realEquity: Number(dashboard.totals?.realEquity) || 0,
+            credit: Number(dashboard.totals?.credit) || 0,
+            balance: Number(dashboard.totals?.balance) || 0,
+            margin: Number(dashboard.totals?.margin) || 0,
+            freeMargin: Number(dashboard.totals?.freeMargin) || 0,
+          },
+        });
+        setMetricsEquitySummary({
+          lpWithdrawableEquity: Number(dashboard.lpWithdrawableEquity) || 0,
+          clientWithdrawableEquity: Number(dashboard.clientWithdrawableEquity) || 0,
+          difference: Number(dashboard.difference) || 0,
+        });
         setMetricsLastUpdated(new Date());
         setMetricsError(null);
       } catch (e: any) {
@@ -1751,12 +1773,12 @@ export function DealingDepartmentPage() {
 
   const historyAggregateVisibleItems = useMemo(() => {
     const items = historyAggregateData?.items || [];
-    return items.filter((item) => !item.isError && (historyShowLowNtpRows || item.ntpPercent >= 1));
+    return items.filter((item) => item.isError || historyShowLowNtpRows || !isZeroish(item.ntpPercent));
   }, [historyAggregateData, historyShowLowNtpRows]);
 
   const historyAggregateHiddenRowsCount = useMemo(() => {
     if (!historyAggregateData?.items?.length) return 0;
-    return historyAggregateData.items.filter((item) => !item.isError && item.ntpPercent < 1).length;
+    return historyAggregateData.items.filter((item) => !item.isError && isZeroish(item.ntpPercent)).length;
   }, [historyAggregateData]);
 
   const historyAggregateVisibleTotals = useMemo(() => {
@@ -1870,15 +1892,13 @@ export function DealingDepartmentPage() {
       setOverviewError(null);
       try {
         const coverageEndpoint = `${BACKEND_BASE_URL}/Coverage/position-match-table`;
-        const metricsEndpoint = `${BACKEND_BASE_URL}/Metrics/lp`;
-        const equitySummaryEndpoint = `${BACKEND_BASE_URL}/Metrics/equity-summary`;
+        const metricsDashboardEndpoint = `${BACKEND_BASE_URL}/Metrics/dashboard`;
         const swapEndpoint = `${BACKEND_BASE_URL}/Swap/positions`;
         const historyEndpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
 
-        const [coverageResp, metricsResp, equitySummaryResp, swapResp, historyResp] = await Promise.allSettled([
+        const [coverageResp, metricsDashboardResp, swapResp, historyResp] = await Promise.allSettled([
           fetch(coverageEndpoint),
-          fetch(metricsEndpoint),
-          fetch(equitySummaryEndpoint),
+          fetch(metricsDashboardEndpoint),
           fetch(swapEndpoint),
           fetch(historyEndpoint),
         ]);
@@ -1894,15 +1914,23 @@ export function DealingDepartmentPage() {
         if (coverageResp.status === "fulfilled" && coverageResp.value.ok) {
           nextData.coverage = (await coverageResp.value.json()) as CoverageData;
         }
-        if (metricsResp.status === "fulfilled" && metricsResp.value.ok) {
-          nextData.lpMetrics = (await metricsResp.value.json()) as MetricsData;
-        }
-        if (equitySummaryResp.status === "fulfilled" && equitySummaryResp.value.ok) {
-          const summary = (await equitySummaryResp.value.json()) as Partial<EquitySummaryData>;
+        if (metricsDashboardResp.status === "fulfilled" && metricsDashboardResp.value.ok) {
+          const dashboard = (await metricsDashboardResp.value.json()) as Partial<MetricsData & EquitySummaryData>;
+          nextData.lpMetrics = {
+            items: Array.isArray(dashboard.items) ? dashboard.items : [],
+            totals: {
+              equity: Number(dashboard.totals?.equity) || 0,
+              realEquity: Number(dashboard.totals?.realEquity) || 0,
+              credit: Number(dashboard.totals?.credit) || 0,
+              balance: Number(dashboard.totals?.balance) || 0,
+              margin: Number(dashboard.totals?.margin) || 0,
+              freeMargin: Number(dashboard.totals?.freeMargin) || 0,
+            },
+          };
           nextData.equitySummary = {
-            lpWithdrawableEquity: Number(summary.lpWithdrawableEquity) || 0,
-            clientWithdrawableEquity: Number(summary.clientWithdrawableEquity) || 0,
-            difference: Number(summary.difference) || 0,
+            lpWithdrawableEquity: Number(dashboard.lpWithdrawableEquity) || 0,
+            clientWithdrawableEquity: Number(dashboard.clientWithdrawableEquity) || 0,
+            difference: Number(dashboard.difference) || 0,
           };
         }
         if (swapResp.status === "fulfilled" && swapResp.value.ok) {
@@ -2090,6 +2118,20 @@ export function DealingDepartmentPage() {
     if (activeMenu !== "History") return;
 
     let cancelled = false;
+    const requestKey = `${historyTab}|${historySelectedLogin}|${historyTimestamps.from}|${historyTimestamps.to}|${historyRefreshKey}`;
+    const now = Date.now();
+    if (historyRequestRef.current.key === requestKey && now - historyRequestRef.current.at < 1200) {
+      return;
+    }
+    historyRequestRef.current = { key: requestKey, at: now };
+
+    const describeRateLimit = (resp: Response, label: string) => {
+      if (resp.status !== 429) return `${label} ${resp.status}`;
+      const retryAfter = resp.headers.get("Retry-After");
+      return retryAfter
+        ? `Rate limit reached (429) for ${label}. Retry after ${retryAfter}s.`
+        : `Rate limit reached (429) for ${label}. Please wait a few seconds and try again.`;
+    };
 
     const loadHistory = async () => {
       setHistoryLoading(true);
@@ -2098,7 +2140,7 @@ export function DealingDepartmentPage() {
         if (historyTab === "aggregate") {
           const endpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
           const resp = await fetch(endpoint);
-          if (!resp.ok) throw new Error(`History aggregate ${resp.status}`);
+          if (!resp.ok) throw new Error(describeRateLimit(resp, "History aggregate"));
           const data = (await resp.json()) as HistoryAggregateData;
           if (cancelled) return;
           setHistoryAggregateData(data);
@@ -2113,7 +2155,7 @@ export function DealingDepartmentPage() {
           }
           const endpoint = `${BACKEND_BASE_URL}/History/deals?login=${historySelectedLogin}&from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
           const resp = await fetch(endpoint);
-          if (!resp.ok) throw new Error(`History deals ${resp.status}`);
+          if (!resp.ok) throw new Error(describeRateLimit(resp, "History deals"));
           const data = (await resp.json()) as HistoryDealsData;
           if (cancelled) return;
           setHistoryDealsData(data);
@@ -2123,7 +2165,7 @@ export function DealingDepartmentPage() {
 
         const endpoint = `${BACKEND_BASE_URL}/History/volume?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
         const resp = await fetch(endpoint);
-        if (!resp.ok) throw new Error(`History volume ${resp.status}`);
+        if (!resp.ok) throw new Error(describeRateLimit(resp, "History volume"));
         const data = (await resp.json()) as HistoryVolumeData;
         if (cancelled) return;
         setHistoryVolumeData(data);
@@ -2645,6 +2687,10 @@ export function DealingDepartmentPage() {
         { label: "Sell Lots", value: sellLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
         { label: "Net Lots", value: netLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
       ];
+    }
+
+    if (activeMenu === "Deal Matching") {
+      return [];
     }
 
     return [
@@ -3478,7 +3524,7 @@ export function DealingDepartmentPage() {
             <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>
           )}
 
-          {activeMenu !== "Bonus" && activeMenu !== "Client Profiling" && (
+          {activeMenu !== "Bonus" && activeMenu !== "Client Profiling" && summaryCards.length > 0 && (
             <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {summaryCards.map((card) => (
                 <div key={card.label} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
@@ -4908,6 +4954,8 @@ export function DealingDepartmentPage() {
                 </div>
               )}
             </section>
+          ) : activeMenu === "Deal Matching" ? (
+            <DealMatchingTab baseUrl={BACKEND_BASE_URL} />
           ) : activeMenu === "Swap Tracker" ? (
             <section
               className={`rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70 ${
@@ -5065,7 +5113,7 @@ export function DealingDepartmentPage() {
                     onClick={() => setHistoryShowLowNtpRows((value) => !value)}
                     className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-500/20 dark:text-slate-200"
                   >
-                    {historyShowLowNtpRows ? "Hide Hidden Rows" : `Show Hidden Rows (${historyAggregateHiddenRowsCount})`}
+                    {historyShowLowNtpRows ? "Hide 0% NTP Rows" : `Show 0% NTP Rows (${historyAggregateHiddenRowsCount})`}
                   </button>
                 )}
 
@@ -5108,7 +5156,7 @@ export function DealingDepartmentPage() {
 
               {historyTab === "aggregate" && !historyShowLowNtpRows && historyAggregateHiddenRowsCount > 0 && (
                 <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-                  {historyAggregateHiddenRowsCount} row{historyAggregateHiddenRowsCount === 1 ? " is" : "s are"} hidden (NTP % &lt; 1, including 0 values).
+                  {historyAggregateHiddenRowsCount} row{historyAggregateHiddenRowsCount === 1 ? " is" : "s are"} hidden (NTP % = 0).
                 </div>
               )}
 

@@ -1,10 +1,46 @@
 import express from "express";
 import jwt from "jsonwebtoken";
+import mysql from "mysql2/promise";
 import { agentCapabilities, runAgentChat } from "./llmAgent.js";
 import { dateUtils, getLiveSnapshot } from "./metricsService.js";
 
 const router = express.Router();
 const AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET || "";
+const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
+const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
+const AUTH_DB_NAME = process.env.AUTH_DB_NAME;
+const AUTH_DB_USER = process.env.AUTH_DB_USER;
+const AUTH_DB_PASSWORD = process.env.AUTH_DB_PASSWORD;
+
+let pool = null;
+let initPromise = null;
+
+function hasDbConfig() {
+  return Boolean(AUTH_DB_HOST && AUTH_DB_NAME && AUTH_DB_USER && AUTH_DB_PASSWORD);
+}
+
+async function ensureDbInitialized() {
+  if (pool) return;
+  if (initPromise) return initPromise;
+  if (!hasDbConfig()) {
+    throw new Error("auth_db_not_configured");
+  }
+
+  initPromise = (async () => {
+    pool = mysql.createPool({
+      host: AUTH_DB_HOST,
+      port: AUTH_DB_PORT,
+      database: AUTH_DB_NAME,
+      user: AUTH_DB_USER,
+      password: AUTH_DB_PASSWORD,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+  })();
+
+  return initPromise;
+}
 
 function parseToken(req) {
   const raw = req.headers.authorization || "";
@@ -20,16 +56,57 @@ function canUseLiveAgent(payload) {
   return access.includes("LiveAgent") || access.includes("Backoffice");
 }
 
-function requireLiveAgentAccess(req, res, next) {
+async function requireLiveAgentAccess(req, res, next) {
   if (!AUTH_JWT_SECRET) {
     return res.status(503).json({ error: "auth_not_configured" });
   }
+
+  try {
+    await ensureDbInitialized();
+  } catch {
+    return res.status(503).json({ error: "auth_service_unavailable" });
+  }
+
   const token = parseToken(req);
   if (!token) return res.status(401).json({ error: "missing_token" });
+
   try {
     const payload = jwt.verify(token, AUTH_JWT_SECRET);
-    if (!canUseLiveAgent(payload)) return res.status(403).json({ error: "forbidden" });
-    req.auth = payload;
+
+    const [rows] = await pool.query(
+      "SELECT id, email, role, status, access_json, token_version FROM users WHERE id=? LIMIT 1",
+      [payload.sub]
+    );
+    if (!rows.length) return res.status(401).json({ error: "user_not_found" });
+
+    const user = rows[0];
+    if (String(user.status || "") !== "active") return res.status(403).json({ error: "user_suspended" });
+
+    const tokenVersion = Number(user.token_version || 1);
+    if (Number(payload?.tv || 1) !== tokenVersion) {
+      return res.status(401).json({ error: "revoked_token" });
+    }
+
+    let access = [];
+    try {
+      const parsed = typeof user.access_json === "string" ? JSON.parse(user.access_json || "[]") : user.access_json;
+      access = Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+    } catch {
+      access = [];
+    }
+
+    const resolvedAuth = {
+      ...payload,
+      sub: String(user.id),
+      email: String(user.email || ""),
+      role: String(user.role || ""),
+      status: String(user.status || ""),
+      access,
+      tv: tokenVersion,
+    };
+
+    if (!canUseLiveAgent(resolvedAuth)) return res.status(403).json({ error: "forbidden" });
+    req.auth = resolvedAuth;
     next();
   } catch (error) {
     if (error?.name === "TokenExpiredError") {

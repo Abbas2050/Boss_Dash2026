@@ -49,6 +49,7 @@
         .table-wrap { max-height: calc(100vh - 230px); overflow: auto; background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; }
 
         .inline-edit { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 2px 6px; border-radius: 3px; font-size: 12px; width: 90px; text-align: right; }
+        .ntp-badge { background: #292e42; border: 1px solid #414868; border-radius: 4px; padding: 2px 8px; font-weight: 700; }
 
         #msg { font-size: 13px; min-height: 20px; margin-bottom: 8px; }
         .msg-ok { color: #9ece6a; }
@@ -74,6 +75,16 @@
         <a href="/deal-matching.html">Deal Matching</a>
         <a href="/history.html" class="active">History</a>
         <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -306,6 +317,9 @@
             tbody.innerHTML = '';
 
             data.items.forEach(item => {
+                // Skip LPs with 0% NTP
+                if (!item.isError && item.ntpPercent === 0) return;
+
                 const tr = document.createElement('tr');
                 if (item.isError) tr.className = 'error-row';
 
@@ -335,7 +349,7 @@
                         ${colorCell(item.netPL)}
                         ${colorCell(item.realLpPL)}
                         <td class="neutral">${fmt(item.ntpPercent, 1)}%</td>
-                        ${colorCell(item.lpPL)}
+                        <td><span class="ntp-badge ${colorClass(item.lpPL)}">${fmt(item.lpPL)}</span></td>
                     `;
                 }
                 tbody.appendChild(tr);

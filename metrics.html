@@ -83,6 +83,13 @@
         <a href="/clients-nop.html">Clients NOP</a>
         <a href="/nop-limits.html">NOP Limits</a>
         <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
@@ -91,7 +98,7 @@
         <div class="header">
             <h1>LP Metrics</h1>
             <div class="toolbar">
-                <button onclick="fetchMetrics()">Refresh</button>
+                <button onclick="fetchDashboard()">Refresh</button>
             </div>
             <span class="last-update" id="lastUpdate"></span>
         </div>
@@ -159,19 +166,6 @@
             document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
         }
 
-        async function fetchMetrics() {
-            try {
-                const resp = await fetch('/Metrics/lp');
-                if (!resp.ok) throw new Error('HTTP ' + resp.status);
-                const data = await resp.json();
-                renderTable(data);
-            } catch (e) {
-                console.error('Failed to fetch metrics:', e);
-                document.getElementById('tableContainer').innerHTML =
-                    '<div class="loading">Failed to load metrics. <button onclick="fetchMetrics()">Retry</button></div>';
-            }
-        }
-
         function renderEquitySummary(data) {
             const fmtVal = v => {
                 const formatted = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -196,20 +190,22 @@
             `;
         }
 
-        async function fetchEquitySummary() {
+        async function fetchDashboard() {
             try {
-                const resp = await fetch('/Metrics/equity-summary');
+                const resp = await fetch('/Metrics/dashboard');
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 const data = await resp.json();
+                renderTable(data);
                 renderEquitySummary(data);
             } catch (e) {
-                console.error('Failed to fetch equity summary:', e);
+                console.error('Failed to fetch metrics:', e);
+                document.getElementById('tableContainer').innerHTML =
+                    '<div class="loading">Failed to load metrics. <button onclick="fetchDashboard()">Retry</button></div>';
             }
         }
 
-        fetchMetrics();
-        fetchEquitySummary();
-        setInterval(() => { fetchMetrics(); fetchEquitySummary(); }, 5000);
+        fetchDashboard();
+        setInterval(fetchDashboard, 5000);
     </script>
 </body>
 </html>

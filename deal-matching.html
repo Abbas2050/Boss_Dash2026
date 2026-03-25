@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deal Matching - SLC Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #1a1b26; color: #c0caf5; }
+        .nav { background: #16161e; padding: 10px 20px; display: flex; align-items: center; gap: 15px; border-bottom: 1px solid #292e42; flex-wrap: wrap; }
+        .nav a { color: #565f89; text-decoration: none; font-size: 13px; padding: 4px 8px; border-radius: 4px; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; background: #24283b; }
+        .nav-brand { font-weight: bold; color: #7aa2f7 !important; margin-right: 10px; }
+        .content { max-width: 1600px; margin: 0 auto; padding: 20px; }
+        h1 { font-size: 22px; margin-bottom: 15px; }
+
+        .controls { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 15px; background: #16161e; padding: 15px; border-radius: 8px; border: 1px solid #292e42; }
+        .field { display: flex; flex-direction: column; gap: 4px; }
+        .field label { font-size: 11px; color: #565f89; text-transform: uppercase; }
+        .field input, .field select { background: #24283b; border: 1px solid #292e42; color: #c0caf5; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+        .field input:focus { border-color: #7aa2f7; outline: none; }
+        button { padding: 7px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: 600; }
+        .primary { background: #7aa2f7; color: #1a1b26; }
+        .primary:hover { background: #89b4fa; }
+        .primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 15px; }
+        .summary-card { background: #16161e; border: 1px solid #292e42; border-radius: 8px; padding: 12px; text-align: center; }
+        .summary-card .value { font-size: 24px; font-weight: bold; margin-bottom: 2px; }
+        .summary-card .label { font-size: 11px; color: #565f89; text-transform: uppercase; }
+
+        .rev-section { margin-bottom: 20px; }
+        .rev-section h3 { font-size: 14px; color: #7aa2f7; margin-bottom: 8px; }
+        .rev-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .rev-table th { background: #24283b; padding: 8px 10px; text-align: left; color: #565f89; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+        .rev-table td { padding: 6px 10px; border-bottom: 1px solid #1e2030; }
+        .rev-table tr:hover { background: #1e2030; }
+        .rev-table .number { text-align: right; font-variant-numeric: tabular-nums; }
+        .rev-table tfoot td { border-top: 2px solid #292e42; font-weight: bold; background: #16161e; }
+        .matched { color: #9ece6a; }
+        .unmatched { color: #f7768e; }
+        .partial { color: #e0af68; }
+        .total { color: #7aa2f7; }
+
+        .tabs { display: flex; gap: 0; margin-bottom: 0; }
+        .tab { padding: 8px 16px; cursor: pointer; background: #16161e; color: #565f89; border: 1px solid #292e42; border-bottom: none; border-radius: 6px 6px 0 0; font-size: 13px; }
+        .tab.active { color: #c0caf5; background: #24283b; border-color: #292e42; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        .table-wrap { max-height: 65vh; overflow-y: auto; border: 1px solid #292e42; border-radius: 0 6px 6px 6px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { background: #24283b; position: sticky; top: 0; z-index: 1; padding: 8px 6px; text-align: left; color: #565f89; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+        td { padding: 6px; border-bottom: 1px solid #1e2030; white-space: nowrap; }
+        tr:hover { background: #1e2030; }
+
+        .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; display: inline-block; }
+        .badge-matched { background: #1a3a2a; color: #9ece6a; }
+        .badge-partial { background: #3b2e1a; color: #e0af68; }
+        .badge-unmatched { background: #3a1a1a; color: #f7768e; }
+        .badge-buy { background: #1a3a2a; color: #9ece6a; }
+        .badge-sell { background: #3a1a1a; color: #f7768e; }
+        .badge-fix { background: #2e2a4a; color: #bb9af7; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #888; }
+
+        #matchedTable tr:hover { background: #24283b !important; }
+        .empty-state { text-align: center; padding: 40px; color: #565f89; }
+        .loading { text-align: center; padding: 40px; color: #7aa2f7; }
+        .count { font-size: 12px; color: #565f89; margin-left: 6px; }
+        .error { color: #f7768e; padding: 10px; background: #3a1a1a; border-radius: 6px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html" class="active">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Deal Matching</h1>
+
+        <div class="controls">
+            <div class="field">
+                <label>Group</label>
+                <input type="text" id="group" value="*" placeholder="* for all">
+            </div>
+            <div class="field">
+                <label>From</label>
+                <input type="date" id="fromDate">
+            </div>
+            <div class="field">
+                <label>To</label>
+                <input type="date" id="toDate">
+            </div>
+            <div class="field">
+                <label>Symbol (optional)</label>
+                <input type="text" id="symbol" placeholder="e.g. XAUUSD">
+            </div>
+            <button class="primary" id="runBtn" onclick="runMatch()">Run Match</button>
+        </div>
+
+        <!-- Raw Centroid Orders test panel -->
+        <details style="margin-bottom: 15px;">
+            <summary style="cursor: pointer; color: #7aa2f7; font-size: 14px; margin-bottom: 10px;">Raw Centroid Orders (API Test)</summary>
+            <div class="controls" style="margin-bottom: 0;">
+                <div class="field">
+                    <label>From</label>
+                    <input type="date" id="rawFrom">
+                </div>
+                <div class="field">
+                    <label>To</label>
+                    <input type="date" id="rawTo">
+                </div>
+                <div class="field">
+                    <label>Login</label>
+                    <input type="text" id="rawLogin" placeholder="e.g. 1100278">
+                </div>
+                <div class="field">
+                    <label>Symbol</label>
+                    <input type="text" id="rawSymbol" placeholder="e.g. XAUUSD">
+                </div>
+                <div class="field">
+                    <label>Account</label>
+                    <input type="text" id="rawAccount" placeholder="e.g. TDH1_TEM">
+                </div>
+                <div class="field">
+                    <label>Risk Account</label>
+                    <input type="text" id="rawRiskAccount" placeholder="">
+                </div>
+                <div class="field">
+                    <label>Group</label>
+                    <input type="text" id="rawGroup" placeholder="">
+                </div>
+                <div class="field">
+                    <label>Order</label>
+                    <input type="text" id="rawOrder" placeholder="e.g. 2308999_1">
+                </div>
+                <div class="field">
+                    <label>Cen Ord ID</label>
+                    <input type="text" id="rawCenOrdId" placeholder="e.g. 824351">
+                </div>
+                <div class="field">
+                    <label>Execution</label>
+                    <input type="text" id="rawExecution" placeholder="e.g. FILLED">
+                </div>
+                <div class="field">
+                    <label>Markup Models</label>
+                    <input type="text" id="rawMarkupModels" placeholder="">
+                </div>
+                <div class="field">
+                    <label>API Columns</label>
+                    <div style="position:relative; display:inline-block;">
+                        <button id="apiColBtn" onclick="toggleApiColPicker()" style="background:#24283b; color:#7aa2f7; border:1px solid #292e42; padding:6px 10px; font-size:12px; border-radius:4px; cursor:pointer;">
+                            Requesting <span id="apiColCountLabel">0</span> columns
+                        </button>
+                        <div id="apiColPicker" style="display:none; position:absolute; top:100%; left:0; z-index:100; background:#16161e; border:1px solid #292e42; border-radius:6px; padding:10px; max-height:450px; overflow-y:auto; width:340px; margin-top:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);">
+                            <div style="display:flex; gap:6px; margin-bottom:8px; flex-wrap:wrap;">
+                                <button onclick="apiColPreset('dealmatch')" style="background:#24283b;color:#7aa2f7;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">Deal Match</button>
+                                <button onclick="apiColPreset('all')" style="background:#24283b;color:#e0af68;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">All</button>
+                                <button onclick="apiColPreset('none')" style="background:#24283b;color:#f7768e;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">None</button>
+                            </div>
+                            <div id="apiColCheckboxes" style="display:grid; grid-template-columns:1fr 1fr; gap:2px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <button class="primary" id="rawBtn" onclick="fetchRawOrders()">Fetch Orders</button>
+            </div>
+            <div id="rawError" class="error" style="display:none; margin-top: 10px;"></div>
+            <div id="rawLoading" class="loading" style="display:none">Fetching Centroid orders...</div>
+            <div id="rawResults" style="display:none; margin-top: 10px;">
+                <div style="font-size: 13px; color: #565f89; margin-bottom: 6px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                    <span>Count: <strong id="rawCount" style="color: #7aa2f7;">0</strong></span>
+                    <!-- View toggle -->
+                    <div style="display:flex; gap:2px; background:#24283b; border-radius:4px; overflow:hidden; border:1px solid #292e42;">
+                        <button id="rawViewTable" onclick="setRawView('table')" style="background:#7aa2f7; color:#1a1b26; border:none; padding:4px 10px; font-size:12px; cursor:pointer;">Table</button>
+                        <button id="rawViewJson" onclick="setRawView('json')" style="background:transparent; color:#565f89; border:none; padding:4px 10px; font-size:12px; cursor:pointer;">JSON</button>
+                    </div>
+                    <div id="colPickerWrap" style="position: relative; display: inline-block;">
+                        <button onclick="toggleColumnPicker()" style="background: #24283b; color: #7aa2f7; border: 1px solid #292e42; padding: 4px 10px; font-size: 12px; border-radius: 4px; cursor: pointer;">
+                            Columns (<span id="colCountLabel">0</span>)
+                        </button>
+                        <div id="colPicker" style="display:none; position:absolute; top:100%; left:0; z-index:100; background:#16161e; border:1px solid #292e42; border-radius:6px; padding:10px; max-height:400px; overflow-y:auto; width:320px; margin-top:4px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                            <div style="display:flex; gap:6px; margin-bottom:8px;">
+                                <button onclick="selectAllCols()" style="background:#24283b;color:#9ece6a;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">All</button>
+                                <button onclick="selectNoneCols()" style="background:#24283b;color:#f7768e;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">None</button>
+                                <button onclick="selectDefaultCols()" style="background:#24283b;color:#7aa2f7;border:1px solid #292e42;padding:2px 8px;font-size:11px;border-radius:3px;cursor:pointer;">Default</button>
+                            </div>
+                            <div id="colCheckboxes" style="display:grid; grid-template-columns: 1fr 1fr; gap: 2px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Table view -->
+                <div id="rawTableView" class="table-wrap" style="max-height: 50vh; overflow-x: auto;">
+                    <table>
+                        <thead><tr id="rawTableHead"></tr></thead>
+                        <tbody id="rawTable"></tbody>
+                    </table>
+                </div>
+                <!-- JSON view -->
+                <div id="rawJsonView" style="display:none; max-height:65vh; overflow:auto; background:#16161e; border:1px solid #292e42; border-radius:6px; padding:12px;">
+                    <div id="rawJsonContainer"></div>
+                </div>
+            </div>
+        </details>
+
+        <div id="error" class="error" style="display:none"></div>
+
+        <div id="summary" class="summary-grid" style="display:none">
+            <div class="summary-card"><div class="value total" id="sClientDeals">0</div><div class="label">Client Deals</div></div>
+            <div class="summary-card"><div class="value total" id="sCentroidOrders">0</div><div class="label">Centroid Orders</div></div>
+            <div class="summary-card"><div class="value matched" id="sMatched">0</div><div class="label">Matched</div></div>
+            <div class="summary-card"><div class="value unmatched" id="sUnmatchedClient">0</div><div class="label">Unmatched Client</div></div>
+            <div class="summary-card"><div class="value unmatched" id="sUnmatchedLP">0</div><div class="label">Unmatched LP</div></div>
+            <div class="summary-card"><div class="value" id="sSpreadRevenue" style="color: #9ece6a;">$0</div><div class="label">Matched Markup</div></div>
+            <div class="summary-card"><div class="value" id="sCentroidRevenue" style="color: #bb9af7;">$0</div><div class="label">Centroid-Only Markup</div></div>
+            <div class="summary-card"><div class="value" id="sFixApiRevenue" style="color: #7dcfff;">$0</div><div class="label">FIX API Revenue</div></div>
+            <div class="summary-card"><div class="value" id="sFixApiCount" style="color: #7dcfff;">0</div><div class="label">FIX API Orders</div></div>
+            <div class="summary-card"><div class="value" id="sCommission" style="color: #e0af68;">$0</div><div class="label">Commission</div></div>
+            <div class="summary-card"><div class="value" id="sTotalIncome" style="color: #9ece6a;">$0</div><div class="label">Total Income</div></div>
+        </div>
+
+        <div id="results" style="display:none">
+            <div class="tabs">
+                <div class="tab active" onclick="showTab('revenue')">Revenue</div>
+                <div class="tab" onclick="showTab('matched')">Matched <span id="matchedCount" class="count"></span></div>
+                <div class="tab" onclick="showTab('unmatchedClient')">Unmatched Client <span id="unmatchedClientCount" class="count"></span></div>
+                <div class="tab" onclick="showTab('unmatchedLP')">Unmatched LP <span id="unmatchedLPCount" class="count"></span></div>
+                <div class="tab" onclick="showTab('fixApi')" style="color:#7dcfff;">FIX API <span id="fixApiTabCount" class="count"></span></div>
+            </div>
+
+            <div id="revenuePanel" class="tab-panel active">
+                <div style="padding: 15px; background: #16161e; border: 1px solid #292e42; border-radius: 0 6px 6px 6px;">
+                    <div class="rev-section">
+                        <h3>Revenue by Symbol</h3>
+                        <div class="table-wrap" style="max-height: 40vh;">
+                            <table class="rev-table">
+                                <thead><tr>
+                                    <th>Symbol</th><th class="number">Deals</th>
+                                    <th class="number">Markup Revenue ($)</th>
+                                    <th class="number">Commission ($)</th><th class="number">Total Income ($)</th>
+                                    <th class="number">Avg Markup/Deal ($)</th>
+                                </tr></thead>
+                                <tbody id="revBySymbol"></tbody>
+                                <tfoot id="revBySymbolFoot"></tfoot>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="rev-section" id="centroidRevSection" style="display:none">
+                        <h3 style="color: #bb9af7;">Centroid-Only Revenue by Symbol <span style="font-size:11px;color:#565f89;font-weight:normal">(from unmatched LP orders — uses Centroid price vs LP execution)</span></h3>
+                        <div class="table-wrap" style="max-height: 40vh;">
+                            <table class="rev-table">
+                                <thead><tr>
+                                    <th>Symbol</th><th class="number">Orders</th>
+                                    <th class="number">Markup Revenue ($)</th>
+                                    <th class="number">Avg Markup/Order ($)</th>
+                                </tr></thead>
+                                <tbody id="centroidRevBySymbol"></tbody>
+                                <tfoot id="centroidRevBySymbolFoot"></tfoot>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="rev-section" id="fixApiRevSection" style="display:none">
+                        <h3 style="color: #7dcfff;">FIX API Revenue by Symbol <span style="font-size:11px;color:#565f89;font-weight:normal">(non-MT5 clients — client price vs LP execution from Centroid)</span></h3>
+                        <div class="table-wrap" style="max-height: 40vh;">
+                            <table class="rev-table">
+                                <thead><tr>
+                                    <th>Symbol</th><th class="number">Orders</th>
+                                    <th class="number">Markup Revenue ($)</th>
+                                    <th class="number">Avg Markup/Order ($)</th>
+                                </tr></thead>
+                                <tbody id="fixApiRevBySymbol"></tbody>
+                                <tfoot id="fixApiRevBySymbolFoot"></tfoot>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="rev-section">
+                        <h3>Revenue by Client</h3>
+                        <div class="table-wrap" style="max-height: 40vh;">
+                            <table class="rev-table">
+                                <thead><tr>
+                                    <th>Login</th><th>Name</th><th>Group</th><th class="number">Deals</th>
+                                    <th class="number">Markup Revenue ($)</th>
+                                    <th class="number">Commission ($)</th><th class="number">Total Income ($)</th>
+                                </tr></thead>
+                                <tbody id="revByLogin"></tbody>
+                                <tfoot id="revByLoginFoot"></tfoot>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="matchedPanel" class="tab-panel">
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Time</th><th>Symbol</th><th>Side</th><th>Entry</th>
+                            <th>Login</th><th>Volume</th>
+                            <th>Client Price</th><th>LP Price</th>
+                            <th class="number">Markup (pts)</th><th class="number">Markup ($)</th>
+                            <th class="number">Commission ($)</th><th class="number">Total ($)</th>
+                            <th class="number">LP Vol</th><th class="number">ContractSize</th><th class="number">Rate</th><th class="number">LP Units</th>
+                        </tr></thead>
+                        <tbody id="matchedTable"></tbody>
+                    </table>
+                </div>
+                <div id="matchedEmpty" class="empty-state" style="display:none">No matched deals</div>
+                <!-- Detail overlay for clicked row -->
+                <div id="matchedDetail" style="display:none; margin-top: 10px; background: #16161e; border: 1px solid #292e42; border-radius: 8px; padding: 15px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="font-size: 14px; color: #7aa2f7; margin: 0;">Deal Detail</h3>
+                        <button onclick="document.getElementById('matchedDetail').style.display='none'" style="background:#292e42;color:#565f89;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">Close</button>
+                    </div>
+                    <div id="matchedDetailContent" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px;"></div>
+                </div>
+            </div>
+
+            <div id="unmatchedClientPanel" class="tab-panel">
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Time</th><th>Symbol</th><th>Side</th><th>Entry</th>
+                            <th>Login</th><th>Name</th><th>Group</th><th>Price</th><th>Volume</th>
+                            <th>Deal</th><th>Ext ID</th><th>Order</th><th>Position</th><th>Comment</th><th>Reason</th>
+                        </tr></thead>
+                        <tbody id="unmatchedClientTable"></tbody>
+                    </table>
+                </div>
+                <div id="unmatchedClientEmpty" class="empty-state" style="display:none">All client deals matched</div>
+            </div>
+
+            <div id="unmatchedLPPanel" class="tab-panel">
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Symbol</th><th>Side</th><th>LP Exec Price</th><th>Volume</th><th>Fill Vol</th>
+                            <th>Maker</th><th>Node Account</th><th>Login</th><th>Account</th>
+                            <th>Bid</th><th>Ask</th><th>Ext Bid</th><th>Ext Ask</th>
+                            <th>Ext Order</th><th>Ext Deal</th><th>Ext Pos</th>
+                            <th>Client Ord ID</th><th>Cen Ord ID</th>
+                            <th>State</th><th>Execution</th><th>Group</th><th>Risk Account</th>
+                            <th>Party Symbol</th><th>Create Time</th>
+                        </tr></thead>
+                        <tbody id="unmatchedLPTable"></tbody>
+                    </table>
+                </div>
+                <div id="unmatchedLPEmpty" class="empty-state" style="display:none">All LP orders matched</div>
+            </div>
+
+            <div id="fixApiPanel" class="tab-panel">
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr>
+                            <th>Symbol</th><th>Side</th><th>Client Price</th><th>LP Price</th><th>Volume</th>
+                            <th class="number">Spread (pts)</th><th class="number">Revenue ($)</th>
+                            <th>Ext Bid</th><th>Ext Ask</th><th>Total Markup</th>
+                            <th>Node</th><th>Node Account</th><th>Login</th>
+                            <th>Maker</th><th>Party Symbol</th>
+                            <th>Client Ord ID</th><th>Cen Ord ID</th>
+                            <th>State</th><th>Fix Session</th><th>Create Time</th>
+                        </tr></thead>
+                        <tbody id="fixApiTable"></tbody>
+                    </table>
+                </div>
+                <div id="fixApiEmpty" class="empty-state" style="display:none">No FIX API orders</div>
+            </div>
+        </div>
+
+        <div id="loadingState" class="loading" style="display:none">Running deal match...</div>
+    </div>
+
+    <script>
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(tab + 'Panel').classList.add('active');
+            event.target.closest('.tab').classList.add('active');
+        }
+
+        function valClass(v) { return v > 0 ? 'positive' : v < 0 ? 'negative' : ''; }
+
+        function showMatchDetail(idx) {
+            const m = window._matchedData[idx];
+            if (!m) return;
+
+            // Highlight selected row
+            document.querySelectorAll('#matchedTable tr').forEach(r => r.style.background = '');
+            document.querySelectorAll('#matchedTable tr')[idx].style.background = '#24283b';
+
+            const badgeStatus = m.matchStatus === 'Matched' ? 'badge-matched' : m.matchStatus === 'Partial' ? 'badge-partial' : 'badge-unmatched';
+            const badgeSide = m.side === 'Buy' ? 'badge-buy' : 'badge-sell';
+
+            const row = (label, value, cls) => `<div style="display:flex;justify-content:space-between;padding:4px 8px;border-bottom:1px solid #1e2030;">
+                <span style="color:#565f89">${label}</span>
+                <span ${cls ? `class="${cls}"` : ''} style="font-weight:500">${value}</span>
+            </div>`;
+
+            document.getElementById('matchedDetailContent').innerHTML = `
+                <div>
+                    <div style="font-size:11px;color:#565f89;text-transform:uppercase;margin-bottom:6px;letter-spacing:0.5px;">Client Side</div>
+                    ${row('Time', escapeHtml(m.dealTime))}
+                    ${row('Login', m.clientLogin)}
+                    ${row('Name', escapeHtml(m.clientName))}
+                    ${row('Group', escapeHtml(m.clientGroup || ''))}
+                    ${row('Symbol', `<strong>${escapeHtml(m.symbol)}</strong>`)}
+                    ${row('Side', `<span class="badge ${badgeSide}">${m.side}</span>`)}
+                    ${row('Entry', escapeHtml(m.entry))}
+                    ${row('Volume', m.clientVolume)}
+                    ${row('Client Price', m.clientPrice)}
+                    ${row('Market Bid', m.marketBid || '-')}
+                    ${row('Market Ask', m.marketAsk || '-')}
+                    ${row('Commission', '$' + (m.clientCommission || 0).toFixed(2))}
+                    ${row('Deal Ticket', m.dealTicket)}
+                    ${row('Order Ticket', m.orderTicket)}
+                    ${row('Position ID', m.positionId || '-')}
+                    ${row('External ID', escapeHtml(m.externalDealId || '-'))}
+                </div>
+                <div>
+                    <div style="font-size:11px;color:#565f89;text-transform:uppercase;margin-bottom:6px;letter-spacing:0.5px;">LP Side</div>
+                    ${row('LP Name', `<strong>${escapeHtml(m.lpName)}</strong>`)}
+                    ${row('LP Symbol', escapeHtml(m.partySymbol || '-'))}
+                    ${row('LP Price', m.lpPrice)}
+                    ${row('LP Volume', m.lpVolume)}
+                    ${row('LP Bid', m.lpBid || '-')}
+                    ${row('LP Ask', m.lpAsk || '-')}
+                    ${row('Centroid Order', escapeHtml(m.centroidOrderId || '-'))}
+                    ${row('Fill Count', m.centroidFillCount)}
+                    <div style="font-size:11px;color:#565f89;text-transform:uppercase;margin:10px 0 6px;letter-spacing:0.5px;">Revenue</div>
+                    ${row('Markup (pts)', `<span class="${valClass(m.spread)}">${(m.spread || 0).toFixed(6)}</span>`)}
+                    ${row('Revenue ($)', `<span class="${valClass(m.spreadRevenueUsd)}">${(m.spreadRevenueUsd || 0).toFixed(2)}</span>`)}
+                    ${row('Slippage (pts)', (m.slippage || 0).toFixed(6))}
+                    ${row('Slippage ($)', (m.slippageUsd || 0).toFixed(2))}
+                    ${row('Contract Size', m.contractSize)}
+                    ${row('Client Units', m.clientUnits)}
+                    ${row('LP Units', m.lpUnits)}
+                    <div style="font-size:11px;color:#565f89;text-transform:uppercase;margin:10px 0 6px;letter-spacing:0.5px;">Match Info</div>
+                    ${row('Status', `<span class="badge ${badgeStatus}">${m.matchStatus}</span>`)}
+                    ${row('Method', escapeHtml(m.matchMethod))}
+                    ${row('Time Delta', m.timeDeltaMs !== 0 ? (m.timeDeltaMs > 0 ? '+' : '') + m.timeDeltaMs + 'ms' : '-')}
+                </div>`;
+
+            document.getElementById('matchedDetail').style.display = '';
+            document.getElementById('matchedDetail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        async function runMatch() {
+            const group = document.getElementById('group').value || '*';
+            const from = document.getElementById('fromDate').value;
+            const to = document.getElementById('toDate').value;
+            const symbol = document.getElementById('symbol').value;
+
+            if (!from || !to) { alert('Please select From and To dates'); return; }
+
+            const btn = document.getElementById('runBtn');
+            btn.disabled = true;
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('summary').style.display = 'none';
+            document.getElementById('results').style.display = 'none';
+            document.getElementById('loadingState').style.display = '';
+
+            const params = new URLSearchParams({ group, from, to });
+            if (symbol) params.set('symbol', symbol);
+
+            try {
+                const resp = await fetch(`/DealMatch/Run?${params}`);
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    document.getElementById('error').textContent = `Error: ${text}`;
+                    document.getElementById('error').style.display = '';
+                    return;
+                }
+
+                const data = await resp.json();
+                renderReport(data);
+            } catch (e) {
+                document.getElementById('error').textContent = `Failed: ${e.message}`;
+                document.getElementById('error').style.display = '';
+            } finally {
+                btn.disabled = false;
+                document.getElementById('loadingState').style.display = 'none';
+            }
+        }
+
+        function renderReport(data) {
+            // Summary
+            document.getElementById('sClientDeals').textContent = data.totalClientDeals;
+            document.getElementById('sCentroidOrders').textContent = data.totalCentroidOrders;
+            document.getElementById('sMatched').textContent = data.matchedCount;
+            document.getElementById('sUnmatchedClient').textContent = data.unmatchedClientCount;
+            document.getElementById('sUnmatchedLP').textContent = data.unmatchedLpCount;
+            document.getElementById('sSpreadRevenue').textContent = '$' + (data.totalSpreadRevenueUsd || 0).toFixed(2);
+            document.getElementById('sCentroidRevenue').textContent = '$' + (data.totalCentroidOnlyRevenueUsd || 0).toFixed(2);
+            document.getElementById('sFixApiRevenue').textContent = '$' + (data.totalFixApiRevenueUsd || 0).toFixed(2);
+            document.getElementById('sFixApiCount').textContent = data.fixApiOrderCount || 0;
+            document.getElementById('sCommission').textContent = '$' + (data.totalClientCommission || 0).toFixed(2);
+            const totalIncome = (data.totalSpreadRevenueUsd || 0) + (data.totalCentroidOnlyRevenueUsd || 0) + (data.totalFixApiRevenueUsd || 0) + (data.totalClientCommission || 0);
+            document.getElementById('sTotalIncome').textContent = '$' + totalIncome.toFixed(2);
+            document.getElementById('summary').style.display = '';
+
+            // Tab counts
+            document.getElementById('matchedCount').textContent = `(${data.matchedCount})`;
+            document.getElementById('unmatchedClientCount').textContent = `(${data.unmatchedClientCount})`;
+            document.getElementById('unmatchedLPCount').textContent = `(${data.unmatchedLpCount})`;
+            document.getElementById('fixApiTabCount').textContent = `(${(data.fixApiOrders || []).length})`;
+
+            // Matched table — clean summary rows, click for detail
+            window._matchedData = data.matches;
+            const matchedTbody = document.getElementById('matchedTable');
+            document.getElementById('matchedEmpty').style.display = data.matches.length ? 'none' : '';
+            document.getElementById('matchedDetail').style.display = 'none';
+            matchedTbody.innerHTML = data.matches.map((m, idx) => {
+                const badgeSide = m.side === 'Buy' ? 'badge-buy' : 'badge-sell';
+                return `<tr onclick="showMatchDetail(${idx})" style="cursor:pointer">
+                    <td>${escapeHtml(m.dealTime)}</td>
+                    <td><strong>${escapeHtml(m.symbol)}</strong></td>
+                    <td><span class="badge ${badgeSide}">${m.side}</span></td>
+                    <td>${escapeHtml(m.entry)}</td>
+                    <td>${m.clientLogin}</td>
+                    <td>${m.clientVolume}</td>
+                    <td>${m.clientPrice}</td>
+                    <td>${m.lpPrice}</td>
+                    <td class="number ${valClass(m.spread)}">${(m.spread || 0).toFixed(6)}</td>
+                    <td class="number ${valClass(m.spreadRevenueUsd || 0)}">$${(m.spreadRevenueUsd || 0).toFixed(2)}</td>
+                    <td class="number">${(m.clientCommission || 0).toFixed(2)}</td>
+                    <td class="number ${valClass((m.spreadRevenueUsd || 0) + (m.clientCommission || 0))}"><strong>$${((m.spreadRevenueUsd || 0) + (m.clientCommission || 0)).toFixed(2)}</strong></td>
+                    <td class="number">${(m.lpVolume || 0)}</td>
+                    <td class="number">${(m.contractSize || 0).toLocaleString()}</td>
+                    <td class="number">${(m.rate || 0).toFixed(4)}</td>
+                    <td class="number">${(m.lpUnits || 0).toLocaleString()}</td>
+                </tr>`;
+            }).join('');
+
+            // Revenue aggregation
+            renderRevenue(data.matches, data.centroidOnlyRevenues || [], data.fixApiRevenues || []);
+
+            // Unmatched client deals
+            const ucTbody = document.getElementById('unmatchedClientTable');
+            document.getElementById('unmatchedClientEmpty').style.display = data.unmatchedClientDeals.length ? 'none' : '';
+            ucTbody.innerHTML = data.unmatchedClientDeals.map(d => `<tr>
+                <td>${escapeHtml(d.time)}</td>
+                <td><strong>${escapeHtml(d.symbol)}</strong></td>
+                <td><span class="badge ${d.side === 'Buy' ? 'badge-buy' : 'badge-sell'}">${d.side}</span></td>
+                <td>${escapeHtml(d.entry)}</td>
+                <td>${d.login}</td>
+                <td>${escapeHtml(d.clientName || '')}</td>
+                <td>${escapeHtml(d.group || '')}</td>
+                <td>${d.price}</td>
+                <td>${d.volume}</td>
+                <td>${d.deal}</td>
+                <td>${escapeHtml(d.externalId || '')}</td>
+                <td>${d.order}</td>
+                <td>${d.positionId || '-'}</td>
+                <td>${escapeHtml(d.comment || '')}</td>
+                <td>${escapeHtml(d.reason || '')}</td>
+            </tr>`).join('');
+
+            const ulTbody = document.getElementById('unmatchedLPTable');
+            document.getElementById('unmatchedLPEmpty').style.display = data.unmatchedCentroidOrders.length ? 'none' : '';
+            ulTbody.innerHTML = data.unmatchedCentroidOrders.map(o => {
+                const execPrice = o.avg_price > 0 ? o.avg_price : o.price;
+                return `<tr>
+                <td><strong>${escapeHtml(o.symbol)}</strong></td>
+                <td>${escapeHtml(o.side)}</td>
+                <td style="font-weight:700;color:#e0af68">${execPrice > 0 ? execPrice : '-'}</td>
+                <td>${o.volume}</td>
+                <td>${o.fill_volume}</td>
+                <td><strong>${escapeHtml(o.maker)}</strong></td>
+                <td>${escapeHtml(o.node_account)}</td>
+                <td>${escapeHtml(o.ext_login)}</td>
+                <td>${escapeHtml(o.account)}</td>
+                <td>${o.bid}</td>
+                <td>${o.ask}</td>
+                <td>${o.ext_bid}</td>
+                <td>${o.ext_ask}</td>
+                <td>${o.ext_order === '0' ? '<span class="badge badge-fix">FIX API</span>' : escapeHtml(o.ext_order)}</td>
+                <td>${escapeHtml(o.ext_dealid)}</td>
+                <td>${escapeHtml(o.ext_posid)}</td>
+                <td>${escapeHtml(o.client_ord_id)}</td>
+                <td>${escapeHtml(o.cen_ord_id)}</td>
+                <td>${escapeHtml(o.state)}</td>
+                <td>${escapeHtml(o.execution)}</td>
+                <td>${escapeHtml(o.group)}</td>
+                <td>${escapeHtml(o.risk_account)}</td>
+                <td>${escapeHtml(o.party_symbol)}</td>
+                <td>${escapeHtml(o.create_time)}</td>
+            </tr>`;
+            }).join('');
+
+            // FIX API orders (non-MT5 node) — join with revenue data by cen_ord_id
+            const fixOrders = data.fixApiOrders || [];
+            const fixRevs = data.fixApiRevenues || [];
+            const fixRevMap = {};
+            fixRevs.forEach(r => { if (r.cenOrdId) fixRevMap[r.cenOrdId] = r; });
+
+            const fixTbody = document.getElementById('fixApiTable');
+            document.getElementById('fixApiEmpty').style.display = fixOrders.length ? 'none' : '';
+            fixTbody.innerHTML = fixOrders.map(o => {
+                const rev = fixRevMap[o.cen_ord_id];
+                const clientPrice = rev ? rev.clientPrice : (o.side?.toLowerCase() === 'buy' ? o.ext_ask : o.ext_bid) || '-';
+                const lpPrice = rev ? rev.lpPrice : (o.avg_price > 0 ? o.avg_price : '-');
+                const spread = rev ? rev.spread : null;
+                const spreadRev = rev ? rev.spreadRevenueUsd : null;
+                const vol = rev ? rev.volume : (o.fill_volume || o.volume || '-');
+
+                return `<tr>
+                <td><strong>${escapeHtml(o.symbol)}</strong></td>
+                <td>${o.side ? `<span class="badge ${o.side.toLowerCase() === 'buy' ? 'badge-buy' : 'badge-sell'}">${o.side}</span>` : '<span style="color:#565f89">-</span>'}</td>
+                <td>${clientPrice !== '-' ? clientPrice : '-'}</td>
+                <td style="font-weight:700;color:#e0af68">${lpPrice !== '-' ? lpPrice : '-'}</td>
+                <td>${vol !== '-' ? vol : '-'}</td>
+                <td class="number ${spread !== null ? valClass(spread) : ''}">${spread !== null ? spread.toFixed(6) : '<span style="color:#565f89">-</span>'}</td>
+                <td class="number ${spreadRev !== null ? valClass(spreadRev) : ''}"><strong>${spreadRev !== null ? '$' + spreadRev.toFixed(2) : '<span style="color:#565f89">-</span>'}</strong></td>
+                <td>${o.ext_bid || '-'}</td>
+                <td>${o.ext_ask || '-'}</td>
+                <td>${o.total_markup || '-'}</td>
+                <td><span style="color:#7dcfff">${escapeHtml(o.node)}</span></td>
+                <td>${escapeHtml(o.node_account)}</td>
+                <td>${escapeHtml(o.ext_login)}</td>
+                <td>${escapeHtml(o.maker)}</td>
+                <td>${escapeHtml(o.party_symbol)}</td>
+                <td>${escapeHtml(o.client_ord_id)}</td>
+                <td>${escapeHtml(o.cen_ord_id)}</td>
+                <td>${escapeHtml(o.state)}</td>
+                <td>${escapeHtml(o.fix_session)}</td>
+                <td>${escapeHtml(o.create_time)}</td>
+            </tr>`;
+            }).join('');
+
+            document.getElementById('results').style.display = '';
+
+            // Reset to revenue tab
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('revenuePanel').classList.add('active');
+            document.querySelector('.tab').classList.add('active');
+        }
+
+        function renderRevenue(matches, centroidOnly, fixApi) {
+            const bySymbol = {};
+            const byLogin = {};
+            matches.forEach(m => {
+                const markup = m.spreadRevenueUsd || 0;
+                const comm = m.clientCommission || 0;
+
+                if (!bySymbol[m.symbol]) bySymbol[m.symbol] = { deals: 0, markup: 0, commission: 0 };
+                bySymbol[m.symbol].deals++;
+                bySymbol[m.symbol].markup += markup;
+                bySymbol[m.symbol].commission += comm;
+
+                const key = m.clientLogin;
+                if (!byLogin[key]) byLogin[key] = { login: m.clientLogin, name: m.clientName || '', group: m.clientGroup || '', deals: 0, markup: 0, commission: 0 };
+                byLogin[key].deals++;
+                byLogin[key].markup += markup;
+                byLogin[key].commission += comm;
+            });
+
+            const fmtNum = (v, cls) => `<td class="number ${cls || ''}">${v >= 0 ? '' : '-'}$${Math.abs(v).toFixed(2)}</td>`;
+
+            // Centroid-only revenue by symbol
+            const cenBySymbol = {};
+            centroidOnly.forEach(r => {
+                if (!cenBySymbol[r.symbol]) cenBySymbol[r.symbol] = { orders: 0, markup: 0 };
+                cenBySymbol[r.symbol].orders++;
+                cenBySymbol[r.symbol].markup += r.spreadRevenueUsd || 0;
+            });
+            const cenSection = document.getElementById('centroidRevSection');
+            if (centroidOnly.length > 0) {
+                cenSection.style.display = '';
+                const cenSymbols = Object.entries(cenBySymbol).sort((a, b) => b[1].markup - a[1].markup);
+                let cenTot = { orders: 0, markup: 0 };
+                document.getElementById('centroidRevBySymbol').innerHTML = cenSymbols.map(([sym, s]) => {
+                    const avg = s.orders > 0 ? s.markup / s.orders : 0;
+                    cenTot.orders += s.orders; cenTot.markup += s.markup;
+                    return `<tr>
+                        <td><strong>${escapeHtml(sym)}</strong></td>
+                        <td class="number">${s.orders}</td>
+                        ${fmtNum(s.markup, valClass(s.markup))}
+                        ${fmtNum(avg, valClass(avg))}
+                    </tr>`;
+                }).join('');
+                const cenTotAvg = cenTot.orders > 0 ? cenTot.markup / cenTot.orders : 0;
+                document.getElementById('centroidRevBySymbolFoot').innerHTML = `<tr>
+                    <td><strong>Total</strong></td>
+                    <td class="number">${cenTot.orders}</td>
+                    ${fmtNum(cenTot.markup, valClass(cenTot.markup))}
+                    ${fmtNum(cenTotAvg, valClass(cenTotAvg))}
+                </tr>`;
+            } else {
+                cenSection.style.display = 'none';
+            }
+
+            // FIX API revenue by symbol
+            const fixBySymbol = {};
+            fixApi.forEach(r => {
+                if (!fixBySymbol[r.symbol]) fixBySymbol[r.symbol] = { orders: 0, markup: 0 };
+                fixBySymbol[r.symbol].orders++;
+                fixBySymbol[r.symbol].markup += r.spreadRevenueUsd || 0;
+            });
+            const fixSection = document.getElementById('fixApiRevSection');
+            if (fixApi.length > 0) {
+                fixSection.style.display = '';
+                const fixSymbols = Object.entries(fixBySymbol).sort((a, b) => b[1].markup - a[1].markup);
+                let fixTot = { orders: 0, markup: 0 };
+                document.getElementById('fixApiRevBySymbol').innerHTML = fixSymbols.map(([sym, s]) => {
+                    const avg = s.orders > 0 ? s.markup / s.orders : 0;
+                    fixTot.orders += s.orders; fixTot.markup += s.markup;
+                    return `<tr>
+                        <td><strong>${escapeHtml(sym)}</strong></td>
+                        <td class="number">${s.orders}</td>
+                        ${fmtNum(s.markup, valClass(s.markup))}
+                        ${fmtNum(avg, valClass(avg))}
+                    </tr>`;
+                }).join('');
+                const fixTotAvg = fixTot.orders > 0 ? fixTot.markup / fixTot.orders : 0;
+                document.getElementById('fixApiRevBySymbolFoot').innerHTML = `<tr>
+                    <td><strong>Total</strong></td>
+                    <td class="number">${fixTot.orders}</td>
+                    ${fmtNum(fixTot.markup, valClass(fixTot.markup))}
+                    ${fmtNum(fixTotAvg, valClass(fixTotAvg))}
+                </tr>`;
+            } else {
+                fixSection.style.display = 'none';
+            }
+
+            // Symbol table — sorted by total income descending
+            const symbols = Object.entries(bySymbol).sort((a, b) =>
+                (b[1].markup + b[1].commission) - (a[1].markup + a[1].commission));
+            let totS = { deals: 0, markup: 0, commission: 0 };
+            document.getElementById('revBySymbol').innerHTML = symbols.map(([sym, s]) => {
+                const total = s.markup + s.commission;
+                const avg = s.deals > 0 ? s.markup / s.deals : 0;
+                totS.deals += s.deals; totS.markup += s.markup; totS.commission += s.commission;
+                return `<tr>
+                    <td><strong>${escapeHtml(sym)}</strong></td>
+                    <td class="number">${s.deals}</td>
+                    ${fmtNum(s.markup, valClass(s.markup))}
+                    ${fmtNum(s.commission, valClass(s.commission))}
+                    ${fmtNum(total, valClass(total))}
+                    ${fmtNum(avg, valClass(avg))}
+                </tr>`;
+            }).join('');
+            const totSTotal = totS.markup + totS.commission;
+            const totSAvg = totS.deals > 0 ? totS.markup / totS.deals : 0;
+            document.getElementById('revBySymbolFoot').innerHTML = `<tr>
+                <td><strong>Total</strong></td>
+                <td class="number">${totS.deals}</td>
+                ${fmtNum(totS.markup, valClass(totS.markup))}
+                ${fmtNum(totS.commission, valClass(totS.commission))}
+                ${fmtNum(totSTotal, valClass(totSTotal))}
+                ${fmtNum(totSAvg, valClass(totSAvg))}
+            </tr>`;
+
+            // Login table — sorted by total income descending
+            const logins = Object.values(byLogin).sort((a, b) =>
+                (b.markup + b.commission) - (a.markup + a.commission));
+            let totL = { deals: 0, markup: 0, commission: 0 };
+            document.getElementById('revByLogin').innerHTML = logins.map(l => {
+                const total = l.markup + l.commission;
+                totL.deals += l.deals; totL.markup += l.markup; totL.commission += l.commission;
+                return `<tr>
+                    <td>${l.login}</td>
+                    <td>${escapeHtml(l.name)}</td>
+                    <td>${escapeHtml(l.group)}</td>
+                    <td class="number">${l.deals}</td>
+                    ${fmtNum(l.markup, valClass(l.markup))}
+                    ${fmtNum(l.commission, valClass(l.commission))}
+                    ${fmtNum(total, valClass(total))}
+                </tr>`;
+            }).join('');
+            const totLTotal = totL.markup + totL.commission;
+            document.getElementById('revByLoginFoot').innerHTML = `<tr>
+                <td><strong>Total</strong></td><td></td><td></td>
+                <td class="number">${totL.deals}</td>
+                ${fmtNum(totL.markup, valClass(totL.markup))}
+                ${fmtNum(totL.commission, valClass(totL.commission))}
+                ${fmtNum(totLTotal, valClass(totLTotal))}
+            </tr>`;
+        }
+
+        // ── Column picker for raw orders ──
+        const DEFAULT_RAW_COLS = [
+            'create_time','symbol','party_symbol','side','ext_login','ext_order',
+            'ext_dealid','ext_posid','maker','avg_price','volume','fill_volume',
+            'execution','state','cen_ord_id','price','account','risk_account'
+        ];
+        let allAvailableCols = [];
+        let rawVisibleCols = JSON.parse(localStorage.getItem('rawCols') || 'null') || [...DEFAULT_RAW_COLS];
+        let lastRawData = null;
+
+        function saveRawCols() {
+            localStorage.setItem('rawCols', JSON.stringify(rawVisibleCols));
+            document.getElementById('colCountLabel').textContent = rawVisibleCols.length;
+        }
+
+        function buildColumnCheckboxes() {
+            const container = document.getElementById('colCheckboxes');
+            container.innerHTML = allAvailableCols.map(col => {
+                const checked = rawVisibleCols.includes(col) ? 'checked' : '';
+                return `<label style="font-size:11px;color:#c0caf5;cursor:pointer;padding:2px 0;display:flex;align-items:center;gap:4px;">
+                    <input type="checkbox" value="${col}" ${checked} onchange="toggleCol('${col}', this.checked)" style="accent-color:#7aa2f7;"> ${col}
+                </label>`;
+            }).join('');
+            document.getElementById('colCountLabel').textContent = rawVisibleCols.length;
+        }
+
+        function toggleCol(col, on) {
+            if (on && !rawVisibleCols.includes(col)) rawVisibleCols.push(col);
+            if (!on) rawVisibleCols = rawVisibleCols.filter(c => c !== col);
+            saveRawCols();
+            if (lastRawData) renderRawTable(lastRawData);
+        }
+
+        function selectAllCols() {
+            rawVisibleCols = [...allAvailableCols];
+            saveRawCols(); buildColumnCheckboxes();
+            if (lastRawData) renderRawTable(lastRawData);
+        }
+        function selectNoneCols() {
+            rawVisibleCols = [];
+            saveRawCols(); buildColumnCheckboxes();
+            if (lastRawData) renderRawTable(lastRawData);
+        }
+        function selectDefaultCols() {
+            rawVisibleCols = [...DEFAULT_RAW_COLS];
+            saveRawCols(); buildColumnCheckboxes();
+            if (lastRawData) renderRawTable(lastRawData);
+        }
+
+        function toggleColumnPicker() {
+            const el = document.getElementById('colPicker');
+            el.style.display = el.style.display === 'none' ? '' : 'none';
+        }
+        // Close pickers when clicking outside
+        document.addEventListener('click', e => {
+            ['colPicker', 'apiColPicker'].forEach(id => {
+                const picker = document.getElementById(id);
+                if (picker && picker.style.display !== 'none' && !e.target.closest('#' + id) && !e.target.closest('#apiColBtn') && !e.target.closest('[onclick*="toggleColumnPicker"]')) {
+                    picker.style.display = 'none';
+                }
+            });
+        });
+
+        // ── API columns picker (controls which columns are sent to Centroid) ──
+        const ALL_API_COLS = [
+            "ext_login","ext_order","ext_posid","ext_dealid",
+            "symbol","party_symbol","side","volume","avg_price",
+            "fill_volume","maker","maker_cat","cen_ord_id",
+            "client_ord_id","risk_account","node_account",
+            "bids","asks","state","create_time","recv_time_msc",
+            "price","execution","group","account",
+            "a_avg_price","a_raw_avg_price","a_tot_fill_volume","afill_volume",
+            "ask","b_avg_price","b_raw_avg_price","b_tot_fill_volume",
+            "base_conv_rate","bfill_volume","bid","bperc",
+            "close_avg_price","close_recv_time_mcs","comment","commission",
+            "conc_a_vol","contract_size","deviation",
+            "ext_ask","ext_bid","ext_group_raw","ext_markup",
+            "fix_session","gain_perc","node","ord_type",
+            "party_send_time_mcs","price_dev","quote_conv_rate",
+            "reason","rej_volume","req_avg_price","req_fill_volume",
+            "res_state","res_text","resp_recv_time_mcs",
+            "sent","symbol_group","taker_account_currency",
+            "timeinforce","total_markup","ttl","vol_digits",
+            "volume_abook","volume_bbook","wl_ask","wl_bid"
+        ];
+        const DEALMATCH_API_COLS = [
+            "ext_login","ext_order","ext_posid","ext_dealid",
+            "symbol","party_symbol","side","volume","avg_price",
+            "fill_volume","maker","maker_cat","cen_ord_id",
+            "client_ord_id","risk_account","node_account",
+            "bids","asks","state","create_time","recv_time_msc",
+            "price","execution","group","account",
+            "bid","ask","ext_bid","ext_ask",
+            "comment","commission","contract_size","quote_conv_rate",
+            "ord_type","total_markup","fix_session","node","volume_abook","volume_bbook"
+        ];
+        let apiSelectedCols = JSON.parse(localStorage.getItem('apiCols') || 'null') || [...DEALMATCH_API_COLS];
+
+        function toggleApiColPicker() {
+            const el = document.getElementById('apiColPicker');
+            el.style.display = el.style.display === 'none' ? '' : 'none';
+        }
+        function buildApiColCheckboxes() {
+            const container = document.getElementById('apiColCheckboxes');
+            container.innerHTML = ALL_API_COLS.map(col => {
+                const checked = apiSelectedCols.includes(col) ? 'checked' : '';
+                const isDealMatch = DEALMATCH_API_COLS.includes(col);
+                const color = isDealMatch ? '#c0caf5' : '#565f89';
+                return `<label style="font-size:11px;color:${color};cursor:pointer;padding:2px 0;display:flex;align-items:center;gap:4px;">
+                    <input type="checkbox" value="${col}" ${checked} onchange="toggleApiCol('${col}', this.checked)" style="accent-color:#7aa2f7;"> ${col}
+                </label>`;
+            }).join('');
+            document.getElementById('apiColCountLabel').textContent = apiSelectedCols.length;
+        }
+        function toggleApiCol(col, on) {
+            if (on && !apiSelectedCols.includes(col)) apiSelectedCols.push(col);
+            if (!on) apiSelectedCols = apiSelectedCols.filter(c => c !== col);
+            localStorage.setItem('apiCols', JSON.stringify(apiSelectedCols));
+            document.getElementById('apiColCountLabel').textContent = apiSelectedCols.length;
+        }
+        function apiColPreset(preset) {
+            if (preset === 'dealmatch') apiSelectedCols = [...DEALMATCH_API_COLS];
+            else if (preset === 'all') apiSelectedCols = [...ALL_API_COLS];
+            else apiSelectedCols = [];
+            localStorage.setItem('apiCols', JSON.stringify(apiSelectedCols));
+            buildApiColCheckboxes();
+        }
+        buildApiColCheckboxes();
+
+        function formatCellValue(val) {
+            if (val === null || val === undefined) return '';
+            if (typeof val === 'object') {
+                // Handle Centroid nullable wrappers like {decimal:0, valid:true} or {string:"x", valid:true}
+                if ('valid' in val) {
+                    if (!val.valid) return '<span style="color:#565f89">null</span>';
+                    if ('decimal' in val) return val.decimal;
+                    if ('int64' in val) return val.int64;
+                    if ('int32' in val) return val.int32;
+                    if ('string' in val) return escapeHtml(val.string);
+                }
+                // Arrays (bids/asks) - show count
+                if (Array.isArray(val)) return `[${val.length}]`;
+                return JSON.stringify(val);
+            }
+            return escapeHtml(String(val));
+        }
+
+        function renderRawTable(orders) {
+            const cols = rawVisibleCols.filter(c => allAvailableCols.includes(c));
+            // Header
+            document.getElementById('rawTableHead').innerHTML = cols.map(c =>
+                `<th>${c}</th>`
+            ).join('');
+            // Body
+            const tbody = document.getElementById('rawTable');
+            if (orders.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="${cols.length || 1}" style="text-align:center;color:#565f89;padding:20px">No orders returned</td></tr>`;
+            } else {
+                tbody.innerHTML = orders.map(o =>
+                    '<tr>' + cols.map(c => {
+                        if (c === 'ext_order' && String(o[c]) === '0') return '<td><span class="badge badge-fix">FIX API</span></td>';
+                        return `<td>${formatCellValue(o[c])}</td>`;
+                    }).join('') + '</tr>'
+                ).join('');
+            }
+        }
+
+        async function fetchRawOrders() {
+            const from = document.getElementById('rawFrom').value;
+            const to = document.getElementById('rawTo').value;
+            if (!from || !to) { alert('Please select From and To dates'); return; }
+
+            const btn = document.getElementById('rawBtn');
+            btn.disabled = true;
+            document.getElementById('rawError').style.display = 'none';
+            document.getElementById('rawResults').style.display = 'none';
+            document.getElementById('rawLoading').style.display = '';
+
+            const params = new URLSearchParams({ from, to });
+            if (apiSelectedCols.length > 0) params.set('columns', apiSelectedCols.join(','));
+            const optionals = {
+                login: 'rawLogin', symbol: 'rawSymbol', account: 'rawAccount',
+                riskAccount: 'rawRiskAccount', group: 'rawGroup', order: 'rawOrder',
+                cenOrdId: 'rawCenOrdId', execution: 'rawExecution', markupModels: 'rawMarkupModels'
+            };
+            for (const [key, id] of Object.entries(optionals)) {
+                const val = document.getElementById(id).value.trim();
+                if (val) params.set(key, val);
+            }
+
+            try {
+                const resp = await fetch(`/DealMatch/CentroidOrders?${params}`);
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    document.getElementById('rawError').textContent = `Error: ${text}`;
+                    document.getElementById('rawError').style.display = '';
+                    return;
+                }
+
+                const data = await resp.json();
+                document.getElementById('rawCount').textContent = data.count;
+
+                // Use columns from API response to build the picker
+                if (data.columns && data.columns.length > 0) {
+                    allAvailableCols = data.columns;
+                } else if (data.orders.length > 0) {
+                    allAvailableCols = Object.keys(data.orders[0]);
+                }
+                buildColumnCheckboxes();
+
+                lastRawData = data.orders;
+                renderRawTable(data.orders);
+                renderRawJson(data.orders);
+                document.getElementById('rawResults').style.display = '';
+            } catch (e) {
+                document.getElementById('rawError').textContent = `Failed: ${e.message}`;
+                document.getElementById('rawError').style.display = '';
+            } finally {
+                btn.disabled = false;
+                document.getElementById('rawLoading').style.display = 'none';
+            }
+        }
+
+        // ── Raw view toggle (Table / JSON) ──
+        let rawViewMode = 'table';
+
+        function setRawView(mode) {
+            rawViewMode = mode;
+            const tableBtn = document.getElementById('rawViewTable');
+            const jsonBtn = document.getElementById('rawViewJson');
+            const tableView = document.getElementById('rawTableView');
+            const jsonView = document.getElementById('rawJsonView');
+            const colWrap = document.getElementById('colPickerWrap');
+
+            if (mode === 'table') {
+                tableBtn.style.background = '#7aa2f7'; tableBtn.style.color = '#1a1b26';
+                jsonBtn.style.background = 'transparent'; jsonBtn.style.color = '#565f89';
+                tableView.style.display = ''; jsonView.style.display = 'none';
+                colWrap.style.display = '';
+            } else {
+                jsonBtn.style.background = '#7aa2f7'; jsonBtn.style.color = '#1a1b26';
+                tableBtn.style.background = 'transparent'; tableBtn.style.color = '#565f89';
+                tableView.style.display = 'none'; jsonView.style.display = '';
+                colWrap.style.display = 'none';
+            }
+        }
+
+        function renderRawJson(orders) {
+            const container = document.getElementById('rawJsonContainer');
+            if (!orders || orders.length === 0) {
+                container.innerHTML = '<div style="color:#565f89;text-align:center;padding:20px;">No orders</div>';
+                return;
+            }
+            container.innerHTML = orders.map((order, i) => {
+                const label = order.cen_ord_id || order.ext_order || `#${i}`;
+                const node = order.node || '';
+                const symbol = order.symbol || '';
+                const extOrder = order.ext_order;
+                const tag = (extOrder === 'FIX API' || extOrder === 0 || extOrder === '0')
+                    ? '<span class="badge badge-fix" style="margin-left:6px;">FIX API</span>' : '';
+                return `<details style="margin-bottom:4px;">
+                    <summary style="cursor:pointer; padding:6px 8px; background:#24283b; border-radius:4px; font-size:12px; color:#c0caf5;">
+                        <span style="color:#7aa2f7;">[${i}]</span>
+                        cen_ord_id=<strong>${escapeHtml(String(label))}</strong>
+                        | symbol=<span style="color:#e0af68;">${escapeHtml(String(symbol))}</span>
+                        | node=<span style="color:#bb9af7;">${escapeHtml(String(node))}</span>
+                        ${tag}
+                    </summary>
+                    <pre style="margin:0; padding:8px 12px; background:#1a1b26; border:1px solid #292e42; border-top:none; border-radius:0 0 4px 4px; font-size:11px; color:#c0caf5; overflow-x:auto; white-space:pre-wrap; word-break:break-all;">${syntaxHighlight(order)}</pre>
+                </details>`;
+            }).join('');
+        }
+
+        function syntaxHighlight(obj) {
+            const json = JSON.stringify(obj, null, 2);
+            return json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"([^"]+)":/g, '<span style="color:#7aa2f7;">"$1"</span>:')
+                .replace(/: "([^"]*)"/g, ': <span style="color:#9ece6a;">"$1"</span>')
+                .replace(/: (\d+\.?\d*)/g, ': <span style="color:#e0af68;">$1</span>')
+                .replace(/: (true|false)/g, ': <span style="color:#bb9af7;">$1</span>')
+                .replace(/: (null)/g, ': <span style="color:#565f89;">$1</span>');
+        }
+
+        // Init dates
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('fromDate').value = today;
+        document.getElementById('toDate').value = today;
+        document.getElementById('rawFrom').value = today;
+        document.getElementById('rawTo').value = today;
+    </script>
+</body>
+</html>

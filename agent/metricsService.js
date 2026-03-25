@@ -315,6 +315,27 @@ const READ_ONLY_APP_ENDPOINTS = [
   },
 ];
 
+const ENDPOINT_PARAM_CONTRACTS = {
+  "history.deals": {
+    query: ["login"],
+  },
+  "account.by_login": {
+    query: ["login"],
+  },
+  "account.user_info": {
+    query: ["login"],
+  },
+  "coverage.symbol_dashboard": {
+    pathParams: ["baseSymbol"],
+  },
+  "coverage.lp_positions": {
+    pathParams: ["lpName"],
+  },
+  "contract_size.detect": {
+    pathParams: ["symbol"],
+  },
+};
+
 function findAppEndpoint(endpointId) {
   return READ_ONLY_APP_ENDPOINTS.find((endpoint) => endpoint.id === endpointId) || null;
 }
@@ -1099,6 +1120,281 @@ export async function callAppEndpoint(params = {}) {
   }
 
   throw new Error(`Unsupported endpoint kind for ${endpointId}`);
+}
+
+function tokenizeSearchText(input) {
+  return String(input || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+}
+
+function scoreEndpointForQuestion(endpoint, questionTokens) {
+  if (!endpoint || !questionTokens.length) return 0;
+  const hay = `${endpoint.id || ""} ${endpoint.tag || ""} ${endpoint.description || ""} ${endpoint.path || ""}`.toLowerCase();
+  let score = 0;
+  for (const token of questionTokens) {
+    if (!hay.includes(token)) continue;
+    score += 1;
+    if (String(endpoint.id || "").toLowerCase().includes(token)) score += 2;
+    if (String(endpoint.tag || "").toLowerCase().includes(token)) score += 1;
+  }
+  return score;
+}
+
+function extractPathTemplateKeys(path) {
+  const keys = [];
+  const re = /\{([^}]+)\}/g;
+  let m;
+  while ((m = re.exec(String(path || ""))) !== null) {
+    const key = String(m[1] || "").trim();
+    if (key) keys.push(key);
+  }
+  return keys;
+}
+
+function inferStructuredParamsFromQuestion(question) {
+  const text = String(question || "");
+  const lower = text.toLowerCase();
+
+  const loginMatch = lower.match(/\blogin\D{0,6}(\d{4,})\b/) || text.match(/\b(\d{5,})\b/);
+  const userIdMatch = lower.match(/\b(?:user\s*id|userid|crm\s*id)\D{0,6}(\d{2,})\b/);
+  const emailMatch = lower.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  const symbolMatch = text.match(/\b([A-Z]{3,10})\b/);
+  const lpMatch = text.match(/\blp\s+([A-Za-z0-9._-]{2,30})\b/i);
+
+  return {
+    login: loginMatch ? Number(loginMatch[1]) : null,
+    userId: userIdMatch ? Number(userIdMatch[1]) : null,
+    email: emailMatch ? emailMatch[0] : null,
+    symbol: symbolMatch ? symbolMatch[1].toUpperCase() : null,
+    lpName: lpMatch ? lpMatch[1] : null,
+  };
+}
+
+function fillMissingParamValue(paramName, inferred) {
+  const key = String(paramName || "").toLowerCase();
+  if (key === "login") return inferred.login;
+  if (key === "userid" || key === "crmid") return inferred.userId;
+  if (key === "symbol" || key === "basesymbol") return inferred.symbol;
+  if (key === "lpname" || key === "lp") return inferred.lpName;
+  if (key === "email") return inferred.email;
+  return null;
+}
+
+function resolveEndpointContract(endpoint) {
+  const contract = ENDPOINT_PARAM_CONTRACTS[String(endpoint?.id || "")] || {};
+  const templateParams = extractPathTemplateKeys(endpoint?.path || "");
+  const pathParams = [...new Set([...(contract.pathParams || []), ...templateParams])];
+  const query = [...new Set([...(contract.query || [])])];
+  const body = [...new Set([...(contract.body || [])])];
+  return { pathParams, query, body };
+}
+
+function withInferredParams(endpoint, params, inferred) {
+  const query = { ...(params.query || {}) };
+  const pathParams = { ...(params.pathParams || {}) };
+  const body = { ...(params.body || {}) };
+  const contract = resolveEndpointContract(endpoint);
+
+  for (const name of contract.pathParams) {
+    if (pathParams[name] !== undefined && pathParams[name] !== null && String(pathParams[name]).trim() !== "") continue;
+    const inferredVal = fillMissingParamValue(name, inferred);
+    if (inferredVal !== null && inferredVal !== undefined && String(inferredVal).trim() !== "") {
+      pathParams[name] = inferredVal;
+    }
+  }
+
+  for (const name of contract.query) {
+    if (query[name] !== undefined && query[name] !== null && String(query[name]).trim() !== "") continue;
+    const inferredVal = fillMissingParamValue(name, inferred);
+    if (inferredVal !== null && inferredVal !== undefined && String(inferredVal).trim() !== "") {
+      query[name] = inferredVal;
+    }
+  }
+
+  for (const name of contract.body) {
+    if (body[name] !== undefined && body[name] !== null && String(body[name]).trim() !== "") continue;
+    const inferredVal = fillMissingParamValue(name, inferred);
+    if (inferredVal !== null && inferredVal !== undefined && String(inferredVal).trim() !== "") {
+      body[name] = inferredVal;
+    }
+  }
+
+  return { query, pathParams, body, contract };
+}
+
+function computeMissingParams(callArgs) {
+  const missing = [];
+  for (const name of callArgs.contract.pathParams || []) {
+    const val = callArgs.pathParams?.[name];
+    if (val === undefined || val === null || String(val).trim() === "") missing.push({ scope: "pathParams", name });
+  }
+  for (const name of callArgs.contract.query || []) {
+    const val = callArgs.query?.[name];
+    if (val === undefined || val === null || String(val).trim() === "") missing.push({ scope: "query", name });
+  }
+  for (const name of callArgs.contract.body || []) {
+    const val = callArgs.body?.[name];
+    if (val === undefined || val === null || String(val).trim() === "") missing.push({ scope: "body", name });
+  }
+  return missing;
+}
+
+function buildClarificationQuestion(missingList) {
+  const unique = [...new Set((missingList || []).map((x) => String(x.name || "").trim()).filter(Boolean))];
+  if (!unique.length) return "Please provide more details for this request.";
+  const labels = unique.map((name) => {
+    if (name === "login") return "login (example: 123456)";
+    if (name === "baseSymbol" || name === "symbol") return "symbol (example: XAUUSD)";
+    if (name === "lpName") return "LP name (example: ATFX)";
+    if (name === "userId") return "user id";
+    return name;
+  });
+  return `Please provide ${labels.join(", ")} so I can call the correct endpoint.`;
+}
+
+function shouldRequireEndpointConfirmation(candidates = []) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return false;
+  const top = Number(candidates[0]?.score || 0);
+  const second = Number(candidates[1]?.score || 0);
+  if (top <= 0) return true;
+  // Ask user confirmation when confidence is weak or candidates are too close.
+  return top <= 3 || top - second <= 1;
+}
+
+function buildEndpointConfirmationQuestion(candidates = []) {
+  const choices = (candidates || []).slice(0, 3);
+  if (!choices.length) return "I found multiple possible endpoints. Please confirm which endpoint I should call.";
+  const labels = choices.map((row) => {
+    const id = row?.endpoint?.id || "unknown";
+    const desc = row?.endpoint?.description || row?.endpoint?.path || "";
+    return `${id}${desc ? ` (${desc})` : ""}`;
+  });
+  return `I found multiple possible endpoints. Please confirm one endpoint id: ${labels.join(" | ")}.`;
+}
+
+export async function autoResolveAndCallEndpoint(params = {}) {
+  const question = String(params.question || params.message || "").trim();
+  if (!question) throw new Error("question is required");
+
+  const questionTokens = tokenizeSearchText(question);
+  const limit = Math.max(5, Math.min(120, Number(params.limit) || 60));
+  const catalog = await listAppEndpoints({ limit });
+  const candidates = (catalog.endpoints || [])
+    .map((endpoint) => ({
+      endpoint,
+      score: scoreEndpointForQuestion(endpoint, questionTokens),
+    }))
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  const explicitEndpointId = String(params.confirmEndpointId || params.endpointId || "").trim();
+  if (explicitEndpointId) {
+    const selected = candidates.find((row) => row.endpoint?.id === explicitEndpointId);
+    if (!selected) {
+      return {
+        ok: false,
+        question,
+        reason: "confirmed_endpoint_not_found",
+        requestedEndpointId: explicitEndpointId,
+        topCandidates: candidates.map((c) => ({ id: c.endpoint.id, score: c.score })),
+        response: null,
+      };
+    }
+    candidates.splice(0, candidates.length, selected);
+  }
+
+  if (!candidates.length) {
+    return {
+      ok: false,
+      question,
+      reason: "no_endpoint_match",
+      totalAvailable: catalog.totalAvailable,
+      topCandidates: [],
+      response: null,
+    };
+  }
+
+  const skipConfirmation = Boolean(params.skipConfirmation || explicitEndpointId);
+  if (!skipConfirmation && shouldRequireEndpointConfirmation(candidates)) {
+    return {
+      ok: false,
+      question,
+      reason: "low_confidence_match",
+      topCandidates: candidates.map((c) => ({ id: c.endpoint.id, score: c.score, description: c.endpoint.description || "" })),
+      clarificationQuestion: buildEndpointConfirmationQuestion(candidates),
+      response: null,
+    };
+  }
+
+  const errors = [];
+  const missingByEndpoint = [];
+  const inferred = inferStructuredParamsFromQuestion(question);
+  for (const row of candidates) {
+    const endpointId = row.endpoint.id;
+    const callArgs = withInferredParams(
+      row.endpoint,
+      {
+        query: params.query || {},
+        pathParams: params.pathParams || {},
+        body: params.body || {},
+      },
+      inferred,
+    );
+    const missing = computeMissingParams(callArgs);
+    if (missing.length) {
+      missingByEndpoint.push({ endpointId, missing });
+      continue;
+    }
+
+    try {
+      const result = await callAppEndpoint({
+        endpointId,
+        query: callArgs.query,
+        pathParams: callArgs.pathParams,
+        body: callArgs.body,
+      });
+      return {
+        ok: true,
+        question,
+        selectedEndpointId: endpointId,
+        selectedScore: row.score,
+        topCandidates: candidates.map((c) => ({ id: c.endpoint.id, score: c.score })),
+        response: result.response || null,
+        request: result.request || null,
+        result,
+      };
+    } catch (error) {
+      errors.push({ endpointId, error: error?.message || String(error) });
+    }
+  }
+
+  if (!errors.length && missingByEndpoint.length) {
+    const mergedMissing = missingByEndpoint.flatMap((item) => item.missing || []);
+    return {
+      ok: false,
+      question,
+      reason: "missing_required_params",
+      topCandidates: candidates.map((c) => ({ id: c.endpoint.id, score: c.score })),
+      missingByEndpoint,
+      clarificationQuestion: buildClarificationQuestion(mergedMissing),
+      response: null,
+    };
+  }
+
+  return {
+    ok: false,
+    question,
+    reason: "all_candidates_failed",
+    topCandidates: candidates.map((c) => ({ id: c.endpoint.id, score: c.score })),
+    missingByEndpoint,
+    errors,
+    response: null,
+  };
 }
 
 export async function callSwaggerEndpoint(params = {}) {

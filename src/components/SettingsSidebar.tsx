@@ -2,14 +2,17 @@ import React from "react";
 import { NavLink } from "react-router-dom";
 import { Bell, Briefcase, Link2, ShieldCheck, Users, Workflow } from "lucide-react";
 import { Separator } from "./ui/separator";
+import { getCurrentUser } from "@/lib/auth";
+import { getVisibleSettingsMenuItems } from "@/lib/permissions";
 
-const settingsMenu = [
-  { name: "Coverage", path: "/settings/coverage", icon: Workflow },
-  { name: "LP Manager", path: "/settings/lp-manager", icon: Briefcase },
-  { name: "Symbol Mapping", path: "/settings/symbol-mapping", icon: Link2 },
-  { name: "Alerts", path: "/settings/alerts", icon: Bell },
-  { name: "WS Test", path: "/settings/ws-test", icon: ShieldCheck },
-];
+const settingsIconMap = {
+  Bell,
+  Briefcase,
+  Link2,
+  ShieldCheck,
+  Users,
+  Workflow,
+} as const;
 
 function Item({
   to,
@@ -39,18 +42,28 @@ function Item({
 }
 
 export const SettingsSidebar: React.FC = () => (
-  <aside className="hidden lg:flex lg:w-64 bg-card/70 h-full lg:sticky lg:top-[72px] flex-col py-6 px-4 shadow-lg border-r border-border/40 backdrop-blur-xl">
-    <h2 className="text-foreground text-lg font-semibold mb-3">Settings</h2>
-    <p className="text-xs text-muted-foreground mb-5">Configure integrations, alerts and access.</p>
+  (() => {
+    const visibleItems = getVisibleSettingsMenuItems(getCurrentUser());
+    const coreItems = visibleItems.filter((item) => item.group === "core");
+    const adminItems = visibleItems.filter((item) => item.group === "admin");
 
-    <nav className="flex flex-col gap-2">
-      {settingsMenu.map((item) => (
-        <Item key={item.name} to={item.path} label={item.name} icon={item.icon} />
-      ))}
-    </nav>
+    return (
+      <aside className="hidden lg:flex lg:w-64 bg-card/70 h-full lg:sticky lg:top-[72px] flex-col py-6 px-4 shadow-lg border-r border-border/40 backdrop-blur-xl">
+        <h2 className="text-foreground text-lg font-semibold mb-3">Settings</h2>
+        <p className="text-xs text-muted-foreground mb-5">Configure integrations, alerts and access.</p>
 
-    <Separator className="my-6" />
+        <nav className="flex flex-col gap-2">
+          {coreItems.map((item) => (
+            <Item key={item.key} to={item.path} label={item.name} icon={settingsIconMap[item.icon]} />
+          ))}
+        </nav>
 
-    <Item to="/settings/user-management" label="User Management" icon={Users} />
-  </aside>
+        {adminItems.length > 0 ? <Separator className="my-6" /> : null}
+
+        {adminItems.map((item) => (
+          <Item key={item.key} to={item.path} label={item.name} icon={settingsIconMap[item.icon]} />
+        ))}
+      </aside>
+    );
+  })()
 );

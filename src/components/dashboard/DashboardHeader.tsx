@@ -9,7 +9,7 @@ import { Toast } from '../Toast';
 import { useMemo } from 'react';
 import { getCurrentUser, hasAccess, logout } from '@/lib/auth';
 import { useNavigate } from 'react-router-dom';
-import { DEALING_TAB_KEYS } from '@/lib/permissions';
+import { getVisibleDepartmentItems, getVisibleSettingsMenuItems } from '@/lib/permissions';
 import { MarketSessionsPopover } from './MarketSessionsPopover';
 
 interface DashboardHeaderProps {
@@ -62,7 +62,16 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
   // derive system online state from last update timestamp (true if recent)
   const systemOnline = (Date.now() - lastUpdate.getTime()) < 120000; // 2 minutes
   const can = (section: string) => hasAccess(section);
-  const canDealing = can("Dealing") || DEALING_TAB_KEYS.some((item) => can(item.key));
+  const visibleDepartmentItems = getVisibleDepartmentItems(currentUser);
+  const visibleSettingsItems = getVisibleSettingsMenuItems(currentUser);
+  const firstSettingsPath = visibleSettingsItems[0]?.path || "/settings/coverage";
+  const departmentIcons: Record<string, JSX.Element> = {
+    dealing: <TrendingUp className="w-4 h-4" />,
+    backoffice: <FileText className="w-4 h-4" />,
+    accounts: <Users className="w-4 h-4" />,
+    marketing: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10v6a1 1 0 0 0 1 1h3m10-7v6a1 1 0 0 1-1 1h-3m-6-7V7a1 1 0 0 1 1-1h3m6 0v2m0 0a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z" /></svg>,
+    hr: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" /><path d="M5.5 21a7.5 7.5 0 0 1 13 0" /></svg>,
+  };
 
   return (
     <>
@@ -94,26 +103,12 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
                 <span>Home</span>
               </NavLink>
             )}
-            {canDealing && <NavLink to="/departments/dealing" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <TrendingUp className="w-4 h-4" />
-              <span>Dealing</span>
-            </NavLink>}
-            {can("Backoffice") && <NavLink to="/departments/backoffice" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <FileText className="w-4 h-4" />
-              <span>Backoffice</span>
-            </NavLink>}
-            {can("Accounts") && <NavLink to="/departments/accounts" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <Users className="w-4 h-4" />
-              <span>Accounts</span>
-            </NavLink>}
-            {can("Marketing") && <NavLink to="/departments/marketing" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10v6a1 1 0 0 0 1 1h3m10-7v6a1 1 0 0 1-1 1h-3m-6-7V7a1 1 0 0 1 1-1h3m6 0v2m0 0a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z" /></svg>
-              <span>Marketing</span>
-            </NavLink>}
-            {can("HR") && <NavLink to="/departments/hr" activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" /><path d="M5.5 21a7.5 7.5 0 0 1 13 0" /></svg>
-              <span>HR</span>
-            </NavLink>}
+            {visibleDepartmentItems.map((item) => (
+              <NavLink key={item.key} to={item.path} activeClassName="bg-primary/10 text-primary shadow" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-foreground/90 hover:bg-card/40 transition">
+                {departmentIcons[item.slug]}
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
           </nav>
         </div>
       </div>
@@ -134,8 +129,8 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
         <div className="hidden md:block h-8 w-px bg-gradient-to-b from-transparent via-border/50 to-transparent" />
 
         <div className="flex items-center gap-2">
-          {can("Settings") && <div className="hidden lg:block">
-            <NavLink to="/settings/coverage">
+          {visibleSettingsItems.length > 0 && <div className="hidden lg:block">
+            <NavLink to={firstSettingsPath}>
               <Button size="icon" variant="ghost" className="text-muted-foreground hover:text-foreground p-2" aria-label="Settings">
                 <FiSettings size={20} />
               </Button>
@@ -212,14 +207,15 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
           </div>
           <nav className="flex flex-col gap-2">
             {can("Dashboard") && <NavLink to="/" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">Home</NavLink>}
-            {canDealing && <NavLink to="/departments/dealing" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><TrendingUp className="w-4 h-4" />Dealing</NavLink>}
-            {can("Backoffice") && <NavLink to="/departments/backoffice" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><FileText className="w-4 h-4" />Backoffice</NavLink>}
-            {can("Accounts") && <NavLink to="/departments/accounts" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><Users className="w-4 h-4" />Accounts</NavLink>}
-            {can("Marketing") && <NavLink to="/departments/marketing" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10v6a1 1 0 0 0 1 1h3m10-7v6a1 1 0 0 1-1 1h-3m-6-7V7a1 1 0 0 1 1-1h3m6 0v2m0 0a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z" /></svg>Marketing</NavLink>}
-            {can("HR") && <NavLink to="/departments/hr" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition"><svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" /><path d="M5.5 21a7.5 7.5 0 0 1 13 0" /></svg>HR</NavLink>}
-            {can("Settings") && <NavLink to="/settings/coverage" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">Coverage</NavLink>}
-            {can("Settings") && <NavLink to="/settings/lp-manager" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">LP Manager</NavLink>}
-            {can("Settings") && <NavLink to="/settings/user-management" onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">User Management</NavLink>}
+            {visibleDepartmentItems.map((item) => (
+              <NavLink key={item.key} to={item.path} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">
+                {departmentIcons[item.slug]}
+                {item.label}
+              </NavLink>
+            ))}
+            {visibleSettingsItems.map((item) => (
+              <NavLink key={item.key} to={item.path} onClick={() => setMobileOpen(false)} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-card/40 transition">{item.name}</NavLink>
+            ))}
           </nav>
           <button
             onClick={() => {

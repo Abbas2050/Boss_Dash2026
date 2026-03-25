@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Shield, UserPlus, Search, Trash2, Pencil, CheckCircle2 } from "lucide-react";
-import { AuthUser, deleteUser, getCurrentUser, getUsers, refreshUsers, upsertUser } from "@/lib/auth";
-import { DASHBOARD_SECTION_KEYS, DEALING_TAB_KEYS, DEPARTMENT_KEYS, NOTIFICATION_KEYS } from "@/lib/permissions";
+import { Shield, UserPlus, Search, Trash2, Pencil, CheckCircle2, History, Filter } from "lucide-react";
+import { AuthAuditEvent, AuthUser, deleteUser, fetchAuthAuditEvents, getCurrentUser, getUsers, refreshUsers, upsertUser } from "@/lib/auth";
+import { ADMIN_ACCESS_KEYS, DASHBOARD_ACCESS_KEYS, DEALING_TAB_KEYS, DEPARTMENT_KEYS, NOTIFICATION_KEYS, USER_ROLE_TEMPLATES } from "@/lib/permissions";
 
-const dashboardKeys = [{ key: "Dashboard", label: "Main Dashboard" }, ...DASHBOARD_SECTION_KEYS];
-const departmentKeys = [...DEPARTMENT_KEYS, { key: "Alerts", label: "Alerts" }];
+const dashboardKeys = DASHBOARD_ACCESS_KEYS;
+const departmentKeys = DEPARTMENT_KEYS;
 const dealingTabKeys = DEALING_TAB_KEYS;
 const notificationKeys = NOTIFICATION_KEYS;
+const adminKeys = ADMIN_ACCESS_KEYS;
 
 type UserForm = {
   name: string;
@@ -32,6 +33,12 @@ export const UserManagementPage: React.FC = () => {
   const [form, setForm] = useState<UserForm>(blankForm);
   const [editId, setEditId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [permissionQuery, setPermissionQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "suspended">("all");
+  const [sortBy, setSortBy] = useState<"name" | "role" | "created">("name");
+  const [page, setPage] = useState(1);
+  const pageSize = 8;
+  const [auditEvents, setAuditEvents] = useState<AuthAuditEvent[]>([]);
   const currentUser = getCurrentUser();
 
   const reload = async () => {
@@ -41,18 +48,38 @@ export const UserManagementPage: React.FC = () => {
 
   useEffect(() => {
     reload().catch((err) => setError(err?.message || "Failed to load users"));
+    fetchAuthAuditEvents(80)
+      .then(setAuditEvents)
+      .catch(() => undefined);
   }, []);
 
   const visibleUsers = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return users;
-    return users.filter(
-      (u) =>
-        u.name.toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q) ||
-        u.role.toLowerCase().includes(q)
-    );
-  }, [users, query]);
+    const filtered = users.filter((u) => {
+      const qPass = !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q) || u.role.toLowerCase().includes(q);
+      const statusPass = statusFilter === "all" ? true : u.status === statusFilter;
+      return qPass && statusPass;
+    });
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (sortBy === "role") return a.role.localeCompare(b.role);
+      if (sortBy === "created") return Number(b.id) - Number(a.id);
+      return a.name.localeCompare(b.name);
+    });
+
+    return sorted;
+  }, [users, query, statusFilter, sortBy]);
+
+  const pagedUsers = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return visibleUsers.slice(start, start + pageSize);
+  }, [visibleUsers, page]);
+
+  const totalPages = Math.max(1, Math.ceil(visibleUsers.length / pageSize));
+
+  useEffect(() => {
+    setPage((prev) => Math.min(prev, totalPages));
+  }, [totalPages]);
 
   const stats = useMemo(
     () => ({
@@ -100,6 +127,8 @@ export const UserManagementPage: React.FC = () => {
       }
       resetForm();
       await reload();
+      setPage(1);
+      fetchAuthAuditEvents(80).then(setAuditEvents).catch(() => undefined);
     } catch (err: any) {
       setError(err?.message || "Unable to save user.");
     }
@@ -110,9 +139,19 @@ export const UserManagementPage: React.FC = () => {
       setError("You cannot delete your currently logged-in account.");
       return;
     }
+
+    const user = users.find((u) => u.id === id);
+    const marker = String(user?.email || id);
+    const typed = window.prompt(`Type ${marker} to confirm deletion.`);
+    if (typed !== marker) {
+      setError("Delete confirmation did not match. User not removed.");
+      return;
+    }
+
     try {
       await deleteUser(id);
       await reload();
+      fetchAuthAuditEvents(80).then(setAuditEvents).catch(() => undefined);
     } catch (err: any) {
       setError(err?.message || "Unable to delete user.");
     }
@@ -152,6 +191,20 @@ export const UserManagementPage: React.FC = () => {
       access: [...u.access],
       password: "",
     });
+  };
+
+  const applyRoleTemplate = (role: UserForm["role"]) => {
+    setForm((prev) => ({
+      ...prev,
+      role,
+      access: Array.from(new Set(USER_ROLE_TEMPLATES[role] || [])),
+    }));
+  };
+
+  const permissionVisible = (label: string, key: string) => {
+    const q = permissionQuery.trim().toLowerCase();
+    if (!q) return true;
+    return label.toLowerCase().includes(q) || key.toLowerCase().includes(q);
   };
 
   return (
@@ -250,10 +303,35 @@ export const UserManagementPage: React.FC = () => {
           </div>
 
           <div className="mt-4 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Role Templates</span>
+              {(Object.keys(USER_ROLE_TEMPLATES) as Array<UserForm["role"]>).map((roleName) => (
+                <button
+                  key={roleName}
+                  type="button"
+                  onClick={() => applyRoleTemplate(roleName)}
+                  className={`rounded-md border px-2 py-1 text-xs ${
+                    form.role === roleName ? "border-primary/40 bg-primary/15 text-primary" : "border-border/50 bg-secondary/30 text-muted-foreground"
+                  }`}
+                >
+                  {roleName}
+                </button>
+              ))}
+            </div>
+
+            <label className="relative block">
+              <Search className="h-4 w-4 absolute left-2 top-2.5 text-muted-foreground" />
+              <input
+                value={permissionQuery}
+                onChange={(e) => setPermissionQuery(e.target.value)}
+                placeholder="Filter permission chips"
+                className="w-full rounded-lg bg-background/70 border border-border pl-8 pr-3 py-2 text-sm"
+              />
+            </label>
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dashboard Access</div>
               <div className="flex flex-wrap gap-2">
-                {dashboardKeys.map((item) => (
+                {dashboardKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
                   <button
                     key={item.key}
                     type="button"
@@ -273,7 +351,7 @@ export const UserManagementPage: React.FC = () => {
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Department Access</div>
               <div className="flex flex-wrap gap-2">
-                {departmentKeys.map((item) => (
+                {departmentKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
                   <button
                     key={item.key}
                     type="button"
@@ -289,7 +367,25 @@ export const UserManagementPage: React.FC = () => {
                 ))}
               </div>
             </div>
-
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Admin Access</div>
+              <div className="flex flex-wrap gap-2">
+                {adminKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div>
               <div className="mb-2 flex items-center justify-between">
                 <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Dealing Tab Access</div>
@@ -311,7 +407,7 @@ export const UserManagementPage: React.FC = () => {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {dealingTabKeys.map((item) => (
+                {dealingTabKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
                   <button
                     key={item.key}
                     type="button"
@@ -331,7 +427,7 @@ export const UserManagementPage: React.FC = () => {
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notification Access</div>
               <div className="flex flex-wrap gap-2">
-                {notificationKeys.map((item) => (
+                {notificationKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
                   <button
                     key={item.key}
                     type="button"
@@ -363,17 +459,46 @@ export const UserManagementPage: React.FC = () => {
         </section>
 
         <section className="rounded-2xl border border-border/40 bg-card/70 p-5">
-          <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
             <h2 className="text-lg font-semibold text-foreground">Users</h2>
-            <label className="relative">
-              <Search className="h-4 w-4 absolute left-2 top-2.5 text-muted-foreground" />
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, email, role"
-                className="rounded-lg bg-background/70 border border-border pl-8 pr-3 py-2 text-sm min-w-[230px]"
-              />
-            </label>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="relative">
+                <Search className="h-4 w-4 absolute left-2 top-2.5 text-muted-foreground" />
+                <input
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search name, email, role"
+                  className="rounded-lg bg-background/70 border border-border pl-8 pr-3 py-2 text-sm min-w-[220px]"
+                />
+              </label>
+              <div className="inline-flex items-center gap-2 rounded-lg border border-border px-2 py-1.5">
+                <Filter className="h-4 w-4 text-muted-foreground" />
+                <select
+                  value={statusFilter}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value as "all" | "active" | "suspended");
+                    setPage(1);
+                  }}
+                  className="bg-transparent text-sm"
+                >
+                  <option value="all">All status</option>
+                  <option value="active">Active</option>
+                  <option value="suspended">Suspended</option>
+                </select>
+              </div>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value as "name" | "role" | "created")}
+                className="rounded-lg bg-background/70 border border-border px-3 py-2 text-sm"
+              >
+                <option value="name">Sort: Name</option>
+                <option value="role">Sort: Role</option>
+                <option value="created">Sort: Newest</option>
+              </select>
+            </div>
           </div>
 
           <div className="overflow-x-auto">
@@ -388,7 +513,7 @@ export const UserManagementPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {visibleUsers.map((u) => (
+                {pagedUsers.map((u) => (
                   <tr key={u.id} className="border-b border-border/30 hover:bg-background/40">
                     <td className="py-2">
                       <div className="font-medium text-foreground">{u.name}</div>
@@ -440,10 +565,73 @@ export const UserManagementPage: React.FC = () => {
                     </td>
                   </tr>
                 ))}
-                {visibleUsers.length === 0 && (
+                {pagedUsers.length === 0 && (
                   <tr>
                     <td colSpan={5} className="py-8 text-center text-muted-foreground">
                       No users found.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
+            <div>
+              Showing {pagedUsers.length} of {visibleUsers.length} matching users
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="rounded-md border border-border px-2 py-1 disabled:opacity-50"
+              >
+                Prev
+              </button>
+              <span>
+                Page {page} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="rounded-md border border-border px-2 py-1 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-border/40 bg-card/70 p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <History className="h-4 w-4 text-muted-foreground" />
+            <h2 className="text-lg font-semibold text-foreground">Recent Auth Activity</h2>
+          </div>
+          <div className="max-h-72 overflow-auto rounded-lg border border-border/40">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-card">
+                <tr className="text-left text-muted-foreground border-b border-border/50">
+                  <th className="py-2 px-3">When</th>
+                  <th className="py-2 px-3">Action</th>
+                  <th className="py-2 px-3">Actor</th>
+                  <th className="py-2 px-3">Target</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditEvents.map((evt) => (
+                  <tr key={evt.id} className="border-b border-border/30">
+                    <td className="py-2 px-3 text-xs text-muted-foreground">{new Date(evt.createdAt).toLocaleString()}</td>
+                    <td className="py-2 px-3 font-mono text-xs">{evt.action}</td>
+                    <td className="py-2 px-3 text-xs">{evt.actorUserId || "-"}</td>
+                    <td className="py-2 px-3 text-xs">{evt.targetUserId || "-"}</td>
+                  </tr>
+                ))}
+                {auditEvents.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-6 text-center text-muted-foreground">
+                      No audit events found.
                     </td>
                   </tr>
                 )}

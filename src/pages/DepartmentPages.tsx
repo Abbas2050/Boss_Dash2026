@@ -5,22 +5,18 @@ import { AccountsDepartment } from "@/components/dashboard/AccountsDepartment";
 import { MarketingDepartment } from "@/components/dashboard/MarketingDepartment";
 import { HRDepartment } from "@/components/dashboard/HRDepartment";
 import { DealingDepartmentPage } from "@/pages/departments/DealingDepartmentPage";
-import { hasAccess } from "@/lib/auth";
-import { DEALING_TAB_KEYS } from "@/lib/permissions";
+import { getCurrentUser } from "@/lib/auth";
+import { canAccessDepartmentItem, getDepartmentItemBySlug, getVisibleDepartmentItems } from "@/lib/permissions";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 
 export const DepartmentPages: React.FC = () => {
   const { dept } = useParams<{ dept?: string }>();
-  const selected = (dept || "dealing").toLowerCase();
-  const canDealing = hasAccess("Dealing") || DEALING_TAB_KEYS.some((item) => hasAccess(item.key));
-  const canViewSelected =
-    (selected === "dealing" && canDealing) ||
-    (selected === "backoffice" && hasAccess("Backoffice")) ||
-    (selected === "accounts" && hasAccess("Accounts")) ||
-    (selected === "marketing" && hasAccess("Marketing")) ||
-    (selected === "hr" && hasAccess("HR"));
+  const currentUser = getCurrentUser();
+  const defaultDepartment = getVisibleDepartmentItems(currentUser)[0]?.slug || "dealing";
+  const selected = (dept || defaultDepartment).toLowerCase();
+  const departmentItem = getDepartmentItemBySlug(selected);
 
-  if (["dealing", "backoffice", "accounts", "marketing", "hr"].includes(selected) && !canViewSelected) {
+  if (departmentItem && !canAccessDepartmentItem(currentUser, departmentItem)) {
     return <UnauthorizedPage />;
   }
 
@@ -28,6 +24,8 @@ export const DepartmentPages: React.FC = () => {
     selectedEntity: "all",
     refreshKey: 0,
   };
+
+  const knownDepartmentSlugs = new Set(getVisibleDepartmentItems(currentUser).map((item) => item.slug).concat(["dealing", "backoffice", "accounts", "marketing", "hr"]));
 
   return (
     <div className="min-h-screen p-3 sm:p-4 md:p-6 lg:p-8">
@@ -37,7 +35,7 @@ export const DepartmentPages: React.FC = () => {
       {selected === "marketing" && <MarketingDepartment {...commonProps} />}
       {selected === "hr" && <HRDepartment {...commonProps} />}
 
-      {!["dealing", "backoffice", "accounts", "marketing", "hr"].includes(selected) && (
+      {!knownDepartmentSlugs.has(selected) && (
         <div className="rounded-2xl border border-border/40 bg-card/75 p-6 shadow-sm">
           <h2 className="text-2xl font-semibold text-foreground capitalize">{selected}</h2>
           <p className="text-sm text-muted-foreground mt-2">This department page is being prepared.</p>

@@ -135,6 +135,9 @@ function parseNaturalDateRange(message, fallbackContext) {
 function detectRequiredTools(message) {
   const q = String(message || "").toLowerCase();
   const required = [];
+  if (q.includes("endpoint") && !q.includes("which endpoint") && !q.includes("what endpoint")) {
+    required.push("auto_resolve_and_call_endpoint");
+  }
   if (q.includes("swagger") || q.includes("endpoint list") || q.includes("what api") || q.includes("which api") || q.includes("which endpoint")) {
     required.push("list_app_endpoints");
   }
@@ -207,6 +210,19 @@ function summarizeToolOutput(name, output) {
         endpointId: output.endpointId,
         status: output.response?.status,
         ok: output.response?.ok,
+      };
+    case "auto_resolve_and_call_endpoint":
+      return {
+        ok: output.ok,
+        question: output.question,
+        selectedEndpointId: output.selectedEndpointId || null,
+        selectedScore: output.selectedScore ?? null,
+        reason: output.reason || null,
+        topCandidates: Array.isArray(output.topCandidates) ? output.topCandidates.slice(0, 5) : [],
+        clarificationQuestion: output.clarificationQuestion || null,
+        missingByEndpoint: Array.isArray(output.missingByEndpoint) ? output.missingByEndpoint.slice(0, 3) : [],
+        requestedEndpointId: output.requestedEndpointId || null,
+        status: output.response?.status ?? output.result?.response?.status ?? null,
       };
     case "get_dealing_metrics":
       return {
@@ -400,6 +416,72 @@ function summarizeToolOutput(name, output) {
   }
 }
 
+function parseConfirmedEndpointId(message) {
+  const text = String(message || "").trim();
+  if (!text) return null;
+  const match = text.match(/(?:use|confirm|choose)\s+endpoint(?:\s+id)?\s*[:#-]?\s*([a-z][a-z0-9_]*(?:[.:][a-z0-9_]+)+)/i);
+  return match ? String(match[1]).trim() : null;
+}
+
+async function runDirectEndpointSelection({ message, context }) {
+  const endpointId = parseConfirmedEndpointId(message);
+  if (!endpointId) return null;
+
+  const output = await executeTool("auto_resolve_and_call_endpoint", {
+    question: String(message || ""),
+    confirmEndpointId: endpointId,
+    skipConfirmation: true,
+    fromDate: context.fromDate,
+    toDate: context.toDate,
+  });
+
+  const routeMeta = classifyRoute(message);
+  const toolsUsed = ["auto_resolve_and_call_endpoint"];
+  const toolSummaries = [{ tool: "auto_resolve_and_call_endpoint", data: summarizeToolOutput("auto_resolve_and_call_endpoint", output) }];
+
+  if (output?.ok && output?.selectedEndpointId) {
+    return {
+      answer: standardizeAnswer(
+        `Confirmed and called endpoint ${output.selectedEndpointId}. Status ${output.response?.status ?? output.result?.response?.status ?? "-"}.`,
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+
+  if (output?.reason === "missing_required_params") {
+    return {
+      answer: standardizeAnswer(
+        output.clarificationQuestion || `I need one required parameter before I can call ${endpointId}.`,
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+
+  if (output?.reason === "confirmed_endpoint_not_found") {
+    return {
+      answer: standardizeAnswer(
+        `I could not find endpoint id ${endpointId}. Please choose one from the suggested endpoint ids.`,
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+
+  return {
+    answer: standardizeAnswer(
+      `I could not execute endpoint ${endpointId}. Please try another endpoint id or add missing parameters.`,
+      { context, toolsUsed, routeMeta },
+    ),
+    toolsUsed,
+    toolSummaries,
+  };
+}
+
 function extractAssistantText(message) {
   if (!message) return "";
   if (typeof message.content === "string") return message.content;
@@ -447,7 +529,9 @@ async function runOpenAIToolLoop({ message, history, context }) {
     "Do live calculations from tool outputs when needed. " +
     "Do not invent fields. " +
     "Agent is strictly read-only: never perform updates/deletes/creates and never suggest code/system changes. " +
-    "If a query needs endpoint discovery or a generic read-only endpoint call, use list_app_endpoints and call_app_endpoint. " +
+    "If a query needs endpoint discovery or a generic read-only endpoint call, first use auto_resolve_and_call_endpoint. " +
+    "Only fall back to list_app_endpoints and call_app_endpoint when explicit endpoint control is needed. " +
+    "If auto_resolve_and_call_endpoint returns reason=low_confidence_match, ask the user to confirm one endpoint id before proceeding. " +
     "Source routing policy: Use Portal tools for CRM/users/transactions/deposits/withdrawals/KYC/wallet/backoffice questions. " +
     "Use MT5/backend tools for login/account equity/margin/dealing/coverage/risk/swap/history/bonus/contract-size questions. " +
     "If a query spans both domains, call both relevant tool sets and state that explicitly. " +
@@ -541,13 +625,31 @@ async function runRuleBasedFallback({ message, context }) {
   }
 
   if (q.includes("endpoint") && (q.includes("call") || q.includes("run") || q.includes("query"))) {
-    const endpoints = await call("list_app_endpoints", { search: q, limit: 1 });
-    const endpointId = endpoints?.endpoints?.[0]?.id;
-    if (endpointId) {
-      const called = await call("call_app_endpoint", { endpointId });
+    const resolved = await call("auto_resolve_and_call_endpoint", { question: message });
+    if (resolved?.ok && resolved?.selectedEndpointId) {
       return {
         answer: standardizeAnswer(
-          `Called endpoint ${endpointId}. Status ${called.response?.status ?? "-"}.`,
+          `Called endpoint ${resolved.selectedEndpointId}. Status ${resolved.response?.status ?? resolved.result?.response?.status ?? "-"}.`,
+          { context, toolsUsed, routeMeta },
+        ),
+        toolsUsed,
+        toolSummaries,
+      };
+    }
+    if (resolved?.reason === "low_confidence_match") {
+      return {
+        answer: standardizeAnswer(
+          resolved.clarificationQuestion || "I found multiple possible endpoints. Please confirm the endpoint id.",
+          { context, toolsUsed, routeMeta },
+        ),
+        toolsUsed,
+        toolSummaries,
+      };
+    }
+    if (resolved?.reason === "missing_required_params") {
+      return {
+        answer: standardizeAnswer(
+          resolved.clarificationQuestion || "I need a bit more information to call the correct endpoint.",
           { context, toolsUsed, routeMeta },
         ),
         toolsUsed,
@@ -733,6 +835,38 @@ async function runRuleBasedFallback({ message, context }) {
     };
   }
 
+  const resolved = await call("auto_resolve_and_call_endpoint", { question: message });
+  if (resolved?.ok && resolved?.selectedEndpointId) {
+    return {
+      answer: standardizeAnswer(
+        `I resolved this question to endpoint ${resolved.selectedEndpointId} and fetched the latest response successfully.`,
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+  if (resolved?.reason === "low_confidence_match") {
+    return {
+      answer: standardizeAnswer(
+        resolved.clarificationQuestion || "I found multiple possible endpoints. Please confirm which endpoint id to use.",
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+  if (resolved?.reason === "missing_required_params") {
+    return {
+      answer: standardizeAnswer(
+        resolved.clarificationQuestion || "I need one missing parameter before I can fetch this result.",
+        { context, toolsUsed, routeMeta },
+      ),
+      toolsUsed,
+      toolSummaries,
+    };
+  }
+
   const snap = await call("get_live_snapshot");
   return {
     answer: standardizeAnswer(
@@ -750,6 +884,9 @@ export async function runAgentChat({ message, history, context }) {
   }
 
   const effectiveContext = parseNaturalDateRange(message, context);
+
+  const directEndpoint = await runDirectEndpointSelection({ message, context: effectiveContext });
+  if (directEndpoint) return directEndpoint;
 
   if (OPENAI_API_KEY) {
     return runOpenAIToolLoop({ message, history, context: effectiveContext });
