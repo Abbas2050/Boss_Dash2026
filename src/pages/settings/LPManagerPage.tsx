@@ -3,6 +3,9 @@ import React, { useEffect, useState } from "react";
 type LPAccount = any;
 
 export const LPManagerPage: React.FC = () => {
+  const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+  const apiUrl = (path: string) => (backendBaseUrl ? `${backendBaseUrl}${path}` : path);
+
   const [accounts, setAccounts] = useState<LPAccount[]>([]);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [lpName, setLpName] = useState("");
@@ -39,6 +42,19 @@ export const LPManagerPage: React.FC = () => {
   const [editErrors, setEditErrors] = useState<Record<string,string>>({});
   const [editSaving, setEditSaving] = useState<boolean>(false);
   const [showPreview, setShowPreview] = useState<boolean>(false);
+
+  async function readJsonOrThrow(resp: Response, label: string) {
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`${label} failed (HTTP ${resp.status})${text ? `: ${text.slice(0, 200)}` : ""}`);
+    }
+    const contentType = (resp.headers.get("content-type") || "").toLowerCase();
+    if (!contentType.includes("application/json")) {
+      const text = await resp.text().catch(() => "");
+      throw new Error(`${label} returned non-JSON response${text ? `: ${text.slice(0, 120)}` : ""}`);
+    }
+    return resp.json();
+  }
 
   function openEditModal(id: number) {
     const a = accounts.find(x => x.id === id);
@@ -92,7 +108,7 @@ export const LPManagerPage: React.FC = () => {
     if (editMt5Password.trim()) body.mt5Password = editMt5Password.trim();
 
     try {
-      const resp = await fetch(`/api/LpAccount/${editId}`, {
+      const resp = await fetch(apiUrl(`/api/LpAccount/${editId}`), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       if (resp.ok) {
@@ -111,8 +127,8 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadAccounts() {
     try {
-      const resp = await fetch(`/api/LpAccount?all=true`);
-      const data = await resp.json();
+      const resp = await fetch(apiUrl(`/api/LpAccount?all=true`));
+      const data = await readJsonOrThrow(resp, "Load accounts");
       setAccounts(data || []);
     } catch (e: any) {
       setAccounts([]);
@@ -122,7 +138,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadCoverage() {
     try {
-      const resp = await fetch(`/Coverage/dashboard`);
+      const resp = await fetch(apiUrl(`/Coverage/dashboard`));
       // we don't fully render coverage here (separate UI), keep a noop or simple console for now
       await resp.json().catch(() => null);
     } catch (e: any) {
@@ -132,7 +148,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadTerminalStatus() {
     try {
-      const resp = await fetch(`/api/TerminalPosition/status`);
+      const resp = await fetch(apiUrl(`/api/TerminalPosition/status`));
       await resp.json().catch(() => null);
     } catch (e: any) {
       // ignore
@@ -170,7 +186,7 @@ export const LPManagerPage: React.FC = () => {
     }
 
     try {
-      const resp = await fetch(`/api/LpAccount`, {
+      const resp = await fetch(apiUrl(`/api/LpAccount`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -192,7 +208,7 @@ export const LPManagerPage: React.FC = () => {
   async function deactivate(id: number) {
     if (!confirm('Deactivate this LP account? It will stop tracking positions.')) return;
     try {
-      const resp = await fetch(`/api/LpAccount/${id}`, { method: 'DELETE' });
+      const resp = await fetch(apiUrl(`/api/LpAccount/${id}`), { method: 'DELETE' });
       if (resp.ok) {
         setMsg({ text: 'Account deactivated', ok: true });
         loadAccounts(); loadCoverage();
@@ -205,7 +221,7 @@ export const LPManagerPage: React.FC = () => {
   async function removeAccount(id: number, name: string) {
     if (!confirm(`Permanently remove LP account "${name}" (#${id})? This cannot be undone.`)) return;
     try {
-      const resp = await fetch(`/api/LpAccount/${id}?permanent=true`, { method: 'DELETE' });
+      const resp = await fetch(apiUrl(`/api/LpAccount/${id}?permanent=true`), { method: 'DELETE' });
       if (resp.ok) {
         setMsg({ text: `Account "${name}" permanently removed`, ok: true });
         loadAccounts(); loadCoverage();
@@ -217,7 +233,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function activate(id: number) {
     try {
-      const resp = await fetch(`/api/LpAccount/${id}`, {
+      const resp = await fetch(apiUrl(`/api/LpAccount/${id}`), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ isActive: true })
       });
       if (resp.ok) {
@@ -238,6 +254,38 @@ export const LPManagerPage: React.FC = () => {
     <div className="bg-background min-h-screen">
       <main className="p-3 sm:p-4 md:p-6 lg:p-8">
         <h1 className="text-2xl font-bold text-primary mb-6">LP Account Manager</h1>
+
+        <div className="mb-6 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-border/40 bg-card/80 p-4">
+            <div className="text-sm font-semibold text-primary">LP Info</div>
+            <p className="mt-1 text-xs text-foreground/70">
+              Manage LP offsets, revenue share %, swap-free days, credit caps, notes, and history start settings.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                href="/lp-info%201.html"
+                className="rounded border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-secondary/70"
+              >
+                Open LP Info Page
+              </a>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border/40 bg-card/80 p-4">
+            <div className="text-sm font-semibold text-primary">LP Contract Sizes</div>
+            <p className="mt-1 text-xs text-foreground/70">
+              Configure per-LP symbol contract-size overrides and conversion factors used in coverage normalization.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                href="/lp-contract-sizes.html"
+                className="rounded border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-secondary/70"
+              >
+                Open LP Contract Sizes Page
+              </a>
+            </div>
+          </div>
+        </div>
 
         <div className="mb-4 text-sm text-foreground/80">
           <button onClick={loadAll} className="bg-secondary px-3 py-1 rounded">Refresh All</button>

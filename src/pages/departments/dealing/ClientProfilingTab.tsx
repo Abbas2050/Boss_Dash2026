@@ -375,7 +375,7 @@ export function ClientProfilingTab({
 
   useEffect(() => {
     void loadRankings();
-  }, [loadRankings, refreshKey]);
+  }, [refreshKey]);
 
   return (
     <div className="space-y-4">
@@ -402,7 +402,7 @@ export function ClientProfilingTab({
             <option value="15">Top 15</option>
             <option value="20">Top 20</option>
           </select>
-          <button type="button" onClick={() => { onRefresh(); void loadRankings(); }} disabled={loading}
+          <button type="button" onClick={onRefresh} disabled={loading}
             className="inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-700 hover:bg-cyan-500/20 disabled:opacity-60 dark:text-cyan-300">
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             {loading ? "Loading…" : "Refresh"}

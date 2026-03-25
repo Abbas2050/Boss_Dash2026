@@ -10,6 +10,10 @@ export interface AgentChatResponse {
   ok: boolean;
   answer?: string;
   toolsUsed?: string[];
+  toolSummaries?: Array<{
+    tool: string;
+    data: Record<string, any> | null;
+  }>;
   context?: {
     fromDate: string;
     toDate: string;
@@ -46,6 +50,31 @@ export interface AgentLiveSnapshot {
   } | null;
   swap?: {
     dueTonight?: number;
+  } | null;
+  history?: {
+    totals?: {
+      netPL?: number;
+      realLpPL?: number;
+      lpPL?: number;
+      grossProfit?: number;
+    };
+  } | null;
+  accounts?: {
+    totalDeposits?: number;
+    totalWithdrawals?: number;
+    netFlow?: number;
+  } | null;
+  backoffice?: {
+    totalClients?: number;
+    totalMt5Accounts?: number;
+    deposits?: number;
+    withdrawals?: number;
+  } | null;
+  marketing?: {
+    sessions?: number;
+    activeUsers?: number;
+    newUsers?: number;
+    conversions?: number;
   } | null;
 }
 

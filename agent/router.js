@@ -72,6 +72,7 @@ router.post("/chat", requireLiveAgentAccess, async (req, res) => {
       ok: true,
       answer: result.answer,
       toolsUsed: result.toolsUsed || [],
+      toolSummaries: result.toolSummaries || [],
       context: {
         fromDate: range.from,
         toDate: range.to,

@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - LP Contract Sizes</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { max-width: 1050px; margin: 0 auto; padding: 30px 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 6px; }
+        .subtitle { color: #565f89; font-size: 13px; margin-bottom: 25px; }
+
+        .panel { background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 15px; margin-bottom: 20px; }
+        h2 { font-size: 15px; color: #9ece6a; margin-bottom: 12px; }
+
+        .form-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .form-row input, .form-row select { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
+        .form-row input[type="number"] { width: 130px; }
+        .form-row input[type="text"] { width: 140px; }
+        .form-row select { width: 220px; }
+        .form-row input[readonly] { color: #7aa2f7; background: #1a1b26; border-color: #292e42; }
+
+        .form-label { font-size: 11px; color: #565f89; margin-bottom: 2px; }
+        .form-group { display: flex; flex-direction: column; }
+
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.detect { background: #e0af68; }
+        button.detect:hover { background: #f0c878; }
+        button.danger { background: #f7768e; padding: 4px 10px; font-size: 12px; }
+        button.danger:hover { background: #ff9e9e; }
+        button.save { background: #9ece6a; padding: 4px 10px; font-size: 12px; }
+        button.save:hover { background: #b5e88a; }
+        button.cancel { background: #565f89; padding: 4px 10px; font-size: 12px; }
+        button.cancel:hover { background: #737aa2; }
+
+        #msg { margin-top: 10px; font-size: 13px; min-height: 20px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 10px 12px; text-align: left; font-weight: 600; }
+        td { padding: 8px 12px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+        .symbol { color: #e0af68; font-weight: 600; }
+        .login { color: #7aa2f7; font-weight: 600; }
+        .cs { color: #c0caf5; }
+        .factor { color: #9ece6a; font-weight: 600; }
+        .empty { color: #565f89; text-align: center; padding: 30px; }
+
+        .count { font-size: 12px; color: #565f89; margin-bottom: 10px; }
+
+        .edit-input { background: #24283b; border: 1px solid #7aa2f7; color: #e0e0e0; padding: 4px 8px; border-radius: 3px; font-size: 13px; width: 100px; }
+
+        .lp-name { color: #bb9af7; font-size: 12px; }
+
+        .info-box { background: #24283b; border: 1px solid #414868; border-radius: 4px; padding: 10px 14px; margin-bottom: 15px; font-size: 12px; color: #888; line-height: 1.6; }
+        .info-box strong { color: #c0caf5; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html" class="active">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Per-LP Contract Size Overrides</h1>
+        <div class="subtitle">Manual contract size overrides per LP account. LP lots are normalized to client-equivalent in the coverage dashboard.</div>
+
+        <div class="info-box">
+            <strong>How it works:</strong> Each LP may have different contract sizes for the same symbol.
+            Contract sizes are <strong>auto-detected</strong> from MT5 positions (Manager &amp; Terminal sources).
+            Use this page to add <strong>manual overrides</strong> when auto-detection is unavailable (e.g. XTB/bonus LPs)
+            or when auto-detected values are incorrect.<br>
+            <strong>Formula:</strong> <code>displayLots = rawLpLots &times; (lpContractSize / clientContractSize)</code>
+        </div>
+
+        <div class="panel">
+            <h2>Add Override</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <div class="form-label">LP Account</div>
+                    <select id="loginSelect">
+                        <option value="">Loading LPs...</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <div class="form-label">Symbol</div>
+                    <input id="symbolInput" type="text" placeholder="e.g. XAUUSD" style="text-transform:uppercase" />
+                </div>
+                <div class="form-group">
+                    <div class="form-label">&nbsp;</div>
+                    <button class="detect" onclick="detectSizes()">Detect</button>
+                </div>
+                <div class="form-group">
+                    <div class="form-label">LP Contract Size</div>
+                    <input id="csInput" type="number" placeholder="LP CS" min="0" step="0.01" />
+                </div>
+                <div class="form-group">
+                    <div class="form-label">Client CS</div>
+                    <input id="clientCsDisplay" type="text" readonly placeholder="-" style="width:100px" />
+                </div>
+                <div class="form-group">
+                    <div class="form-label">Factor</div>
+                    <input id="factorDisplay" type="text" readonly placeholder="-" style="width:90px" />
+                </div>
+                <div class="form-group">
+                    <div class="form-label">&nbsp;</div>
+                    <button onclick="addEntry()">Add</button>
+                </div>
+            </div>
+            <div id="msg"></div>
+        </div>
+
+        <div class="panel">
+            <h2>Overrides</h2>
+            <div id="count" class="count"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>LP Login</th>
+                        <th>LP Name</th>
+                        <th>Symbol</th>
+                        <th>LP Contract Size</th>
+                        <th>Client CS</th>
+                        <th>Factor</th>
+                        <th style="text-align:right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTable">
+                    <tr><td colspan="8" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let lpAccounts = [];
+
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            setTimeout(() => el.textContent = '', 4000);
+        }
+
+        function escHtml(s) {
+            if (!s) return '';
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function getLpName(login) {
+            const acct = lpAccounts.find(a => String(a.mt5Login) === String(login));
+            return acct ? acct.lpName : '';
+        }
+
+        function computeFactor() {
+            const cs = parseFloat(document.getElementById('csInput').value);
+            const clientCs = parseFloat(document.getElementById('clientCsDisplay').value);
+            const display = document.getElementById('factorDisplay');
+            if (!isNaN(cs) && !isNaN(clientCs) && clientCs > 0) {
+                display.value = (cs / clientCs).toFixed(4);
+            } else {
+                display.value = '-';
+            }
+        }
+
+        document.getElementById('csInput').addEventListener('input', computeFactor);
+
+        async function loadLpAccounts() {
+            try {
+                const resp = await fetch('/api/LpAccount');
+                lpAccounts = await resp.json();
+                const select = document.getElementById('loginSelect');
+                select.innerHTML = '<option value="">-- Select LP Account --</option>';
+                lpAccounts.forEach(a => {
+                    const opt = document.createElement('option');
+                    opt.value = a.mt5Login;
+                    opt.textContent = `${a.lpName} (${a.mt5Login}) [${a.source}]`;
+                    select.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('Failed to load LP accounts:', e);
+            }
+        }
+
+        async function detectSizes() {
+            const login = document.getElementById('loginSelect').value;
+            const symbol = document.getElementById('symbolInput').value.trim().toUpperCase();
+            if (!login) { msg('Select an LP account first', false); return; }
+            if (!symbol) { msg('Enter a symbol first', false); return; }
+
+            try {
+                const resp = await fetch(`/api/LpContractSize/detect?login=${login}&symbol=${encodeURIComponent(symbol)}`);
+                if (!resp.ok) { msg('Detection failed', false); return; }
+                const data = await resp.json();
+
+                if (data.lpContractSize > 0)
+                    document.getElementById('csInput').value = data.lpContractSize;
+                else
+                    document.getElementById('csInput').value = '';
+
+                document.getElementById('clientCsDisplay').value = data.clientContractSize > 0 ? data.clientContractSize : '';
+                computeFactor();
+
+                let info = `Detected: LP CS=${data.lpContractSize}, Client CS=${data.clientContractSize}, Factor=${data.conversionFactor.toFixed(4)}`;
+                if (data.lpContractSize === 0) info += ' (LP CS not found from positions - enter manually)';
+                if (data.clientContractSize === 0) info += ' (client CS not found)';
+                msg(info, data.lpContractSize > 0 && data.clientContractSize > 0);
+            } catch (e) {
+                msg(`Detection failed: ${e.message}`, false);
+            }
+        }
+
+        async function loadEntries() {
+            try {
+                const resp = await fetch('/api/LpContractSize');
+                const data = await resp.json();
+                const tbody = document.getElementById('dataTable');
+
+                document.getElementById('count').textContent = `${data.length} override${data.length !== 1 ? 's' : ''}`;
+
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="empty">No manual overrides. Auto-detected contract sizes are used from positions. Add overrides for LPs where auto-detection is unavailable.</td></tr>';
+                    return;
+                }
+
+                // For each entry, try to detect client CS for the factor display
+                const rows = await Promise.all(data.map(async (e) => {
+                    let clientCs = 0;
+                    try {
+                        const detectResp = await fetch(`/api/LpContractSize/detect?login=${e.mt5Login}&symbol=${encodeURIComponent(e.symbol)}`);
+                        if (detectResp.ok) {
+                            const detectData = await detectResp.json();
+                            clientCs = detectData.clientContractSize || 0;
+                        }
+                    } catch {}
+
+                    const factor = (e.contractSize > 0 && clientCs > 0) ? (e.contractSize / clientCs).toFixed(4) : '-';
+                    const lpName = getLpName(e.mt5Login);
+
+                    return `
+                        <tr id="row-${e.id}">
+                            <td>${e.id}</td>
+                            <td class="login">${e.mt5Login}</td>
+                            <td class="lp-name">${escHtml(lpName)}</td>
+                            <td class="symbol">${escHtml(e.symbol)}</td>
+                            <td class="cs" id="cs-${e.id}">${e.contractSize}</td>
+                            <td class="cs">${clientCs > 0 ? clientCs : '-'}</td>
+                            <td class="factor">${factor}</td>
+                            <td style="text-align:right">
+                                <button class="save" onclick="startEdit(${e.id}, ${e.contractSize})">Edit</button>
+                                <button class="danger" onclick="deleteEntry(${e.id}, ${e.mt5Login}, '${escHtml(e.symbol)}')">Delete</button>
+                            </td>
+                        </tr>`;
+                }));
+
+                tbody.innerHTML = rows.join('');
+            } catch (e) {
+                document.getElementById('dataTable').innerHTML = `<tr><td colspan="8" class="empty" style="color:#f7768e">Failed to load: ${e.message}</td></tr>`;
+            }
+        }
+
+        function startEdit(id, currentCs) {
+            const csCell = document.getElementById(`cs-${id}`);
+            const row = document.getElementById(`row-${id}`);
+
+            csCell.innerHTML = `<input class="edit-input" type="number" step="0.01" min="0" value="${currentCs}" id="editCs-${id}" />`;
+
+            const actionsCell = row.querySelector('td:last-child');
+            actionsCell.innerHTML = `
+                <button class="save" onclick="saveEdit(${id})">Save</button>
+                <button class="cancel" onclick="loadEntries()">Cancel</button>`;
+
+            document.getElementById(`editCs-${id}`).focus();
+
+            row.addEventListener('keydown', function handler(e) {
+                if (e.key === 'Enter') saveEdit(id);
+                if (e.key === 'Escape') loadEntries();
+            });
+        }
+
+        async function saveEdit(id) {
+            const cs = parseFloat(document.getElementById(`editCs-${id}`).value);
+
+            if (isNaN(cs) || cs <= 0) {
+                msg('Contract size must be > 0', false);
+                return;
+            }
+
+            try {
+                const resp = await fetch(`/api/LpContractSize/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mt5Login: 0, symbol: '', contractSize: cs })
+                });
+
+                if (resp.ok) {
+                    msg('Override updated', true);
+                    loadEntries();
+                } else {
+                    const text = await resp.text();
+                    msg(`Error: ${text}`, false);
+                }
+            } catch (e) {
+                msg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        async function addEntry() {
+            const login = document.getElementById('loginSelect').value;
+            const symbol = document.getElementById('symbolInput').value.trim().toUpperCase();
+            const cs = parseFloat(document.getElementById('csInput').value);
+
+            if (!login) { msg('Select an LP account', false); return; }
+            if (!symbol) { msg('Enter a symbol', false); return; }
+            if (isNaN(cs) || cs <= 0) { msg('Contract size must be > 0', false); return; }
+
+            try {
+                const resp = await fetch('/api/LpContractSize', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mt5Login: parseInt(login), symbol, contractSize: cs })
+                });
+
+                if (resp.ok) {
+                    msg(`Added: login ${login} / ${symbol} = ${cs}`, true);
+                    document.getElementById('symbolInput').value = '';
+                    document.getElementById('csInput').value = '';
+                    document.getElementById('clientCsDisplay').value = '';
+                    document.getElementById('factorDisplay').value = '';
+                    loadEntries();
+                } else {
+                    const text = await resp.text();
+                    msg(`Error: ${text}`, false);
+                }
+            } catch (e) {
+                msg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        async function deleteEntry(id, login, symbol) {
+            if (!confirm(`Delete override for login ${login} / ${symbol}? Will fall back to auto-detected contract size.`)) return;
+            try {
+                const resp = await fetch(`/api/LpContractSize/${id}`, { method: 'DELETE' });
+                if (resp.ok) {
+                    msg('Override deleted', true);
+                    loadEntries();
+                } else {
+                    msg('Failed to delete', false);
+                }
+            } catch (e) {
+                msg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        document.getElementById('symbolInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') detectSizes();
+        });
+
+        // Init
+        loadLpAccounts().then(() => loadEntries());
+    </script>
+</body>
+</html>

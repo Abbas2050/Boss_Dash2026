@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Symbol Mapping</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { max-width: 800px; margin: 0 auto; padding: 30px 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 6px; }
+        .subtitle { color: #565f89; font-size: 13px; margin-bottom: 25px; }
+
+        .panel { background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 15px; margin-bottom: 20px; }
+        h2 { font-size: 15px; color: #9ece6a; margin-bottom: 12px; }
+
+        .form-inline { display: flex; gap: 10px; align-items: center; }
+        .form-inline input { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 8px 12px; border-radius: 4px; font-size: 13px; flex: 1; }
+        .form-inline span { color: #565f89; font-size: 18px; }
+
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.danger { background: #f7768e; padding: 4px 10px; font-size: 12px; }
+        button.danger:hover { background: #ff9e9e; }
+
+        #msg { margin-top: 10px; font-size: 13px; min-height: 20px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 10px 12px; text-align: left; font-weight: 600; }
+        td { padding: 8px 12px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+        .raw { color: #e0af68; font-weight: 600; }
+        .mapped { color: #9ece6a; font-weight: 600; }
+        .arrow { color: #565f89; text-align: center; }
+        .empty { color: #565f89; text-align: center; padding: 30px; }
+
+        .count { font-size: 12px; color: #565f89; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html" class="active">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Symbol Mapping</h1>
+        <div class="subtitle">Map LP-specific symbol names to normalized symbols used by the coverage tracker</div>
+
+        <div class="panel">
+            <h2>Add Mapping</h2>
+            <div class="form-inline">
+                <input id="rawSymbol" placeholder="LP symbol (e.g. XAUUSDi, GOLD.cx)" />
+                <span>&#8594;</span>
+                <input id="mappedSymbol" placeholder="Normalized (e.g. XAUUSD)" />
+                <button onclick="addMapping()">Add</button>
+            </div>
+            <div id="msg"></div>
+        </div>
+
+        <div class="panel">
+            <h2>Mappings</h2>
+            <div id="count" class="count"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Raw Symbol (LP)</th>
+                        <th class="arrow"></th>
+                        <th>Mapped Symbol</th>
+                        <th style="text-align:right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="mappingsTable">
+                    <tr><td colspan="5" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            setTimeout(() => el.textContent = '', 4000);
+        }
+
+        async function loadMappings() {
+            try {
+                const resp = await fetch('/api/SymbolMapping');
+                const data = await resp.json();
+                const tbody = document.getElementById('mappingsTable');
+
+                document.getElementById('count').textContent = `${data.length} mapping${data.length !== 1 ? 's' : ''}`;
+
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="empty">No symbol mappings configured. Add one above.</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.map(m => `
+                    <tr>
+                        <td>${m.id}</td>
+                        <td class="raw">${m.rawSymbol}</td>
+                        <td class="arrow">&#8594;</td>
+                        <td class="mapped">${m.mappedSymbol}</td>
+                        <td style="text-align:right">
+                            <button class="danger" onclick="deleteMapping(${m.id}, '${m.rawSymbol}')">Delete</button>
+                        </td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                document.getElementById('mappingsTable').innerHTML = `<tr><td colspan="5" class="empty" style="color:#f7768e">Failed to load: ${e.message}</td></tr>`;
+            }
+        }
+
+        async function addMapping() {
+            const rawSymbol = document.getElementById('rawSymbol').value.trim();
+            const mappedSymbol = document.getElementById('mappedSymbol').value.trim();
+
+            if (!rawSymbol || !mappedSymbol) {
+                msg('Both fields are required', false);
+                return;
+            }
+
+            try {
+                const resp = await fetch('/api/SymbolMapping', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rawSymbol, mappedSymbol })
+                });
+
+                if (resp.ok) {
+                    msg(`Mapping added: ${rawSymbol} -> ${mappedSymbol}`, true);
+                    document.getElementById('rawSymbol').value = '';
+                    document.getElementById('mappedSymbol').value = '';
+                    loadMappings();
+                } else {
+                    const text = await resp.text();
+                    msg(`Error: ${text}`, false);
+                }
+            } catch (e) {
+                msg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        async function deleteMapping(id, name) {
+            if (!confirm(`Delete mapping for '${name}'?`)) return;
+            try {
+                const resp = await fetch(`/api/SymbolMapping/${id}`, { method: 'DELETE' });
+                if (resp.ok) {
+                    msg('Mapping deleted', true);
+                    loadMappings();
+                } else {
+                    msg('Failed to delete', false);
+                }
+            } catch (e) {
+                msg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        // Allow Enter key to submit
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && (e.target.id === 'rawSymbol' || e.target.id === 'mappedSymbol')) {
+                addMapping();
+            }
+        });
+
+        loadMappings();
+    </script>
+</body>
+</html>

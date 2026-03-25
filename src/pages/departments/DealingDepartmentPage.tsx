@@ -1,5 +1,6 @@
-﻿import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Bell, Camera, ChevronDown, ChevronRight, Info, Maximize2, Minimize2, RefreshCw } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/dealingApi";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
@@ -44,6 +45,7 @@ type CoverageRow = {
   uncovered: number;
   contractSizeMultiplier?: number;
   lpNets?: Record<string, number>;
+  isSubtotalRow?: boolean;
 };
 
 type CoverageData = {
@@ -57,6 +59,31 @@ type CoverageData = {
     lpNets?: Record<string, number>;
   };
 };
+
+const DEALING_MENU_QUERY_MAP: Record<string, string> = {
+  dealing: "Dealing",
+  coverage: "Coverage",
+  risk: "Risk Exposure",
+  "risk-exposure": "Risk Exposure",
+  metrics: "Metrics",
+  bonus: "Bonus",
+  contracts: "Contract Sizes",
+  "contract-sizes": "Contract Sizes",
+  swap: "Swap Tracker",
+  "swap-tracker": "Swap Tracker",
+  history: "History",
+  clients: "Clients NOP",
+  "clients-nop": "Clients NOP",
+  profiling: "Client Profiling",
+  "client-profiling": "Client Profiling",
+  rebate: "Rebate Calculator",
+  "rebate-calculator": "Rebate Calculator",
+};
+
+const DEALING_MENU_REVERSE_QUERY_MAP = Object.entries(DEALING_MENU_QUERY_MAP).reduce<Record<string, string>>((acc, [key, value]) => {
+  if (!acc[value]) acc[value] = key;
+  return acc;
+}, {});
 
 type BonusDashboardResponse = {
   positionMatchTable?: CoverageData;
@@ -345,6 +372,7 @@ type RebateRule = {
 type DealingOverviewData = {
   coverage: CoverageData | null;
   lpMetrics: MetricsData | null;
+  equitySummary: EquitySummaryData | null;
   swaps: SwapPosition[];
   historyAggregate: HistoryAggregateData | null;
 };
@@ -489,6 +517,8 @@ const isGoldSymbol = (symbol: string) => {
   return s === "XAUUSD" || s.startsWith("GOLD");
 };
 
+const isZeroish = (value: number | null | undefined, epsilon = 0.000001) => Math.abs(Number(value) || 0) <= epsilon;
+
 const formatCoverageVal = (value: number) => {
   if (value === 0) return <span className="text-slate-500">0.00</span>;
   if (value > 0) return <span className="text-emerald-700 dark:text-emerald-300">{value.toFixed(2)}</span>;
@@ -576,14 +606,13 @@ const escapeCsv = (value: string | number | null | undefined) => {
 
 const ALERT_EVENT_SET = new Set<string>(ALERT_EVENT_KEYS as readonly string[]);
 type BonusSubTab = (typeof BONUS_SUB_TABS)[number];
+const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
 
 const getAlertsHubConfig = () => {
-  const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
   const explicitTokenUrl = (import.meta as any).env?.VITE_SIGNALR_TOKEN_URL || "";
-  const base = String(backendBaseUrl).replace(/\/+$/, "");
   const tokenBase = String(explicitTokenUrl).trim();
   return {
-    hubUrl: base ? `${base}/ws/dashboard` : "/ws/dashboard",
+    hubUrl: `${BACKEND_BASE_URL}/ws/dashboard`,
     tokenUrls: tokenBase ? [tokenBase] : [],
   };
 };
@@ -622,21 +651,43 @@ const alertTypeForEvent = (eventName: AlertEventKey): LiveNotification["type"] =
 };
 
 export function DealingDepartmentPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [fromDate, setFromDate] = useState<Date>(() => new Date());
   const [toDate, setToDate] = useState<Date>(() => new Date());
+  const [selectedFromDate, setSelectedFromDate] = useState<Date>(() => new Date());
+  const [selectedToDate, setSelectedToDate] = useState<Date>(() => new Date());
   const [isLoading, setIsLoading] = useState(false);
   const [metrics, setMetrics] = useState<DealingMetrics>(DEFAULT_METRICS);
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [activeMenu, setActiveMenu] = useState("Dealing");
+  // URL is the single source of truth for the active tab — no useState needed
+  const activeMenu =
+    DEALING_MENU_QUERY_MAP[String(searchParams.get("tab") || "").trim().toLowerCase()] || "Dealing";
+  const setActiveMenu = useCallback(
+    (menu: string) => {
+      const tab = DEALING_MENU_REVERSE_QUERY_MAP[menu] || "dealing";
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("tab", tab);
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
   const [coverageData, setCoverageData] = useState<CoverageData | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [coverageError, setCoverageError] = useState<string | null>(null);
   const [coverageStatus, setCoverageStatus] = useState<"connected" | "connecting" | "disconnected">("disconnected");
   const [coverageLastUpdated, setCoverageLastUpdated] = useState<Date | null>(null);
   const [coverageRefreshKey, setCoverageRefreshKey] = useState(0);
+  const [coverageShowZeroData, setCoverageShowZeroData] = useState(false);
+  const [riskShowZeroData, setRiskShowZeroData] = useState(false);
+  const [overviewRiskExpandedSymbol, setOverviewRiskExpandedSymbol] = useState<string | null>(null);
   const [fullscreenTable, setFullscreenTable] = useState<FullscreenTableKey | null>(null);
   const [snapshottingTable, setSnapshottingTable] = useState<FullscreenTableKey | null>(null);
   const coverageSignalRRef = useRef<SignalRConnectionManager | null>(null);
@@ -713,6 +764,7 @@ export function DealingDepartmentPage() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyLastUpdated, setHistoryLastUpdated] = useState<Date | null>(null);
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
+  const [historyShowLowNtpRows, setHistoryShowLowNtpRows] = useState(false);
   const [historySavingLp, setHistorySavingLp] = useState<string | null>(null);
   const [historyStartPeriodEdits, setHistoryStartPeriodEdits] = useState<Record<string, string>>({});
   const [nopData, setNopData] = useState<NopReportData | null>(null);
@@ -736,6 +788,7 @@ export function DealingDepartmentPage() {
   const [overviewData, setOverviewData] = useState<DealingOverviewData>({
     coverage: null,
     lpMetrics: null,
+    equitySummary: null,
     swaps: [],
     historyAggregate: null,
   });
@@ -751,6 +804,11 @@ export function DealingDepartmentPage() {
     () => ALERT_EVENT_KEYS.filter((key) => livePrefs[key] && hasAccess(`Notifications:${key}`)),
     [livePrefs]
   );
+
+  const parseDateInput = (value: string, fallback: Date) => {
+    const next = new Date(`${value}T00:00:00`);
+    return Number.isNaN(next.getTime()) ? fallback : next;
+  };
 
   const modeLabel = isUtcTodaySelection(fromDate, toDate) ? "Live" : "Reports";
   const menuLoading =
@@ -890,7 +948,8 @@ export function DealingDepartmentPage() {
     if (!allowedMenuItems.includes(activeMenu)) {
       setActiveMenu(allowedMenuItems[0]);
     }
-  }, [allowedMenuItems, activeMenu]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedMenuItems]); // re-check only when permissions change, not on every tab switch
 
   useEffect(() => {
     if (activeMenu !== "Bonus") return;
@@ -913,6 +972,11 @@ export function DealingDepartmentPage() {
   }, [activeMenu, bonusSubTab]);
 
   const handlePageRefresh = () => {
+    const nextFrom = new Date(selectedFromDate);
+    const nextTo = new Date(selectedToDate);
+    setFromDate(nextFrom);
+    setToDate(nextTo);
+
     if (activeMenu === "Coverage" || activeMenu === "Risk Exposure") {
       setCoverageRefreshKey((k) => k + 1);
       return;
@@ -1215,8 +1279,8 @@ export function DealingDepartmentPage() {
 
   const handleCoverageSnapshot = () =>
     runSnapshot("coverage", () => {
-      if (!coverageData?.rows?.length) return;
-      const lpNames = coverageData.lpNames || [];
+      if (!coverageTableRows.length) return;
+      const lpNames = visibleCoverageLpNames;
       const headers = ["Symbol", "Buy/Sell", "Client Net", "Uncovered", ...lpNames];
       const rows: Array<Array<string | number>> = [];
       [...coverageRows.gold, ...coverageRows.rest].forEach((row, idx) => {
@@ -1226,18 +1290,18 @@ export function DealingDepartmentPage() {
           rows.push(["GOLD TOTAL", "", coverageGoldTotals.clientNet, coverageGoldTotals.uncovered, ...lpNames.map((lp) => coverageGoldTotals.lpTotals[lp] || 0)]);
         }
       });
-      rows.push(["TOTAL", "", coverageData.totals?.clientNet || 0, coverageData.totals?.uncovered || 0, ...lpNames.map((lp) => coverageData.totals?.lpNets?.[lp] || 0)]);
+      rows.push(["TOTAL", "", coverageData?.totals?.clientNet || 0, coverageData?.totals?.uncovered || 0, ...lpNames.map((lp) => coverageData?.totals?.lpNets?.[lp] || 0)]);
       downloadTableSnapshot({ filePrefix: "coverage-snapshot", title: "Coverage Snapshot - Position Match Table", updatedAt: coverageLastUpdated, headers, rows });
     });
 
   const handleRiskSnapshot = () =>
     runSnapshot("risk", () => {
-      if (!riskRows.length) return;
+      if (!riskVisibleRows.length) return;
       const headers = ["Symbol", "Direction", "Client Net", "LP Coverage", "Uncovered", "Coverage %"];
-      const rows: Array<Array<string | number>> = riskRows.map((row) => {
+      const rows: Array<Array<string | number>> = riskVisibleRows.map((row) => {
         const lpCoverage = row.clientNet - row.uncovered;
         const pct = row.clientNet === 0 ? "-" : `${(((row.clientNet - row.uncovered) / row.clientNet) * 100).toFixed(1)}%`;
-        return [row.symbol, row.direction || "-", row.clientNet, lpCoverage, row.uncovered, pct];
+        return [row.isSubtotalRow ? "GOLD NET (GOLDFT + XAUUSD)" : row.symbol, row.direction || "-", row.clientNet, lpCoverage, row.uncovered, pct];
       });
       const tClient = coverageData?.totals?.clientNet || 0;
       const tUncovered = coverageData?.totals?.uncovered || 0;
@@ -1299,7 +1363,7 @@ export function DealingDepartmentPage() {
   const handleHistorySnapshot = () =>
     runSnapshot("history", () => {
       if (historyTab === "aggregate") {
-        const items = historyAggregateData?.items || [];
+        const items = historyAggregateVisibleItems;
         if (!items.length) return;
         const headers = ["LP Name", "Login", "Source", "Start Period", "Start Equity", "End Equity", "Credit", "Deposit", "Withdrawal", "Net Deposits", "Gross P/L", "Commission", "Swap", "Net P/L", "Real LP P/L", "NTP %", "LP P/L (Rev Share)"];
         const rows: Array<Array<string | number>> = items.map((item) =>
@@ -1325,8 +1389,8 @@ export function DealingDepartmentPage() {
                 item.lpPL,
               ],
         );
-        if (historyAggregateData?.totals) {
-          const t = historyAggregateData.totals;
+        if (historyAggregateVisibleTotals) {
+          const t = historyAggregateVisibleTotals;
           rows.push(["TOTAL", "", "", "", t.startEquity, t.endEquity, t.credit, t.deposit, t.withdrawal, t.netDeposits, t.grossProfit, t.totalCommission, t.totalSwap, t.netPL, t.realLpPL, "", t.lpPL]);
         }
         downloadTableSnapshot({ filePrefix: "history-aggregate-snapshot", title: "History Snapshot - Revenue Share", updatedAt: historyLastUpdated, headers, rows });
@@ -1381,9 +1445,8 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const coverageEndpoint = backendBaseUrl ? `${backendBaseUrl}/Coverage/position-match-table` : "/Coverage/position-match-table";
-    const hubUrl = backendBaseUrl ? `${backendBaseUrl}/ws/dashboard` : "/ws/dashboard";
+    const coverageEndpoint = `${BACKEND_BASE_URL}/Coverage/position-match-table`;
+    const hubUrl = `${BACKEND_BASE_URL}/ws/dashboard`;
     let cancelled = false;
 
     const fetchCoverage = async () => {
@@ -1458,9 +1521,8 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const metricsEndpoint = backendBaseUrl ? `${backendBaseUrl}/Metrics/lp` : "/Metrics/lp";
-    const equitySummaryEndpoint = backendBaseUrl ? `${backendBaseUrl}/Metrics/equity-summary` : "/Metrics/equity-summary";
+    const metricsEndpoint = `${BACKEND_BASE_URL}/Metrics/lp`;
+    const equitySummaryEndpoint = `${BACKEND_BASE_URL}/Metrics/equity-summary`;
     let cancelled = false;
 
     const fetchMetrics = async () => {
@@ -1507,8 +1569,7 @@ export function DealingDepartmentPage() {
       setContractSizesError(null);
       return;
     }
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize` : "/api/ContractSize";
+    const endpoint = `${BACKEND_BASE_URL}/api/ContractSize`;
     let cancelled = false;
     const load = async () => {
       setContractSizesLoading(true);
@@ -1545,8 +1606,7 @@ export function DealingDepartmentPage() {
       setContractFormMessage({ text: "Enter a symbol first.", ok: false });
       return;
     }
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/detect/${encodeURIComponent(symbol)}` : `/api/ContractSize/detect/${encodeURIComponent(symbol)}`;
+    const endpoint = `${BACKEND_BASE_URL}/api/ContractSize/detect/${encodeURIComponent(symbol)}`;
     try {
       const resp = await fetch(endpoint);
       if (!resp.ok) throw new Error(`Detect ${resp.status}`);
@@ -1571,8 +1631,7 @@ export function DealingDepartmentPage() {
       setContractFormMessage({ text: "Symbol, client CS, and LP CS (> 0) are required.", ok: false });
       return;
     }
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize` : "/api/ContractSize";
+    const endpoint = `${BACKEND_BASE_URL}/api/ContractSize`;
     try {
       const resp = await fetch(endpoint, {
         method: "POST",
@@ -1597,8 +1656,7 @@ export function DealingDepartmentPage() {
       setContractSizesError("Invalid values. LP CS must be > 0.");
       return;
     }
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/${id}` : `/api/ContractSize/${id}`;
+    const endpoint = `${BACKEND_BASE_URL}/api/ContractSize/${id}`;
     try {
       const resp = await fetch(endpoint, {
         method: "PUT",
@@ -1614,8 +1672,7 @@ export function DealingDepartmentPage() {
   };
 
   const deleteContractSizeEntry = async (id: number) => {
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/ContractSize/${id}` : `/api/ContractSize/${id}`;
+    const endpoint = `${BACKEND_BASE_URL}/api/ContractSize/${id}`;
     try {
       const resp = await fetch(endpoint, { method: "DELETE" });
       if (!resp.ok) throw new Error(`Delete ${resp.status}`);
@@ -1631,8 +1688,7 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/Swap/positions` : "/Swap/positions";
+    const endpoint = `${BACKEND_BASE_URL}/Swap/positions`;
     let cancelled = false;
 
     const fetchSwap = async () => {
@@ -1661,17 +1717,29 @@ export function DealingDepartmentPage() {
     };
   }, [activeMenu, swapRefreshKey]);
 
+  const visibleCoverageLpNames = useMemo(() => {
+    const lpNames = coverageData?.lpNames || [];
+    if (coverageShowZeroData || !coverageData?.rows?.length) return lpNames;
+    return lpNames.filter((lp) => coverageData.rows.some((row) => !isZeroish(row.lpNets?.[lp] || 0)));
+  }, [coverageData, coverageShowZeroData]);
+
   const coverageRows = useMemo(() => {
     if (!coverageData?.rows) return { gold: [] as CoverageRow[], rest: [] as CoverageRow[] };
-    const gold = coverageData.rows.filter((row) => isGoldSymbol(row.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
-    const rest = coverageData.rows.filter((row) => !isGoldSymbol(row.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
+    const filteredRows = coverageShowZeroData
+      ? coverageData.rows
+      : coverageData.rows.filter((row) => {
+          const hasVisibleLpValue = visibleCoverageLpNames.some((lp) => !isZeroish(row.lpNets?.[lp] || 0));
+          return !isZeroish(row.clientNet) || !isZeroish(row.uncovered) || hasVisibleLpValue;
+        });
+    const gold = filteredRows.filter((row) => isGoldSymbol(row.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
+    const rest = filteredRows.filter((row) => !isGoldSymbol(row.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
     return { gold, rest };
-  }, [coverageData]);
+  }, [coverageData, coverageShowZeroData, visibleCoverageLpNames]);
 
   const coverageGoldTotals = useMemo(() => {
     const gold = coverageRows.gold;
     const lpTotals: Record<string, number> = {};
-    (coverageData?.lpNames || []).forEach((lp) => {
+    visibleCoverageLpNames.forEach((lp) => {
       lpTotals[lp] = gold.reduce((sum, row) => sum + (row.lpNets?.[lp] || 0), 0);
     });
     return {
@@ -1679,7 +1747,57 @@ export function DealingDepartmentPage() {
       uncovered: gold.reduce((sum, row) => sum + row.uncovered, 0),
       lpTotals,
     };
-  }, [coverageRows.gold, coverageData?.lpNames]);
+  }, [coverageRows.gold, visibleCoverageLpNames]);
+
+  const historyAggregateVisibleItems = useMemo(() => {
+    const items = historyAggregateData?.items || [];
+    return items.filter((item) => !item.isError && (historyShowLowNtpRows || item.ntpPercent >= 1));
+  }, [historyAggregateData, historyShowLowNtpRows]);
+
+  const historyAggregateHiddenRowsCount = useMemo(() => {
+    if (!historyAggregateData?.items?.length) return 0;
+    return historyAggregateData.items.filter((item) => !item.isError && item.ntpPercent < 1).length;
+  }, [historyAggregateData]);
+
+  const historyAggregateVisibleTotals = useMemo(() => {
+    const validItems = historyAggregateVisibleItems.filter((item) => !item.isError);
+    if (!validItems.length) return null;
+
+    return validItems.reduce<HistoryAggregateData["totals"]>(
+      (totals, item) => ({
+        ...totals,
+        startEquity: totals.startEquity + (Number(item.startEquity) || 0),
+        endEquity: totals.endEquity + (Number(item.endEquity) || 0),
+        credit: totals.credit + (Number(item.credit) || 0),
+        deposit: totals.deposit + (Number(item.deposit) || 0),
+        withdrawal: totals.withdrawal + (Number(item.withdrawal) || 0),
+        netDeposits: totals.netDeposits + (Number(item.netDeposits) || 0),
+        grossProfit: totals.grossProfit + (Number(item.grossProfit) || 0),
+        totalCommission: totals.totalCommission + (Number(item.totalCommission) || 0),
+        totalSwap: totals.totalSwap + (Number(item.totalSwap) || 0),
+        netPL: totals.netPL + (Number(item.netPL) || 0),
+        realLpPL: totals.realLpPL + (Number(item.realLpPL) || 0),
+        ntpPercent: 0,
+        lpPL: totals.lpPL + (Number(item.lpPL) || 0),
+      }),
+      {
+        effectiveFrom: 0,
+        startEquity: 0,
+        endEquity: 0,
+        credit: 0,
+        deposit: 0,
+        withdrawal: 0,
+        netDeposits: 0,
+        grossProfit: 0,
+        totalCommission: 0,
+        totalSwap: 0,
+        netPL: 0,
+        realLpPL: 0,
+        ntpPercent: 0,
+        lpPL: 0,
+      },
+    );
+  }, [historyAggregateVisibleItems]);
 
   const historyTimestamps = useMemo(() => {
     const from = Math.floor(getUtcDayStartFromLocalDate(fromDate).getTime() / 1000);
@@ -1694,10 +1812,7 @@ export function DealingDepartmentPage() {
       setHistoryError("Invalid Start Period date.");
       return;
     }
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl
-      ? `${backendBaseUrl}/History/lp-config/${encodeURIComponent(lpName)}`
-      : `/History/lp-config/${encodeURIComponent(lpName)}`;
+    const endpoint = `${BACKEND_BASE_URL}/History/lp-config/${encodeURIComponent(lpName)}`;
 
     setHistorySavingLp(lpName);
     setHistoryError(null);
@@ -1748,23 +1863,22 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
     let cancelled = false;
 
     const loadOverview = async () => {
       setOverviewLoading(true);
       setOverviewError(null);
       try {
-        const coverageEndpoint = backendBaseUrl ? `${backendBaseUrl}/Coverage/position-match-table` : "/Coverage/position-match-table";
-        const metricsEndpoint = backendBaseUrl ? `${backendBaseUrl}/Metrics/lp` : "/Metrics/lp";
-        const swapEndpoint = backendBaseUrl ? `${backendBaseUrl}/Swap/positions` : "/Swap/positions";
-        const historyEndpoint = backendBaseUrl
-          ? `${backendBaseUrl}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`
-          : `/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
+        const coverageEndpoint = `${BACKEND_BASE_URL}/Coverage/position-match-table`;
+        const metricsEndpoint = `${BACKEND_BASE_URL}/Metrics/lp`;
+        const equitySummaryEndpoint = `${BACKEND_BASE_URL}/Metrics/equity-summary`;
+        const swapEndpoint = `${BACKEND_BASE_URL}/Swap/positions`;
+        const historyEndpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
 
-        const [coverageResp, metricsResp, swapResp, historyResp] = await Promise.allSettled([
+        const [coverageResp, metricsResp, equitySummaryResp, swapResp, historyResp] = await Promise.allSettled([
           fetch(coverageEndpoint),
           fetch(metricsEndpoint),
+          fetch(equitySummaryEndpoint),
           fetch(swapEndpoint),
           fetch(historyEndpoint),
         ]);
@@ -1772,6 +1886,7 @@ export function DealingDepartmentPage() {
         const nextData: DealingOverviewData = {
           coverage: null,
           lpMetrics: null,
+          equitySummary: null,
           swaps: [],
           historyAggregate: null,
         };
@@ -1781,6 +1896,14 @@ export function DealingDepartmentPage() {
         }
         if (metricsResp.status === "fulfilled" && metricsResp.value.ok) {
           nextData.lpMetrics = (await metricsResp.value.json()) as MetricsData;
+        }
+        if (equitySummaryResp.status === "fulfilled" && equitySummaryResp.value.ok) {
+          const summary = (await equitySummaryResp.value.json()) as Partial<EquitySummaryData>;
+          nextData.equitySummary = {
+            lpWithdrawableEquity: Number(summary.lpWithdrawableEquity) || 0,
+            clientWithdrawableEquity: Number(summary.clientWithdrawableEquity) || 0,
+            difference: Number(summary.difference) || 0,
+          };
         }
         if (swapResp.status === "fulfilled" && swapResp.value.ok) {
           const data = (await swapResp.value.json()) as SwapPosition[];
@@ -1794,7 +1917,7 @@ export function DealingDepartmentPage() {
         setOverviewData(nextData);
         setOverviewLastUpdated(new Date());
 
-        if (!nextData.coverage && !nextData.lpMetrics && nextData.swaps.length === 0 && !nextData.historyAggregate) {
+        if (!nextData.coverage && !nextData.lpMetrics && !nextData.equitySummary && nextData.swaps.length === 0 && !nextData.historyAggregate) {
           setOverviewError("Unable to load summary sources.");
         }
       } catch (e: any) {
@@ -1871,10 +1994,40 @@ export function DealingDepartmentPage() {
 
   const riskRows = useMemo(() => {
     if (!coverageData?.rows) return [] as CoverageRow[];
-    const gold = coverageData.rows.filter((row) => isGoldSymbol(row.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
+    const targetGoldSymbols = ["GOLDFT", "XAUUSD"] as const;
+    const targetGoldRows = targetGoldSymbols
+      .map((symbol) => coverageData.rows.find((row) => String(row.symbol || "").toUpperCase() === symbol))
+      .filter((row): row is CoverageRow => Boolean(row));
+    const targetGoldSet = new Set(targetGoldSymbols);
+    const otherGold = coverageData.rows
+      .filter((row) => isGoldSymbol(row.symbol) && !targetGoldSet.has(String(row.symbol || "").toUpperCase() as (typeof targetGoldSymbols)[number]))
+      .sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
     const rest = coverageData.rows.filter((row) => !isGoldSymbol(row.symbol)).sort((a, b) => Math.abs(b.uncovered) - Math.abs(a.uncovered));
-    return [...gold, ...rest];
+    const goldSubtotal = targetGoldRows.length
+      ? [{
+          symbol: "GOLD NET",
+          direction: "",
+          clientNet: targetGoldRows.reduce((sum, row) => sum + (Number(row.clientNet) || 0), 0),
+          uncovered: targetGoldRows.reduce((sum, row) => sum + (Number(row.uncovered) || 0), 0),
+          lpNets: (coverageData.lpNames || []).reduce<Record<string, number>>((acc, lp) => {
+            acc[lp] = targetGoldRows.reduce((sum, row) => sum + (Number(row.lpNets?.[lp]) || 0), 0);
+            return acc;
+          }, {}),
+          isSubtotalRow: true,
+        } satisfies CoverageRow]
+      : [];
+    return [...targetGoldRows, ...goldSubtotal, ...otherGold, ...rest];
   }, [coverageData]);
+
+  const riskVisibleRows = useMemo(() => {
+    if (riskShowZeroData) return riskRows;
+    return riskRows.filter((row) => !isZeroish(row.clientNet) || !isZeroish(row.uncovered));
+  }, [riskRows, riskShowZeroData]);
+
+  const riskHiddenRowsCount = useMemo(() => {
+    if (riskShowZeroData) return 0;
+    return Math.max(0, riskRows.length - riskVisibleRows.length);
+  }, [riskRows, riskVisibleRows, riskShowZeroData]);
 
   const riskKpis = useMemo(() => {
     const rows = coverageData?.rows || [];
@@ -1908,8 +2061,7 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const endpoint = backendBaseUrl ? `${backendBaseUrl}/api/LpAccount` : "/api/LpAccount";
+    const endpoint = `${BACKEND_BASE_URL}/api/LpAccount`;
     let cancelled = false;
 
     const loadLpAccounts = async () => {
@@ -1937,7 +2089,6 @@ export function DealingDepartmentPage() {
   useEffect(() => {
     if (activeMenu !== "History") return;
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
     let cancelled = false;
 
     const loadHistory = async () => {
@@ -1945,9 +2096,7 @@ export function DealingDepartmentPage() {
       setHistoryError(null);
       try {
         if (historyTab === "aggregate") {
-          const endpoint = backendBaseUrl
-            ? `${backendBaseUrl}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`
-            : `/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
+          const endpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
           const resp = await fetch(endpoint);
           if (!resp.ok) throw new Error(`History aggregate ${resp.status}`);
           const data = (await resp.json()) as HistoryAggregateData;
@@ -1962,9 +2111,7 @@ export function DealingDepartmentPage() {
             setHistoryDealsData(null);
             return;
           }
-          const endpoint = backendBaseUrl
-            ? `${backendBaseUrl}/History/deals?login=${historySelectedLogin}&from=${historyTimestamps.from}&to=${historyTimestamps.to}`
-            : `/History/deals?login=${historySelectedLogin}&from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
+          const endpoint = `${BACKEND_BASE_URL}/History/deals?login=${historySelectedLogin}&from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
           const resp = await fetch(endpoint);
           if (!resp.ok) throw new Error(`History deals ${resp.status}`);
           const data = (await resp.json()) as HistoryDealsData;
@@ -1974,9 +2121,7 @@ export function DealingDepartmentPage() {
           return;
         }
 
-        const endpoint = backendBaseUrl
-          ? `${backendBaseUrl}/History/volume?from=${historyTimestamps.from}&to=${historyTimestamps.to}`
-          : `/History/volume?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
+        const endpoint = `${BACKEND_BASE_URL}/History/volume?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
         const resp = await fetch(endpoint);
         if (!resp.ok) throw new Error(`History volume ${resp.status}`);
         const data = (await resp.json()) as HistoryVolumeData;
@@ -2004,10 +2149,7 @@ export function DealingDepartmentPage() {
       setNopLoading(true);
       setNopError(null);
       try {
-        const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-        const positionsEndpoint = backendBaseUrl
-          ? `${backendBaseUrl}/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`
-          : `/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`;
+        const positionsEndpoint = `${BACKEND_BASE_URL}/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`;
         const positionsResp = await fetch(positionsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
         if (!positionsResp.ok) throw new Error(`GetPositionsByGroup ${positionsResp.status}`);
         const allPositions = (await positionsResp.json()) as Array<{
@@ -2042,7 +2184,7 @@ export function DealingDepartmentPage() {
           ),
         );
 
-        const accountsEndpoint = backendBaseUrl ? `${backendBaseUrl}/Account/GetAllAccounts` : "/Account/GetAllAccounts";
+        const accountsEndpoint = `${BACKEND_BASE_URL}/Account/GetAllAccounts`;
         const accountsResp = await fetch(accountsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
         if (!accountsResp.ok) throw new Error(`GetAllAccounts ${accountsResp.status}`);
         const allAccounts = (await accountsResp.json()) as Array<{
@@ -2067,7 +2209,7 @@ export function DealingDepartmentPage() {
           const chunk = logins.slice(i, i + chunkSize);
           if (!chunk.length) continue;
           const query = chunk.map((login) => `logins=${encodeURIComponent(String(login))}`).join("&");
-          const userInfoEndpoint = backendBaseUrl ? `${backendBaseUrl}/Account/GetUserInfoBatch?${query}` : `/Account/GetUserInfoBatch?${query}`;
+          const userInfoEndpoint = `${BACKEND_BASE_URL}/Account/GetUserInfoBatch?${query}`;
           try {
             const infoResp = await fetch(userInfoEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
             if (!infoResp.ok) continue;
@@ -2163,10 +2305,9 @@ export function DealingDepartmentPage() {
       return;
     }
 
-    const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-    const dashboardEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/dashboard` : "/Bonus/dashboard";
-    const statusEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/status` : "/Bonus/status";
-    const pnlSummaryEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-summary` : "/Bonus/pnl-summary";
+    const dashboardEndpoint = `${BACKEND_BASE_URL}/Bonus/dashboard`;
+    const statusEndpoint = `${BACKEND_BASE_URL}/Bonus/status`;
+    const pnlSummaryEndpoint = `${BACKEND_BASE_URL}/Bonus/pnl-summary`;
 
     let cancelled = false;
 
@@ -2185,7 +2326,7 @@ export function DealingDepartmentPage() {
             from: toYmd(fromDate),
             to: toYmd(toDate),
           });
-          const pnlSmartEndpoint = backendBaseUrl ? `${backendBaseUrl}/Bonus/pnl-smart?${params}` : `/Bonus/pnl-smart?${params}`;
+          const pnlSmartEndpoint = `${BACKEND_BASE_URL}/Bonus/pnl-smart?${params}`;
           requests.push(fetch(pnlSmartEndpoint));
         }
 
@@ -2232,9 +2373,7 @@ export function DealingDepartmentPage() {
             setBonusPnlDaily((await pnlSmartResp.value.json()) as BonusPnlDailyResponse);
             // Background fetch HWM monthly-report for HWM-adjusted values
             setBonusPnlMonthlyReport(null);
-            const hwmEndpoint = backendBaseUrl
-              ? `${backendBaseUrl}/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`
-              : `/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`;
+            const hwmEndpoint = `${BACKEND_BASE_URL}/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`;
             fetch(hwmEndpoint)
               .then((r) => (r.ok ? r.json() : null))
               .then((hwmData) => {
@@ -2462,9 +2601,9 @@ export function DealingDepartmentPage() {
 
     if (activeMenu === "History") {
       if (historyTab === "aggregate") {
-        const totals = historyAggregateData?.totals;
+        const totals = historyAggregateVisibleTotals;
         return [
-          { label: "LP Rows", value: (historyAggregateData?.items?.length || 0).toLocaleString() },
+          { label: "LP Rows", value: historyAggregateVisibleItems.length.toLocaleString() },
           { label: "Net P/L", value: totals ? totals.netPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
           { label: "Real LP P/L", value: totals ? totals.realLpPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
           { label: "Rev Share P/L", value: totals ? totals.lpPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
@@ -2509,19 +2648,12 @@ export function DealingDepartmentPage() {
     }
 
     return [
-      { label: "Client Equity", value: `$${metrics.totalEquity.toLocaleString()}` },
-      { label: "LP Equity", value: `$${(overviewData.lpMetrics?.totals?.equity || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
-      {
-        label: "Difference (LP Equity-Client Equity)",
-        value: `$${((overviewData.lpMetrics?.totals?.equity || 0) - metrics.totalEquity).toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
-      },
-      { label: "Total Credit", value: `$${metrics.totalCredit.toLocaleString()}` },
-      { label: "Trading Profit", value: `$${metrics.tradingProfit.toLocaleString()}` },
-      { label: "LP Accounts", value: (overviewData.lpMetrics?.items?.length || 0).toLocaleString() },
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
-      { label: "Total Uncovered", value: (overviewData.coverage?.totals?.uncovered || 0).toFixed(2) },
+      { label: "LP Withdrawable Equity", value: formatDollar(overviewData.equitySummary?.lpWithdrawableEquity || 0) },
+      { label: "Client Withdrawable Equity", value: formatDollar(overviewData.equitySummary?.clientWithdrawableEquity || 0) },
+      { label: "LP-Client WD Equity Difference", value: formatDollar(overviewData.equitySummary?.difference || 0) },
     ];
-  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData, contractSizes, bonusSubTab, bonusPositionMatchTable, bonusCoverageRows, bonusRiskRows, bonusPnlDaily, bonusPnlSummary, bonusDashboard]);
+  }, [activeMenu, coverageData, riskKpis, metricsData, swapRows, metrics, historyTab, historyAggregateData, historyAggregateVisibleItems, historyAggregateVisibleTotals, historyDealsData, historyVolumeData, overviewData, rebateCalcRows, rebateLoginsCount, nopData, contractSizes, bonusSubTab, bonusPositionMatchTable, bonusCoverageRows, bonusRiskRows, bonusPnlDaily, bonusPnlSummary, bonusDashboard]);
 
   const rebateSymbolTotals = useMemo(() => {
     const bySymbol = new Map<
@@ -2597,14 +2729,63 @@ export function DealingDepartmentPage() {
     return [...priority, ...others];
   }, [overviewData.coverage?.rows, topSymbols]);
 
+  const riskCoverageSummary = useMemo(() => {
+    const symbols = riskCoverageRows.length;
+    const totalAbsoluteUncovered = riskCoverageRows.reduce((sum, row) => sum + Math.abs(Number(row.uncovered) || 0), 0);
+    const totalAbsoluteClientNet = riskCoverageRows.reduce((sum, row) => sum + Math.abs(Number(row.clientNet) || 0), 0);
+    const totalAbsoluteLpCoverage = riskCoverageRows.reduce(
+      (sum, row) => sum + Math.abs((Number(row.clientNet) || 0) - (Number(row.uncovered) || 0)),
+      0,
+    );
+    const worstRow = riskCoverageRows.reduce<(typeof riskCoverageRows)[number] | null>((current, row) => {
+      if (!current) return row;
+      return Math.abs(Number(row.uncovered) || 0) > Math.abs(Number(current.uncovered) || 0) ? row : current;
+    }, null);
+    const goldWatchCount = riskCoverageRows.filter((row) => isGoldSymbol(row.symbol)).length;
+    const coveragePct = totalAbsoluteClientNet > 0 ? Math.min((totalAbsoluteLpCoverage / totalAbsoluteClientNet) * 100, 999) : 0;
+    return {
+      symbols,
+      goldWatchCount,
+      totalAbsoluteUncovered,
+      totalAbsoluteLpCoverage,
+      coveragePct,
+      worstSymbol: worstRow?.symbol || "-",
+      worstUncovered: Number(worstRow?.uncovered) || 0,
+    };
+  }, [riskCoverageRows]);
+
   const coverageTableRows = useMemo(() => [...coverageRows.gold, ...coverageRows.rest], [coverageRows]);
 
+  const coverageHiddenRowsCount = useMemo(() => {
+    if (!coverageData?.rows?.length) return 0;
+    return Math.max(coverageData.rows.length - coverageTableRows.length, 0);
+  }, [coverageData, coverageTableRows]);
+
+  const coverageHiddenLpColumnsCount = useMemo(() => {
+    if (!coverageData?.lpNames?.length) return 0;
+    return Math.max(coverageData.lpNames.length - visibleCoverageLpNames.length, 0);
+  }, [coverageData, visibleCoverageLpNames]);
+
+  const coverageHasHiddenZeroData = coverageHiddenRowsCount > 0 || coverageHiddenLpColumnsCount > 0;
+
+  const coverageHiddenZeroDataLabel = useMemo(() => {
+    const parts: string[] = [];
+    if (coverageHiddenRowsCount > 0) {
+      parts.push(`${coverageHiddenRowsCount} row${coverageHiddenRowsCount === 1 ? "" : "s"}`);
+    }
+    if (coverageHiddenLpColumnsCount > 0) {
+      parts.push(`${coverageHiddenLpColumnsCount} LP column${coverageHiddenLpColumnsCount === 1 ? "" : "s"}`);
+    }
+    return parts.join(", ");
+  }, [coverageHiddenRowsCount, coverageHiddenLpColumnsCount]);
+
   const coverageTableColumns = useMemo<SortableTableColumn<CoverageRow>[]>(() => {
-    const lpNames = coverageData?.lpNames || [];
+    const lpNames = visibleCoverageLpNames;
     const base: SortableTableColumn<CoverageRow>[] = [
       {
         key: "symbol",
         label: "Symbol",
+        hideable: false,
         sortValue: (row) => row.symbol,
         searchValue: (row) => row.symbol,
         cellClassName: "font-mono text-slate-900 dark:text-slate-100",
@@ -2660,17 +2841,25 @@ export function DealingDepartmentPage() {
     }));
 
     return [...base, ...dynamicLpCols];
-  }, [coverageData?.lpNames]);
+  }, [visibleCoverageLpNames]);
 
   const riskTableColumns = useMemo<SortableTableColumn<CoverageRow>[]>(
     () => [
       {
         key: "symbol",
         label: "Symbol",
+        hideable: false,
         sortValue: (row) => row.symbol,
         searchValue: (row) => row.symbol,
         cellClassName: "font-mono text-slate-900 dark:text-slate-100",
-        render: (row) => row.symbol,
+        render: (row) =>
+          row.isSubtotalRow ? (
+            <span className="inline-flex items-center rounded-md bg-amber-200/70 px-2 py-1 font-sans text-[11px] font-bold uppercase tracking-wide text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
+              Gold Net
+            </span>
+          ) : (
+            row.symbol
+          ),
       },
       {
         key: "direction",
@@ -2678,7 +2867,9 @@ export function DealingDepartmentPage() {
         sortValue: (row) => row.direction || "",
         searchValue: (row) => row.direction || "",
         render: (row) =>
-          row.direction === "BUY" ? (
+          row.isSubtotalRow ? (
+            <span className="text-amber-700 dark:text-amber-300">GOLDFT + XAUUSD</span>
+          ) : row.direction === "BUY" ? (
             <span className="font-semibold text-emerald-700 dark:text-emerald-300">BUY</span>
           ) : row.direction === "SELL" ? (
             <span className="font-semibold text-rose-700 dark:text-rose-300">SELL</span>
@@ -2696,7 +2887,7 @@ export function DealingDepartmentPage() {
         render: (row) => (
           <>
             {formatCoverageVal(row.clientNet)}
-            {renderContractSizeBadge(row.contractSizeMultiplier)}
+            {!row.isSubtotalRow ? renderContractSizeBadge(row.contractSizeMultiplier) : null}
           </>
         ),
       },
@@ -2748,6 +2939,7 @@ export function DealingDepartmentPage() {
       {
         key: "lp",
         label: "LP",
+        hideable: false,
         sortValue: (row) => row.lp,
         searchValue: (row) => `${row.lp} ${row.login}`,
         cellClassName: "font-mono text-slate-900 dark:text-slate-100",
@@ -2794,7 +2986,7 @@ export function DealingDepartmentPage() {
 
   const historyDealsColumns = useMemo<SortableTableColumn<HistoryDeal>[]>(
     () => [
-      { key: "dealTicket", label: "Ticket", sortValue: (row) => Number(row.dealTicket) || 0, searchValue: (row) => String(row.dealTicket), render: (row) => row.dealTicket },
+      { key: "dealTicket", label: "Ticket", hideable: false, sortValue: (row) => Number(row.dealTicket) || 0, searchValue: (row) => String(row.dealTicket), render: (row) => row.dealTicket },
       { key: "symbol", label: "Symbol", sortValue: (row) => row.symbol, searchValue: (row) => row.symbol, cellClassName: "font-mono", render: (row) => row.symbol },
       { key: "timeString", label: "Time", sortValue: (row) => row.timeString, searchValue: (row) => row.timeString, cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.timeString },
       { key: "direction", label: "Direction", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.direction, searchValue: (row) => row.direction, render: (row) => <span className={row.direction === "Buy" ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}>{row.direction}</span> },
@@ -2815,7 +3007,7 @@ export function DealingDepartmentPage() {
 
   const historyVolumeColumns = useMemo<SortableTableColumn<HistoryVolumeItem>[]>(
     () => [
-      { key: "lpName", label: "LP Name", sortValue: (row) => row.lpName, searchValue: (row) => row.lpName, cellClassName: "font-mono", render: (row) => row.lpName },
+      { key: "lpName", label: "LP Name", hideable: false, sortValue: (row) => row.lpName, searchValue: (row) => row.lpName, cellClassName: "font-mono", render: (row) => row.lpName },
       { key: "login", label: "Login", sortValue: (row) => String(row.login), searchValue: (row) => String(row.login), render: (row) => row.login },
       { key: "source", label: "Source", sortValue: (row) => row.source || "", searchValue: (row) => row.source || "", cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.source || "-" },
       { key: "tradeCount", label: "Trade Count", headerClassName: "text-right", cellClassName: "text-right", sortValue: (row) => row.tradeCount, searchValue: (row) => String(row.tradeCount), render: (row) => row.tradeCount.toLocaleString() },
@@ -2831,6 +3023,7 @@ export function DealingDepartmentPage() {
       {
         key: "lpName",
         label: "LP Name",
+        hideable: false,
         sortValue: (row) => row.lpName,
         searchValue: (row) => `${row.lpName} ${row.login} ${row.source || ""}`,
         cellClassName: "font-mono text-slate-900 dark:text-slate-100",
@@ -2986,11 +3179,25 @@ export function DealingDepartmentPage() {
       {
         key: "lpPL",
         label: "LP P/L (Rev Share)",
-        headerClassName: "text-right",
-        cellClassName: "text-right",
+        headerClassName: "sticky right-0 z-20 bg-cyan-100 text-right text-cyan-900 shadow-[-10px_0_14px_-12px_rgba(8,145,178,0.65)] dark:bg-cyan-950 dark:text-cyan-100",
+        cellClassName: "sticky right-0 z-10 bg-cyan-50/95 text-right font-semibold shadow-[-10px_0_14px_-12px_rgba(8,145,178,0.45)] dark:bg-cyan-950/95",
         sortValue: (row) => (row.isError ? Number.NEGATIVE_INFINITY : row.lpPL),
         searchValue: (row) => String(row.lpPL || ""),
-        render: (row) => (row.isError ? "-" : <span className={signedValueClass(row.lpPL)}>{row.lpPL.toLocaleString()}</span>),
+        render: (row) => {
+          if (row.isError) return "-";
+          const value = Number(row.lpPL) || 0;
+          const toneClass =
+            value > 0.005
+              ? "border-emerald-300/70 bg-emerald-500/15 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/20 dark:text-emerald-200"
+              : value < -0.005
+                ? "border-rose-300/70 bg-rose-500/15 text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/20 dark:text-rose-200"
+                : "border-cyan-300/70 bg-cyan-500/15 text-cyan-800 dark:border-cyan-500/40 dark:bg-cyan-500/20 dark:text-cyan-200";
+          return (
+            <span className={`inline-flex min-w-[110px] items-center justify-end rounded-md border px-2.5 py-1 tabular-nums ${toneClass}`}>
+              {value.toLocaleString()}
+            </span>
+          );
+        },
       },
     ],
     [fromDate, historySavingLp, historyStartPeriodEdits, historyTimestamps.from]
@@ -3205,8 +3412,8 @@ export function DealingDepartmentPage() {
                     From
                     <input
                       type="date"
-                      value={toYmd(fromDate)}
-                      onChange={(e) => setFromDate(new Date(`${e.target.value}T00:00:00`))}
+                      value={toYmd(selectedFromDate)}
+                      onChange={(e) => setSelectedFromDate(parseDateInput(e.target.value, selectedFromDate))}
                       className="ml-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
                     />
                   </label>
@@ -3214,8 +3421,8 @@ export function DealingDepartmentPage() {
                     To
                     <input
                       type="date"
-                      value={toYmd(toDate)}
-                      onChange={(e) => setToDate(new Date(`${e.target.value}T00:00:00`))}
+                      value={toYmd(selectedToDate)}
+                      onChange={(e) => setSelectedToDate(parseDateInput(e.target.value, selectedToDate))}
                       className="ml-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
                     />
                   </label>
@@ -3241,8 +3448,8 @@ export function DealingDepartmentPage() {
                     From
                     <input
                       type="date"
-                      value={toYmd(fromDate)}
-                      onChange={(e) => setFromDate(new Date(`${e.target.value}T00:00:00`))}
+                      value={toYmd(selectedFromDate)}
+                      onChange={(e) => setSelectedFromDate(parseDateInput(e.target.value, selectedFromDate))}
                       className="ml-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
                     />
                   </label>
@@ -3250,8 +3457,8 @@ export function DealingDepartmentPage() {
                     To
                     <input
                       type="date"
-                      value={toYmd(toDate)}
-                      onChange={(e) => setToDate(new Date(`${e.target.value}T00:00:00`))}
+                      value={toYmd(selectedToDate)}
+                      onChange={(e) => setSelectedToDate(parseDateInput(e.target.value, selectedToDate))}
                       className="ml-2 rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
                     />
                   </label>
@@ -3295,13 +3502,22 @@ export function DealingDepartmentPage() {
                   <span className="text-xs text-slate-500 dark:text-slate-400">{coverageStatus}</span>
                 </div>
                 <div className="flex items-center gap-2">
+                  {(coverageShowZeroData || coverageHasHiddenZeroData) && (
+                    <button
+                      type="button"
+                      onClick={() => setCoverageShowZeroData((value) => !value)}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-500/20 dark:text-slate-200"
+                    >
+                      {coverageShowZeroData ? "Hide Hidden Rows" : coverageHiddenZeroDataLabel ? `Show Hidden Rows (${coverageHiddenZeroDataLabel})` : "Show Hidden Rows"}
+                    </button>
+                  )}
                   {coverageLastUpdated && (
                     <span className="text-xs text-slate-500 dark:text-slate-400">Updated {coverageLastUpdated.toLocaleTimeString()}</span>
                   )}
                   <button
                     type="button"
                     onClick={handleCoverageSnapshot}
-                    disabled={snapshottingTable === "coverage" || coverageLoading || !coverageData?.rows?.length}
+                    disabled={snapshottingTable === "coverage" || coverageLoading || !coverageTableRows.length}
                     className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <Camera className={`h-3.5 w-3.5 ${snapshottingTable === "coverage" ? "animate-pulse" : ""}`} />
@@ -3317,7 +3533,7 @@ export function DealingDepartmentPage() {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setCoverageRefreshKey((k) => k + 1)}
+                    onClick={handlePageRefresh}
                     className="inline-flex items-center gap-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-200 hover:bg-cyan-500/20"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${coverageLoading ? "animate-spin" : ""}`} />
@@ -3332,8 +3548,16 @@ export function DealingDepartmentPage() {
                 </div>
               )}
 
+              {!coverageShowZeroData && coverageHasHiddenZeroData ? (
+                <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+                  {coverageHiddenZeroDataLabel} hidden (all values are 0).
+                </div>
+              ) : null}
+
               <div className={`${fullscreenTable === "coverage" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                 <SortableTable
+                  tableId="dealing-coverage-table"
+                  enableColumnVisibility
                   rows={coverageTableRows}
                   columns={coverageTableColumns}
                   exportFilePrefix="dealing-coverage"
@@ -3348,7 +3572,7 @@ export function DealingDepartmentPage() {
                   <span className="ml-3 text-amber-700 dark:text-amber-300">Gold Total: {formatCoverageVal(coverageGoldTotals.clientNet)} / {formatCoverageVal(coverageGoldTotals.uncovered)}</span>
                 )}
               </div>
-              {!coverageLoading && !coverageData?.rows?.length && (
+              {!coverageLoading && !coverageTableRows.length && (
                 <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">No coverage rows available.</div>
               )}
             </section>
@@ -3367,10 +3591,19 @@ export function DealingDepartmentPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     {coverageLastUpdated && <span className="text-xs text-slate-500 dark:text-slate-400">Updated {coverageLastUpdated.toLocaleTimeString()}</span>}
+                    {riskHiddenRowsCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setRiskShowZeroData((value) => !value)}
+                        className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-500/20"
+                      >
+                        {riskShowZeroData ? "Hide Hidden Rows" : `Show Hidden Rows (${riskHiddenRowsCount})`}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={handleRiskSnapshot}
-                      disabled={snapshottingTable === "risk" || coverageLoading || !riskRows.length}
+                      disabled={snapshottingTable === "risk" || coverageLoading || !riskVisibleRows.length}
                       className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <Camera className={`h-3.5 w-3.5 ${snapshottingTable === "risk" ? "animate-pulse" : ""}`} />
@@ -3391,13 +3624,27 @@ export function DealingDepartmentPage() {
                   <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{coverageError}</div>
                 )}
 
+                {!riskShowZeroData && riskHiddenRowsCount > 0 && (
+                  <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+                    {riskHiddenRowsCount} row{riskHiddenRowsCount === 1 ? " is" : "s are"} hidden (all key values are 0).
+                  </div>
+                )}
+
                 <div className={`${fullscreenTable === "risk" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                   <SortableTable
-                    rows={riskRows}
+                    tableId="dealing-risk-table"
+                    enableColumnVisibility
+                    rows={riskVisibleRows}
                     columns={riskTableColumns}
                     exportFilePrefix="dealing-risk"
                     emptyText="No risk rows available."
-                    rowClassName={(row) => (isGoldSymbol(row.symbol) ? "bg-amber-100/50 dark:bg-amber-500/5" : "bg-slate-50 dark:bg-slate-950/30")}
+                    rowClassName={(row) =>
+                      row.isSubtotalRow
+                        ? "border-y-2 border-amber-400/50 bg-amber-200/60 dark:border-amber-500/40 dark:bg-amber-500/10"
+                        : isGoldSymbol(row.symbol)
+                          ? "bg-amber-100/50 dark:bg-amber-500/5"
+                          : "bg-slate-50 dark:bg-slate-950/30"
+                    }
                   />
                 </div>
                 <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
@@ -3406,7 +3653,7 @@ export function DealingDepartmentPage() {
                     Client Net {formatCoverageVal(coverageData?.totals?.clientNet || 0)} | LP Coverage {formatCoverageVal((coverageData?.totals?.clientNet || 0) - (coverageData?.totals?.uncovered || 0))} | Uncovered {formatCoverageVal(coverageData?.totals?.uncovered || 0)}
                   </span>
                 </div>
-                {!coverageLoading && !riskRows.length && (
+                {!coverageLoading && !riskVisibleRows.length && (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">No risk rows available.</div>
                 )}
               </section>
@@ -3445,6 +3692,8 @@ export function DealingDepartmentPage() {
               )}
               <div className={`${fullscreenTable === "metrics" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                 <SortableTable
+                  tableId="dealing-metrics-table"
+                  enableColumnVisibility
                   rows={metricsData?.items || []}
                   columns={metricsTableColumns}
                   exportFilePrefix="dealing-metrics"
@@ -3557,7 +3806,7 @@ export function DealingDepartmentPage() {
                           Bonus Mgr {connMgr ? "Active" : "Standby"}
                         </div>
                         {bonusLastUpdated && <span className="text-xs text-violet-300">Updated {bonusLastUpdated.toLocaleTimeString()}</span>}
-                        <button type="button" onClick={() => setBonusRefreshKey((k) => k + 1)} className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20 transition">
+                        <button type="button" onClick={handlePageRefresh} className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-white hover:bg-white/20 transition">
                           <RefreshCw className={`h-3 w-3 ${bonusLoading ? "animate-spin" : ""}`} />
                           Refresh
                         </button>
@@ -4456,7 +4705,7 @@ export function DealingDepartmentPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     {bonusError && <span className="rounded-md bg-rose-100 px-2.5 py-1 text-xs text-rose-700 dark:bg-rose-900/30 dark:text-rose-300">{bonusError}</span>}
-                    <button type="button" onClick={() => setBonusRefreshKey((k) => k + 1)} className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/60 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800/40 dark:bg-slate-900 dark:text-violet-300 dark:hover:bg-violet-900/20 transition">
+                    <button type="button" onClick={handlePageRefresh} className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/60 bg-white px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-800/40 dark:bg-slate-900 dark:text-violet-300 dark:hover:bg-violet-900/20 transition">
                       <RefreshCw className={`h-3.5 w-3.5 ${bonusLoading ? "animate-spin" : ""}`} /> Refresh
                     </button>
                   </div>
@@ -4763,7 +5012,7 @@ export function DealingDepartmentPage() {
                     disabled={
                       snapshottingTable === "history" ||
                       historyLoading ||
-                      (historyTab === "aggregate" && !(historyAggregateData?.items || []).length) ||
+                      (historyTab === "aggregate" && !historyAggregateVisibleItems.length) ||
                       (historyTab === "deals" && !(historyDealsData?.deals || []).length) ||
                       (historyTab === "volume" && !(historyVolumeData?.items || []).length)
                     }
@@ -4810,6 +5059,16 @@ export function DealingDepartmentPage() {
                   Load
                 </button>
 
+                {historyTab === "aggregate" && historyAggregateHiddenRowsCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHistoryShowLowNtpRows((value) => !value)}
+                    className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-500/20 dark:text-slate-200"
+                  >
+                    {historyShowLowNtpRows ? "Hide Hidden Rows" : `Show Hidden Rows (${historyAggregateHiddenRowsCount})`}
+                  </button>
+                )}
+
                 {historyTab === "deals" && (
                   <>
                     <select
@@ -4847,20 +5106,28 @@ export function DealingDepartmentPage() {
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{historyError}</div>
               )}
 
+              {historyTab === "aggregate" && !historyShowLowNtpRows && historyAggregateHiddenRowsCount > 0 && (
+                <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+                  {historyAggregateHiddenRowsCount} row{historyAggregateHiddenRowsCount === 1 ? " is" : "s are"} hidden (NTP % &lt; 1, including 0 values).
+                </div>
+              )}
+
               {historyTab === "aggregate" && (
                 <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                   <SortableTable
-                    rows={historyAggregateData?.items || []}
+                    tableId="dealing-history-aggregate-table"
+                    enableColumnVisibility
+                    rows={historyAggregateVisibleItems}
                     columns={historyAggregateColumns}
                     exportFilePrefix="history-revenue-share"
                     emptyText="No revenue-share rows available for this range."
                     rowClassName={(row) => (row.isError ? "bg-slate-50 opacity-50 dark:bg-slate-950/30" : "bg-slate-50 dark:bg-slate-950/30")}
                   />
-                  {historyAggregateData?.totals && (
+                  {historyAggregateVisibleTotals && (
                     <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
                       <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
                       <span className="text-slate-500 dark:text-slate-400">
-                        StartEq {historyAggregateData.totals.startEquity.toLocaleString()} | EndEq {historyAggregateData.totals.endEquity.toLocaleString()} | Credit {historyAggregateData.totals.credit.toLocaleString()} | Deposit {historyAggregateData.totals.deposit.toLocaleString()} | Withdrawal {historyAggregateData.totals.withdrawal.toLocaleString()} | NetDep {historyAggregateData.totals.netDeposits.toLocaleString()} | Gross {historyAggregateData.totals.grossProfit.toLocaleString()} | Commission {historyAggregateData.totals.totalCommission.toLocaleString()} | Swap {historyAggregateData.totals.totalSwap.toLocaleString()} | NetPL {historyAggregateData.totals.netPL.toLocaleString()} | RealLP {historyAggregateData.totals.realLpPL.toLocaleString()} | LPPL {historyAggregateData.totals.lpPL.toLocaleString()}
+                        StartEq {historyAggregateVisibleTotals.startEquity.toLocaleString()} | EndEq {historyAggregateVisibleTotals.endEquity.toLocaleString()} | Credit {historyAggregateVisibleTotals.credit.toLocaleString()} | Deposit {historyAggregateVisibleTotals.deposit.toLocaleString()} | Withdrawal {historyAggregateVisibleTotals.withdrawal.toLocaleString()} | NetDep {historyAggregateVisibleTotals.netDeposits.toLocaleString()} | Gross {historyAggregateVisibleTotals.grossProfit.toLocaleString()} | Commission {historyAggregateVisibleTotals.totalCommission.toLocaleString()} | Swap {historyAggregateVisibleTotals.totalSwap.toLocaleString()} | NetPL {historyAggregateVisibleTotals.netPL.toLocaleString()} | RealLP {historyAggregateVisibleTotals.realLpPL.toLocaleString()} | LPPL {historyAggregateVisibleTotals.lpPL.toLocaleString()}
                       </span>
                     </div>
                   )}
@@ -4870,6 +5137,8 @@ export function DealingDepartmentPage() {
               {historyTab === "deals" && (
                 <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                   <SortableTable
+                    tableId="dealing-history-deals-table"
+                    enableColumnVisibility
                     rows={historyDealsData?.deals || []}
                     columns={historyDealsColumns}
                     exportFilePrefix="history-deals"
@@ -4881,6 +5150,8 @@ export function DealingDepartmentPage() {
               {historyTab === "volume" && (
                 <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
                   <SortableTable
+                    tableId="dealing-history-volume-table"
+                    enableColumnVisibility
                     rows={(historyVolumeData?.items || []).filter((item) => !item.isError)}
                     columns={historyVolumeColumns}
                     exportFilePrefix="history-volume"
@@ -4898,7 +5169,7 @@ export function DealingDepartmentPage() {
               )}
 
               {!historyLoading &&
-                ((historyTab === "aggregate" && !(historyAggregateData?.items || []).length) ||
+                ((historyTab === "aggregate" && !historyAggregateVisibleItems.length) ||
                   (historyTab === "deals" && !(historyDealsData?.deals || []).length) ||
                   (historyTab === "volume" && !(historyVolumeData?.items || []).length)) && (
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
@@ -4929,7 +5200,7 @@ export function DealingDepartmentPage() {
                   </select>
                   <button
                     type="button"
-                    onClick={() => setNopRefreshKey((k) => k + 1)}
+                    onClick={handlePageRefresh}
                     className="inline-flex items-center gap-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 dark:text-cyan-200 hover:bg-cyan-500/20"
                   >
                     <RefreshCw className={`h-3.5 w-3.5 ${nopLoading ? "animate-spin" : ""}`} />
@@ -5092,11 +5363,11 @@ export function DealingDepartmentPage() {
             </section>
           ) : activeMenu === "Client Profiling" ? (
             <ClientProfilingTab
-              fromDate={toYmd(fromDate)}
-              toDate={toYmd(toDate)}
+              fromDate={toYmd(selectedFromDate)}
+              toDate={toYmd(selectedToDate)}
               refreshKey={refreshKey}
-              onFromDateChange={(value) => setFromDate(new Date(`${value}T00:00:00`))}
-              onToDateChange={(value) => setToDate(new Date(`${value}T00:00:00`))}
+              onFromDateChange={(value) => setSelectedFromDate(parseDateInput(value, selectedFromDate))}
+              onToDateChange={(value) => setSelectedToDate(parseDateInput(value, selectedToDate))}
               onRefresh={handlePageRefresh}
             />
           ) : activeMenu === "Rebate Calculator" ? (
@@ -5283,56 +5554,107 @@ export function DealingDepartmentPage() {
 
               <section className="grid grid-cols-1 gap-4 xl:grid-cols-3">
                 <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70 xl:col-span-2">
-                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Risk & Coverage</h2>
-                  <div className="space-y-2">
-                    {!riskCoverageRows.length && <div className="rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/50 p-3 text-xs text-slate-500 dark:text-slate-400">No uncovered symbols in this range.</div>}
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Risk & Coverage</h2>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                        <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">{riskCoverageSummary.symbols} symbols</span>
+                        <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">Coverage {riskCoverageSummary.coveragePct.toFixed(1)}%</span>
+                        <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">Worst {riskCoverageSummary.worstSymbol} {signedValueText(riskCoverageSummary.worstUncovered)}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveMenu("Coverage")}
+                        className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      >
+                        Coverage
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveMenu("Risk Exposure")}
+                        className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      >
+                        Risk
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                    <div className="grid grid-cols-[auto_minmax(120px,1.2fr)_70px_90px_110px_110px_110px] items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-400">
+                      <span></span>
+                      <span>Symbol</span>
+                      <span className="text-right">Pos</span>
+                      <span className="text-right">Lots</span>
+                      <span className="text-right">Client Net</span>
+                      <span className="text-right">LP Coverage</span>
+                      <span className="text-right">Uncovered</span>
+                    </div>
+
+                    {!riskCoverageRows.length && (
+                      <div className="px-3 py-4 text-sm text-slate-500 dark:text-slate-400">No uncovered symbols in this range.</div>
+                    )}
+
                     {riskCoverageRows.map((row) => {
                       const lpCoverage = row.clientNet - row.uncovered;
+                      const isExpanded = overviewRiskExpandedSymbol === row.symbol;
                       return (
-                      <div key={row.symbol} className="group relative rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/50 p-3">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-mono text-slate-900 dark:text-slate-100">{row.symbol}</span>
-                          <span className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                            Pos: {row.positions} | Lots: {row.lots.toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
-                          <div className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 dark:border-slate-700 dark:bg-slate-900/80">
-                            <div className="text-[11px] text-slate-500 dark:text-slate-400">Client Net</div>
-                            <div className={`text-sm font-semibold ${row.clientNet >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>
-                              {row.clientNet.toFixed(2)}
+                        <div key={row.symbol} className="border-t border-slate-200 first:border-t-0 dark:border-slate-800">
+                          <button
+                            type="button"
+                            onClick={() => setOverviewRiskExpandedSymbol((current) => (current === row.symbol ? null : row.symbol))}
+                            className="grid w-full grid-cols-[auto_minmax(120px,1.2fr)_70px_90px_110px_110px_110px] items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 dark:hover:bg-slate-900/50"
+                          >
+                            <span className="text-slate-400 dark:text-slate-500">{isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}</span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">{row.symbol}</span>
+                                {isGoldSymbol(row.symbol) && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300">Gold</span>}
+                              </div>
+                              <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{row.subSymbols.length} sub-symbols</div>
                             </div>
-                          </div>
-                          <div className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 dark:border-slate-700 dark:bg-slate-900/80">
-                            <div className="text-[11px] text-slate-500 dark:text-slate-400">LP Coverage</div>
-                            <div className={`text-sm font-semibold ${lpCoverage >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>
-                              {lpCoverage.toFixed(2)}
-                            </div>
-                          </div>
-                          <div className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 dark:border-slate-700 dark:bg-slate-900/80">
-                            <div className="text-[11px] text-slate-500 dark:text-slate-400">Uncovered</div>
-                            <div className={`text-sm font-semibold ${row.uncovered >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}`}>
-                              {row.uncovered.toFixed(2)}
-                            </div>
-                          </div>
-                        </div>
-                        {row.subSymbols.length > 0 && (
-                          <div className="pointer-events-none absolute left-2 right-2 top-full z-20 mt-1 rounded-lg border border-slate-700 bg-slate-950/95 p-2 text-[11px] opacity-0 transition-opacity group-hover:opacity-100">
-                            <div className="mb-1 text-slate-400">Sub symbols</div>
-                            <div className="space-y-0.5">
-                              {row.subSymbols.map((sub) => (
-                                <div key={`${row.symbol}-${sub.symbol}`} className="flex items-center justify-between">
-                                  <span className="font-mono text-slate-300">{sub.symbol}</span>
-                                  <span className={sub.netExposureLots >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-rose-700 dark:text-rose-300"}>
-                                    {sub.netExposureLots.toFixed(2)}
-                                  </span>
+                            <span className="text-right text-sm text-slate-700 dark:text-slate-300">{row.positions}</span>
+                            <span className={`text-right text-sm ${signedValueClass(row.lots)}`}>{signedValueText(row.lots)}</span>
+                            <span className={`text-right text-sm ${signedValueClass(row.clientNet)}`}>{signedValueText(row.clientNet)}</span>
+                            <span className={`text-right text-sm ${signedValueClass(lpCoverage)}`}>{signedValueText(lpCoverage)}</span>
+                            <span className={`text-right text-sm font-semibold ${signedValueClass(row.uncovered)}`}>{signedValueText(row.uncovered)}</span>
+                          </button>
+
+                          {isExpanded && (
+                            <div className="border-t border-slate-200 bg-slate-50/70 px-3 py-3 dark:border-slate-800 dark:bg-slate-950/40">
+                              <div className="mb-2 flex flex-wrap gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                                <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">Client {signedValueText(row.clientNet)}</span>
+                                <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">LP {signedValueText(lpCoverage)}</span>
+                                <span className="rounded-full border border-slate-200 px-2 py-1 dark:border-slate-700">Uncovered {signedValueText(row.uncovered)}</span>
+                              </div>
+                              {row.subSymbols.length > 0 ? (
+                                <div className="overflow-x-auto">
+                                  <table className="min-w-full text-xs">
+                                    <thead>
+                                      <tr className="text-slate-500 dark:text-slate-400">
+                                        <th className="px-2 py-1 text-left font-semibold uppercase tracking-wide">Sub Symbol</th>
+                                        <th className="px-2 py-1 text-right font-semibold uppercase tracking-wide">Net Lots</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {row.subSymbols.map((sub) => (
+                                        <tr key={`${row.symbol}-${sub.symbol}`} className="border-t border-slate-200 dark:border-slate-800">
+                                          <td className="px-2 py-1.5 font-mono text-slate-700 dark:text-slate-300">{sub.symbol}</td>
+                                          <td className={`px-2 py-1.5 text-right ${signedValueClass(sub.netExposureLots)}`}>{signedValueText(sub.netExposureLots)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
                                 </div>
-                              ))}
+                              ) : (
+                                <div className="text-xs text-slate-500 dark:text-slate-400">No split routing detail available for this symbol.</div>
+                              )}
                             </div>
-                          </div>
-                        )}
-                      </div>
-                    )})}
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 

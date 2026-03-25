@@ -54,7 +54,7 @@ export interface GroupDeal {
   storage: number;
 }
 
-const BACKEND_BASE_URL = (import.meta as any).env?.VITE_BACKEND_BASE_URL || '';
+const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || 'https://api.skylinkscapital.com').replace(/\/+$/, '');
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value);
@@ -73,9 +73,7 @@ export async function getSummaryByGroup(params: {
   from: Date;
   to: Date;
 }): Promise<GroupSummaryResponse> {
-  const endpoint = BACKEND_BASE_URL
-    ? `${String(BACKEND_BASE_URL).replace(/\/+$/, '')}/Report/GetSummaryByGroup`
-    : '/Report/GetSummaryByGroup';
+  const endpoint = `${BACKEND_BASE_URL}/Report/GetSummaryByGroup`;
 
   const url = new URL(endpoint, window.location.origin);
   url.searchParams.set('group', params.group);
@@ -126,9 +124,7 @@ export async function getSummaryByGroup(params: {
 }
 
 export async function getPositionsByGroup(params: { group: string }): Promise<GroupPosition[]> {
-  const endpoint = BACKEND_BASE_URL
-    ? `${String(BACKEND_BASE_URL).replace(/\/+$/, '')}/Position/GetPositionsByGroup`
-    : '/Position/GetPositionsByGroup';
+  const endpoint = `${BACKEND_BASE_URL}/Position/GetPositionsByGroup`;
 
   const url = new URL(endpoint, window.location.origin);
   url.searchParams.set('group', params.group);
@@ -160,9 +156,7 @@ export async function getDealsByGroup(params: {
   from: Date;
   to: Date;
 }): Promise<GroupDeal[]> {
-  const endpoint = BACKEND_BASE_URL
-    ? `${String(BACKEND_BASE_URL).replace(/\/+$/, '')}/Deal/GetDealsByGroup`
-    : '/Deal/GetDealsByGroup';
+  const endpoint = `${BACKEND_BASE_URL}/Deal/GetDealsByGroup`;
 
   const url = new URL(endpoint, window.location.origin);
   url.searchParams.set('group', params.group);

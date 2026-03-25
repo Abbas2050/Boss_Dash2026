@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - LP Info</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 15px; }
+        h2 { font-size: 15px; color: #9ece6a; margin: 20px 0 10px; }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .panel { background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 15px; }
+
+        .form-row { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
+        .form-row label { min-width: 140px; font-size: 13px; color: #888; }
+        .form-row input, .form-row textarea { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; }
+        .form-row textarea { font-family: 'Segoe UI', monospace; min-height: 100px; resize: vertical; }
+
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 7px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.danger { background: #f7768e; }
+        button.danger:hover { background: #ff9e9e; }
+        button.secondary { background: #414868; color: #e0e0e0; }
+        button.secondary:hover { background: #565f89; }
+        button.edit-btn { background: #e0af68; color: #1a1b26; padding: 4px 10px; font-size: 12px; }
+        button.edit-btn:hover { background: #f0c878; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 8px; text-align: left; font-weight: 600; white-space: nowrap; }
+        td { padding: 6px 8px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+
+        .full-width { grid-column: 1 / -1; }
+        .actions { display: flex; gap: 5px; }
+
+        #msg { margin-top: 8px; font-size: 13px; min-height: 20px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        .positive { color: #9ece6a; }
+        .negative { color: #f7768e; }
+        .neutral { color: #e0af68; }
+        .muted { color: #565f89; }
+        .no-info { color: #565f89; font-style: italic; }
+
+        /* Edit Modal */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 100; justify-content: center; align-items: center; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: #1a1b26; border: 1px solid #414868; border-radius: 8px; padding: 20px; width: 550px; max-width: 90vw; max-height: 90vh; overflow-y: auto; }
+        .modal h2 { color: #7aa2f7; margin: 0 0 15px; font-size: 16px; }
+        .modal .form-row label { min-width: 140px; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end; }
+        #editMsg { margin-top: 8px; font-size: 13px; min-height: 20px; }
+        .section-divider { border-top: 1px solid #292e42; margin: 12px 0; padding-top: 8px; }
+        .section-label { font-size: 12px; color: #565f89; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html" class="active">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <!-- Edit Modal -->
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <h2>Edit LP Info <span id="editTitle" style="color:#565f89;font-size:13px"></span></h2>
+            <input type="hidden" id="editLpName" />
+            <input type="hidden" id="editInfoId" />
+
+            <div class="section-label">General</div>
+            <div class="form-row">
+                <label>Offset (Hrs)</label>
+                <input id="editOffsetHours" type="number" step="0.5" />
+            </div>
+            <div class="form-row">
+                <label>Rev Share %</label>
+                <input id="editRevSharePercent" type="number" step="0.1" />
+            </div>
+            <div class="form-row">
+                <label>Swap-Free Days</label>
+                <input id="editSwapFreeDays" type="number" step="1" />
+            </div>
+            <div class="form-row">
+                <label>Credit Cap</label>
+                <input id="editCreditCap" type="number" step="1" />
+            </div>
+            <div class="form-row">
+                <label>Notes</label>
+                <input id="editNotes" />
+            </div>
+
+            <div class="section-divider"></div>
+            <div class="section-label">History / Revenue Share</div>
+            <div class="form-row">
+                <label>Manual Start Equity</label>
+                <input id="editManualStartEquity" type="number" step="0.01" />
+            </div>
+            <div class="form-row">
+                <label>Custom Start Date</label>
+                <input id="editCustomStartDate" type="date" />
+            </div>
+            <div class="form-row">
+                <label>Custom End Date</label>
+                <input id="editCustomEndDate" type="date" />
+            </div>
+
+            <div id="editMsg"></div>
+            <div class="modal-actions">
+                <button class="secondary" onclick="closeEditModal()">Cancel</button>
+                <button onclick="saveEdit()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="content">
+        <h1>LP Info Management</h1>
+
+        <div class="grid">
+            <!-- CSV Import -->
+            <div class="panel" style="grid-column: 1 / -1;">
+                <h2>CSV Import</h2>
+                <p style="font-size:12px;color:#888;margin-bottom:10px">
+                    Paste CSV with header: LP Name, Offset (Hrs), Rev Share %, Swap-Free Days, Credit Cap, Notes<br>
+                    Existing LPs will be updated. TOTAL row is skipped.
+                </p>
+                <div class="form-row">
+                    <textarea id="csvText" placeholder="Paste CSV content here..." style="min-height:60px"></textarea>
+                </div>
+                <div class="form-row" style="justify-content:flex-end">
+                    <button onclick="importCsv()">Import CSV</button>
+                </div>
+                <div id="importMsg" style="font-size:13px;min-height:20px;margin-top:4px"></div>
+            </div>
+
+            <!-- LP Info Table -->
+            <div class="panel full-width">
+                <h2>LP Accounts & Info</h2>
+                <p style="font-size:12px;color:#888;margin-bottom:10px">
+                    Shows all active LP accounts. Click Edit to set or update LP Info settings.
+                </p>
+                <div id="msg"></div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>LP Name</th>
+                            <th>Login</th>
+                            <th>Source</th>
+                            <th>Status</th>
+                            <th>Offset (Hrs)</th>
+                            <th>Rev Share %</th>
+                            <th>Swap-Free Days</th>
+                            <th>Credit Cap</th>
+                            <th>Start Equity</th>
+                            <th>Notes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="infoTable"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let lpAccounts = [];
+        let lpInfoMap = {}; // keyed by lpName (lowercase)
+
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 4000);
+        }
+
+        function editMsg(text, ok) {
+            const el = document.getElementById('editMsg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 4000);
+        }
+
+        function importMsg(text, ok) {
+            const el = document.getElementById('importMsg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 6000);
+        }
+
+        function toDateStr(dt) {
+            if (!dt) return '';
+            return dt.split('T')[0];
+        }
+
+        // ---- Edit Modal ----
+        function openEditModal(lpName) {
+            const info = lpInfoMap[lpName.toLowerCase()];
+
+            document.getElementById('editLpName').value = lpName;
+            document.getElementById('editInfoId').value = info ? info.id : '';
+            document.getElementById('editTitle').textContent = lpName;
+            document.getElementById('editOffsetHours').value = info ? info.offsetHours : 0;
+            document.getElementById('editRevSharePercent').value = info ? info.revSharePercent : 0;
+            document.getElementById('editSwapFreeDays').value = info ? info.swapFreeDays : 0;
+            document.getElementById('editCreditCap').value = info ? info.creditCap : 0;
+            document.getElementById('editNotes').value = info ? (info.notes || '') : '';
+            document.getElementById('editManualStartEquity').value = info ? info.manualStartEquity : 0;
+            document.getElementById('editCustomStartDate').value = info ? toDateStr(info.customStartDate) : '';
+            document.getElementById('editCustomEndDate').value = info ? toDateStr(info.customEndDate) : '';
+
+            document.getElementById('editMsg').textContent = '';
+            document.getElementById('editModal').className = 'modal-overlay show';
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').className = 'modal-overlay';
+        }
+
+        async function saveEdit() {
+            const lpName = document.getElementById('editLpName').value;
+            const infoId = document.getElementById('editInfoId').value;
+
+            const body = {
+                lpName: lpName,
+                offsetHours: parseFloat(document.getElementById('editOffsetHours').value) || 0,
+                revSharePercent: parseFloat(document.getElementById('editRevSharePercent').value) || 0,
+                swapFreeDays: parseInt(document.getElementById('editSwapFreeDays').value) || 0,
+                creditCap: parseFloat(document.getElementById('editCreditCap').value) || 0,
+                notes: document.getElementById('editNotes').value.trim() || null,
+                manualStartEquity: parseFloat(document.getElementById('editManualStartEquity').value) || 0,
+                customStartDate: document.getElementById('editCustomStartDate').value || null,
+                customEndDate: document.getElementById('editCustomEndDate').value || null,
+            };
+
+            try {
+                let resp;
+                if (infoId) {
+                    // Update existing
+                    resp = await fetch(`${API}/api/LpInfo/${infoId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                } else {
+                    // Create new
+                    resp = await fetch(`${API}/api/LpInfo`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body)
+                    });
+                }
+
+                if (resp.ok) {
+                    closeEditModal();
+                    msg(`LP Info ${infoId ? 'updated' : 'created'} for ${lpName}`, true);
+                    loadData();
+                } else {
+                    const text = await resp.text();
+                    editMsg(`Error: ${text}`, false);
+                }
+            } catch (e) {
+                editMsg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        document.getElementById('editModal').addEventListener('click', e => {
+            if (e.target === document.getElementById('editModal')) closeEditModal();
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeEditModal();
+        });
+
+        // ---- Load Table (merged LP Accounts + LP Info) ----
+        async function loadData() {
+            try {
+                const [accResp, infoResp] = await Promise.all([
+                    fetch(`${API}/api/LpAccount?all=true`),
+                    fetch(`${API}/api/LpInfo`)
+                ]);
+
+                lpAccounts = await accResp.json();
+                const allInfos = await infoResp.json();
+
+                // Build lookup by lpName (case-insensitive)
+                lpInfoMap = {};
+                allInfos.forEach(info => {
+                    lpInfoMap[info.lpName.toLowerCase()] = info;
+                });
+
+                renderTable();
+            } catch (e) {
+                document.getElementById('infoTable').innerHTML = `<tr><td colspan="11" style="color:#f7768e">Failed to load: ${e.message}</td></tr>`;
+            }
+        }
+
+        function renderTable() {
+            const tbody = document.getElementById('infoTable');
+            tbody.innerHTML = '';
+
+            if (lpAccounts.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="11" class="muted">No LP accounts found. Add them in LP Manager first.</td></tr>';
+                return;
+            }
+
+            lpAccounts.forEach(lp => {
+                const info = lpInfoMap[lp.lpName.toLowerCase()];
+                const tr = document.createElement('tr');
+                const hasInfo = !!info;
+
+                const offsetVal = info ? info.offsetHours : 0;
+                const offsetClass = offsetVal > 0 ? 'positive' : offsetVal < 0 ? 'negative' : '';
+                const revShare = info ? info.revSharePercent : 0;
+                const swapFree = info ? info.swapFreeDays : 0;
+                const creditCap = info ? info.creditCap : 0;
+                const startEq = info ? info.manualStartEquity : 0;
+                const notes = info ? (info.notes || '-') : '-';
+
+                const noInfoClass = hasInfo ? '' : 'no-info';
+
+                // Escape single quotes in lpName for onclick
+                const safeName = lp.lpName.replace(/'/g, "\\'");
+
+                const statusClass = lp.isActive ? 'positive' : 'negative';
+                const statusText = lp.isActive ? 'Active' : 'Inactive';
+
+                tr.innerHTML = `
+                    <td><strong>${lp.lpName}</strong></td>
+                    <td>${lp.mt5Login}</td>
+                    <td class="muted">${lp.source}</td>
+                    <td class="${statusClass}">${statusText}</td>
+                    <td class="${noInfoClass} ${offsetClass}">${hasInfo ? (offsetVal > 0 ? '+' : '') + offsetVal : '-'}</td>
+                    <td class="${noInfoClass}">${hasInfo ? revShare + '%' : '-'}</td>
+                    <td class="${noInfoClass}">${hasInfo ? swapFree : '-'}</td>
+                    <td class="${noInfoClass}">${hasInfo ? (creditCap ? creditCap.toLocaleString() : '0') : '-'}</td>
+                    <td class="${noInfoClass}">${hasInfo && startEq > 0 ? startEq.toLocaleString() : '-'}</td>
+                    <td style="color:#888">${notes}</td>
+                    <td class="actions">
+                        <button class="edit-btn" onclick="openEditModal('${safeName}')">${hasInfo ? 'Edit' : 'Set Info'}</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // ---- CSV Import ----
+        async function importCsv() {
+            const csvText = document.getElementById('csvText').value.trim();
+            if (!csvText) {
+                importMsg('Paste CSV content first', false);
+                return;
+            }
+
+            try {
+                const resp = await fetch(`${API}/api/LpInfo/import`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ csvText })
+                });
+
+                if (resp.ok) {
+                    const result = await resp.json();
+                    let message = `Imported ${result.imported} LPs`;
+                    if (result.skipped > 0) message += `, skipped ${result.skipped}`;
+                    if (result.errors && result.errors.length > 0) message += ` (${result.errors.length} errors)`;
+                    importMsg(message, true);
+                    document.getElementById('csvText').value = '';
+                    loadData();
+                } else {
+                    const text = await resp.text();
+                    importMsg(`Error: ${text}`, false);
+                }
+            } catch (e) {
+                importMsg(`Failed: ${e.message}`, false);
+            }
+        }
+
+        loadData();
+    </script>
+</body>
+</html>

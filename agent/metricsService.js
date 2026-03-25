@@ -3,12 +3,20 @@ import { SWAGGER_ENDPOINTS, SWAGGER_META } from "./swaggerCatalog.js";
 
 const DEFAULT_GROUP = "*";
 
-const BACKEND_BASE_URL = String(process.env.VITE_BACKEND_BASE_URL || process.env.BACKEND_BASE_URL || "").replace(/\/+$/, "");
+const DEFAULT_BACKEND_BASE_URL = "https://api.skylinkscapital.com";
+const BACKEND_BASE_URL = String(
+  process.env.VITE_BACKEND_BASE_URL ||
+    process.env.BACKEND_BASE_URL ||
+    process.env.BACKEND_API_BASE_URL ||
+    DEFAULT_BACKEND_BASE_URL,
+).replace(/\/+$/, "");
 const PORTAL_TRANSACTIONS_URL = process.env.VITE_API_URL || "https://portal.skylinkscapital.com/rest/transactions";
 const PORTAL_VERSION = process.env.VITE_API_VERSION || "";
 const PORTAL_TOKEN = process.env.VITE_API_TOKEN || "";
 const WALLET_URL = process.env.VITE_WALLET_URL || "";
 const WALLET_TOKEN = process.env.VITE_WALLET_TOKEN || process.env.WALLET_API_TOKEN || "";
+const PORTAL_USERS_URL = PORTAL_TRANSACTIONS_URL.replace("/transactions", "/users");
+const PORTAL_ACCOUNTS_URL = PORTAL_TRANSACTIONS_URL.replace("/transactions", "/accounts");
 
 function toIsoDate(input) {
   if (!input) return null;
@@ -93,6 +101,241 @@ function resolvePathTemplate(path, pathParams = {}) {
   });
 }
 
+const READ_ONLY_APP_ENDPOINTS = [
+  {
+    id: "report.summary_by_group",
+    kind: "swagger",
+    method: "get",
+    path: "/Report/GetSummaryByGroup",
+    tag: "Dealing",
+    description: "Dealing summary by account group.",
+  },
+  {
+    id: "coverage.position_match_table",
+    kind: "swagger",
+    method: "get",
+    path: "/Coverage/position-match-table",
+    tag: "Coverage",
+    description: "Coverage position match table across LPs.",
+  },
+  {
+    id: "coverage.symbol_dashboard",
+    kind: "swagger",
+    method: "get",
+    path: "/Coverage/dashboard/{baseSymbol}",
+    tag: "Coverage",
+    description: "Coverage dashboard for a specific symbol.",
+  },
+  {
+    id: "coverage.lp_positions",
+    kind: "swagger",
+    method: "get",
+    path: "/Coverage/lp/{lpName}/positions",
+    tag: "Coverage",
+    description: "Current positions held by a specific LP.",
+  },
+  {
+    id: "metrics.lp",
+    kind: "swagger",
+    method: "get",
+    path: "/Metrics/lp",
+    tag: "Metrics",
+    description: "LP metrics including equity and margin.",
+  },
+  {
+    id: "metrics.equity_summary",
+    kind: "swagger",
+    method: "get",
+    path: "/Metrics/equity-summary",
+    tag: "Metrics",
+    description: "LP and client withdrawable equity summary.",
+  },
+  {
+    id: "swap.positions",
+    kind: "swagger",
+    method: "get",
+    path: "/Swap/positions",
+    tag: "Swap",
+    description: "Swap positions and tonight charge status.",
+  },
+  {
+    id: "history.aggregate",
+    kind: "swagger",
+    method: "get",
+    path: "/History/aggregate",
+    tag: "History",
+    description: "History aggregate metrics by date range.",
+  },
+  {
+    id: "history.deals",
+    kind: "swagger",
+    method: "get",
+    path: "/History/deals",
+    tag: "History",
+    description: "History deals for a specific login and period.",
+  },
+  {
+    id: "history.volume",
+    kind: "swagger",
+    method: "get",
+    path: "/History/volume",
+    tag: "History",
+    description: "History volume metrics by LP/account.",
+  },
+  {
+    id: "deal.by_group",
+    kind: "swagger",
+    method: "get",
+    path: "/Deal/GetDealsByGroup",
+    tag: "Deal",
+    description: "Deals by account group and date range.",
+  },
+  {
+    id: "account.by_login",
+    kind: "swagger",
+    method: "get",
+    path: "/Account/GetAccountByLogin",
+    tag: "Account",
+    description: "Account details for a trading login.",
+  },
+  {
+    id: "account.user_info",
+    kind: "swagger",
+    method: "get",
+    path: "/Account/GetUserInfo",
+    tag: "Account",
+    description: "User information for a trading login.",
+  },
+  {
+    id: "account.user_info_batch",
+    kind: "swagger",
+    method: "get",
+    path: "/Account/GetUserInfoBatch",
+    tag: "Account",
+    description: "Batch user information by login list.",
+  },
+  {
+    id: "bonus.dashboard",
+    kind: "swagger",
+    method: "get",
+    path: "/Bonus/dashboard",
+    tag: "Bonus",
+    description: "Bonus dashboard snapshot.",
+  },
+  {
+    id: "bonus.status",
+    kind: "swagger",
+    method: "get",
+    path: "/Bonus/status",
+    tag: "Bonus",
+    description: "Bonus status snapshot.",
+  },
+  {
+    id: "bonus.pnl_summary",
+    kind: "swagger",
+    method: "get",
+    path: "/Bonus/pnl-summary",
+    tag: "Bonus",
+    description: "Bonus PnL summary data.",
+  },
+  {
+    id: "bonus.pnl_smart",
+    kind: "swagger",
+    method: "get",
+    path: "/Bonus/pnl-smart",
+    tag: "Bonus",
+    description: "Bonus daily PnL detail for date range.",
+  },
+  {
+    id: "bonus.pnl_monthly_report",
+    kind: "swagger",
+    method: "get",
+    path: "/Bonus/pnl-monthly-report",
+    tag: "Bonus",
+    description: "Bonus monthly report by from date.",
+  },
+  {
+    id: "contract_size.list",
+    kind: "swagger",
+    method: "get",
+    path: "/api/ContractSize",
+    tag: "ContractSize",
+    description: "Contract size mappings.",
+  },
+  {
+    id: "contract_size.detect",
+    kind: "swagger",
+    method: "get",
+    path: "/api/ContractSize/detect/{symbol}",
+    tag: "ContractSize",
+    description: "Detect client/lp contract size for a symbol.",
+  },
+  {
+    id: "lp.accounts",
+    kind: "swagger",
+    method: "get",
+    path: "/api/LpAccount",
+    tag: "LpAccount",
+    description: "Configured LP account registry.",
+  },
+  {
+    id: "symbol.mapping",
+    kind: "swagger",
+    method: "get",
+    path: "/api/SymbolMapping",
+    tag: "SymbolMapping",
+    description: "Symbol mapping rules used by settings.",
+  },
+  {
+    id: "portal.users.search",
+    kind: "portal-post",
+    target: "users",
+    tag: "Portal",
+    description: "Portal user search endpoint used for client lookups.",
+  },
+  {
+    id: "portal.accounts.search",
+    kind: "portal-post",
+    target: "accounts",
+    tag: "Portal",
+    description: "Portal trading account search endpoint.",
+  },
+  {
+    id: "portal.transactions.search",
+    kind: "portal-post",
+    target: "transactions",
+    tag: "Portal",
+    description: "Portal transaction search endpoint.",
+  },
+  {
+    id: "wallet.snapshot",
+    kind: "wallet-get",
+    tag: "Wallet",
+    description: "Wallet and PSP balances snapshot.",
+  },
+];
+
+function findAppEndpoint(endpointId) {
+  return READ_ONLY_APP_ENDPOINTS.find((endpoint) => endpoint.id === endpointId) || null;
+}
+
+function listReadableSwaggerEndpoints() {
+  return SWAGGER_ENDPOINTS.filter((ep) => ["get", "head", "options"].includes(String(ep.method || "").toLowerCase())).map((ep) => ({
+    id: `swagger:${ep.id}`,
+    kind: "swagger-catalog",
+    method: String(ep.method || "get"),
+    path: ep.path,
+    tag: ep.tag || "General",
+    description: ep.summary || `Swagger endpoint ${ep.method?.toUpperCase?.() || "GET"} ${ep.path}`,
+  }));
+}
+
+function getPortalTargetUrl(target) {
+  if (target === "users") return PORTAL_USERS_URL;
+  if (target === "accounts") return PORTAL_ACCOUNTS_URL;
+  return PORTAL_TRANSACTIONS_URL;
+}
+
 export async function getDealingSummary(params = {}) {
   const range = buildRange(params);
   const group = params.group || DEFAULT_GROUP;
@@ -140,6 +383,58 @@ export async function getCoverageMetrics() {
     coveragePct,
     topUncovered,
     raw: data,
+  };
+}
+
+export async function getCoverageBySymbol(params = {}) {
+  const symbol = String(params.symbol || params.baseSymbol || "").trim().toUpperCase();
+  if (!symbol) throw new Error("symbol is required");
+  const data = await fetchJson(buildBackendUrl(`/Coverage/dashboard/${encodeURIComponent(symbol)}`));
+  const rows = Array.isArray(data?.rows) ? data.rows : Array.isArray(data) ? data : [];
+  const totals = data?.totals || {};
+  return {
+    symbol,
+    rowCount: rows.length,
+    clientNet: toNumber(totals.clientNet ?? data?.clientNet),
+    uncovered: toNumber(totals.uncovered ?? data?.uncovered),
+    lpCount: Array.isArray(data?.lpNames) ? data.lpNames.length : 0,
+    coveragePct: Math.abs(toNumber(totals.clientNet ?? data?.clientNet)) > 0
+      ? ((Math.abs(toNumber(totals.clientNet ?? data?.clientNet)) - Math.abs(toNumber(totals.uncovered ?? data?.uncovered))) /
+          Math.abs(toNumber(totals.clientNet ?? data?.clientNet))) *
+        100
+      : 0,
+    lpBreakdown: Array.isArray(data?.lpNames)
+      ? data.lpNames.map((lp) => ({ lp, net: toNumber(totals.lpNets?.[lp]) }))
+      : [],
+    raw: data,
+  };
+}
+
+export async function getLpPositions(params = {}) {
+  const lpName = String(params.lpName || params.lp || "").trim();
+  if (!lpName) throw new Error("lpName is required");
+  const rows = await fetchJson(buildBackendUrl(`/Coverage/lp/${encodeURIComponent(lpName)}/positions`));
+  const items = Array.isArray(rows) ? rows : [];
+  const grouped = new Map();
+  for (const row of items) {
+    const symbol = String(row?.symbol || row?.baseSymbol || "").toUpperCase() || "UNKNOWN";
+    const current = grouped.get(symbol) || { symbol, positions: 0, netLots: 0, buyLots: 0, sellLots: 0 };
+    const lots = toNumber(row?.lots ?? row?.volume ?? row?.netLots);
+    const side = String(row?.side || row?.direction || row?.action || "").toUpperCase();
+    current.positions += 1;
+    current.netLots += lots;
+    if (side.includes("BUY") || side === "0") current.buyLots += Math.abs(lots);
+    if (side.includes("SELL") || side === "1") current.sellLots += Math.abs(lots);
+    grouped.set(symbol, current);
+  }
+  const symbols = [...grouped.values()].sort((a, b) => Math.abs(b.netLots) - Math.abs(a.netLots));
+  return {
+    lpName,
+    positionCount: items.length,
+    symbolCount: symbols.length,
+    totalNetLots: symbols.reduce((sum, row) => sum + row.netLots, 0),
+    topSymbols: symbols.slice(0, 10),
+    raw: items,
   };
 }
 
@@ -202,6 +497,331 @@ export async function getHistoryAggregate(params = {}) {
       grossProfit: toNumber(data?.totals?.grossProfit),
     },
     raw: data,
+  };
+}
+
+export async function getHistoryDeals(params = {}) {
+  const range = buildRange(params);
+  const login = Number(params.login);
+  if (!Number.isFinite(login) || login <= 0) throw new Error("login is required");
+  const url = new URL(buildBackendUrl("/History/deals"));
+  url.searchParams.set("login", String(login));
+  url.searchParams.set("from", String(range.fromTs));
+  url.searchParams.set("to", String(range.toTs));
+  const data = await fetchJson(url.toString());
+  const deals = Array.isArray(data?.deals) ? data.deals : Array.isArray(data) ? data : [];
+  return {
+    login,
+    totalDeals: toNumber(data?.totalDeals ?? deals.length),
+    totals: {
+      profit: deals.reduce((sum, row) => sum + toNumber(row?.profit), 0),
+      commission: deals.reduce((sum, row) => sum + toNumber(row?.commission), 0),
+      swap: deals.reduce((sum, row) => sum + toNumber(row?.swap ?? row?.storage), 0),
+      volume: deals.reduce((sum, row) => sum + toNumber(row?.volume), 0),
+    },
+    sampleDeals: deals.slice(0, 20),
+    raw: data,
+  };
+}
+
+export async function getHistoryVolume(params = {}) {
+  const range = buildRange(params);
+  const url = new URL(buildBackendUrl("/History/volume"));
+  url.searchParams.set("from", String(range.fromTs));
+  url.searchParams.set("to", String(range.toTs));
+  const data = await fetchJson(url.toString());
+  const items = Array.isArray(data?.items) ? data.items : Array.isArray(data) ? data : [];
+  return {
+    rowCount: items.length,
+    totals: {
+      tradeCount: items.reduce((sum, row) => sum + toNumber(row?.tradeCount), 0),
+      totalLots: items.reduce((sum, row) => sum + toNumber(row?.totalLots), 0),
+      notionalUsd: items.reduce((sum, row) => sum + toNumber(row?.notionalUsd), 0),
+      volumeYards: items.reduce((sum, row) => sum + toNumber(row?.volumeYards), 0),
+    },
+    topByYards: [...items]
+      .sort((a, b) => toNumber(b?.volumeYards) - toNumber(a?.volumeYards))
+      .slice(0, 10),
+    raw: data,
+  };
+}
+
+export async function getBonusMetrics(params = {}) {
+  const range = buildRange(params);
+  const from = range.from;
+  const to = range.to;
+  const dashboardUrl = buildBackendUrl("/Bonus/dashboard");
+  const statusUrl = buildBackendUrl("/Bonus/status");
+  const pnlSummaryUrl = buildBackendUrl("/Bonus/pnl-summary");
+  const pnlSmartUrl = `${buildBackendUrl("/Bonus/pnl-smart")}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+  const pnlMonthlyUrl = `${buildBackendUrl("/Bonus/pnl-monthly-report")}?from=${encodeURIComponent(from)}`;
+
+  const [dashboard, status, pnlSummary, pnlSmart, monthly] = await Promise.allSettled([
+    fetchJson(dashboardUrl),
+    fetchJson(statusUrl),
+    fetchJson(pnlSummaryUrl),
+    fetchJson(pnlSmartUrl),
+    fetchJson(pnlMonthlyUrl),
+  ]);
+
+  const getValue = (entry) => (entry.status === "fulfilled" ? entry.value : null);
+  const dashboardVal = getValue(dashboard);
+  const statusVal = getValue(status);
+  const summaryVal = getValue(pnlSummary);
+  const smartVal = getValue(pnlSmart);
+  const monthlyVal = getValue(monthly);
+
+  return {
+    range: { from, to },
+    grossPnl: toNumber(summaryVal?.grossPnl ?? smartVal?.grossPnl),
+    totalEquity: toNumber(statusVal?.totalEquity ?? dashboardVal?.equity?.client?.totalEquity),
+    lpRealizedPnl: toNumber(summaryVal?.lpRealizedPnl ?? smartVal?.lp?.realizedPnl),
+    lpUnrealizedPnl: toNumber(summaryVal?.lpUnrealizedPnl ?? smartVal?.lp?.unrealizedPnl),
+    creditSettled: toNumber(summaryVal?.creditSettled),
+    creditUnsettled: toNumber(summaryVal?.creditUnsettled),
+    monthlyRows: Array.isArray(monthlyVal?.months) ? monthlyVal.months.length : 0,
+    raw: {
+      dashboard: dashboardVal,
+      status: statusVal,
+      pnlSummary: summaryVal,
+      pnlSmart: smartVal,
+      monthlyReport: monthlyVal,
+    },
+  };
+}
+
+export async function getContractSizes(params = {}) {
+  const symbol = String(params.symbol || "").trim().toUpperCase();
+  if (symbol) {
+    const detectUrl = buildBackendUrl(`/api/ContractSize/detect/${encodeURIComponent(symbol)}`);
+    const detected = await fetchJson(detectUrl);
+    return {
+      symbol,
+      detected,
+      raw: detected,
+    };
+  }
+  const data = await fetchJson(buildBackendUrl("/api/ContractSize"));
+  const rows = Array.isArray(data) ? data : [];
+  return {
+    count: rows.length,
+    sample: rows.slice(0, 25),
+    raw: rows,
+  };
+}
+
+export async function getCrmCashflow(params = {}) {
+  const userId = Number(params.userId ?? params.crmId);
+  if (!Number.isFinite(userId) || userId <= 0) throw new Error("userId (or crmId) is required");
+  const range = buildRange(params);
+  const begin = `${range.from} 00:00:00`;
+  const end = `${range.to} 23:59:59`;
+
+  const [deposits, withdrawals, accounts] = await Promise.all([
+    postPortal(PORTAL_TRANSACTIONS_URL, {
+      fromUserId: userId,
+      processedAt: { begin, end },
+      transactionTypes: ["deposit"],
+      statuses: ["approved"],
+    }).catch(() => []),
+    postPortal(PORTAL_TRANSACTIONS_URL, {
+      fromUserId: userId,
+      processedAt: { begin, end },
+      transactionTypes: ["withdrawal"],
+      statuses: ["approved"],
+    }).catch(() => []),
+    postPortal(PORTAL_ACCOUNTS_URL, { userId }).catch(() => []),
+  ]);
+
+  const depRows = Array.isArray(deposits) ? deposits : [];
+  const wdrRows = Array.isArray(withdrawals) ? withdrawals : [];
+  const accountRows = Array.isArray(accounts) ? accounts : [];
+
+  const totalDeposits = depRows.reduce((sum, row) => sum + toNumber(row?.processedAmount), 0);
+  const totalWithdrawals = Math.abs(wdrRows.reduce((sum, row) => sum + toNumber(row?.processedAmount), 0));
+  return {
+    userId,
+    fromDate: range.from,
+    toDate: range.to,
+    depositsCount: depRows.length,
+    withdrawalsCount: wdrRows.length,
+    totalDeposits,
+    totalWithdrawals,
+    netFlow: totalDeposits - totalWithdrawals,
+    tradingAccountsCount: accountRows.length,
+    logins: accountRows.map((row) => row?.login).filter(Boolean),
+    raw: {
+      deposits: depRows,
+      withdrawals: wdrRows,
+      accounts: accountRows,
+    },
+  };
+}
+
+export async function getTradingActivity(params = {}) {
+  const range = buildRange(params);
+  const group = String(params.group || "*");
+  const symbolFilter = String(params.symbol || "").trim().toUpperCase();
+  const limit = Math.max(1, Math.min(25, Number(params.limit) || 10));
+  const url = new URL(buildBackendUrl("/Deal/GetDealsByGroup"));
+  url.searchParams.set("group", group);
+  url.searchParams.set("from", toDdMmYyyy(range.from));
+  url.searchParams.set("to", toDdMmYyyy(range.to));
+  const data = await fetchJson(url.toString(), {
+    headers: { accept: "text/plain" },
+  });
+  const deals = (Array.isArray(data) ? data : []).filter((row) => {
+    const symbol = String(row?.symbol || "").toUpperCase();
+    return !symbolFilter || symbol === symbolFilter;
+  });
+  const grouped = new Map();
+  for (const deal of deals) {
+    const symbol = String(deal?.symbol || "UNKNOWN").toUpperCase();
+    const current = grouped.get(symbol) || {
+      symbol,
+      dealCount: 0,
+      totalLots: 0,
+      totalProfit: 0,
+      totalCommission: 0,
+      totalSwap: 0,
+      uniqueLogins: new Set(),
+    };
+    current.dealCount += 1;
+    current.totalLots += toNumber(deal?.lots);
+    current.totalProfit += toNumber(deal?.profit);
+    current.totalCommission += toNumber(deal?.commission);
+    current.totalSwap += toNumber(deal?.storage ?? deal?.swap);
+    current.uniqueLogins.add(String(deal?.login || ""));
+    grouped.set(symbol, current);
+  }
+  const bySymbol = [...grouped.values()]
+    .map((row) => ({
+      symbol: row.symbol,
+      dealCount: row.dealCount,
+      totalLots: row.totalLots,
+      totalProfit: row.totalProfit,
+      totalCommission: row.totalCommission,
+      totalSwap: row.totalSwap,
+      uniqueLogins: row.uniqueLogins.size,
+    }))
+    .sort((a, b) => b.totalLots - a.totalLots);
+  return {
+    fromDate: range.from,
+    toDate: range.to,
+    group,
+    symbol: symbolFilter || null,
+    dealCount: deals.length,
+    symbolCount: bySymbol.length,
+    topSymbolsByLots: bySymbol.slice(0, limit),
+    topSymbolsByDeals: [...bySymbol].sort((a, b) => b.dealCount - a.dealCount).slice(0, limit),
+    totals: {
+      totalLots: bySymbol.reduce((sum, row) => sum + row.totalLots, 0),
+      totalProfit: bySymbol.reduce((sum, row) => sum + row.totalProfit, 0),
+      totalCommission: bySymbol.reduce((sum, row) => sum + row.totalCommission, 0),
+      totalSwap: bySymbol.reduce((sum, row) => sum + row.totalSwap, 0),
+    },
+    raw: deals,
+  };
+}
+
+export async function getAccountDetails(params = {}) {
+  const login = Number(params.login);
+  if (!Number.isFinite(login) || login <= 0) throw new Error("login is required");
+  const accountUrl = new URL(buildBackendUrl("/Account/GetAccountByLogin"));
+  accountUrl.searchParams.set("login", String(login));
+  const userUrl = new URL(buildBackendUrl("/Account/GetUserInfo"));
+  userUrl.searchParams.set("login", String(login));
+  const [accountResp, userResp] = await Promise.allSettled([
+    fetchJson(accountUrl.toString(), { headers: { accept: "text/plain" } }),
+    fetchJson(userUrl.toString(), { headers: { accept: "text/plain" } }),
+  ]);
+  const account = accountResp.status === "fulfilled" ? accountResp.value : null;
+  const user = userResp.status === "fulfilled" ? userResp.value : null;
+  return {
+    login,
+    account: {
+      balance: toNumber(account?.balance ?? account?.currentBalance),
+      equity: toNumber(account?.equity ?? account?.currentEquity),
+      credit: toNumber(account?.credit ?? account?.currentCredit),
+      margin: toNumber(account?.margin),
+      freeMargin: toNumber(account?.freeMargin),
+      marginLevel: toNumber(account?.marginLevel),
+      group: account?.group ?? account?.accountGroup ?? null,
+    },
+    user: {
+      name: user?.name ?? user?.fullName ?? null,
+      email: user?.email ?? null,
+      country: user?.country ?? null,
+      status: user?.status ?? user?.tradingStatus ?? null,
+      ibId: user?.ibId ?? null,
+    },
+    raw: {
+      account,
+      user,
+    },
+  };
+}
+
+export async function getUserAccountsByEmail(params = {}) {
+  const email = String(params.email || "").trim().toLowerCase();
+  if (!email) throw new Error("email is required");
+
+  const users = await postPortal(PORTAL_USERS_URL, params.userFilter && typeof params.userFilter === "object" ? params.userFilter : {}).catch(() => []);
+  const matchedUsers = (Array.isArray(users) ? users : []).filter((user) => {
+    const primary = String(user?.email || "").trim().toLowerCase();
+    const secondary = String(user?.secondaryEmail || "").trim().toLowerCase();
+    return primary === email || secondary === email;
+  });
+
+  const userIds = [...new Set(matchedUsers.map((user) => toNumber(user?.id)).filter((id) => id > 0))];
+  let accounts = [];
+  if (userIds.length) {
+    accounts = await postPortal(PORTAL_ACCOUNTS_URL, { userIds, segment: { limit: 1000, offset: 0 } }).catch(() => []);
+  }
+
+  const accountItems = Array.isArray(accounts) ? accounts : [];
+  return {
+    email,
+    matchedUsers: matchedUsers.map((user) => ({
+      id: toNumber(user?.id),
+      firstName: user?.firstName ?? null,
+      lastName: user?.lastName ?? null,
+      email: user?.email ?? null,
+      secondaryEmail: user?.secondaryEmail ?? null,
+    })),
+    tradingAccountsCount: accountItems.length,
+    logins: accountItems.map((account) => ({
+      login: account?.login ?? null,
+      group: account?.group ?? account?.groupName ?? null,
+      balance: toNumber(account?.balance),
+      credit: toNumber(account?.credit),
+      equity: toNumber(account?.equity),
+      userId: toNumber(account?.userId),
+    })),
+    raw: {
+      users: matchedUsers,
+      accounts: accountItems,
+    },
+  };
+}
+
+export async function getSymbolMappings(params = {}) {
+  const search = String(params.symbol || params.search || "").trim().toUpperCase();
+  const data = await fetchJson(buildBackendUrl("/api/SymbolMapping"));
+  const rows = (Array.isArray(data) ? data : []).filter((row) => {
+    if (!search) return true;
+    const raw = String(row?.rawSymbol || row?.sourceSymbol || row?.symbol || "").toUpperCase();
+    const mapped = String(row?.mappedSymbol || row?.targetSymbol || "").toUpperCase();
+    return raw.includes(search) || mapped.includes(search);
+  });
+  return {
+    count: rows.length,
+    items: rows.slice(0, 25).map((row) => ({
+      id: row?.id,
+      rawSymbol: row?.rawSymbol || row?.sourceSymbol || row?.symbol || null,
+      mappedSymbol: row?.mappedSymbol || row?.targetSymbol || null,
+    })),
+    raw: rows,
   };
 }
 
@@ -332,12 +952,15 @@ export async function getMarketingMetrics(params = {}) {
 
 export async function getLiveSnapshot(params = {}) {
   const range = buildRange(params);
-  const [dealing, coverage, lpMetrics, swap, history] = await Promise.allSettled([
+  const [dealing, coverage, lpMetrics, swap, history, accounts, backoffice, marketing] = await Promise.allSettled([
     getDealingSummary(range),
     getCoverageMetrics(),
     getLpMetrics(),
     getSwapMetrics(),
     getHistoryAggregate(range),
+    getAccountsMetrics(range),
+    getBackofficeMetrics(range),
+    getMarketingMetrics(range),
   ]);
 
   const getVal = (r) => (r.status === "fulfilled" ? r.value : null);
@@ -349,6 +972,9 @@ export async function getLiveSnapshot(params = {}) {
     lpMetrics: getVal(lpMetrics),
     swap: getVal(swap),
     history: getVal(history),
+    accounts: getVal(accounts),
+    backoffice: getVal(backoffice),
+    marketing: getVal(marketing),
   };
 }
 
@@ -381,6 +1007,98 @@ export async function listSwaggerEndpoints(params = {}) {
       responses: ep.responses,
     })),
   };
+}
+
+export async function listAppEndpoints(params = {}) {
+  const tag = String(params.tag || "").toLowerCase();
+  const search = String(params.search || "").toLowerCase();
+  const limit = Math.max(1, Math.min(200, Number(params.limit) || 50));
+
+  const combinedEndpoints = [...READ_ONLY_APP_ENDPOINTS, ...listReadableSwaggerEndpoints()];
+  const endpoints = combinedEndpoints.filter((endpoint) => {
+    if (tag && String(endpoint.tag || "").toLowerCase() !== tag) return false;
+    if (search) {
+      const hay = `${endpoint.id} ${endpoint.tag || ""} ${endpoint.description || ""} ${endpoint.path || endpoint.target || ""}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  }).slice(0, limit);
+
+  return {
+    totalMatched: endpoints.length,
+    totalAvailable: combinedEndpoints.length,
+    endpoints: endpoints.map((endpoint) => ({
+      id: endpoint.id,
+      kind: endpoint.kind,
+      tag: endpoint.tag,
+      method: endpoint.method?.toUpperCase?.() || (endpoint.kind === "portal-post" ? "POST" : endpoint.kind === "wallet-get" ? "GET" : "GET"),
+      path: endpoint.path || endpoint.target || null,
+      description: endpoint.description,
+    })),
+  };
+}
+
+export async function callAppEndpoint(params = {}) {
+  const endpointId = String(params.endpointId || "").trim();
+  if (!endpointId) throw new Error("endpointId is required");
+  const endpoint = findAppEndpoint(endpointId);
+  const swaggerCatalogEndpoint = String(endpointId).startsWith("swagger:")
+    ? listReadableSwaggerEndpoints().find((entry) => entry.id === endpointId)
+    : null;
+  const resolvedEndpoint = endpoint || swaggerCatalogEndpoint;
+  if (!resolvedEndpoint) throw new Error(`Unknown app endpoint: ${endpointId}`);
+
+  if (resolvedEndpoint.kind === "swagger" || resolvedEndpoint.kind === "swagger-catalog") {
+    return {
+      endpointId,
+      ...(await callSwaggerEndpoint({
+        path: resolvedEndpoint.path,
+        method: resolvedEndpoint.method,
+        query: params.query || {},
+        pathParams: params.pathParams || {},
+        body: params.body || {},
+      })),
+    };
+  }
+
+  if (resolvedEndpoint.kind === "portal-post") {
+    const data = await postPortal(getPortalTargetUrl(resolvedEndpoint.target), params.body && typeof params.body === "object" ? params.body : {});
+    return {
+      endpointId,
+      request: {
+        method: "POST",
+        target: resolvedEndpoint.target,
+        body: params.body || {},
+      },
+      response: {
+        ok: true,
+        status: 200,
+        data,
+      },
+    };
+  }
+
+  if (resolvedEndpoint.kind === "wallet-get") {
+    if (!WALLET_URL || !WALLET_TOKEN) throw new Error("wallet endpoint is not configured");
+    const url = WALLET_URL.includes("?")
+      ? `${WALLET_URL}&token=${encodeURIComponent(WALLET_TOKEN)}`
+      : `${WALLET_URL}?token=${encodeURIComponent(WALLET_TOKEN)}`;
+    const data = await fetchJson(url);
+    return {
+      endpointId,
+      request: {
+        method: "GET",
+        url,
+      },
+      response: {
+        ok: true,
+        status: 200,
+        data,
+      },
+    };
+  }
+
+  throw new Error(`Unsupported endpoint kind for ${endpointId}`);
 }
 
 export async function callSwaggerEndpoint(params = {}) {
