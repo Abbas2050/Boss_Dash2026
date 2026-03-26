@@ -492,21 +492,39 @@ export function AccountsDepartment({
           {pspBalances.length === 0 && !isLoading && (
             <div className="text-[11px] text-muted-foreground">No wallet data available.</div>
           )}
-          {pspBalances.map((psp) => (
-            <div key={psp.name} className="flex items-center justify-between p-1.5 rounded-md bg-secondary/30 border border-border/40 text-xs">
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                {psp.status === 'error' ? (
-                  <AlertTriangle className="w-3 h-3 text-destructive flex-shrink-0" />
-                ) : (
-                  <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
+          {pspBalances.map((psp, index) => {
+            const cryptoCount = 5; // Bitpace, LetKnow Pay, OwnBit, HeroPayment, Match2Pay
+            const cryptoSubtotal = pspBalances.slice(0, cryptoCount).reduce((sum, item) => sum + item.balance, 0);
+            
+            return (
+              <div key={psp.name}>
+                <div className="flex items-center justify-between p-1.5 rounded-md bg-secondary/30 border border-border/40 text-xs">
+                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                    {psp.status === 'error' ? (
+                      <AlertTriangle className="w-3 h-3 text-destructive flex-shrink-0" />
+                    ) : (
+                      <CheckCircle className="w-3 h-3 text-success flex-shrink-0" />
+                    )}
+                    <span className="text-foreground truncate">{psp.name}</span>
+                  </div>
+                  <span className="font-mono font-semibold text-right ml-2 flex-shrink-0">
+                    ${psp.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
+                {index === cryptoCount - 1 && (
+                  <div className="flex items-center justify-between p-1.5 rounded-md bg-cyan-500/15 border border-cyan-500/40 text-xs mt-1">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <CheckCircle className="w-3 h-3 text-cyan-500 flex-shrink-0" />
+                      <span className="text-foreground font-semibold truncate">🔐 SUBTOTAL CRYPTO</span>
+                    </div>
+                    <span className="font-mono font-bold text-right ml-2 flex-shrink-0 text-cyan-500">
+                      ${cryptoSubtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </div>
                 )}
-                <span className="text-foreground truncate">{psp.name}</span>
               </div>
-              <span className="font-mono font-semibold text-right ml-2 flex-shrink-0">
-                ${psp.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {/* Totals */}
