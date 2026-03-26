@@ -485,7 +485,7 @@ export function AccountsDepartment({
           <div className="text-[10px] text-muted-foreground">Updated: {reportUpdated}</div>
         </div>
         
-        <div className="space-y-1 max-h-40 overflow-y-auto">
+        <div className="space-y-1">
           {walletError && (
             <div className="text-[11px] text-destructive">{walletError}</div>
           )}
@@ -539,7 +539,7 @@ export function AccountsDepartment({
       </div>}
 
       {/* Receivables */}
-      {!isLpMode && <div className="pt-2 border-t border-border/30 space-y-1.5">
+      {!isLpMode && <div className="pt-2 border-t border-border/30 grid grid-cols-2 gap-1.5">
         <div className="p-2 rounded-md bg-warning/10 border border-warning/20">
           <div className="text-[10px] text-muted-foreground mb-0.5">📊 To be received in BANK</div>
           <div className="font-mono font-semibold text-warning">${bankReceivable.toFixed(2)}</div>
