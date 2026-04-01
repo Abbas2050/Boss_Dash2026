@@ -400,8 +400,9 @@ export function BackOfficeDepartment({
         const clientDateFilter = fromDate || toDate ? { created: { begin, end } } : {};
         const hasEntityFilter = selectedEntity !== 'all';
 
-        const [allUsers, allDepositsRaw, allWithdrawalsRaw, ibWithdrawalsRaw, verifiedUsers, unverifiedUsers, individualUsers, corporateUsers] =
+        const [allUsersInEntity, allUsers, allDepositsRaw, allWithdrawalsRaw, ibWithdrawalsRaw, verifiedUsers, unverifiedUsers, individualUsers, corporateUsers] =
           await Promise.all([
+            fetchAllUsers({ ...baseUsersFilter, lead: false }),
             fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false }),
             fetchAllTransactions({
               processedAt: { begin, end },
@@ -439,7 +440,7 @@ export function BackOfficeDepartment({
         });
         console.log('[KYC] distinct custom_compliance_approval values:', Object.fromEntries(kycDistinct));
 
-        const entityUserIds = new Set(allUsers.map((user) => user.id));
+        const entityUserIds = new Set(allUsersInEntity.map((user) => user.id));
         const entityUserIdsArr = Array.from(entityUserIds);
 
         // Accounts created in the selected date range (paginated, no hard limit)
