@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Equity Overview</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Consolas, monospace; background: #0d0d14; color: #c8c8d0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 16px; }
+        .header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+        .header h1 { font-size: 16px; color: #c0caf5; font-weight: 600; }
+        .toolbar button {
+            background: #1a1b26; border: 1px solid #292e42; color: #7aa2f7; padding: 4px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px;
+        }
+        .toolbar button:hover { background: #1f2335; border-color: #7aa2f7; }
+        .last-update { font-size: 11px; color: #565f89; margin-left: auto; }
+
+        .val-pos { color: #9ece6a; }
+        .val-neg { color: #f7768e; }
+        .val-zero { color: #565f89; }
+        .loading { text-align: center; padding: 40px; color: #565f89; font-size: 14px; }
+
+        /* Equity cards */
+        .equity-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .equity-card {
+            border: 1px solid #292e42; border-radius: 6px; background: #1a1b26; padding: 16px;
+        }
+        .equity-card .card-title {
+            font-size: 13px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.5px; margin-bottom: 12px; padding-bottom: 8px;
+            border-bottom: 1px solid #292e42;
+        }
+        .equity-card.client-card .card-title { color: #7aa2f7; }
+        .equity-card.lp-card .card-title { color: #e0af68; }
+
+        .equity-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 0; font-size: 13px;
+        }
+        .equity-row .label { color: #888; }
+        .equity-row .value { font-weight: 700; font-size: 15px; }
+        .equity-row.net { border-top: 1px solid #292e42; margin-top: 4px; padding-top: 10px; }
+        .equity-row.net .label { color: #c0caf5; font-weight: 600; }
+        .equity-row.net .value { font-size: 18px; }
+
+        /* Difference banner */
+        .diff-banner {
+            border: 1px solid #292e42; border-radius: 6px; background: #1a1b26;
+            padding: 16px; text-align: center; margin-bottom: 20px;
+        }
+        .diff-banner .label {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.5px; color: #bb9af7; margin-bottom: 6px;
+        }
+        .diff-banner .value { font-size: 24px; font-weight: 700; }
+
+        /* Collapsible sections */
+        .collapsible-header {
+            display: flex; align-items: center; justify-content: space-between;
+            background: #1a1b26; border: 1px solid #292e42; border-radius: 6px;
+            padding: 10px 16px; cursor: pointer; margin-bottom: 0; margin-top: 0;
+            user-select: none; transition: background 0.15s;
+        }
+        .collapsible-header:hover { background: #1f2335; }
+        .collapsible-header h2 { font-size: 14px; color: #c0caf5; font-weight: 600; }
+        .collapsible-header .toggle-icon {
+            color: #7aa2f7; font-size: 13px; font-weight: 700;
+            transition: transform 0.2s;
+        }
+        .collapsible-header.open .toggle-icon { transform: rotate(90deg); }
+        .collapsible-header .badge { font-size: 11px; color: #565f89; margin-left: 8px; }
+        .collapsible-body {
+            display: none; border: 1px solid #292e42; border-top: none;
+            border-radius: 0 0 6px 6px; overflow-x: auto; margin-bottom: 16px;
+        }
+        .collapsible-body.open { display: block; }
+        .collapsible-header.open { border-radius: 6px 6px 0 0; }
+
+        .filter-bar {
+            display: flex; align-items: center; gap: 8px; margin-left: auto;
+        }
+        .filter-bar select, .filter-bar input {
+            background: #24283b; border: 1px solid #414868; color: #e0e0e0;
+            padding: 5px 10px; border-radius: 4px; font-size: 12px;
+        }
+        .filter-bar input { width: 180px; }
+        .filter-bar input::placeholder { color: #565f89; }
+
+        /* Tables */
+        table { border-collapse: collapse; width: 100%; font-size: 13px; }
+        thead th {
+            background: #13131d; color: #7aa2f7; font-weight: 600; font-size: 11px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 8px 10px; text-align: right; border-bottom: 1px solid #292e42;
+            position: sticky; top: 0; z-index: 1;
+        }
+        thead th:first-child, thead th:nth-child(2), thead th:nth-child(3) { text-align: left; }
+        tbody tr { border-bottom: 1px solid #1a1b26; }
+        tbody tr:hover { background: #1a1b2a; }
+        tbody td { padding: 6px 10px; text-align: right; white-space: nowrap; }
+        tbody td:first-child, tbody td:nth-child(2), tbody td:nth-child(3) { text-align: left; }
+        tbody td:first-child { color: #c0caf5; font-weight: 600; }
+
+        tfoot td {
+            padding: 8px 10px; text-align: right; font-weight: 700;
+            border-top: 2px solid #292e42; background: #13131d;
+        }
+        tfoot td:first-child { text-align: left; color: #c0caf5; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/volume-alerts.html">Volume Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/equity-overview.html" class="active">Equity Overview</a>
+        <a href="/internal-accounts.html">Internal Accounts</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <div class="header">
+            <h1>Equity Overview</h1>
+            <div class="toolbar">
+                <button onclick="fetchData()">Refresh</button>
+            </div>
+            <span class="last-update" id="lastUpdate"></span>
+        </div>
+
+        <div id="mainContent">
+            <div class="loading">Loading equity data...</div>
+        </div>
+    </div>
+
+<script>
+    function fmtDollar(v) {
+        if (v === 0) return '<span class="val-zero">$0.00</span>';
+        const cls = v > 0 ? 'val-pos' : 'val-neg';
+        const f = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `<span class="${cls}">${v < 0 ? '-' : ''}$${f}</span>`;
+    }
+
+    function fmtPct(v) {
+        if (v === 0) return '<span class="val-zero">0.00%</span>';
+        const cls = v >= 100 ? 'val-pos' : 'val-neg';
+        return `<span class="${cls}">${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%</span>`;
+    }
+
+    function fmtVal(v) {
+        const f = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `${v < 0 ? '-' : ''}$${f}`;
+    }
+
+    function colorClass(v) { return v > 0 ? 'val-pos' : v < 0 ? 'val-neg' : 'val-zero'; }
+
+    // State
+    let allClientItems = [];
+    let allLpItems = [];
+
+    function renderDashboard(data) {
+        const c = data.clients;
+        const l = data.lps;
+
+        let html = '';
+
+        // Equity summary cards
+        html += '<div class="equity-grid">';
+
+        // Client card
+        html += `<div class="equity-card client-card">
+            <div class="card-title">Client Withdrawable Equity</div>
+            <div class="equity-row"><span class="label">Live Clients</span><span class="value ${colorClass(c.liveWithdrawableEquity)}">${fmtVal(c.liveWithdrawableEquity)}</span></div>
+            <div class="equity-row"><span class="label">Bonus Clients</span><span class="value ${colorClass(c.bonusWithdrawableEquity)}">${fmtVal(c.bonusWithdrawableEquity)}</span></div>
+            <div class="equity-row net"><span class="label">Net Client WD Equity</span><span class="value ${colorClass(c.netWithdrawableEquity)}">${fmtVal(c.netWithdrawableEquity)}</span></div>
+        </div>`;
+
+        // LP card
+        html += `<div class="equity-card lp-card">
+            <div class="card-title">LP Withdrawable Equity</div>
+            <div class="equity-row"><span class="label">Live LPs</span><span class="value ${colorClass(l.liveWithdrawableEquity)}">${fmtVal(l.liveWithdrawableEquity)}</span></div>
+            <div class="equity-row"><span class="label">Bonus LP (XTB)</span><span class="value ${colorClass(l.bonusWithdrawableEquity)}">${fmtVal(l.bonusWithdrawableEquity)}</span></div>
+            <div class="equity-row net"><span class="label">Net LP WD Equity</span><span class="value ${colorClass(l.netWithdrawableEquity)}">${fmtVal(l.netWithdrawableEquity)}</span></div>
+        </div>`;
+
+        html += '</div>';
+
+        // Difference banner
+        html += `<div class="diff-banner">
+            <div class="label">Net LP - Net Client Withdrawable Equity</div>
+            <div class="value ${colorClass(data.netDifference)}">${fmtVal(data.netDifference)}</div>
+        </div>`;
+
+        document.getElementById('mainContent').innerHTML = html;
+
+        // Client details (append outside mainContent to preserve collapse state)
+        allClientItems = c.items || [];
+        allLpItems = l.items || [];
+
+        renderCollapsibleSection('client', allClientItems, true);
+        renderCollapsibleSection('lp', allLpItems, false);
+    }
+
+    function renderCollapsibleSection(type, items, isClient) {
+        const containerId = type + 'Section';
+        let container = document.getElementById(containerId);
+
+        // First render — create the DOM structure once
+        if (!container) {
+            container = document.createElement('div');
+            container.id = containerId;
+            document.querySelector('.content').appendChild(container);
+
+            const title = isClient ? 'Client Details' : 'LP Details';
+            container.innerHTML = `
+                <div class="collapsible-header" onclick="toggleSection('${type}')">
+                    <div style="display:flex;align-items:center;">
+                        <h2>${title}</h2>
+                        <span class="badge" id="${type}Badge"></span>
+                    </div>
+                    <div class="filter-bar">
+                        <select id="${type}SourceFilter" onclick="event.stopPropagation()" onchange="filterItems('${type}')">
+                            <option value="">All Sources</option>
+                            <option value="Live">Live</option>
+                            <option value="Bonus">Bonus</option>
+                        </select>
+                        <input type="text" id="${type}Search" placeholder="Search by login..." onclick="event.stopPropagation()" oninput="filterItems('${type}')">
+                    </div>
+                    <span class="toggle-icon">&#9654;</span>
+                </div>
+                <div class="collapsible-body" id="${type}Body"></div>
+            `;
+        }
+
+        // Update badge count
+        document.getElementById(type + 'Badge').textContent = `(${items.length} accounts)`;
+
+        // Re-apply active filters to new data
+        filterItems(type);
+    }
+
+    let nameCache = {};
+    let namesLoaded = false;
+
+    async function resolveNames() {
+        try {
+            const resp = await fetch('/EquityOverview/names');
+            if (resp.ok) {
+                nameCache = await resp.json();
+            }
+        } catch (e) { /* optional */ }
+    }
+
+    function buildTable(type, items, isClient) {
+        let html = '<table><thead><tr>';
+        html += '<th>Name</th><th>Login</th><th>Source</th><th>Equity</th><th>WD Equity</th><th>Credit</th>';
+        html += '<th>Balance</th><th>Margin</th><th>Free Margin</th><th>Margin Level %</th>';
+        html += '</tr></thead><tbody>';
+
+        items.forEach(item => {
+            const srcColor = item.source === 'Bonus' ? '#e0af68' : '#7aa2f7';
+            const name = item.name || nameCache[String(item.login)] || '';
+            html += '<tr>';
+            html += `<td>${name || '<span style="color:#565f89">-</span>'}</td>`;
+            html += `<td style="color:#c0caf5;font-weight:600">${item.login}</td>`;
+            html += `<td style="color:${srcColor};font-size:11px;font-weight:600">${item.source}</td>`;
+            html += `<td>${fmtDollar(item.equity)}</td>`;
+            html += `<td>${fmtDollar(item.withdrawableEquity)}</td>`;
+            html += `<td>${fmtDollar(item.credit)}</td>`;
+            html += `<td>${fmtDollar(item.balance)}</td>`;
+            html += `<td>${fmtDollar(item.margin)}</td>`;
+            html += `<td>${fmtDollar(item.freeMargin)}</td>`;
+            html += `<td>${fmtPct(item.marginLevel)}</td>`;
+            html += '</tr>';
+        });
+
+        html += '</tbody></table>';
+        document.getElementById(type + 'Body').innerHTML = html;
+    }
+
+    function toggleSection(type) {
+        const container = document.getElementById(type + 'Section');
+        const header = container.querySelector('.collapsible-header');
+        const body = container.querySelector('.collapsible-body');
+        header.classList.toggle('open');
+        body.classList.toggle('open');
+    }
+
+    function filterItems(type) {
+        const src = document.getElementById(type + 'SourceFilter').value;
+        const q = document.getElementById(type + 'Search').value.trim();
+        const isClient = type === 'client';
+        let items = isClient ? allClientItems : allLpItems;
+
+        if (src) items = items.filter(i => i.source === src);
+        if (q) {
+            const ql = q.toLowerCase();
+            items = items.filter(i => {
+                const name = i.name || nameCache[String(i.login)] || '';
+                return String(i.login).includes(q) || name.toLowerCase().includes(ql);
+            });
+        }
+
+        buildTable(type, items, isClient);
+    }
+
+    async function fetchData() {
+        try {
+            const resp = await fetch('/EquityOverview/dashboard');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderDashboard(data);
+            document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+
+            // Resolve names once on first successful load
+            if (!namesLoaded) {
+                namesLoaded = true;
+                resolveNames().then(() => {
+                    filterItems('client');
+                    filterItems('lp');
+                });
+            }
+        } catch (e) {
+            console.error('Failed to fetch equity overview:', e);
+            document.getElementById('mainContent').innerHTML =
+                '<div class="loading">Failed to load data. <button onclick="fetchData()">Retry</button></div>';
+        }
+    }
+
+    fetchData();
+    setInterval(fetchData, 5000);
+</script>
+</body>
+</html>

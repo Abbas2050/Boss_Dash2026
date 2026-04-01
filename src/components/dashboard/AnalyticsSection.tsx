@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { TrendingUp, PieChart as PieChartIcon, Users, DollarSign, Activity, BarChart3, Calendar, AlertCircle, Briefcase } from 'lucide-react';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, ScatterChart, Scatter } from 'recharts';
+import { TrendingUp, PieChart as PieChartIcon, Users, DollarSign, BarChart3, Calendar, AlertCircle, Briefcase } from 'lucide-react';
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from 'recharts';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { fetchTransactions, fetchUsers, fetchAccounts, fetchTrades } from '@/lib/api';
+import { fetchTransactions, fetchUsers, fetchAccounts } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
 
 interface AnalyticsSectionProps {
@@ -20,7 +20,6 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
   const [clientFunnelData, setClientFunnelData] = useState<any[]>([]);
   const [transactionBreakdown, setTransactionBreakdown] = useState<any[]>([]);
   const [clientSegmentation, setClientSegmentation] = useState<any[]>([]);
-  const [topInstruments, setTopInstruments] = useState<any[]>([]);
   const [pspDeposits, setPspDeposits] = useState<any[]>([]);
   const [pspWithdrawals, setPspWithdrawals] = useState<any[]>([]);
   const [entityClientsData, setEntityClientsData] = useState<any[]>([]);
@@ -48,6 +47,24 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         break;
     }
     return { start, end: now };
+  };
+
+  const getEntityName = (user: any) => {
+    const entityField = user?.customFields?.custom_change_me_field;
+    if (typeof entityField === 'object' && entityField?.value) return String(entityField.value);
+    if (typeof entityField === 'string' && entityField.trim()) return entityField;
+    return 'Default';
+  };
+
+  const normalizePspName = (tx: any) => {
+    if (tx?.psp) return String(tx.psp).trim();
+    if (tx?.comment) return String(tx.comment).trim();
+    return 'Unknown';
+  };
+
+  const isNegativeBalanceDeposit = (tx: any) => {
+    const platformComment = String(tx?.platformComment || '').toLowerCase();
+    return platformComment.includes('negative bal');
   };
 
   useEffect(() => {
@@ -81,6 +98,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           ? { customFields: { custom_change_me_field: { value: selectedEntity } } }
           : {};
         const clientDateFilter = { created: { begin, end } };
+        const hasEntityFilter = selectedEntity !== 'all';
 
         // Fetch all data in parallel
         const [
@@ -91,8 +109,6 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           verifiedUsers,
           individualUsers,
           corporateUsers,
-          allTrades,
-          allAccounts,
         ] = await Promise.all([
           fetchTransactions({ 
             processedAt: { begin, end },
@@ -113,24 +129,39 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
           fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
           fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
-          fetchTrades({ closeDate: { begin, end } }).catch(() => []),
-          fetchAccounts({ createdAt: { begin, end }, segment: { limit: 1000, offset: 0 } }).catch(() => []),
         ]);
 
-        // Get all accounts (not just in date range) for client funnel
-        const allAccountsUnfiltered = await fetchAccounts({ segment: { limit: 1000, offset: 0 } }).catch(() => []);
-        const accountsByUser = new Map();
-        allAccountsUnfiltered.forEach((acc: any) => {
+        const allAccounts = await fetchAccounts({
+          createdAt: { begin, end },
+          userIds: hasEntityFilter ? allUsers.map((user) => user.id) : undefined,
+          segment: { limit: 1000, offset: 0 },
+        }).catch(() => []);
+
+        const entityUserIds = new Set((allUsers || []).map((user) => user.id));
+        const filteredDeposits = hasEntityFilter
+          ? (allDeposits || []).filter((tx) => entityUserIds.has(tx.fromUserId))
+          : (allDeposits || []);
+        const filteredWithdrawals = hasEntityFilter
+          ? (allWithdrawals || []).filter((tx) => entityUserIds.has(tx.fromUserId))
+          : (allWithdrawals || []);
+        const filteredIbWithdrawals = hasEntityFilter
+          ? (allIBWithdrawals || []).filter((tx) => entityUserIds.has(tx.fromUserId))
+          : (allIBWithdrawals || []);
+        const validDeposits = filteredDeposits.filter((tx) => !isNegativeBalanceDeposit(tx));
+        const accountsByUser = new Map<number, any[]>();
+        (allAccounts || []).forEach((acc: any) => {
           if (!accountsByUser.has(acc.userId)) {
             accountsByUser.set(acc.userId, []);
           }
-          accountsByUser.get(acc.userId).push(acc);
+          accountsByUser.get(acc.userId)?.push(acc);
         });
 
         // 1. CLIENT FUNNEL - Total Clients → MT5 Accounts → Depositors
         const totalClients = allUsers.length;
-        const clientsWithAccounts = new Set(Array.from(accountsByUser.keys()));
-        const clientsWithDeposits = new Set(allDeposits.map(d => d.fromUserId));
+        const clientsWithAccounts = new Set(
+          Array.from(accountsByUser.keys()).filter((userId) => entityUserIds.has(userId) || !hasEntityFilter),
+        );
+        const clientsWithDeposits = new Set(validDeposits.map((deposit) => deposit.fromUserId));
         const clientFunnel = [
           { stage: 'Total Clients', count: totalClients, percentage: 100 },
           { stage: 'Created MT5', count: clientsWithAccounts.size, percentage: totalClients > 0 ? Math.round((clientsWithAccounts.size / totalClients) * 100) : 0 },
@@ -140,12 +171,12 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
 
         // 2. REVENUE TREND - Daily deposits vs withdrawals with net flow
         const dailyData: { [key: string]: any } = {};
-        allDeposits.forEach(tx => {
+        validDeposits.forEach(tx => {
           const date = new Date(tx.processedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           if (!dailyData[date]) dailyData[date] = { date, deposits: 0, withdrawals: 0, netFlow: 0 };
           dailyData[date].deposits += tx.processedAmount / 1000000;
         });
-        allWithdrawals.forEach(tx => {
+        filteredWithdrawals.forEach(tx => {
           const date = new Date(tx.processedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
           if (!dailyData[date]) dailyData[date] = { date, deposits: 0, withdrawals: 0, netFlow: 0 };
           dailyData[date].withdrawals += Math.abs(tx.processedAmount) / 1000000;
@@ -168,13 +199,13 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         setFunnelData(funnelSteps);
 
         // 4. TRANSACTION BREAKDOWN
-        const totalDep = allDeposits.reduce((sum, tx) => sum + tx.processedAmount, 0) / 1000000;
-        const totalWd = allWithdrawals.reduce((sum, tx) => sum + Math.abs(tx.processedAmount), 0) / 1000000;
-        const totalIB = allIBWithdrawals.reduce((sum, tx) => sum + Math.abs(tx.processedAmount), 0) / 1000000;
+        const totalDep = validDeposits.reduce((sum, tx) => sum + tx.processedAmount, 0) / 1000000;
+        const totalWd = filteredWithdrawals.reduce((sum, tx) => sum + Math.abs(tx.processedAmount), 0) / 1000000;
+        const totalIB = filteredIbWithdrawals.reduce((sum, tx) => sum + Math.abs(tx.processedAmount), 0) / 1000000;
         const transactionData = [
-          { name: 'Deposits', value: parseFloat(totalDep.toFixed(2)), count: allDeposits.length },
-          { name: 'Withdrawals', value: parseFloat(totalWd.toFixed(2)), count: allWithdrawals.length },
-          { name: 'IB Withdrawals', value: parseFloat(totalIB.toFixed(2)), count: allIBWithdrawals.length },
+          { name: 'Deposits', value: parseFloat(totalDep.toFixed(2)), count: validDeposits.length },
+          { name: 'Withdrawals', value: parseFloat(totalWd.toFixed(2)), count: filteredWithdrawals.length },
+          { name: 'IB Withdrawals', value: parseFloat(totalIB.toFixed(2)), count: filteredIbWithdrawals.length },
         ];
         setTransactionBreakdown(transactionData);
 
@@ -194,58 +225,9 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         ];
         setClientSegmentation(segmentationData);
 
-        // 6. TOP TRADING INSTRUMENTS - Group by symbol and sum volumes
-        const instrumentMap: { [key: string]: { volume: number; trades: number } } = {};
-        allTrades.forEach((trade: any) => {
-          const symbol = trade.symbol || 'Unknown';
-          if (!instrumentMap[symbol]) instrumentMap[symbol] = { volume: 0, trades: 0 };
-          instrumentMap[symbol].volume += trade.volume || 0;
-          instrumentMap[symbol].trades += 1;
-        });
-        
-        // Categorize instruments by type
-        const getInstrumentType = (symbol: string) => {
-          const sym = symbol.toUpperCase();
-          if (sym.includes('USD') || sym.includes('EUR') || sym.includes('GBP') || sym.includes('JPY') || sym.includes('AUD') || sym.includes('CAD') || sym.includes('CHF') || sym.includes('NZD')) return 'Forex';
-          if (sym.includes('GOLD') || sym.includes('XAU') || sym.includes('SILVER') || sym.includes('XAG')) return 'Metals';
-          if (sym.includes('BTC') || sym.includes('ETH') || sym.includes('CRYPTO')) return 'Crypto';
-          if (sym.includes('US30') || sym.includes('US100') || sym.includes('SPX') || sym.includes('NDX') || sym.includes('DAX')) return 'Indices';
-          return 'Other';
-        };
-        
-        const getInstrumentColor = (type: string) => {
-          switch(type) {
-            case 'Forex': return '#3b82f6';
-            case 'Metals': return '#f59e0b';
-            case 'Crypto': return '#8b5cf6';
-            case 'Indices': return '#ec4899';
-            default: return '#6b7280';
-          }
-        };
-        
-        const instrumentData = Object.entries(instrumentMap)
-          .map(([symbol, data]) => ({
-            symbol,
-            volume: parseFloat((data.volume / 1000000).toFixed(2)), // Convert to millions
-            trades: data.trades,
-            type: getInstrumentType(symbol),
-            color: getInstrumentColor(getInstrumentType(symbol))
-          }))
-          .sort((a, b) => b.volume - a.volume)
-          .slice(0, 12); // Top 12 instruments
-        setTopInstruments(instrumentData);
-
-        // Use tx.psp if available, else fallback to comment or 'Unknown'
-        const normalizePspName = (tx: any) => {
-          // Try to use tx.psp, else fallback to comment, else 'Unknown'
-          if (tx.psp) return tx.psp.trim();
-          if (tx.comment) return tx.comment.trim();
-          return 'Unknown';
-        };
-
-        // 7. PSP DEPOSITS BREAKDOWN - Sum by PSP field (if available)
+        // 6. PSP DEPOSITS BREAKDOWN - Sum by PSP field (if available)
         const pspDepMap: { [key: string]: { amount: number; count: number } } = {};
-        allDeposits.forEach(tx => {
+        validDeposits.forEach(tx => {
           const psp = normalizePspName(tx);
           if (!pspDepMap[psp]) pspDepMap[psp] = { amount: 0, count: 0 };
           pspDepMap[psp].amount += tx.processedAmount / 1000000;
@@ -256,15 +238,15 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           .sort((a, b) => b.value - a.value);
         setPspDeposits(pspDepositData);
 
-        // 8. PSP WITHDRAWALS + IB BREAKDOWN
+        // 7. PSP WITHDRAWALS + IB BREAKDOWN
         const pspWdMap: { [key: string]: { amount: number; type: string; count: number } } = {};
-        allWithdrawals.forEach(tx => {
+        filteredWithdrawals.forEach(tx => {
           const psp = normalizePspName(tx);
           if (!pspWdMap[psp]) pspWdMap[psp] = { amount: 0, type: 'Withdrawal', count: 0 };
           pspWdMap[psp].amount += Math.abs(tx.processedAmount) / 1000000;
           pspWdMap[psp].count += 1;
         });
-        allIBWithdrawals.forEach(tx => {
+        filteredIbWithdrawals.forEach(tx => {
           const ibLabel = 'IB Withdrawal';
           if (!pspWdMap[ibLabel]) pspWdMap[ibLabel] = { amount: 0, type: 'IB Withdrawal', count: 0 };
           pspWdMap[ibLabel].amount += Math.abs(tx.processedAmount) / 1000000;
@@ -275,38 +257,28 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           .sort((a, b) => b.value - a.value);
         setPspWithdrawals(pspWithdrawalData);
 
-        // 9. ENTITY CLIENTS - Fetch ALL entities with ALL users (not filtered by date)
-        // This shows entity structure regardless of the date range selected
-        const allUsersForEntities = await fetchUsers({}).catch(() => []);
-        const allAccountsForEntities = await fetchAccounts({ segment: { limit: 1000, offset: 0 } }).catch(() => []);
+        // 8. ENTITY CLIENTS - Respect selected date range and entity filter
         const entityMap: { [key: string]: { clients: number; accounts: number } } = {};
-        
-        allUsersForEntities.forEach(user => {
-          // Extract entity from customFields - try both formats
-          const entityField = user.customFields?.custom_change_me_field;
-          const entity = (typeof entityField === 'object' && entityField?.value) 
-            ? entityField.value 
-            : (typeof entityField === 'string' ? entityField : 'Default');
+
+        allUsers.forEach((user: any) => {
+          const entity = getEntityName(user);
           if (!entityMap[entity]) entityMap[entity] = { clients: 0, accounts: 0 };
           entityMap[entity].clients += 1;
         });
-        
-        allAccountsForEntities.forEach((acc: any) => {
-          const user = allUsersForEntities.find(u => u.id === acc.userId);
+
+        allAccounts.forEach((acc: any) => {
+          const user = allUsers.find((candidate: any) => candidate.id === acc.userId);
           if (!user) return;
-          const entityField = user.customFields?.custom_change_me_field;
-          const entity = (typeof entityField === 'object' && entityField?.value) 
-            ? entityField.value 
-            : (typeof entityField === 'string' ? entityField : 'Default');
+          const entity = getEntityName(user);
           if (!entityMap[entity]) entityMap[entity] = { clients: 0, accounts: 0 };
           entityMap[entity].accounts += 1;
         });
-        
+
         const entityData = Object.entries(entityMap)
-          .filter(([name]) => name !== 'Default') // Exclude Default entity - keep only 3 entities
+          .filter(([name]) => name !== 'Default')
           .map(([name, data]) => ({ name, clients: data.clients, accounts: data.accounts }))
           .sort((a, b) => b.clients - a.clients);
-        
+
         setEntityClientsData(entityData);
       } catch (err) {
         // silently ignore
@@ -317,6 +289,9 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
 
     fetchAnalyticsData();
   }, [selectedEntity, fromDate, toDate, refreshKey, timelineMode]);
+
+  const transactionBreakdownTotal = transactionBreakdown.reduce((sum, item) => sum + item.value, 0);
+  const maxTransactionBreakdown = Math.max(0, ...transactionBreakdown.map((item) => item.value));
 
   return (
     <div className="space-y-5">
@@ -430,7 +405,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                 <h3 className="text-sm font-semibold">Transaction Breakdown</h3>
               </div>
               <span className="text-xs font-mono text-muted-foreground">
-                Total: ${transactionBreakdown.reduce((sum, item) => sum + item.value, 0).toFixed(2)}M
+                Total: ${transactionBreakdownTotal.toFixed(2)}M
               </span>
             </div>
             {transactionBreakdown.length > 0 ? (
@@ -451,7 +426,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                       <div 
                         className="h-full flex items-center justify-end pr-3 text-foreground text-sm font-bold transition-all shadow-lg"
                         style={{
-                          width: `${Math.max((item.value / Math.max(...transactionBreakdown.map(t => t.value))) * 100, 5)}%`,
+                          width: `${Math.max(maxTransactionBreakdown > 0 ? (item.value / maxTransactionBreakdown) * 100 : 0, 5)}%`,
                           backgroundColor: idx === 0 ? '#10b981' : idx === 1 ? '#ef4444' : '#f59e0b',
                           boxShadow: `inset 0 2px 4px rgba(0,0,0,0.1)`
                         }}
@@ -459,7 +434,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                         {item.value > 0 && `$${item.value.toFixed(2)}M`}
                       </div>
                       <div className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-muted-foreground">
-                        {Math.round((item.value / transactionBreakdown.reduce((sum, t) => sum + t.value, 0)) * 100)}%
+                        {Math.round(transactionBreakdownTotal > 0 ? (item.value / transactionBreakdownTotal) * 100 : 0)}%
                       </div>
                     </div>
                   </div>
@@ -527,53 +502,6 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
               </div>
             ) : (
               <div className="h-[250px] flex items-center justify-center text-muted-foreground">No data available</div>
-            )}
-          </Card>
-        </div>
-
-        {/* Top Trading Instruments */}
-        <div className="col-span-12 lg:col-span-6">
-          <Card className="p-4">
-            <div className="flex items-center gap-2 mb-4">
-              <Activity className="w-4 h-4 text-primary" />
-              <h3 className="text-sm font-semibold">Top Trading Instruments</h3>
-              <span className="text-xs text-muted-foreground">(Volume & Trade Count)</span>
-            </div>
-            {topInstruments.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <ComposedChart data={topInstruments} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-                  <XAxis dataKey="symbol" stroke="hsl(var(--muted-foreground))" fontSize={11} angle={-45} textAnchor="end" height={80} />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: 'Volume (M)', angle: -90, position: 'insideLeft' }} />
-                  <YAxis yAxisId="right" orientation="right" stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: 'Trades', angle: 90, position: 'insideRight' }} />
-                  <Tooltip 
-                    contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }}
-                    formatter={(value: any, name: string) => {
-                      if (name === 'volume') return [`${value.toFixed(2)}M lots`, 'Volume'];
-                      if (name === 'trades') return [value, 'Trades'];
-                      return value;
-                    }}
-                  />
-                  <Legend />
-                  <Bar 
-                    dataKey="volume" 
-                    fill="#3b82f6" 
-                    name="Volume (M lots)"
-                    radius={[8, 8, 0, 0]}
-                  />
-                  <Line 
-                    yAxisId="right"
-                    type="monotone" 
-                    dataKey="trades" 
-                    stroke="#10b981" 
-                    strokeWidth={3} 
-                    dot={{ fill: '#10b981', r: 5 }} 
-                    name="Trade Count" 
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[300px] flex items-center justify-center text-muted-foreground">No trading data available</div>
             )}
           </Card>
         </div>

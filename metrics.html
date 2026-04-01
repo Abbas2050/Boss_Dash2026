@@ -63,7 +63,19 @@
         .equity-box .value {
             font-size: 22px; font-weight: 700; color: #c0caf5;
         }
+        .gold-price-bar {
+            display: flex; align-items: center; gap: 16px; padding: 8px 16px;
+            background: #1a1b26; border-bottom: 1px solid #292e42; font-size: 13px;
+        }
+        .gold-price-bar .label { color: #e0af68; font-weight: 700; font-size: 12px; }
+        .gold-price-bar .price { font-weight: 700; font-size: 16px; color: #c0caf5; }
+        .gold-price-bar .spread-info { font-size: 11px; color: #565f89; }
+        .gold-price-bar .bid { color: #f7768e; }
+        .gold-price-bar .ask { color: #9ece6a; }
+        .gold-price-bar .tick-up { color: #9ece6a; }
+        .gold-price-bar .tick-down { color: #f7768e; }
     </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
 </head>
 <body>
     <nav class="nav">
@@ -77,6 +89,7 @@
         <a href="/symbol-mapping.html">Symbol Mapping</a>
         <a href="/transactions.html">Transactions</a>
         <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/volume-alerts.html">Volume Alerts</a>
         <a href="/deal-matching.html">Deal Matching</a>
         <a href="/history.html">History</a>
         <a href="/swap-tracker.html">Swap Tracker</a>
@@ -90,9 +103,19 @@
         <a href="/bonus-pnl.html">Bonus PnL</a>
         <a href="/bonus-pnl-report.html">PnL Report</a>
         <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/equity-overview.html">Equity Overview</a>
+        <a href="/internal-accounts.html">Internal Accounts</a>
         <a href="/ws-test.html">WS Test</a>
         <a href="/swagger">Swagger</a>
     </nav>
+
+    <div class="gold-price-bar">
+        <span class="label">XAUUSD</span>
+        <span>Bid: <span class="bid" id="goldBid">--</span></span>
+        <span>Ask: <span class="ask" id="goldAsk">--</span></span>
+        <span class="price" id="goldLast">--</span>
+        <span class="spread-info" id="goldSpread"></span>
+    </div>
 
     <div class="content">
         <div class="header">
@@ -206,6 +229,38 @@
 
         fetchDashboard();
         setInterval(fetchDashboard, 5000);
+
+        // Gold price via SignalR
+        let lastGoldBid = 0;
+        const goldConn = new signalR.HubConnectionBuilder()
+            .withUrl('/ws/dashboard')
+            .withAutomaticReconnect([0, 1000, 2000, 5000])
+            .build();
+
+        goldConn.on('PriceUpdate', (data) => {
+            if (data.symbol && data.symbol.toUpperCase().includes('XAUUSD')) {
+                const dir = data.bid > lastGoldBid ? 'tick-up' : data.bid < lastGoldBid ? 'tick-down' : '';
+                lastGoldBid = data.bid;
+                document.getElementById('goldBid').textContent = data.bid.toFixed(2);
+                document.getElementById('goldAsk').textContent = data.ask.toFixed(2);
+                document.getElementById('goldLast').textContent = data.bid.toFixed(2);
+                document.getElementById('goldLast').className = 'price ' + dir;
+                document.getElementById('goldSpread').textContent = `Spread: ${((data.ask - data.bid) * 100).toFixed(1)} pts`;
+            }
+        });
+
+        goldConn.onreconnected(async () => {
+            await goldConn.invoke('SubscribeToSymbol', 'XAUUSD');
+        });
+
+        (async () => {
+            try {
+                await goldConn.start();
+                await goldConn.invoke('SubscribeToSymbol', 'XAUUSD');
+            } catch (e) {
+                console.error('Gold price SignalR error:', e);
+            }
+        })();
     </script>
 </body>
 </html>

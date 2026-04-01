@@ -4,6 +4,11 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { componentTagger } from "lovable-tagger";
 
+const BACKEND_API_TARGET =
+  process.env.BACKEND_API_BASE_URL ||
+  process.env.VITE_BACKEND_BASE_URL ||
+  "https://api.skylinkscapital.com";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -60,6 +65,16 @@ export default defineConfig(({ mode }) => ({
       },
       "/api": {
         target: "http://localhost:3001",
+        changeOrigin: true,
+        rewrite: (reqPath) => reqPath,
+      },
+      "/NopReport": {
+        target: BACKEND_API_TARGET,
+        changeOrigin: true,
+        rewrite: (reqPath) => reqPath,
+      },
+      "/EquityOverview": {
+        target: BACKEND_API_TARGET,
         changeOrigin: true,
         rewrite: (reqPath) => reqPath,
       },

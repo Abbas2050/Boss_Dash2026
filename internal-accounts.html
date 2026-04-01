@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Internal Accounts</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', monospace; background: #0f0f1a; color: #e0e0e0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { max-width: 1100px; margin: 0 auto; padding: 30px 20px; }
+        h1 { font-size: 18px; color: #7aa2f7; margin-bottom: 6px; }
+        .subtitle { color: #565f89; font-size: 13px; margin-bottom: 25px; }
+
+        .panel { background: #1a1b26; border: 1px solid #292e42; border-radius: 6px; padding: 15px; margin-bottom: 20px; }
+        h2 { font-size: 15px; color: #9ece6a; margin-bottom: 12px; }
+
+        .form-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .form-row input, .form-row select { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
+        .form-row input[type="number"] { width: 130px; }
+        .form-row input[type="text"] { width: 150px; }
+        .form-row select { min-width: 100px; }
+
+        .checkbox-group { display: flex; gap: 14px; align-items: center; font-size: 13px; }
+        .checkbox-group label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: #888; }
+        .checkbox-group input[type="checkbox"] { accent-color: #7aa2f7; }
+
+        button { background: #7aa2f7; color: #1a1b26; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.danger { background: #f7768e; padding: 4px 10px; font-size: 12px; }
+        button.danger:hover { background: #ff9e9e; }
+        button.save { background: #9ece6a; padding: 4px 10px; font-size: 12px; }
+        button.save:hover { background: #b5e88a; }
+
+        #msg { margin-top: 10px; font-size: 13px; min-height: 20px; }
+        .msg-ok { color: #9ece6a; }
+        .msg-err { color: #f7768e; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { background: #24283b; color: #7aa2f7; padding: 10px 12px; text-align: left; font-weight: 600; }
+        td { padding: 8px 12px; border-bottom: 1px solid #292e42; }
+        tr:hover td { background: #1f2335; }
+        .empty { color: #565f89; text-align: center; padding: 30px; }
+        .count { font-size: 12px; color: #565f89; margin-bottom: 10px; }
+
+        .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; }
+        .badge-live { background: rgba(122, 162, 247, 0.15); color: #7aa2f7; }
+        .badge-bonus { background: rgba(224, 175, 104, 0.15); color: #e0af68; }
+        .badge-on { background: rgba(158, 206, 106, 0.15); color: #9ece6a; }
+        .badge-off { background: rgba(86, 95, 137, 0.15); color: #565f89; }
+        .badge-inactive { background: rgba(247, 118, 142, 0.15); color: #f7768e; }
+
+        .login-col { color: #9ece6a; font-weight: 600; }
+        .label-col { color: #c0caf5; font-weight: 600; }
+
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: #1a1b26; border: 1px solid #292e42; border-radius: 8px; padding: 20px; width: 420px; }
+        .modal h2 { font-size: 15px; color: #7aa2f7; margin-bottom: 16px; }
+        .modal .field { margin-bottom: 12px; }
+        .modal .field label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+        .modal .field input, .modal .field select { width: 100%; background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 8px 12px; border-radius: 4px; font-size: 13px; }
+        .modal .field .checkbox-row { display: flex; gap: 16px; align-items: center; font-size: 13px; }
+        .modal .field .checkbox-row label { display: flex; align-items: center; gap: 4px; cursor: pointer; color: #c8c8d0; margin-bottom: 0; }
+        .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+        .modal .actions button.cancel { background: #565f89; }
+        .auto-detected { font-size: 11px; color: #e0af68; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/volume-alerts.html">Volume Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/equity-overview.html">Equity Overview</a>
+        <a href="/internal-accounts.html" class="active">Internal Accounts</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <h1>Internal Accounts</h1>
+        <div class="subtitle">Configure accounts to exclude from equity and/or coverage calculations</div>
+
+        <div class="panel">
+            <h2>Add Internal Account</h2>
+            <div class="form-row">
+                <input id="loginInput" type="number" placeholder="MT5 Login" min="1" />
+                <input id="labelInput" type="text" placeholder="Label" />
+                <select id="systemSelect">
+                    <option value="Live">Live</option>
+                    <option value="Bonus">Bonus</option>
+                </select>
+                <input id="descInput" type="text" placeholder="Description (optional)" style="width:200px" />
+            </div>
+            <div class="checkbox-group" style="margin-top:10px;">
+                <label><input type="checkbox" id="exclEquity" checked /> Exclude from Equity</label>
+                <label><input type="checkbox" id="exclPositions" checked /> Exclude from Positions</label>
+                <button onclick="addAccount()" style="margin-left:auto">Add</button>
+            </div>
+            <div id="msg"></div>
+        </div>
+
+        <div class="panel">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                <h2 style="margin-bottom:0">Internal Accounts</h2>
+                <button onclick="resolveSystems()" style="font-size:12px;padding:5px 12px;">Auto-Detect Systems</button>
+            </div>
+            <div id="count" class="count"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Login</th>
+                        <th>Label</th>
+                        <th>System</th>
+                        <th>Equity</th>
+                        <th>Positions</th>
+                        <th>Description</th>
+                        <th>Status</th>
+                        <th style="text-align:right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="accountsTable">
+                    <tr><td colspan="8" class="empty">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="editModal">
+        <div class="modal">
+            <h2>Edit Internal Account</h2>
+            <input type="hidden" id="editId" />
+            <div class="field">
+                <label>MT5 Login</label>
+                <input id="editLogin" type="number" />
+            </div>
+            <div class="field">
+                <label>Label</label>
+                <input id="editLabel" type="text" />
+            </div>
+            <div class="field">
+                <label>System</label>
+                <select id="editSystem">
+                    <option value="Live">Live</option>
+                    <option value="Bonus">Bonus</option>
+                </select>
+                <div class="auto-detected" id="editSystemNote">System is auto-detected from MT5 on save</div>
+            </div>
+            <div class="field">
+                <label>Description</label>
+                <input id="editDesc" type="text" />
+            </div>
+            <div class="field">
+                <label>Exclusions</label>
+                <div class="checkbox-row">
+                    <label><input type="checkbox" id="editExclEquity" /> Exclude from Equity</label>
+                    <label><input type="checkbox" id="editExclPositions" /> Exclude from Positions</label>
+                </div>
+            </div>
+            <div class="actions">
+                <button class="cancel" onclick="closeEditModal()">Cancel</button>
+                <button onclick="saveEdit()">Save</button>
+            </div>
+        </div>
+    </div>
+
+<script>
+    const API = '/api/internal-accounts';
+
+    function msg(text, ok) {
+        const el = document.getElementById('msg');
+        el.textContent = text;
+        el.className = ok ? 'msg-ok' : 'msg-err';
+        setTimeout(() => el.textContent = '', 4000);
+    }
+
+    function escHtml(s) {
+        if (!s) return '';
+        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function badgeSystem(sys) {
+        return sys === 'Bonus'
+            ? '<span class="badge badge-bonus">Bonus</span>'
+            : '<span class="badge badge-live">Live</span>';
+    }
+
+    function badgeFlag(on) {
+        return on
+            ? '<span class="badge badge-on">Excluded</span>'
+            : '<span class="badge badge-off">Included</span>';
+    }
+
+    async function loadAccounts() {
+        try {
+            const resp = await fetch(API + '?all=true');
+            const data = await resp.json();
+            const tbody = document.getElementById('accountsTable');
+            document.getElementById('count').textContent = `${data.length} account${data.length !== 1 ? 's' : ''}`;
+
+            if (!data.length) {
+                tbody.innerHTML = '<tr><td colspan="8" class="empty">No internal accounts configured.</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.map(a => `
+                <tr style="${!a.isActive ? 'opacity:0.5' : ''}">
+                    <td class="login-col">${a.mt5Login}</td>
+                    <td class="label-col">${escHtml(a.label)}</td>
+                    <td>${badgeSystem(a.system)}</td>
+                    <td>${badgeFlag(a.excludeFromEquity)}</td>
+                    <td>${badgeFlag(a.excludeFromPositions)}</td>
+                    <td style="color:#565f89;font-size:12px">${escHtml(a.description) || '-'}</td>
+                    <td>${a.isActive ? '<span class="badge badge-on">Active</span>' : '<span class="badge badge-inactive">Inactive</span>'}</td>
+                    <td style="text-align:right">
+                        <button class="save" onclick='openEditModal(${JSON.stringify(a)})'>Edit</button>
+                        ${!a.isActive ? `<button class="save" onclick="toggleActive(${a.id}, true)">Activate</button>` : ''}
+                        <button class="danger" onclick="deleteAccount(${a.id}, '${a.mt5Login}', ${a.isActive})">${a.isActive ? 'Deactivate' : 'Delete'}</button>
+                    </td>
+                </tr>
+            `).join('');
+        } catch (e) {
+            document.getElementById('accountsTable').innerHTML = `<tr><td colspan="8" class="empty" style="color:#f7768e">Failed: ${e.message}</td></tr>`;
+        }
+    }
+
+    async function addAccount() {
+        const login = document.getElementById('loginInput').value.trim();
+        const label = document.getElementById('labelInput').value.trim();
+        const system = document.getElementById('systemSelect').value;
+        const description = document.getElementById('descInput').value.trim() || null;
+        const excludeFromEquity = document.getElementById('exclEquity').checked;
+        const excludeFromPositions = document.getElementById('exclPositions').checked;
+
+        if (!login || !label) { msg('Login and Label are required', false); return; }
+
+        try {
+            const resp = await fetch(API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mt5Login: parseInt(login), label, system, description, excludeFromEquity, excludeFromPositions })
+            });
+            if (resp.ok) {
+                msg(`Added: ${login} (${label})`, true);
+                document.getElementById('loginInput').value = '';
+                document.getElementById('labelInput').value = '';
+                document.getElementById('descInput').value = '';
+                loadAccounts();
+            } else {
+                msg('Error: ' + await resp.text(), false);
+            }
+        } catch (e) { msg('Failed: ' + e.message, false); }
+    }
+
+    function openEditModal(account) {
+        document.getElementById('editId').value = account.id;
+        document.getElementById('editLogin').value = account.mt5Login;
+        document.getElementById('editLabel').value = account.label;
+        document.getElementById('editSystem').value = account.system;
+        document.getElementById('editDesc').value = account.description || '';
+        document.getElementById('editExclEquity').checked = account.excludeFromEquity;
+        document.getElementById('editExclPositions').checked = account.excludeFromPositions;
+        document.getElementById('editModal').classList.add('show');
+    }
+
+    function closeEditModal() {
+        document.getElementById('editModal').classList.remove('show');
+    }
+
+    async function saveEdit() {
+        const id = document.getElementById('editId').value;
+        const login = document.getElementById('editLogin').value.trim();
+        const body = {
+            mt5Login: login ? parseInt(login) : undefined,
+            label: document.getElementById('editLabel').value.trim(),
+            system: document.getElementById('editSystem').value,
+            description: document.getElementById('editDesc').value.trim() || null,
+            excludeFromEquity: document.getElementById('editExclEquity').checked,
+            excludeFromPositions: document.getElementById('editExclPositions').checked,
+        };
+
+        if (!body.label || !login) { msg('Login and Label are required', false); return; }
+
+        try {
+            const resp = await fetch(`${API}/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (resp.ok) {
+                const updated = await resp.json();
+                if (updated.system !== body.system) {
+                    msg(`Saved. System auto-corrected to ${updated.system} (found in ${updated.system} manager)`, true);
+                } else {
+                    msg('Saved', true);
+                }
+                closeEditModal();
+                loadAccounts();
+            } else {
+                msg('Error: ' + await resp.text(), false);
+            }
+        } catch (e) { msg('Failed: ' + e.message, false); }
+    }
+
+    async function toggleActive(id, val) {
+        try {
+            const resp = await fetch(`${API}/${id}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ isActive: val })
+            });
+            if (resp.ok) { msg('Updated', true); loadAccounts(); }
+            else msg('Error: ' + await resp.text(), false);
+        } catch (e) { msg('Failed: ' + e.message, false); }
+    }
+
+    async function deleteAccount(id, login, isActive) {
+        const action = isActive ? 'deactivate' : 'permanently delete';
+        if (!confirm(`${action} internal account ${login}?`)) return;
+        try {
+            const resp = await fetch(`${API}/${id}${isActive ? '' : '?permanent=true'}`, { method: 'DELETE' });
+            if (resp.ok) { msg(isActive ? 'Deactivated' : 'Deleted', true); loadAccounts(); }
+            else msg('Failed', false);
+        } catch (e) { msg('Failed: ' + e.message, false); }
+    }
+
+    async function resolveSystems() {
+        try {
+            const resp = await fetch(`${API}/resolve-systems`, { method: 'POST' });
+            if (resp.ok) {
+                const result = await resp.json();
+                if (result.corrected > 0)
+                    msg(`Auto-detected: ${result.corrected} of ${result.total} account(s) corrected`, true);
+                else
+                    msg(`All ${result.total} account(s) already correct`, true);
+                loadAccounts();
+            } else {
+                msg('Error: ' + await resp.text(), false);
+            }
+        } catch (e) { msg('Failed: ' + e.message, false); }
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && ['loginInput', 'labelInput', 'descInput'].includes(e.target.id)) addAccount();
+        if (e.key === 'Escape') closeEditModal();
+    });
+
+    document.getElementById('editModal').addEventListener('click', e => {
+        if (e.target === document.getElementById('editModal')) closeEditModal();
+    });
+
+    loadAccounts();
+</script>
+</body>
+</html>

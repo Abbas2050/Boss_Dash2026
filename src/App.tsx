@@ -17,6 +17,7 @@ const LPManager = lazy(() => import("./pages/LPManager"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const CoveragePage = lazy(() => import("./pages/settings/CoveragePage").then((m) => ({ default: m.CoveragePage })));
 const LPManagerPage = lazy(() => import("./pages/settings/LPManagerPage").then((m) => ({ default: m.LPManagerPage })));
+const InternalAccountsSettingsPage = lazy(() => import("./pages/settings/InternalAccountsPage").then((m) => ({ default: m.InternalAccountsPage })));
 const SymbolMappingPage = lazy(() => import("./pages/settings/SymbolMappingPage").then((m) => ({ default: m.SymbolMappingPage })));
 const WSTestPage = lazy(() => import("./pages/settings/WSTestPage").then((m) => ({ default: m.WSTestPage })));
 const UserManagementPage = lazy(() => import("./pages/settings/UserManagementPage").then((m) => ({ default: m.UserManagementPage })));
@@ -30,6 +31,7 @@ const queryClient = new QueryClient();
 const settingsPageComponents = {
   coverage: CoveragePage,
   "lp-manager": LPManagerPage,
+  "internal-accounts": InternalAccountsSettingsPage,
   "symbol-mapping": SymbolMappingPage,
   alerts: AlertsSettingsPage,
   "ws-test": WSTestPage,

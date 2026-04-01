@@ -1,6 +1,7 @@
 ﻿import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Bell, Camera, ChevronDown, ChevronRight, Info, Maximize2, Minimize2, RefreshCw } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
+import { HubConnection, HubConnectionBuilder, LogLevel } from "@microsoft/signalr";
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/dealingApi";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
@@ -9,6 +10,7 @@ import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
 import { ClientProfilingTab } from "@/pages/departments/dealing/ClientProfilingTab";
 import { DealMatchingTab } from "@/pages/departments/dealing/DealMatchingTab";
+import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -67,6 +69,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   risk: "Risk Exposure",
   "risk-exposure": "Risk Exposure",
   metrics: "Metrics",
+  equity: "Equity Overview",
+  "equity-overview": "Equity Overview",
   bonus: "Bonus",
   contracts: "Contract Sizes",
   "contract-sizes": "Contract Sizes",
@@ -701,6 +705,9 @@ export function DealingDepartmentPage() {
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
   const [metricsRefreshKey, setMetricsRefreshKey] = useState(0);
+  const [metricsGoldQuote, setMetricsGoldQuote] = useState<{ bid: number; ask: number; spreadPoints: number; dir: "up" | "down" | "flat" } | null>(null);
+  const metricsLastBidRef = useRef<number | null>(null);
+  const metricsPriceSignalRRef = useRef<HubConnection | null>(null);
   const metricsRequestRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const [bonusSubTab, setBonusSubTab] = useState<BonusSubTab>("Bonus Coverage");
   const [bonusShowOverview, setBonusShowOverview] = useState(true);
@@ -777,6 +784,7 @@ export function DealingDepartmentPage() {
   const [nopError, setNopError] = useState<string | null>(null);
   const [nopLastUpdated, setNopLastUpdated] = useState<Date | null>(null);
   const [nopRefreshKey, setNopRefreshKey] = useState(0);
+  const [equityOverviewRefreshKey, setEquityOverviewRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -821,6 +829,8 @@ export function DealingDepartmentPage() {
       ? coverageLoading
       : activeMenu === "Metrics"
         ? metricsLoading
+      : activeMenu === "Equity Overview"
+        ? false
       : activeMenu === "Bonus"
         ? bonusLoading
       : activeMenu === "Contract Sizes"
@@ -844,6 +854,11 @@ export function DealingDepartmentPage() {
   }, []);
 
   useEffect(() => {
+    if (activeMenu !== "Dealing") {
+      setIsLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     const fetchData = async () => {
@@ -929,7 +944,7 @@ export function DealingDepartmentPage() {
       cancelled = true;
       clearInterval(iv);
     };
-  }, [fromDate, toDate, refreshKey]);
+  }, [activeMenu, fromDate, toDate, refreshKey]);
 
   const menuItems = DEALING_TABS as readonly string[];
   const bonusRootAccess = hasAccess("Dealing:Bonus");
@@ -988,6 +1003,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Metrics") {
       setMetricsRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Equity Overview") {
+      setEquityOverviewRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Bonus") {
@@ -1585,6 +1604,62 @@ export function DealingDepartmentPage() {
       clearInterval(iv);
     };
   }, [activeMenu, metricsRefreshKey]);
+
+  useEffect(() => {
+    if (activeMenu !== "Metrics") {
+      if (metricsPriceSignalRRef.current) {
+        metricsPriceSignalRRef.current.stop().catch(() => undefined);
+        metricsPriceSignalRRef.current = null;
+      }
+      return;
+    }
+
+    const connection = new HubConnectionBuilder()
+      .withUrl(`${BACKEND_BASE_URL}/ws/dashboard`)
+      .withAutomaticReconnect([0, 1000, 2000, 5000])
+      .configureLogging(LogLevel.None)
+      .build();
+
+    connection.on("PriceUpdate", (payload: { symbol?: string; bid?: number; ask?: number }) => {
+      const symbol = String(payload?.symbol || "").toUpperCase();
+      if (!symbol.includes("XAUUSD")) return;
+      const bid = Number(payload?.bid);
+      const ask = Number(payload?.ask);
+      if (!Number.isFinite(bid) || !Number.isFinite(ask)) return;
+
+      const prevBid = metricsLastBidRef.current;
+      const dir: "up" | "down" | "flat" = prevBid == null ? "flat" : bid > prevBid ? "up" : bid < prevBid ? "down" : "flat";
+      metricsLastBidRef.current = bid;
+      setMetricsGoldQuote({ bid, ask, spreadPoints: (ask - bid) * 100, dir });
+    });
+
+    connection.onreconnected(async () => {
+      try {
+        await connection.invoke("SubscribeToSymbol", "XAUUSD");
+      } catch {
+        // ignore subscription errors
+      }
+    });
+
+    (async () => {
+      try {
+        await connection.start();
+        await connection.invoke("SubscribeToSymbol", "XAUUSD");
+      } catch {
+        // ignore connection errors
+      }
+    })();
+
+    metricsPriceSignalRRef.current = connection;
+
+    return () => {
+      connection.off("PriceUpdate");
+      connection.stop().catch(() => undefined);
+      if (metricsPriceSignalRRef.current === connection) {
+        metricsPriceSignalRRef.current = null;
+      }
+    };
+  }, [activeMenu]);
 
   useEffect(() => {
     if (activeMenu !== "Contract Sizes") {
@@ -2191,143 +2266,23 @@ export function DealingDepartmentPage() {
       setNopLoading(true);
       setNopError(null);
       try {
-        const positionsEndpoint = `${BACKEND_BASE_URL}/Position/GetPositionsByGroup?group=${encodeURIComponent("*")}`;
-        const positionsResp = await fetch(positionsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
-        if (!positionsResp.ok) throw new Error(`GetPositionsByGroup ${positionsResp.status}`);
-        const allPositions = (await positionsResp.json()) as Array<{
-          login?: number | string;
-          symbol?: string;
-          action?: number;
-          lots?: number;
-          volume?: number;
-          volumeExt?: number;
-        }>;
-
-        const allSymbols = Array.from(
-          new Set(
-            (allPositions || [])
-              .map((p) => String(p?.symbol || "").trim())
-              .filter(Boolean),
-          ),
-        ).sort((a, b) => a.localeCompare(b));
-
-        const filteredPositions = (allPositions || []).filter((p) => {
-          const symbol = String(p?.symbol || "").trim();
-          if (!symbol) return false;
-          if (nopSymbol && symbol !== nopSymbol) return false;
-          return getPositionLots(p) > 0;
-        });
-
-        const logins = Array.from(
-          new Set(
-            filteredPositions
-              .map((p) => Number(p?.login))
-              .filter((v) => Number.isFinite(v) && v > 0),
-          ),
-        );
-
-        const accountsEndpoint = `${BACKEND_BASE_URL}/Account/GetAllAccounts`;
-        const accountsResp = await fetch(accountsEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
-        if (!accountsResp.ok) throw new Error(`GetAllAccounts ${accountsResp.status}`);
-        const allAccounts = (await accountsResp.json()) as Array<{
-          login?: number | string;
-          balance?: number;
-          credit?: number;
-          margin?: number;
-          marginFree?: number;
-          marginLevel?: number;
-          equity?: number;
-        }>;
-        const accountByLogin = new Map<number, (typeof allAccounts)[number]>();
-        for (const account of allAccounts || []) {
-          const login = Number(account?.login);
-          if (!Number.isFinite(login) || login <= 0) continue;
-          accountByLogin.set(login, account);
-        }
-
-        const userInfoByLogin = new Map<number, { name?: string }>();
-        const chunkSize = 80;
-        for (let i = 0; i < logins.length; i += chunkSize) {
-          const chunk = logins.slice(i, i + chunkSize);
-          if (!chunk.length) continue;
-          const query = chunk.map((login) => `logins=${encodeURIComponent(String(login))}`).join("&");
-          const userInfoEndpoint = `${BACKEND_BASE_URL}/Account/GetUserInfoBatch?${query}`;
-          try {
-            const infoResp = await fetch(userInfoEndpoint, { headers: { accept: "application/json, text/plain, */*" } });
-            if (!infoResp.ok) continue;
-            const payload = (await infoResp.json()) as Record<string, { login?: number | string; name?: string }>;
-            Object.values(payload || {}).forEach((entry) => {
-              const login = Number(entry?.login);
-              if (!Number.isFinite(login) || login <= 0) return;
-              userInfoByLogin.set(login, { name: String(entry?.name || "") });
-            });
-          } catch {
-            // continue without names if batch info request fails
-          }
-        }
-
-        const symbolBuckets = new Map<string, { buy: Map<number, number>; sell: Map<number, number> }>();
-        for (const position of filteredPositions) {
-          const symbol = String(position?.symbol || "").trim();
-          const login = Number(position?.login);
-          const lots = getPositionLots(position);
-          if (!symbol || !Number.isFinite(login) || login <= 0 || !(lots > 0)) continue;
-          const side = Number(position?.action) === 1 ? "sell" : "buy";
-          const bucket = symbolBuckets.get(symbol) || { buy: new Map<number, number>(), sell: new Map<number, number>() };
-          const current = bucket[side].get(login) || 0;
-          bucket[side].set(login, current + lots);
-          symbolBuckets.set(symbol, bucket);
-        }
-
-        const toClient = (login: number, volume: number): NopClient => {
-          const account = accountByLogin.get(login);
-          const info = userInfoByLogin.get(login);
-          return {
-            login,
-            name: String(info?.name || ""),
-            volume,
-            realLimit: null,
-            mt5Limit: null,
-            equity: Number(account?.equity || 0),
-            credit: Number(account?.credit || 0),
-            balance: Number(account?.balance || 0),
-            marginFree: Number(account?.marginFree || 0),
-            margin: Number(account?.margin || 0),
-            marginLevel: Number(account?.marginLevel || 0),
-          };
-        };
-
-        const symbols: NopSymbolGroup[] = Array.from(symbolBuckets.entries())
-          .map(([symbol, bucket]) => {
-            const buyClients = Array.from(bucket.buy.entries())
-              .map(([login, volume]) => toClient(login, volume))
-              .sort((a, b) => b.volume - a.volume);
-            const sellClients = Array.from(bucket.sell.entries())
-              .map(([login, volume]) => toClient(login, volume))
-              .sort((a, b) => b.volume - a.volume);
-            const buyTotal = buyClients.reduce((sum, row) => sum + row.volume, 0);
-            const sellTotal = sellClients.reduce((sum, row) => sum + row.volume, 0);
-            return {
-              symbol,
-              buyClients,
-              sellClients,
-              buyTotal,
-              sellTotal,
-              netTotal: buyTotal - sellTotal,
-            };
-          })
-          .sort((a, b) => a.symbol.localeCompare(b.symbol));
-
+        const endpoint = nopSymbol
+          ? `/NopReport?symbol=${encodeURIComponent(nopSymbol)}`
+          : "/NopReport";
+        const resp = await fetch(endpoint);
+        if (!resp.ok) throw new Error(`NopReport ${resp.status}`);
+        const payload = (await resp.json()) as Partial<NopReportData>;
+        const symbols = Array.isArray(payload?.symbols) ? payload.symbols : [];
         const normalized: NopReportData = {
-          timestamp: new Date().toISOString(),
-          accountsReporting: logins.filter((login) => accountByLogin.has(login)).length,
-          collectedLogins: logins.length,
+          timestamp: String(payload?.timestamp || new Date().toISOString()),
+          accountsReporting: Number(payload?.accountsReporting || 0),
+          collectedLogins: Number(payload?.collectedLogins || 0),
           symbols,
         };
         if (cancelled) return;
         setNopData(normalized);
         setNopLastUpdated(new Date());
-        setNopSymbolsAll(allSymbols);
+        setNopSymbolsAll(Array.from(new Set(symbols.map((s) => String(s?.symbol || "")).filter(Boolean))).sort((a, b) => a.localeCompare(b)));
       } catch (e: any) {
         if (!cancelled) setNopError(e?.message || "Failed to load clients NOP.");
       } finally {
@@ -2564,15 +2519,11 @@ export function DealingDepartmentPage() {
     }
 
     if (activeMenu === "Metrics") {
-      const items = metricsData?.items || [];
-      const avgMarginLevel =
-        items.length > 0 ? items.reduce((sum, item) => sum + (Number.isFinite(item.marginLevel) ? item.marginLevel : 0), 0) / items.length : 0;
-      return [
-        { label: "LP Accounts", value: items.length.toLocaleString() },
-        { label: "Total Equity", value: `$${(metricsData?.totals?.equity || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
-        { label: "Total Margin", value: `$${(metricsData?.totals?.margin || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}` },
-        { label: "Avg Margin Level", value: `${avgMarginLevel.toFixed(2)}%` },
-      ];
+      return [];
+    }
+
+    if (activeMenu === "Equity Overview") {
+      return [];
     }
 
     if (activeMenu === "Bonus") {
@@ -2671,22 +2622,7 @@ export function DealingDepartmentPage() {
     }
 
     if (activeMenu === "Clients NOP") {
-      const rows = nopData?.symbols || [];
-      let buyLots = 0;
-      let sellLots = 0;
-
-      rows.forEach((s) => {
-        buyLots += Number.isFinite(s.buyTotal) ? s.buyTotal : 0;
-        sellLots += Number.isFinite(s.sellTotal) ? s.sellTotal : 0;
-      });
-
-      const netLots = buyLots - sellLots;
-      return [
-        { label: "Symbols", value: rows.length.toLocaleString() },
-        { label: "Buy Lots", value: buyLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-        { label: "Sell Lots", value: sellLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-        { label: "Net Lots", value: netLots.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-      ];
+      return [];
     }
 
     if (activeMenu === "Deal Matching") {
@@ -3535,7 +3471,9 @@ export function DealingDepartmentPage() {
             </section>
           )}
 
-          {activeMenu === "Coverage" ? (
+          {activeMenu === "Equity Overview" ? (
+            <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
+          ) : activeMenu === "Coverage" ? (
             <section
               className={`rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70 ${
                 fullscreenTable === "coverage" ? "fixed inset-3 z-50 flex h-[calc(100vh-1.5rem)] max-h-[calc(100vh-1.5rem)] flex-col overflow-hidden bg-white shadow-2xl dark:bg-slate-950" : ""
@@ -3732,6 +3670,29 @@ export function DealingDepartmentPage() {
                     {fullscreenTable === "metrics" ? "Exit Fullscreen" : "Fullscreen"}
                   </button>
                 </div>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-800 dark:bg-slate-900/60">
+                <span className="font-semibold text-amber-700 dark:text-amber-300">XAUUSD</span>
+                <span>
+                  Bid: <span className="font-mono text-rose-700 dark:text-rose-300">{metricsGoldQuote ? metricsGoldQuote.bid.toFixed(2) : "--"}</span>
+                </span>
+                <span>
+                  Ask: <span className="font-mono text-emerald-700 dark:text-emerald-300">{metricsGoldQuote ? metricsGoldQuote.ask.toFixed(2) : "--"}</span>
+                </span>
+                <span
+                  className={`font-mono text-sm font-semibold ${
+                    !metricsGoldQuote || metricsGoldQuote.dir === "flat"
+                      ? "text-slate-500"
+                      : metricsGoldQuote.dir === "up"
+                        ? "text-emerald-700 dark:text-emerald-300"
+                        : "text-rose-700 dark:text-rose-300"
+                  }`}
+                >
+                  {metricsGoldQuote ? metricsGoldQuote.bid.toFixed(2) : "--"}
+                </span>
+                <span className="text-slate-500 dark:text-slate-400">
+                  Spread: {metricsGoldQuote ? `${metricsGoldQuote.spreadPoints.toFixed(1)} pts` : "--"}
+                </span>
               </div>
               {metricsError && (
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{metricsError}</div>
@@ -5320,7 +5281,19 @@ export function DealingDepartmentPage() {
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.balance, 2)}</td>
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.marginFree, 2)}</td>
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.margin, 2)}</td>
-                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}</td>
+                                    <td
+                                      className={`border-t border-slate-800 px-3 py-2 text-right ${
+                                        !Number.isFinite(Number(c.marginLevel)) || Number(c.marginLevel) <= 0
+                                          ? "text-slate-500 dark:text-slate-400"
+                                          : Number(c.marginLevel) >= 200
+                                            ? "text-emerald-700 dark:text-emerald-300"
+                                            : Number(c.marginLevel) >= 100
+                                              ? "text-slate-700 dark:text-slate-200"
+                                              : "text-rose-700 dark:text-rose-300"
+                                      }`}
+                                    >
+                                      {c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -5378,7 +5351,19 @@ export function DealingDepartmentPage() {
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.balance, 2)}</td>
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.marginFree, 2)}</td>
                                     <td className="border-t border-slate-800 px-3 py-2 text-right">{formatMaybeNumber(c.margin, 2)}</td>
-                                    <td className="border-t border-slate-800 px-3 py-2 text-right">{c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}</td>
+                                    <td
+                                      className={`border-t border-slate-800 px-3 py-2 text-right ${
+                                        !Number.isFinite(Number(c.marginLevel)) || Number(c.marginLevel) <= 0
+                                          ? "text-slate-500 dark:text-slate-400"
+                                          : Number(c.marginLevel) >= 200
+                                            ? "text-emerald-700 dark:text-emerald-300"
+                                            : Number(c.marginLevel) >= 100
+                                              ? "text-slate-700 dark:text-slate-200"
+                                              : "text-rose-700 dark:text-rose-300"
+                                      }`}
+                                    >
+                                      {c.marginLevel ? `${formatMaybeNumber(c.marginLevel, 2)}%` : "-"}
+                                    </td>
                                   </tr>
                                 ))}
                               </tbody>

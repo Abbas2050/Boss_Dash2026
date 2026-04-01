@@ -3,6 +3,11 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
 
+const BACKEND_API_TARGET =
+  process.env.BACKEND_API_BASE_URL ||
+  process.env.VITE_BACKEND_BASE_URL ||
+  "https://api.skylinkscapital.com";
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
@@ -57,6 +62,16 @@ export default defineConfig(({ mode }) => ({
       },
       '/api': {
         target: 'http://localhost:3001',
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      '/NopReport': {
+        target: BACKEND_API_TARGET,
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      '/EquityOverview': {
+        target: BACKEND_API_TARGET,
         changeOrigin: true,
         rewrite: (path) => path,
       },

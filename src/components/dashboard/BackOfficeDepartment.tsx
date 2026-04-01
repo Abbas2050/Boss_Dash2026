@@ -59,6 +59,8 @@ export function BackOfficeDepartment({
     totalIBs: 0,
     totalDeposits: 0,
     totalWithdrawals: 0,
+    totalDepositCount: 0,
+    totalWithdrawalCount: 0,
     totalClients: 0,
     totalMT5Accounts: 0,
     firstDeposits: 0,
@@ -71,6 +73,9 @@ export function BackOfficeDepartment({
     kycPending: 0,
     kycRejected: 0,
   });
+
+  const formatCurrencyValue = (value: number) =>
+    `$${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -372,19 +377,11 @@ export function BackOfficeDepartment({
         const baseUsersFilter =
           selectedEntity !== 'all' ? { customFields: { custom_change_me_field: { value: selectedEntity } } } : {};
         const clientDateFilter = fromDate || toDate ? { created: { begin, end } } : {};
+        const hasEntityFilter = selectedEntity !== 'all';
 
-        const [allUsers, allAccounts, ibWithdrawals, allDeposits, allWithdrawals, verifiedUsers, individualUsers, corporateUsers] =
+        const [allUsers, allDepositsRaw, allWithdrawalsRaw, ibWithdrawalsRaw, verifiedUsers, individualUsers, corporateUsers] =
           await Promise.all([
             fetchUsers({ ...baseUsersFilter, ...clientDateFilter }),
-            fetchAccounts({
-              createdAt: { begin, end },
-              segment: { limit: 1000, offset: 0 },
-            }),
-            fetchTransactions({
-              processedAt: { begin, end },
-              transactionTypes: ['ib withdrawal'],
-              statuses: ['approved'],
-            }),
             fetchTransactions({
               processedAt: { begin, end },
               transactionTypes: ['deposit'],
@@ -395,22 +392,50 @@ export function BackOfficeDepartment({
               transactionTypes: ['withdrawal'],
               statuses: ['approved'],
             }),
+            fetchTransactions({
+              processedAt: { begin, end },
+              transactionTypes: ['ib withdrawal'],
+              statuses: ['approved'],
+            }),
             fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
             fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
             fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
           ]);
 
+        const entityUserIds = new Set(allUsers.map((user) => user.id));
+        const accounts = hasEntityFilter
+          ? entityUserIds.size > 0
+            ? await fetchAccounts({
+                createdAt: { begin, end },
+                userIds: Array.from(entityUserIds),
+                segment: { limit: 1000, offset: 0 },
+              }).catch(() => [])
+            : []
+          : await fetchAccounts({
+              createdAt: { begin, end },
+              segment: { limit: 1000, offset: 0 },
+            }).catch(() => []);
+
+        const allDeposits = hasEntityFilter
+          ? allDepositsRaw.filter((tx) => entityUserIds.has(tx.fromUserId))
+          : allDepositsRaw;
+        const allWithdrawals = hasEntityFilter
+          ? allWithdrawalsRaw.filter((tx) => entityUserIds.has(tx.fromUserId))
+          : allWithdrawalsRaw;
+        const ibWithdrawals = hasEntityFilter
+          ? ibWithdrawalsRaw.filter((tx) => entityUserIds.has(tx.fromUserId))
+          : ibWithdrawalsRaw;
+
+        const validDeposits = allDeposits.filter((tx: any) => {
+          const platformComment = String(tx?.platformComment || '').toLowerCase();
+          return !platformComment.includes('negative bal');
+        });
+
         let clients = allUsers;
-        let accounts = allAccounts;
-        if (selectedEntity !== 'all') {
-          const entityUserIds = allUsers.map((u) => u.id);
-          clients = allUsers;
-          accounts = (allAccounts as any[]).filter((a) => entityUserIds.includes(a.userId));
-        }
 
         const rangeStart = new Date(begin);
         const rangeEnd = new Date(end);
-        const firstDepositCount = allUsers.filter((user) => {
+        const firstDepositCount = allUsers.filter((user: any) => {
           if (!user.firstDepositDate) return false;
           const userFirstDepositDate = new Date(user.firstDepositDate);
           return userFirstDepositDate >= rangeStart && userFirstDepositDate <= rangeEnd;
@@ -418,8 +443,10 @@ export function BackOfficeDepartment({
 
         setMetrics({
           totalIBs: ibWithdrawals.length,
-          totalDeposits: allDeposits.length,
-          totalWithdrawals: allWithdrawals.length,
+          totalDeposits: validDeposits.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0),
+          totalWithdrawals: Math.abs(allWithdrawals.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0)),
+          totalDepositCount: validDeposits.length,
+          totalWithdrawalCount: allWithdrawals.length,
           totalClients: clients.length,
           totalMT5Accounts: accounts.length,
           firstDeposits: firstDepositCount,
@@ -580,11 +607,11 @@ export function BackOfficeDepartment({
                 </div>
                 <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
                   <div className="text-[10px] text-slate-500">Deposits</div>
-                  <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{metrics.totalDeposits.toLocaleString()}</div>
+                  <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrencyValue(metrics.totalDeposits)}</div>
                 </div>
                 <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
                   <div className="text-[10px] text-slate-500">Withdrawals</div>
-                  <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{metrics.totalWithdrawals.toLocaleString()}</div>
+                  <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{formatCurrencyValue(metrics.totalWithdrawals)}</div>
                 </div>
               </div>
             </div>
@@ -598,17 +625,17 @@ export function BackOfficeDepartment({
             <div className="rounded-xl border border-primary/20 bg-primary/10 p-3 text-center">
               <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
               <div className="font-mono font-semibold">{metrics.totalIBs}</div>
-              <div className="text-xs text-muted-foreground">IB events</div>
+              <div className="text-xs text-muted-foreground">IB Withdrawals</div>
             </div>
             <div className="rounded-xl border border-success/20 bg-success/10 p-3 text-center">
               <TrendingUp className="mx-auto mb-1 h-4 w-4 text-success" />
-              <div className="font-mono font-semibold">{metrics.totalDeposits}</div>
-              <div className="text-xs text-muted-foreground">Deposits</div>
+              <div className="font-mono font-semibold">{metrics.totalDepositCount.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">No. of Deposits</div>
             </div>
             <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-center">
               <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
-              <div className="font-mono font-semibold">{metrics.totalWithdrawals}</div>
-              <div className="text-xs text-muted-foreground">Withdrawals</div>
+              <div className="font-mono font-semibold">{metrics.totalWithdrawalCount.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">No. of Withdrawals</div>
             </div>
           </div>
 
