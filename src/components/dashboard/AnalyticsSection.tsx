@@ -3,8 +3,21 @@ import { TrendingUp, PieChart as PieChartIcon, Users, DollarSign, BarChart3, Cal
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from 'recharts';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { fetchTransactions, fetchUsers, fetchAccounts } from '@/lib/api';
+import { fetchTransactions, fetchUsers, fetchAllUsers, fetchAccounts, type AccountRequest, type Account } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
+
+async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
+  const PAGE = 1000;
+  const all: Account[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await fetchAccounts({ ...filter, segment: { limit: PAGE, offset } }).catch(() => [] as Account[]);
+    all.push(...page);
+    if (page.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+}
 
 interface AnalyticsSectionProps {
   selectedEntity: string;
@@ -125,16 +138,15 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
             transactionTypes: ['ib withdrawal'],
             statuses: ['approved']
           }),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter }),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
-          fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
+          fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false }),
+          fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, verified: true }).catch(() => []),
+          fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, clientTypes: ['Individual'] }).catch(() => []),
+          fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, clientTypes: ['Corporate'] }).catch(() => []),
         ]);
 
-        const allAccounts = await fetchAccounts({
+        const allAccounts = await fetchAllAccounts({
           createdAt: { begin, end },
           userIds: hasEntityFilter ? allUsers.map((user) => user.id) : undefined,
-          segment: { limit: 1000, offset: 0 },
         }).catch(() => []);
 
         const entityUserIds = new Set((allUsers || []).map((user) => user.id));

@@ -46,6 +46,7 @@ interface FilterSectionProps {
   activeQuickFilter: string;
   setActiveQuickFilter: (v: string) => void;
   onSubmit: (override?: { fromDate?: Date; toDate?: Date }) => void;
+  onClear?: () => void;
 }
 
 export function FilterSection({
@@ -58,6 +59,7 @@ export function FilterSection({
   activeQuickFilter,
   setActiveQuickFilter,
   onSubmit,
+  onClear,
 }: FilterSectionProps) {
   const [fromOpen, setFromOpen] = useState(false);
   const [toOpen, setToOpen] = useState(false);
@@ -142,6 +144,7 @@ export function FilterSection({
     if (nextFrom || nextTo) {
       setFromDate(nextFrom ? new Date(nextFrom) : undefined);
       setToDate(nextTo ? new Date(nextTo) : undefined);
+      onSubmit({ fromDate: nextFrom, toDate: nextTo });
     }
   };
 
@@ -153,6 +156,7 @@ export function FilterSection({
     setFromDate(today);
     setToDate(todayEnd);
     setActiveQuickFilter('today');
+    onClear?.();
   };
 
   const hasActiveFilters = selectedEntity !== 'all' || fromDate || toDate;

@@ -7,6 +7,7 @@ export interface TransactionRequest {
   customFields?: Record<string, string>;
   fromUserId?: number;
   transactionTypes?: string[];
+  segment?: { limit: number; offset: number };
 }
 
 export interface UserRequest {
@@ -15,6 +16,8 @@ export interface UserRequest {
   clientTypes?: string[];
   customFields?: Record<string, string | { value: string }>;
   verified?: boolean;
+  lead?: boolean;
+  segment?: { limit: number; offset: number };
 }
 
 export interface User {
@@ -167,6 +170,19 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
   }
 }
 
+export async function fetchAllTransactions(body: Omit<TransactionRequest, 'segment'>): Promise<Transaction[]> {
+  const PAGE = 1000;
+  const all: Transaction[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await fetchTransactions({ ...body, segment: { limit: PAGE, offset } }).catch(() => [] as Transaction[]);
+    all.push(...page);
+    if (page.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+}
+
 export async function fetchUsers(body: UserRequest): Promise<User[]> {
   const baseUrl = '/rest/users';
   const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
@@ -193,6 +209,19 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
   } catch (err: any) {
     throw err;
   }
+}
+
+export async function fetchAllUsers(body: Omit<UserRequest, 'segment'>): Promise<User[]> {
+  const PAGE = 1000;
+  const all: User[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await fetchUsers({ ...body, segment: { limit: PAGE, offset } }).catch(() => [] as User[]);
+    all.push(...page);
+    if (page.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
 }
 
 export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {

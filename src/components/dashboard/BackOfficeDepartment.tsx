@@ -23,10 +23,23 @@ import {
 } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
-import { fetchUsers, fetchTransactions, fetchAccounts } from '@/lib/api';
+import { fetchUsers, fetchAllUsers, fetchTransactions, fetchAllTransactions, fetchAccounts, type AccountRequest, type Account } from '@/lib/api';
 import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
+
+async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
+  const PAGE = 1000;
+  const all: Account[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await fetchAccounts({ ...filter, segment: { limit: PAGE, offset } }).catch(() => [] as Account[]);
+    all.push(...page);
+    if (page.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+}
 
 type CashflowTx = {
   id: number | string;
@@ -64,14 +77,22 @@ export function BackOfficeDepartment({
     totalClients: 0,
     totalMT5Accounts: 0,
     firstDeposits: 0,
-    verifiedClients: 8,
-    individualClients: 10,
-    corporateClients: 4,
-    sumsubActive: 11,
+    verifiedClients: 0,
+    unverifiedClients: 0,
+    individualClients: 0,
+    corporateClients: 0,
+    testAccounts: 0,
+    sumsubActive: 0,
     activeAccounts: 0,
+    demoAccounts: 0,
+    liveAccounts: 0,
     kycApproved: 0,
-    kycPending: 0,
+    kycApprovedWithConditions: 0,
+    kycPendingReview: 0,
     kycRejected: 0,
+    kycAdditionalInfo: 0,
+    kycOnHold: 0,
+    kycUnknown: 0,
   });
 
   const formatCurrencyValue = (value: number) =>
@@ -379,42 +400,61 @@ export function BackOfficeDepartment({
         const clientDateFilter = fromDate || toDate ? { created: { begin, end } } : {};
         const hasEntityFilter = selectedEntity !== 'all';
 
-        const [allUsers, allDepositsRaw, allWithdrawalsRaw, ibWithdrawalsRaw, verifiedUsers, individualUsers, corporateUsers] =
+        const [allUsers, allDepositsRaw, allWithdrawalsRaw, ibWithdrawalsRaw, verifiedUsers, unverifiedUsers, individualUsers, corporateUsers] =
           await Promise.all([
-            fetchUsers({ ...baseUsersFilter, ...clientDateFilter }),
-            fetchTransactions({
+            fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false }),
+            fetchAllTransactions({
               processedAt: { begin, end },
               transactionTypes: ['deposit'],
               statuses: ['approved'],
             }),
-            fetchTransactions({
+            fetchAllTransactions({
               processedAt: { begin, end },
               transactionTypes: ['withdrawal'],
               statuses: ['approved'],
             }),
-            fetchTransactions({
+            fetchAllTransactions({
               processedAt: { begin, end },
               transactionTypes: ['ib withdrawal'],
               statuses: ['approved'],
             }),
-            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, verified: true }).catch(() => []),
-            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Individual'] }).catch(() => []),
-            fetchUsers({ ...baseUsersFilter, ...clientDateFilter, clientTypes: ['Corporate'] }).catch(() => []),
+            fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, verified: true }).catch(() => []),
+            fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, verified: false }).catch(() => []),
+            fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, clientTypes: ['Individual'] }).catch(() => []),
+            fetchAllUsers({ ...baseUsersFilter, ...clientDateFilter, lead: false, clientTypes: ['Corporate'] }).catch(() => []),
           ]);
 
+        // KYC helper — handles both plain string and { value: "..." } object forms
+        const getKycStatus = (u: any): string => {
+          const raw = u?.customFields?.custom_compliance_approval;
+          if (typeof raw === 'object' && raw !== null) return String(raw?.value ?? '');
+          return String(raw ?? '');
+        };
+
+        // Log all distinct KYC values so you can inspect in DevTools what the API actually returns
+        const kycDistinct = new Map<string, number>();
+        allUsers.forEach((u: any) => {
+          const v = getKycStatus(u);
+          kycDistinct.set(v, (kycDistinct.get(v) ?? 0) + 1);
+        });
+        console.log('[KYC] distinct custom_compliance_approval values:', Object.fromEntries(kycDistinct));
+
         const entityUserIds = new Set(allUsers.map((user) => user.id));
+        const entityUserIdsArr = Array.from(entityUserIds);
+
+        // Accounts created in the selected date range (paginated, no hard limit)
         const accounts = hasEntityFilter
           ? entityUserIds.size > 0
-            ? await fetchAccounts({
-                createdAt: { begin, end },
-                userIds: Array.from(entityUserIds),
-                segment: { limit: 1000, offset: 0 },
-              }).catch(() => [])
+            ? await fetchAllAccounts({ createdAt: { begin, end }, userIds: entityUserIdsArr })
             : []
-          : await fetchAccounts({
-              createdAt: { begin, end },
-              segment: { limit: 1000, offset: 0 },
-            }).catch(() => []);
+          : await fetchAllAccounts({ createdAt: { begin, end } });
+
+        // Active accounts = accounts created in selected date range with tradingStatus === 'active'
+        const activeAccountsCount = hasEntityFilter
+          ? entityUserIds.size > 0
+            ? (await fetchAllAccounts({ createdAt: { begin, end }, userIds: entityUserIdsArr })).filter((a: any) => a.tradingStatus === 'active').length
+            : 0
+          : (await fetchAllAccounts({ createdAt: { begin, end } })).filter((a: any) => a.tradingStatus === 'active').length;
 
         const allDeposits = hasEntityFilter
           ? allDepositsRaw.filter((tx) => entityUserIds.has(tx.fromUserId))
@@ -431,11 +471,16 @@ export function BackOfficeDepartment({
           return !platformComment.includes('negative bal');
         });
 
-        let clients = allUsers;
+        // Exclude test profiles from all client-derived counts (mirrors CRM behaviour)
+        const clients = allUsers;
+        const testAccounts = allUsers.filter((u: any) => u.testProfile === true).length;
+        const filteredVerifiedUsers = verifiedUsers.filter((u: any) => u.testProfile !== true);
+        const filteredIndividualUsers = individualUsers.filter((u: any) => u.testProfile !== true);
+        const filteredCorporateUsers = corporateUsers.filter((u: any) => u.testProfile !== true);
 
         const rangeStart = new Date(begin);
         const rangeEnd = new Date(end);
-        const firstDepositCount = allUsers.filter((user: any) => {
+        const firstDepositCount = clients.filter((user: any) => {
           if (!user.firstDepositDate) return false;
           const userFirstDepositDate = new Date(user.firstDepositDate);
           return userFirstDepositDate >= rangeStart && userFirstDepositDate <= rangeEnd;
@@ -451,21 +496,23 @@ export function BackOfficeDepartment({
           totalMT5Accounts: accounts.length,
           firstDeposits: firstDepositCount,
           verifiedClients: verifiedUsers.length,
+          unverifiedClients: unverifiedUsers.length,
           individualClients: individualUsers.length,
           corporateClients: corporateUsers.length,
-          sumsubActive: 11,
-          activeAccounts: accounts.filter((a: any) => a.tradingStatus === 'active').length,
-          kycApproved: clients.filter((u: any) => {
-            const val = u.customFields?.custom_compliance_approval;
-            return val === 'Approved' || val === 'Approved with Conditions';
-          }).length,
-          kycPending: clients.filter((u: any) => {
-            const val = u.customFields?.custom_compliance_approval;
-            return val === 'Pending' || !val;
-          }).length,
-          kycRejected: clients.filter((u: any) => {
-            const val = u.customFields?.custom_compliance_approval;
-            return val === 'Rejected';
+          testAccounts,
+          sumsubActive: 0,
+          activeAccounts: activeAccountsCount,
+          demoAccounts: accounts.filter((a: any) => String(a.groupName || '').toLowerCase().startsWith('demo')).length,
+          liveAccounts: accounts.filter((a: any) => !String(a.groupName || '').toLowerCase().startsWith('demo')).length,
+          kycApproved: clients.filter((u: any) => getKycStatus(u) === 'Approved').length,
+          kycApprovedWithConditions: clients.filter((u: any) => getKycStatus(u) === 'Approved with Conditions').length,
+          kycPendingReview: clients.filter((u: any) => getKycStatus(u) === 'Pending Review').length,
+          kycRejected: clients.filter((u: any) => getKycStatus(u) === 'Rejected').length,
+          kycAdditionalInfo: clients.filter((u: any) => getKycStatus(u) === 'Additional Information Required').length,
+          kycOnHold: clients.filter((u: any) => getKycStatus(u) === 'On Hold').length,
+          kycUnknown: clients.filter((u: any) => {
+            const v = getKycStatus(u);
+            return !['Approved','Approved with Conditions','Pending Review','Rejected','Additional Information Required','On Hold',''].includes(v);
           }).length,
         });
       } catch {
@@ -621,7 +668,7 @@ export function BackOfficeDepartment({
         <div className={variant === 'compact' ? 'grid grid-cols-1 gap-4' : 'grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]'}>
         <section className={variant === 'compact' ? 'h-full rounded-2xl border border-border/60 bg-card/70 p-4' : 'h-full rounded-2xl border border-border/60 bg-card/70 p-4'}>
           <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">{variant === 'compact' ? 'Operations Overview' : '1. Backoffice Overview'}</div>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-primary/20 bg-primary/10 p-3 text-center">
               <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
               <div className="font-mono font-semibold">{metrics.totalIBs}</div>
@@ -636,6 +683,11 @@ export function BackOfficeDepartment({
               <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
               <div className="font-mono font-semibold">{metrics.totalWithdrawalCount.toLocaleString()}</div>
               <div className="text-xs text-muted-foreground">No. of Withdrawals</div>
+            </div>
+            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3 text-center">
+              <CheckCircle className="mx-auto mb-1 h-4 w-4 text-cyan-500" />
+              <div className="font-mono font-semibold">{metrics.verifiedClients.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground">Verified Clients</div>
             </div>
           </div>
 
@@ -658,10 +710,13 @@ export function BackOfficeDepartment({
                 <Users className="h-3.5 w-3.5 text-primary" />
                 Client Breakdown
               </div>
-              <MetricRow label="Verified Clients" value={metrics.verifiedClients} icon={<Shield className="h-3.5 w-3.5" />} />
+              <MetricRow label="Unverified Clients" value={metrics.unverifiedClients} icon={<Shield className="h-3.5 w-3.5" />} />
               <MetricRow label="Individual Clients" value={metrics.individualClients} icon={<User className="h-3.5 w-3.5" />} />
               <MetricRow label="Corporate Clients" value={metrics.corporateClients} icon={<Briefcase className="h-3.5 w-3.5" />} />
+              <MetricRow label="Test Accounts" value={metrics.testAccounts} icon={<Settings className="h-3.5 w-3.5" />} />
               <MetricRow label="Active Accounts" value={metrics.activeAccounts} icon={<Database className="h-3.5 w-3.5" />} />
+              <MetricRow label="Demo Accounts" value={metrics.demoAccounts} icon={<Activity className="h-3.5 w-3.5" />} />
+              <MetricRow label="Live Accounts" value={metrics.liveAccounts} icon={<TrendingUp className="h-3.5 w-3.5" />} />
             </div>
 
             <div className="rounded-lg border border-border/40 bg-background/50 p-3">
@@ -669,20 +724,38 @@ export function BackOfficeDepartment({
                 <Shield className="h-3.5 w-3.5 text-primary" />
                 KYC Status
               </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-center">
                   <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Approved</div>
                   <div className="mt-1 font-mono text-lg font-semibold text-emerald-800 dark:text-emerald-200">{metrics.kycApproved}</div>
                 </div>
+                <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-2 text-center">
+                  <div className="text-[10px] text-teal-700 dark:text-teal-300">Approved w/ Conditions</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-teal-800 dark:text-teal-200">{metrics.kycApprovedWithConditions}</div>
+                </div>
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-center">
-                  <div className="text-[10px] text-amber-700 dark:text-amber-300">Pending</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200">{metrics.kycPending}</div>
+                  <div className="text-[10px] text-amber-700 dark:text-amber-300">Pending Review</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200">{metrics.kycPendingReview}</div>
                 </div>
                 <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-center">
                   <div className="text-[10px] text-rose-700 dark:text-rose-300">Rejected</div>
                   <div className="mt-1 font-mono text-lg font-semibold text-rose-800 dark:text-rose-200">{metrics.kycRejected}</div>
                 </div>
+                <div className="rounded-md border border-orange-500/30 bg-orange-500/10 p-2 text-center">
+                  <div className="text-[10px] text-orange-700 dark:text-orange-300">Additional Info Req.</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-orange-800 dark:text-orange-200">{metrics.kycAdditionalInfo}</div>
+                </div>
+                <div className="rounded-md border border-sky-500/30 bg-sky-500/10 p-2 text-center">
+                  <div className="text-[10px] text-sky-700 dark:text-sky-300">On Hold</div>
+                  <div className="mt-1 font-mono text-lg font-semibold text-sky-800 dark:text-sky-200">{metrics.kycOnHold}</div>
+                </div>
               </div>
+              {metrics.kycUnknown > 0 && (
+                <div className="mt-2 rounded-md border border-violet-500/30 bg-violet-500/10 p-2 text-center">
+                  <div className="text-[10px] text-violet-700 dark:text-violet-300">Unknown (see console)</div>
+                  <div className="mt-1 font-mono text-base font-semibold text-violet-800 dark:text-violet-200">{metrics.kycUnknown}</div>
+                </div>
+              )}
             </div>
           </div>
         </section>

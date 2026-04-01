@@ -1,7 +1,7 @@
 
 import { useEffect, useState } from 'react';
 import { TrendingUp, Users, DollarSign, Activity, UserPlus } from 'lucide-react';
-import { fetchAccounts, fetchTransactions, fetchTrades, fetchUsers, Account, Transaction, Trade } from '@/lib/api';
+import { fetchAccounts, fetchTransactions, fetchTrades, fetchUsers, fetchAllUsers, Account, Transaction, Trade, type AccountRequest, type Account as AccountType } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
 import { getContractSize } from '@/lib/contractSizes';
 
@@ -64,14 +64,12 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
     setIsLoading(true);
     setErrorMessage(null);
 
-    // Step 1: Fetch users by entity if entity filter is applied
+    // Step 1: Fetch users by entity if entity filter is applied (exclude leads)
     const fetchUserIdsPromise = selectedEntity && selectedEntity !== 'all'
-      ? fetchUsers({ customFields: { custom_change_me_field: selectedEntity } })
+      ? fetchAllUsers({ lead: false, customFields: { custom_change_me_field: selectedEntity } })
           .then(users => users.map(u => u.id))
-          .catch(err => {
-            return []; // Return empty array on error
-          })
-      : Promise.resolve(undefined); // No entity filter
+          .catch(() => [])
+      : Promise.resolve(undefined);
 
     // Step 2: Fetch all data in parallel, then filter client-side by user IDs
     fetchUserIdsPromise.then(userIds => {
@@ -80,7 +78,7 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         fetchTransactions({ ...baseBody, transactionTypes: ['withdrawal'] }),
         fetchTransactions({ ...baseBody, transactionTypes: ['ib withdrawal'] }),
         fetchTrades(tradesBody),
-        fetchUsers(usersBody),
+        fetchAllUsers({ ...usersBody, lead: false }),
         Promise.resolve(userIds) // Pass userIds through the promise chain
       ]);
     })
@@ -102,12 +100,19 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
           createdAt: begin && end ? { begin, end } : undefined,
           userIds: entityUserIds && entityUserIds.length > 0 ? entityUserIds : undefined,
           orders: [{ field: 'createdAt', direction: 'DESC' }],
-          segment: { limit: 500, offset: 0 },
         };
         Object.keys(accountsBody).forEach(key => accountsBody[key] === undefined && delete accountsBody[key]);
 
-        const accountsResponse = await fetchAccounts(accountsBody);
-        accounts = accountsResponse as Account[];
+        const PAGE = 1000;
+        const accountsAll: Account[] = [];
+        let offset = 0;
+        for (;;) {
+          const pg = await fetchAccounts({ ...accountsBody, segment: { limit: PAGE, offset } }) as Account[];
+          accountsAll.push(...pg);
+          if (pg.length < PAGE) break;
+          offset += PAGE;
+        }
+        accounts = accountsAll;
 
         if (entityUserIds && entityUserIds.length > 0) {
           deposits = allDeposits.filter((tx: Transaction) => entityUserIds.includes(tx.fromUserId));

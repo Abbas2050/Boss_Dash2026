@@ -25,6 +25,16 @@ export function BackofficeDepartmentPage() {
     setRefreshKey((prev) => prev + 1);
   };
 
+  const handleClearFilters = () => {
+    const now = getDubaiDate();
+    const today = getDubaiDayStart(now);
+    const todayEnd = getDubaiDayEnd(now);
+    setAppliedEntity('all');
+    setAppliedFromDate(new Date(today));
+    setAppliedToDate(new Date(todayEnd));
+    setRefreshKey((prev) => prev + 1);
+  };
+
   return (
     <div className="space-y-5">
       <FilterSection
@@ -37,6 +47,7 @@ export function BackofficeDepartmentPage() {
         activeQuickFilter={activeQuickFilter}
         setActiveQuickFilter={setActiveQuickFilter}
         onSubmit={handleApplyFilters}
+        onClear={handleClearFilters}
       />
 
       <BackOfficeDepartment
