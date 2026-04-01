@@ -3,6 +3,7 @@ import type { AuthUser } from "@/lib/auth";
 export const DEALING_TABS = [
   "Dealing",
   "Risk Exposure",
+  "Risk Scenario",
   "Coverage",
   "Bonus",
   "Metrics",
@@ -165,6 +166,7 @@ export type UserRoleTemplate = "Super Admin" | "Manager" | "Analyst" | "Support"
 export const LEGACY_ROUTE_ALIASES = [
   { path: "coverage.html", to: "/departments/dealing" },
   { path: "risk-exposure.html", to: "/departments/dealing" },
+  { path: "risk-scenario.html", to: "/departments/dealing?tab=risk-scenario" },
   { path: "metrics.html", to: "/departments/dealing" },
   { path: "equity-overview.html", to: "/departments/dealing" },
   { path: "internal-accounts.html", to: "/settings/internal-accounts" },

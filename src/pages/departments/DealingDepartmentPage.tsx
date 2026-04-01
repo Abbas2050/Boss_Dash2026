@@ -11,6 +11,7 @@ import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from
 import { ClientProfilingTab } from "@/pages/departments/dealing/ClientProfilingTab";
 import { DealMatchingTab } from "@/pages/departments/dealing/DealMatchingTab";
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
+import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -68,6 +69,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   coverage: "Coverage",
   risk: "Risk Exposure",
   "risk-exposure": "Risk Exposure",
+  scenario: "Risk Scenario",
+  "risk-scenario": "Risk Scenario",
   metrics: "Metrics",
   equity: "Equity Overview",
   "equity-overview": "Equity Overview",
@@ -785,6 +788,7 @@ export function DealingDepartmentPage() {
   const [nopLastUpdated, setNopLastUpdated] = useState<Date | null>(null);
   const [nopRefreshKey, setNopRefreshKey] = useState(0);
   const [equityOverviewRefreshKey, setEquityOverviewRefreshKey] = useState(0);
+  const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -999,6 +1003,10 @@ export function DealingDepartmentPage() {
 
     if (activeMenu === "Coverage" || activeMenu === "Risk Exposure") {
       setCoverageRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Risk Scenario") {
+      setRiskScenarioRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Metrics") {
@@ -3471,7 +3479,9 @@ export function DealingDepartmentPage() {
             </section>
           )}
 
-          {activeMenu === "Equity Overview" ? (
+          {activeMenu === "Risk Scenario" ? (
+            <RiskScenarioTab refreshKey={riskScenarioRefreshKey} />
+          ) : activeMenu === "Equity Overview" ? (
             <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
           ) : activeMenu === "Coverage" ? (
             <section

@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Risk Scenario Analysis</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Consolas, monospace; background: #0d0d14; color: #c8c8d0; padding: 0; }
+
+        .nav { display: flex; align-items: center; gap: 0; background: #1a1b26; border-bottom: 1px solid #292e42; padding: 0 20px; }
+        .nav-brand { color: #7aa2f7; font-weight: 700; font-size: 15px; padding: 12px 16px 12px 0; text-decoration: none; border-right: 1px solid #292e42; margin-right: 4px; }
+        .nav a { color: #565f89; text-decoration: none; padding: 12px 14px; font-size: 13px; font-weight: 500; transition: color 0.15s, background 0.15s; }
+        .nav a:hover { color: #c0caf5; background: #24283b; }
+        .nav a.active { color: #7aa2f7; border-bottom: 2px solid #7aa2f7; }
+
+        .content { padding: 16px; }
+        .header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+        .header h1 { font-size: 16px; color: #c0caf5; font-weight: 600; }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .controls label { font-size: 12px; color: #888; }
+        .controls select, .controls input { background: #24283b; border: 1px solid #414868; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+        .controls select { min-width: 140px; }
+        .controls input { width: 90px; }
+        button.calc { background: #7aa2f7; color: #1a1b26; border: none; padding: 7px 18px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button.calc:hover { background: #89b4fa; }
+        #status { font-size: 12px; color: #565f89; margin-left: 8px; }
+
+        .loading { text-align: center; padding: 40px; color: #565f89; font-size: 14px; }
+        .val-pos { color: #9ece6a; }
+        .val-neg { color: #f7768e; }
+        .val-zero { color: #565f89; }
+        .val-warn { color: #e0af68; }
+
+        .table-wrap { overflow-x: auto; border: 1px solid #292e42; border-radius: 6px; }
+        table { border-collapse: collapse; width: 100%; font-size: 12px; white-space: nowrap; }
+        thead th {
+            background: #13131d; color: #7aa2f7; font-weight: 600; font-size: 10px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 8px 8px; text-align: right; border-bottom: 1px solid #292e42;
+            position: sticky; top: 0; z-index: 1;
+        }
+        thead th:first-child, thead th:nth-child(2) { text-align: left; }
+        tbody tr { border-bottom: 1px solid #1a1b26; }
+        tbody tr:hover { background: #1a1b2a; }
+        tbody td { padding: 5px 8px; text-align: right; }
+        tbody td:first-child, tbody td:nth-child(2) { text-align: left; }
+        tbody td:first-child { color: #c0caf5; font-weight: 600; }
+
+        .total-row td { background: #1a1b26; font-weight: 700; border-top: 2px solid #292e42; }
+        .total-row td:first-child { color: #7aa2f7; }
+
+        .badge-live { color: #7aa2f7; font-size: 10px; font-weight: 600; }
+        .badge-bonus { color: #e0af68; font-size: 10px; font-weight: 600; }
+
+        .scenario-highlight { background: rgba(122, 162, 247, 0.06); }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <a href="/" class="nav-brand">SLC Dashboard</a>
+        <a href="/">Home</a>
+        <a href="/risk-exposure.html">Risk Exposure</a>
+        <a href="/coverage.html">Coverage</a>
+        <a href="/metrics.html">Metrics</a>
+        <a href="/lp-manager.html">LP Manager</a>
+        <a href="/lp-info.html">LP Info</a>
+        <a href="/symbol-mapping.html">Symbol Mapping</a>
+        <a href="/transactions.html">Transactions</a>
+        <a href="/account-alerts.html">Account Alerts</a>
+        <a href="/volume-alerts.html">Volume Alerts</a>
+        <a href="/deal-matching.html">Deal Matching</a>
+        <a href="/history.html">History</a>
+        <a href="/swap-tracker.html">Swap Tracker</a>
+        <a href="/clients-nop.html">Clients NOP</a>
+        <a href="/nop-limits.html">NOP Limits</a>
+        <a href="/contract-sizes.html">Contract Sizes</a>
+        <a href="/lp-contract-sizes.html">LP Contract Sizes</a>
+        <a href="/bonus-equity.html">Bonus Equity</a>
+        <a href="/bonus-coverage.html">Bonus Coverage</a>
+        <a href="/bonus-risk.html">Bonus Risk</a>
+        <a href="/bonus-pnl.html">Bonus PnL</a>
+        <a href="/bonus-pnl-report.html">PnL Report</a>
+        <a href="/client-profiling.html">Client Profiling</a>
+        <a href="/equity-overview.html">Equity Overview</a>
+        <a href="/internal-accounts.html">Internal Accounts</a>
+        <a href="/risk-scenario.html" class="active">Risk Scenario</a>
+        <a href="/ws-test.html">WS Test</a>
+        <a href="/swagger">Swagger</a>
+    </nav>
+
+    <div class="content">
+        <div class="header">
+            <h1>Risk Scenario Analysis</h1>
+        </div>
+
+        <div class="controls">
+            <div>
+                <label>Symbol</label><br>
+                <select id="symbolSelect"><option value="">Loading...</option></select>
+            </div>
+            <div>
+                <label>Direction</label><br>
+                <select id="dirSelect">
+                    <option value="Up">Up</option>
+                    <option value="Down">Down</option>
+                </select>
+            </div>
+            <div>
+                <label>Move (price)</label><br>
+                <input id="moveInput" type="number" value="10" step="0.01">
+            </div>
+            <div>
+                <label>Target ML %</label><br>
+                <input id="targetMlInput" type="number" value="150" step="10">
+            </div>
+            <button class="calc" onclick="calculate()">Calculate</button>
+            <span id="status"></span>
+        </div>
+
+        <div id="resultContainer"></div>
+    </div>
+
+<script>
+    function fmt(v, d = 2) {
+        if (v == null || isNaN(v)) return '-';
+        return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    }
+
+    function fmtUsd(v) {
+        if (v == null || isNaN(v) || v === 0) return '<span class="val-zero">$0.00</span>';
+        const cls = v > 0 ? 'val-pos' : 'val-neg';
+        const f = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `<span class="${cls}">${v < 0 ? '-' : ''}$${f}</span>`;
+    }
+
+    function fmtMl(v) {
+        if (v == null || isNaN(v) || v === 0) return '<span class="val-zero">-</span>';
+        const cls = v >= 200 ? 'val-pos' : v >= 100 ? 'val-warn' : 'val-neg';
+        return `<span class="${cls}">${fmt(v)}%</span>`;
+    }
+
+    function fmtFunding(v) {
+        if (v == null || isNaN(v) || v === 0) return '<span class="val-pos">$0.00</span>';
+        return `<span class="val-neg">$${fmt(v)}</span>`;
+    }
+
+    async function loadSymbols() {
+        try {
+            const resp = await fetch('/RiskScenario/symbols');
+            if (!resp.ok) return;
+            const symbols = await resp.json();
+            const sel = document.getElementById('symbolSelect');
+            sel.innerHTML = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+        } catch (e) {
+            console.error('Failed to load symbols', e);
+        }
+    }
+
+    async function calculate() {
+        const symbol = document.getElementById('symbolSelect').value;
+        const direction = document.getElementById('dirSelect').value;
+        const moveAmount = parseFloat(document.getElementById('moveInput').value) || 0;
+        const targetMl = parseFloat(document.getElementById('targetMlInput').value) || 150;
+
+        if (!symbol || moveAmount === 0) {
+            document.getElementById('status').textContent = 'Select a symbol and move amount';
+            return;
+        }
+
+        document.getElementById('status').textContent = 'Calculating...';
+        document.getElementById('resultContainer').innerHTML = '<div class="loading">Calculating scenario...</div>';
+
+        try {
+            const resp = await fetch('/RiskScenario/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol, direction, moveAmount, targetMl })
+            });
+
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderResults(data);
+            document.getElementById('status').textContent = `${data.rows?.length || 0} LP(s) with ${symbol} positions`;
+        } catch (e) {
+            document.getElementById('status').textContent = 'Error: ' + e.message;
+            document.getElementById('resultContainer').innerHTML = '';
+        }
+    }
+
+    function renderResults(data) {
+        const container = document.getElementById('resultContainer');
+        if (!data.rows || data.rows.length === 0) {
+            container.innerHTML = '<div class="loading">No LP positions found for this symbol.</div>';
+            return;
+        }
+
+        const sign = data.direction === 'Up' ? '+' : '-';
+
+        let html = '<div class="table-wrap"><table><thead><tr>';
+        html += '<th>LP</th><th>Source</th><th>Net Vol</th><th>VWAP Open</th><th>Price Current</th>';
+        html += '<th>Adverse Price</th><th>P/L Now</th>';
+        html += '<th style="background:#1a1b30">P&L Change</th><th style="background:#1a1b30">P/L After</th>';
+        html += '<th>Rev Share %</th><th>PL Share $</th>';
+        html += '<th>Equity Now</th><th style="background:#1a1b30">Equity After</th>';
+        html += '<th>ML Now %</th><th style="background:#1a1b30">ML After %</th>';
+        html += '<th>Margin</th><th>FM Now</th><th>FM After</th>';
+        html += '<th>Funding to Target</th><th>Comment</th>';
+        html += '</tr></thead><tbody>';
+
+        for (const r of data.rows) {
+            const srcCls = r.source === 'Bonus' ? 'badge-bonus' : 'badge-live';
+            html += `<tr>`;
+            html += `<td>${r.lp}</td>`;
+            html += `<td><span class="${srcCls}">${r.source}</span></td>`;
+            html += `<td>${fmt(r.netVolume, 3)}</td>`;
+            html += `<td>${fmt(r.vwapOpen, 5)}</td>`;
+            html += `<td>${fmt(r.priceCurrent, 5)}</td>`;
+            html += `<td>${fmt(r.adversePrice, 5)}</td>`;
+            html += `<td>${fmtUsd(r.plNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(r.deltaPl)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(r.plAfter)}</td>`;
+            html += `<td>${r.revSharePct || '-'}</td>`;
+            html += `<td>${fmtUsd(r.plShareUsd)}</td>`;
+            html += `<td>${fmtUsd(r.equityNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(r.equityAfter)}</td>`;
+            html += `<td>${fmtMl(r.mlNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtMl(r.mlAfter)}</td>`;
+            html += `<td>${fmtUsd(r.margin)}</td>`;
+            html += `<td>${fmtUsd(r.freeMarginNow)}</td>`;
+            html += `<td>${fmtUsd(r.freeMarginAfter)}</td>`;
+            html += `<td>${fmtFunding(r.fundingToTarget)}</td>`;
+            html += `<td style="color:#565f89;font-size:11px">${r.comment || ''}</td>`;
+            html += `</tr>`;
+        }
+
+        // TOTAL row
+        if (data.totals) {
+            const t = data.totals;
+            html += `<tr class="total-row">`;
+            html += `<td>TOTAL</td><td></td>`;
+            html += `<td>${fmt(t.netVolume, 3)}</td>`;
+            html += `<td></td><td></td><td></td>`;
+            html += `<td>${fmtUsd(t.plNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(t.deltaPl)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(t.plAfter)}</td>`;
+            html += `<td></td>`;
+            html += `<td>${fmtUsd(t.plShareUsd)}</td>`;
+            html += `<td>${fmtUsd(t.equityNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtUsd(t.equityAfter)}</td>`;
+            html += `<td>${fmtMl(t.mlNow)}</td>`;
+            html += `<td class="scenario-highlight">${fmtMl(t.mlAfter)}</td>`;
+            html += `<td>${fmtUsd(t.margin)}</td>`;
+            html += `<td>${fmtUsd(t.freeMarginNow)}</td>`;
+            html += `<td>${fmtUsd(t.freeMarginAfter)}</td>`;
+            html += `<td>${fmtFunding(t.fundingToTarget)}</td>`;
+            html += `<td style="color:#565f89;font-size:11px">${t.comment || ''}</td>`;
+            html += `</tr>`;
+        }
+
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+    }
+
+    // Allow Enter key to trigger calculate
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && ['moveInput', 'targetMlInput'].includes(e.target.id)) calculate();
+    });
+
+    loadSymbols();
+</script>
+</body>
+</html>
