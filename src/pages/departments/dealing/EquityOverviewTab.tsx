@@ -1,30 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-
-type EquityAccount = {
-  login: number | string;
-  source: "Live" | "Bonus" | string;
-  name?: string;
-  equity: number;
-  withdrawableEquity: number;
-  credit: number;
-  balance: number;
-  margin: number;
-  freeMargin: number;
-  marginLevel: number;
-};
-
-type EquityGroup = {
-  liveWithdrawableEquity: number;
-  bonusWithdrawableEquity: number;
-  netWithdrawableEquity: number;
-  items: EquityAccount[];
-};
-
-type EquityDashboard = {
-  clients: EquityGroup;
-  lps: EquityGroup;
-  netDifference: number;
-};
+import { type EquityAccount, type EquityDashboard, fetchEquityOverviewDashboard, fetchEquityOverviewNames } from "@/lib/equityOverviewApi";
 
 export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
   const [data, setData] = useState<EquityDashboard | null>(null);
@@ -52,25 +27,9 @@ export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
       setLoading(true);
       setError(null);
       try {
-        const resp = await fetch(`/EquityOverview/dashboard?includeDetails=false`);
-        if (!resp.ok) throw new Error(`EquityOverview ${resp.status}`);
-        const json = (await resp.json()) as EquityDashboard;
+        const json = await fetchEquityOverviewDashboard({ includeDetails: false });
         if (cancelled) return;
-        setData({
-          clients: {
-            liveWithdrawableEquity: Number(json?.clients?.liveWithdrawableEquity || 0),
-            bonusWithdrawableEquity: Number(json?.clients?.bonusWithdrawableEquity || 0),
-            netWithdrawableEquity: Number(json?.clients?.netWithdrawableEquity || 0),
-            items: [],
-          },
-          lps: {
-            liveWithdrawableEquity: Number(json?.lps?.liveWithdrawableEquity || 0),
-            bonusWithdrawableEquity: Number(json?.lps?.bonusWithdrawableEquity || 0),
-            netWithdrawableEquity: Number(json?.lps?.netWithdrawableEquity || 0),
-            items: [],
-          },
-          netDifference: Number(json?.netDifference || 0),
-        });
+        setData(json);
         setLastUpdated(new Date());
       } catch (e: any) {
         if (!cancelled) setError(e?.message || "Failed to load equity overview.");
@@ -92,17 +51,12 @@ export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
     setDetailsError(null);
     try {
       const [dashResp, namesResp] = await Promise.all([
-        fetch(`/EquityOverview/dashboard`),
-        fetch(`/EquityOverview/names`).catch(() => null as any),
+        fetchEquityOverviewDashboard({ includeDetails: true }),
+        fetchEquityOverviewNames().catch(() => ({} as Record<string, string>)),
       ]);
-      if (!dashResp.ok) throw new Error(`EquityOverview details ${dashResp.status}`);
-
-      const dashboard = (await dashResp.json()) as EquityDashboard;
-      const namesJson = namesResp && namesResp.ok ? ((await namesResp.json()) as Record<string, string>) : {};
-
-      setClientItems(Array.isArray(dashboard?.clients?.items) ? dashboard.clients.items : []);
-      setLpItems(Array.isArray(dashboard?.lps?.items) ? dashboard.lps.items : []);
-      setNamesByLogin(namesJson || {});
+      setClientItems(Array.isArray(dashResp?.clients?.items) ? dashResp.clients.items : []);
+      setLpItems(Array.isArray(dashResp?.lps?.items) ? dashResp.lps.items : []);
+      setNamesByLogin(namesResp || {});
       setDetailsLoaded(true);
     } catch (e: any) {
       setDetailsError(e?.message || "Failed to load client/LP details.");

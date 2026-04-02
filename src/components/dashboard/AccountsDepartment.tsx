@@ -6,6 +6,7 @@ import { fetchTransactions } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { StatusBadge } from './StatusBadge';
 import { fetchWalletBalances } from '@/lib/walletApi';
+import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
 
 interface PSPBalance {
@@ -202,22 +203,21 @@ export function AccountsDepartment({
 
     const fetchLpEquitySummary = async () => {
       try {
-        const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '');
-        const endpoint = backendBaseUrl ? `${backendBaseUrl}/Metrics/equity-summary` : '/Metrics/equity-summary';
-        const resp = await fetch(endpoint);
-        if (!resp.ok) throw new Error(`LP equity summary API ${resp.status}`);
-        const data = await resp.json();
+        const data = await fetchEquityOverviewDashboard({ includeDetails: false });
+        const lpWithdrawableEquity = data.lps.netWithdrawableEquity;
+        const clientWithdrawableEquity = data.clients.netWithdrawableEquity;
+        const difference = data.netDifference;
         setLpEquitySummary({
-          lpWithdrawableEquity: Number(data?.lpWithdrawableEquity) || 0,
-          clientWithdrawableEquity: Number(data?.clientWithdrawableEquity) || 0,
-          difference: Number(data?.difference) || 0,
+          lpWithdrawableEquity,
+          clientWithdrawableEquity,
+          difference,
         });
         const nextPoint: LpEquityPoint = {
           ts: Date.now(),
           time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
-          lpWithdrawableEquity: Number(data?.lpWithdrawableEquity) || 0,
-          clientWithdrawableEquity: Number(data?.clientWithdrawableEquity) || 0,
-          difference: Number(data?.difference) || 0,
+          lpWithdrawableEquity,
+          clientWithdrawableEquity,
+          difference,
         };
         setLpEquitySeries((prev) => {
           const next = [...prev, nextPoint];

@@ -100,6 +100,7 @@ app.use('/api/wallet', (req, res) =>
 [
   '/Metrics',
   '/Coverage',
+  '/EquityOverview',
   '/Swap',
   '/History',
   '/Report',
