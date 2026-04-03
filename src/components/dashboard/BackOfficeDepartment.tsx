@@ -27,6 +27,7 @@ import { fetchUsers, fetchAllUsers, fetchTransactions, fetchAllTransactions, fet
 import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
+import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
 
 async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
   const PAGE = 1000;
@@ -47,6 +48,11 @@ type CashflowTx = {
   amount: number;
   pspName: string;
   pspId: number | null;
+};
+
+type CashflowRow = {
+  deposit: CashflowTx | null;
+  withdrawal: CashflowTx | null;
 };
 
 type PSPBalance = {
@@ -103,6 +109,7 @@ export function BackOfficeDepartment({
   const [lookupCrmId, setLookupCrmId] = useState('');
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [withdrawalDecisionAmount, setWithdrawalDecisionAmount] = useState('');
   const [lookupResult, setLookupResult] = useState<{
     crmId: number;
     deposits: CashflowTx[];
@@ -195,7 +202,7 @@ export function BackOfficeDepartment({
     }
   };
 
-  const cashflowRows = useMemo(() => {
+  const cashflowRows = useMemo<CashflowRow[]>(() => {
     const deposits = lookupResult?.deposits || [];
     const withdrawals = lookupResult?.withdrawals || [];
     const maxLen = Math.max(deposits.length, withdrawals.length);
@@ -205,9 +212,124 @@ export function BackOfficeDepartment({
     }));
   }, [lookupResult]);
 
+  const cashflowColumns = useMemo<SortableTableColumn<CashflowRow>[]>(
+    () => [
+      {
+        key: 'depId',
+        label: 'Dep Txn ID',
+        sortValue: (row) => String(row.deposit?.id ?? ''),
+        searchValue: (row) => `${row.deposit?.id ?? ''} ${row.deposit?.pspName ?? ''}`,
+        render: (row) => <span className="font-mono">{row.deposit ? String(row.deposit.id) : '-'}</span>,
+      },
+      {
+        key: 'depDate',
+        label: 'Dep Date',
+        sortValue: (row) => (row.deposit?.processedAt ? new Date(row.deposit.processedAt).getTime() : 0),
+        render: (row) => (row.deposit ? formatTxDate(row.deposit.processedAt) : '-'),
+      },
+      {
+        key: 'depPsp',
+        label: 'Dep PSP',
+        sortValue: (row) => String(row.deposit?.pspName ?? ''),
+        render: (row) => row.deposit?.pspName || '-',
+      },
+      {
+        key: 'depAmount',
+        label: 'Dep Amount',
+        sortValue: (row) => Number(row.deposit?.amount ?? 0),
+        headerClassName: 'text-right',
+        cellClassName: 'text-right text-emerald-700 dark:text-emerald-300',
+        render: (row) => (row.deposit ? `$${row.deposit.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'),
+      },
+      {
+        key: 'wdId',
+        label: 'Wdr Txn ID',
+        sortValue: (row) => String(row.withdrawal?.id ?? ''),
+        searchValue: (row) => `${row.withdrawal?.id ?? ''} ${row.withdrawal?.pspName ?? ''}`,
+        render: (row) => <span className="font-mono">{row.withdrawal ? String(row.withdrawal.id) : '-'}</span>,
+      },
+      {
+        key: 'wdDate',
+        label: 'Wdr Date',
+        sortValue: (row) => (row.withdrawal?.processedAt ? new Date(row.withdrawal.processedAt).getTime() : 0),
+        render: (row) => (row.withdrawal ? formatTxDate(row.withdrawal.processedAt) : '-'),
+      },
+      {
+        key: 'wdPsp',
+        label: 'Wdr PSP',
+        sortValue: (row) => String(row.withdrawal?.pspName ?? ''),
+        render: (row) => row.withdrawal?.pspName || '-',
+      },
+      {
+        key: 'wdAmount',
+        label: 'Wdr Amount',
+        sortValue: (row) => Number(row.withdrawal?.amount ?? 0),
+        headerClassName: 'text-right',
+        cellClassName: 'text-right text-amber-700 dark:text-amber-300',
+        render: (row) => (row.withdrawal ? `$${row.withdrawal.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'),
+      },
+    ],
+    [],
+  );
+
   const createdRate = metrics.totalClients > 0 ? Math.round((metrics.totalMT5Accounts / metrics.totalClients) * 100) : 0;
   const lookupDepositTotal = lookupResult?.deposits.reduce((s, t) => s + t.amount, 0) || 0;
   const lookupWithdrawalTotal = lookupResult?.withdrawals.reduce((s, t) => s + t.amount, 0) || 0;
+  const hideZeroStatsInCompact = variant === 'compact';
+  const clientBreakdownItems = [
+    { label: 'Unverified Clients', value: metrics.unverifiedClients, icon: <Shield className="h-3.5 w-3.5" /> },
+    { label: 'Individual Clients', value: metrics.individualClients, icon: <User className="h-3.5 w-3.5" /> },
+    { label: 'Corporate Clients', value: metrics.corporateClients, icon: <Briefcase className="h-3.5 w-3.5" /> },
+    { label: 'Test Accounts', value: metrics.testAccounts, icon: <Settings className="h-3.5 w-3.5" /> },
+    { label: 'Active Accounts', value: metrics.activeAccounts, icon: <Database className="h-3.5 w-3.5" /> },
+    { label: 'Demo Accounts', value: metrics.demoAccounts, icon: <Activity className="h-3.5 w-3.5" /> },
+    { label: 'Live Accounts', value: metrics.liveAccounts, icon: <TrendingUp className="h-3.5 w-3.5" /> },
+  ].filter((item) => !hideZeroStatsInCompact || item.value > 0);
+
+  const kycItems = [
+    {
+      label: 'Approved',
+      value: metrics.kycApproved,
+      cardClass: 'rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-emerald-700 dark:text-emerald-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-emerald-800 dark:text-emerald-200',
+    },
+    {
+      label: 'Approved w/ Conditions',
+      value: metrics.kycApprovedWithConditions,
+      cardClass: 'rounded-md border border-teal-500/30 bg-teal-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-teal-700 dark:text-teal-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-teal-800 dark:text-teal-200',
+    },
+    {
+      label: 'Pending Review',
+      value: metrics.kycPendingReview,
+      cardClass: 'rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-amber-700 dark:text-amber-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200',
+    },
+    {
+      label: 'Rejected',
+      value: metrics.kycRejected,
+      cardClass: 'rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-rose-700 dark:text-rose-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-rose-800 dark:text-rose-200',
+    },
+    {
+      label: 'Additional Info Req.',
+      value: metrics.kycAdditionalInfo,
+      cardClass: 'rounded-md border border-orange-500/30 bg-orange-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-orange-700 dark:text-orange-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-orange-800 dark:text-orange-200',
+    },
+    {
+      label: 'On Hold',
+      value: metrics.kycOnHold,
+      cardClass: 'rounded-md border border-sky-500/30 bg-sky-500/10 p-2 text-center',
+      labelClass: 'text-[10px] text-sky-700 dark:text-sky-300',
+      valueClass: 'mt-1 font-mono text-lg font-semibold text-sky-800 dark:text-sky-200',
+    },
+  ].filter((item) => !hideZeroStatsInCompact || item.value > 0);
   const depositByPsp = useMemo(() => {
     const m = new Map<string, number>();
     (lookupResult?.deposits || []).forEach((tx) => {
@@ -228,6 +350,97 @@ export function BackOfficeDepartment({
       .map(([psp, amount]) => ({ psp, amount }))
       .sort((a, b) => b.amount - a.amount);
   }, [lookupResult?.withdrawals]);
+
+  const withdrawalDecision = useMemo(() => {
+    if (!lookupResult) return null;
+
+    const normalizeMethod = (pspName: string): 'Cash' | 'Crypto' => {
+      const key = String(pspName || '').trim().toLowerCase();
+      if (key.includes('crypto')) return 'Crypto';
+      // Treat bank + cash rails as the cash bucket for payout decisioning.
+      return 'Cash';
+    };
+
+    const depositsByMethod = { Cash: 0, Crypto: 0 };
+    const withdrawalsByMethod = { Cash: 0, Crypto: 0 };
+
+    (lookupResult.deposits || []).forEach((tx) => {
+      const method = normalizeMethod(tx.pspName);
+      depositsByMethod[method] += Number(tx.amount || 0);
+    });
+
+    (lookupResult.withdrawals || []).forEach((tx) => {
+      const method = normalizeMethod(tx.pspName);
+      withdrawalsByMethod[method] += Number(tx.amount || 0);
+    });
+
+    const availableCash = depositsByMethod.Cash - withdrawalsByMethod.Cash;
+    const availableCrypto = depositsByMethod.Crypto - withdrawalsByMethod.Crypto;
+
+    const requestedAmount = Number(String(withdrawalDecisionAmount || '').replace(/,/g, '').trim());
+    if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) {
+      return {
+        requestedAmount: 0,
+        method: null as 'Cash' | 'Crypto' | null,
+        tone: 'neutral' as 'neutral' | 'success' | 'warning',
+        reason: 'Enter a valid withdrawal amount to get FIFO method recommendation.',
+        availableCash,
+        availableCrypto,
+      };
+    }
+
+    if (availableCash >= requestedAmount && availableCrypto >= requestedAmount) {
+      const method: 'Cash' | 'Crypto' = availableCash >= availableCrypto ? 'Cash' : 'Crypto';
+      return {
+        requestedAmount,
+        method,
+        tone: 'success' as 'neutral' | 'success' | 'warning',
+        reason:
+          method === 'Cash'
+            ? 'Both methods can cover this amount. Cash has higher FIFO-eligible remaining balance after prior withdrawals, so cash is preferred.'
+            : 'Both methods can cover this amount. Crypto has higher FIFO-eligible remaining balance after prior withdrawals, so crypto is preferred.',
+        availableCash,
+        availableCrypto,
+      };
+    }
+
+    if (availableCash >= requestedAmount) {
+      return {
+        requestedAmount,
+        method: 'Cash' as 'Cash' | 'Crypto',
+        tone: 'success' as 'neutral' | 'success' | 'warning',
+        reason: 'Cash bucket has sufficient FIFO-eligible balance. Crypto bucket is insufficient for this amount.',
+        availableCash,
+        availableCrypto,
+      };
+    }
+
+    if (availableCrypto >= requestedAmount) {
+      return {
+        requestedAmount,
+        method: 'Crypto' as 'Cash' | 'Crypto',
+        tone: 'success' as 'neutral' | 'success' | 'warning',
+        reason: 'Crypto bucket has sufficient FIFO-eligible balance. Cash bucket is insufficient for this amount.',
+        availableCash,
+        availableCrypto,
+      };
+    }
+
+    const cashPositive = Math.max(0, availableCash);
+    const cryptoPositive = Math.max(0, availableCrypto);
+    return {
+      requestedAmount,
+      method: null as 'Cash' | 'Crypto' | null,
+      tone: 'warning' as 'neutral' | 'success' | 'warning',
+      reason: `Insufficient FIFO-eligible balance in both methods for $${requestedAmount.toLocaleString(undefined, {
+        maximumFractionDigits: 2,
+      })}. Available now: Cash $${cashPositive.toLocaleString(undefined, {
+        maximumFractionDigits: 2,
+      })}, Crypto $${cryptoPositive.toLocaleString(undefined, { maximumFractionDigits: 2 })}.`,
+      availableCash,
+      availableCrypto,
+    };
+  }, [lookupResult, withdrawalDecisionAmount]);
 
   const handleCashflowSnapshot = () => {
     if (!cashflowRows.length) return;
@@ -451,11 +664,11 @@ export function BackOfficeDepartment({
           : await fetchAllAccounts({ createdAt: { begin, end } });
 
         // Active accounts = accounts created in selected date range with tradingStatus === 'active'
-        const activeAccountsCount = hasEntityFilter
+        const activeAccountsRaw = hasEntityFilter
           ? entityUserIds.size > 0
-            ? (await fetchAllAccounts({ createdAt: { begin, end }, userIds: entityUserIdsArr })).filter((a: any) => a.tradingStatus === 'active').length
-            : 0
-          : (await fetchAllAccounts({ createdAt: { begin, end } })).filter((a: any) => a.tradingStatus === 'active').length;
+            ? await fetchAllAccounts({ createdAt: { begin, end }, userIds: entityUserIdsArr })
+            : []
+          : await fetchAllAccounts({ createdAt: { begin, end } });
 
         const allDeposits = hasEntityFilter
           ? allDepositsRaw.filter((tx) => entityUserIds.has(tx.fromUserId))
@@ -472,8 +685,8 @@ export function BackOfficeDepartment({
           return !platformComment.includes('negative bal');
         });
 
-        // Exclude test profiles from all client-derived counts (mirrors CRM behaviour)
         const clients = allUsers;
+        const nonTestClients = clients.filter((u: any) => u.testProfile !== true);
         const testAccounts = allUsers.filter((u: any) => u.testProfile === true).length;
         const filteredVerifiedUsers = verifiedUsers.filter((u: any) => u.testProfile !== true);
         const filteredIndividualUsers = individualUsers.filter((u: any) => u.testProfile !== true);
@@ -487,24 +700,32 @@ export function BackOfficeDepartment({
           return userFirstDepositDate >= rangeStart && userFirstDepositDate <= rangeEnd;
         }).length;
 
+        const getAccountGroupText = (account: any) => String(account?.groupName || account?.group || '').trim().toLowerCase();
+        const isDemoOrIbWalletGroup = (account: any) => {
+          const group = getAccountGroupText(account);
+          return group.startsWith('demo') || group.startsWith('ib-wallet');
+        };
+        const nonDemoNonIbAccounts = accounts.filter((account: any) => !isDemoOrIbWalletGroup(account));
+        const activeAccountsCount = activeAccountsRaw.filter((account: any) => account?.tradingStatus === 'active' && !isDemoOrIbWalletGroup(account)).length;
+
         setMetrics({
           totalIBs: ibWithdrawals.length,
           totalDeposits: validDeposits.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0),
           totalWithdrawals: Math.abs(allWithdrawals.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0)),
           totalDepositCount: validDeposits.length,
           totalWithdrawalCount: allWithdrawals.length,
-          totalClients: clients.length,
-          totalMT5Accounts: accounts.length,
+          totalClients: nonTestClients.length,
+          totalMT5Accounts: nonDemoNonIbAccounts.length,
           firstDeposits: firstDepositCount,
           verifiedClients: verifiedUsers.length,
-          unverifiedClients: unverifiedUsers.length,
-          individualClients: individualUsers.length,
-          corporateClients: corporateUsers.length,
+          unverifiedClients: unverifiedUsers.filter((u: any) => u.testProfile !== true).length,
+          individualClients: filteredIndividualUsers.length,
+          corporateClients: filteredCorporateUsers.length,
           testAccounts,
           sumsubActive: 0,
           activeAccounts: activeAccountsCount,
-          demoAccounts: accounts.filter((a: any) => String(a.groupName || '').toLowerCase().startsWith('demo')).length,
-          liveAccounts: accounts.filter((a: any) => !String(a.groupName || '').toLowerCase().startsWith('demo')).length,
+          demoAccounts: accounts.filter((a: any) => getAccountGroupText(a).startsWith('demo')).length,
+          liveAccounts: nonDemoNonIbAccounts.length,
           kycApproved: clients.filter((u: any) => getKycStatus(u) === 'Approved').length,
           kycApprovedWithConditions: clients.filter((u: any) => getKycStatus(u) === 'Approved with Conditions').length,
           kycPendingReview: clients.filter((u: any) => getKycStatus(u) === 'Pending Review').length,
@@ -711,13 +932,9 @@ export function BackOfficeDepartment({
                 <Users className="h-3.5 w-3.5 text-primary" />
                 Client Breakdown
               </div>
-              <MetricRow label="Unverified Clients" value={metrics.unverifiedClients} icon={<Shield className="h-3.5 w-3.5" />} />
-              <MetricRow label="Individual Clients" value={metrics.individualClients} icon={<User className="h-3.5 w-3.5" />} />
-              <MetricRow label="Corporate Clients" value={metrics.corporateClients} icon={<Briefcase className="h-3.5 w-3.5" />} />
-              <MetricRow label="Test Accounts" value={metrics.testAccounts} icon={<Settings className="h-3.5 w-3.5" />} />
-              <MetricRow label="Active Accounts" value={metrics.activeAccounts} icon={<Database className="h-3.5 w-3.5" />} />
-              <MetricRow label="Demo Accounts" value={metrics.demoAccounts} icon={<Activity className="h-3.5 w-3.5" />} />
-              <MetricRow label="Live Accounts" value={metrics.liveAccounts} icon={<TrendingUp className="h-3.5 w-3.5" />} />
+              {clientBreakdownItems.map((item) => (
+                <MetricRow key={item.label} label={item.label} value={item.value} icon={item.icon} />
+              ))}
             </div>
 
             <div className="rounded-lg border border-border/40 bg-background/50 p-3">
@@ -726,30 +943,12 @@ export function BackOfficeDepartment({
                 KYC Status
               </div>
               <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-center">
-                  <div className="text-[10px] text-emerald-700 dark:text-emerald-300">Approved</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-emerald-800 dark:text-emerald-200">{metrics.kycApproved}</div>
-                </div>
-                <div className="rounded-md border border-teal-500/30 bg-teal-500/10 p-2 text-center">
-                  <div className="text-[10px] text-teal-700 dark:text-teal-300">Approved w/ Conditions</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-teal-800 dark:text-teal-200">{metrics.kycApprovedWithConditions}</div>
-                </div>
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-center">
-                  <div className="text-[10px] text-amber-700 dark:text-amber-300">Pending Review</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200">{metrics.kycPendingReview}</div>
-                </div>
-                <div className="rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-center">
-                  <div className="text-[10px] text-rose-700 dark:text-rose-300">Rejected</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-rose-800 dark:text-rose-200">{metrics.kycRejected}</div>
-                </div>
-                <div className="rounded-md border border-orange-500/30 bg-orange-500/10 p-2 text-center">
-                  <div className="text-[10px] text-orange-700 dark:text-orange-300">Additional Info Req.</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-orange-800 dark:text-orange-200">{metrics.kycAdditionalInfo}</div>
-                </div>
-                <div className="rounded-md border border-sky-500/30 bg-sky-500/10 p-2 text-center">
-                  <div className="text-[10px] text-sky-700 dark:text-sky-300">On Hold</div>
-                  <div className="mt-1 font-mono text-lg font-semibold text-sky-800 dark:text-sky-200">{metrics.kycOnHold}</div>
-                </div>
+                {kycItems.map((item) => (
+                  <div key={item.label} className={item.cardClass}>
+                    <div className={item.labelClass}>{item.label}</div>
+                    <div className={item.valueClass}>{item.value}</div>
+                  </div>
+                ))}
               </div>
               {metrics.kycUnknown > 0 && (
                 <div className="mt-2 rounded-md border border-violet-500/30 bg-violet-500/10 p-2 text-center">
@@ -836,6 +1035,12 @@ export function BackOfficeDepartment({
                 placeholder="Enter CRM ID (e.g. 10314)"
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-500/40 focus:ring dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
+              <input
+                value={withdrawalDecisionAmount}
+                onChange={(e) => setWithdrawalDecisionAmount(e.target.value)}
+                placeholder="Withdrawal amount (e.g. 1000000)"
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-cyan-500/40 focus:ring dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              />
               <button
                 type="button"
                 onClick={handleLookupClientCashflow}
@@ -843,7 +1048,7 @@ export function BackOfficeDepartment({
                 className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-cyan-500/40 bg-cyan-500 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-600 disabled:opacity-60 sm:w-auto"
               >
                 {lookupLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                {lookupLoading ? 'Searching...' : 'Find Cashflow'}
+                {lookupLoading ? 'Searching...' : 'Find'}
               </button>
             </div>
 
@@ -901,6 +1106,32 @@ export function BackOfficeDepartment({
                   </div>
                 </div>
 
+                <div className="mt-3 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-3">
+                  <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold text-cyan-800 dark:text-cyan-300">
+                    <ArrowUpToLine className="h-3.5 w-3.5" /> Withdrawal Method Decision (FIFO)
+                  </div>
+                  {withdrawalDecision && (
+                    <div
+                      className={`mt-2 rounded-lg border px-3 py-2 text-xs ${
+                        withdrawalDecision.tone === 'success'
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
+                          : withdrawalDecision.tone === 'warning'
+                            ? 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200'
+                            : 'border-slate-300/60 bg-slate-100/60 text-slate-700 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300'
+                      }`}
+                    >
+                      <div className="font-semibold">
+                        Recommended Method:{' '}
+                        <span className="font-mono">{withdrawalDecision.method || 'N/A'}</span>
+                      </div>
+                      <div className="mt-1">{withdrawalDecision.reason}</div>
+                      <div className="mt-1 font-mono text-[11px] opacity-90">
+                        FIFO eligible balance (Cash: ${withdrawalDecision.availableCash.toLocaleString(undefined, { maximumFractionDigits: 2 })} | Crypto: ${withdrawalDecision.availableCrypto.toLocaleString(undefined, { maximumFractionDigits: 2 })})
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div
                   className={`mt-3 rounded-lg border border-slate-200 dark:border-slate-800 ${
                     cashflowFullscreen ? 'fixed inset-2 z-50 overflow-auto overscroll-contain bg-white p-2.5 shadow-2xl dark:bg-slate-950 sm:inset-3 sm:p-3' : 'overflow-x-auto'
@@ -925,65 +1156,23 @@ export function BackOfficeDepartment({
                       {cashflowFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
                     </button>
                   </div>
-                  <table className="min-w-[960px] text-[11px] md:min-w-full md:text-xs">
-                    <thead className="sticky top-0 z-10 bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Deposits</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide" colSpan={4}>Withdrawals</th>
-                      </tr>
-                      <tr>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Txn ID</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Date</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">PSP</th>
-                        <th className="px-2 py-2 text-right font-semibold uppercase tracking-wide">Amount</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Txn ID</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">Date</th>
-                        <th className="px-2 py-2 text-left font-semibold uppercase tracking-wide">PSP</th>
-                        <th className="px-2 py-2 text-right font-semibold uppercase tracking-wide">Amount</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {cashflowRows.length === 0 && (
-                        <tr>
-                          <td colSpan={8} className="px-3 py-4 text-center text-slate-500 dark:text-slate-400">
-                            No deposit/withdrawal records found for this client.
-                          </td>
-                        </tr>
-                      )}
-                      {cashflowRows.map((row, idx) => (
-                        <tr key={`cashflow-${idx}`} className="bg-white odd:bg-slate-50 dark:bg-slate-950/50 dark:odd:bg-slate-900/40">
-                          <td className="border-t border-slate-200 px-2 py-2 font-mono dark:border-slate-800">{row.deposit ? String(row.deposit.id) : '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.deposit ? formatTxDate(row.deposit.processedAt) : '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.deposit?.pspName || '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 text-right text-emerald-700 dark:border-slate-800 dark:text-emerald-300">
-                            {row.deposit ? `$${row.deposit.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}
-                          </td>
-                          <td className="border-t border-slate-200 px-2 py-2 font-mono dark:border-slate-800">{row.withdrawal ? String(row.withdrawal.id) : '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.withdrawal ? formatTxDate(row.withdrawal.processedAt) : '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 dark:border-slate-800">{row.withdrawal?.pspName || '-'}</td>
-                          <td className="border-t border-slate-200 px-2 py-2 text-right text-amber-700 dark:border-slate-800 dark:text-amber-300">
-                            {row.withdrawal ? `$${row.withdrawal.amount.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '-'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="bg-slate-200/80 font-semibold text-slate-700 dark:bg-slate-900/95 dark:text-slate-200">
-                        <td className="px-2 py-2">TOTAL</td>
-                        <td className="px-2 py-2" />
-                        <td className="px-2 py-2 text-right text-emerald-700 dark:text-emerald-300">
-                          ${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="px-2 py-2" />
-                        <td className="px-2 py-2">TOTAL</td>
-                        <td className="px-2 py-2" />
-                        <td className="px-2 py-2 text-right text-amber-700 dark:text-amber-300">
-                          ${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="px-2 py-2" />
-                      </tr>
-                    </tfoot>
-                  </table>
+                  <SortableTable
+                    tableId="backoffice-client-cashflow-table"
+                    enableColumnVisibility
+                    rows={cashflowRows}
+                    columns={cashflowColumns}
+                    exportFilePrefix="backoffice-client-cashflow"
+                    tableClassName="min-w-[960px] text-[11px] md:min-w-full md:text-xs"
+                    emptyText="No deposit/withdrawal records found for this client."
+                    rowClassName={(_row, idx) => (idx % 2 === 0 ? 'bg-white dark:bg-slate-950/50' : 'bg-slate-50 dark:bg-slate-900/40')}
+                  />
+                  <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
+                    <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{' '}
+                    <span className="text-slate-500 dark:text-slate-400">
+                      Deposits <span className="font-mono text-emerald-700 dark:text-emerald-300">${lookupDepositTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span> | Withdrawals{' '}
+                      <span className="font-mono text-amber-700 dark:text-amber-300">${lookupWithdrawalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                    </span>
+                  </div>
                 </div>
               </>
             )}

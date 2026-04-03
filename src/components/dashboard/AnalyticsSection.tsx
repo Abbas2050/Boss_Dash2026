@@ -3,7 +3,7 @@ import { TrendingUp, PieChart as PieChartIcon, Users, DollarSign, BarChart3, Cal
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart } from 'recharts';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { fetchTransactions, fetchUsers, fetchAllUsers, fetchAccounts, type AccountRequest, type Account } from '@/lib/api';
+import { fetchTransactions, fetchAllTransactions, fetchUsers, fetchAllUsers, fetchAccounts, type AccountRequest, type Account } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
 
 async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
@@ -123,17 +123,17 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           individualUsers,
           corporateUsers,
         ] = await Promise.all([
-          fetchTransactions({ 
+          fetchAllTransactions({ 
             processedAt: { begin, end },
             transactionTypes: ['deposit'],
             statuses: ['approved']
           }),
-          fetchTransactions({ 
+          fetchAllTransactions({ 
             processedAt: { begin, end },
             transactionTypes: ['withdrawal'],
             statuses: ['approved']
           }),
-          fetchTransactions({ 
+          fetchAllTransactions({ 
             processedAt: { begin, end },
             transactionTypes: ['ib withdrawal'],
             statuses: ['approved']
@@ -168,6 +168,65 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           accountsByUser.get(acc.userId)?.push(acc);
         });
 
+        const registeredClientIds = new Set((allUsers || []).map((user: any) => Number(user.id)).filter((id) => Number.isFinite(id)));
+        const getAccountGroupText = (account: any) => String(account?.groupName || account?.group || '').trim().toLowerCase();
+        const isDemoOrIbWalletGroup = (account: any) => {
+          const group = getAccountGroupText(account);
+          return group.startsWith('demo') || group.startsWith('ib-wallet');
+        };
+
+        const registeredClientAccounts = (allAccounts || []).filter((account: any) => registeredClientIds.has(Number(account?.userId)));
+        const registeredLiveAccounts = registeredClientAccounts.filter((account: any) => !isDemoOrIbWalletGroup(account));
+
+        const parseLoginNumber = (value: unknown): number | null => {
+          if (value === null || value === undefined) return null;
+          const direct = Number(value);
+          if (Number.isFinite(direct)) return direct;
+
+          const text = String(value).trim();
+          if (!text) return null;
+          const trailing = text.match(/(\d+)$/);
+          if (!trailing) return null;
+          const parsed = Number(trailing[1]);
+          return Number.isFinite(parsed) ? parsed : null;
+        };
+
+        const getTxLogin = (tx: any): number | null => {
+          const candidates = [
+            tx?.login,
+            tx?.fromAccountLogin,
+            tx?.toAccountLogin,
+            tx?.fromLogin,
+            tx?.toLogin,
+            tx?.loginSid,
+            tx?.fromLoginSid,
+            tx?.toLoginSid,
+          ];
+          for (const candidate of candidates) {
+            const parsed = parseLoginNumber(candidate);
+            if (parsed !== null) return parsed;
+          }
+          return null;
+        };
+
+        const liveAccountLogins = new Set(
+          registeredLiveAccounts
+            .map((account: any) => parseLoginNumber(account?.login ?? account?.loginSid ?? account?.id))
+            .filter((login): login is number => login !== null),
+        );
+
+        const fundedLiveClientIds = new Set(
+          validDeposits
+            .filter((deposit: any) => {
+              const txLogin = getTxLogin(deposit);
+              return txLogin !== null && liveAccountLogins.has(txLogin);
+            })
+            .map((deposit: any) => Number(deposit?.fromUserId))
+            .filter((id) => Number.isFinite(id) && registeredClientIds.has(id)),
+        );
+
+        const fundedLiveClientsCount = fundedLiveClientIds.size;
+
         // 1. CLIENT FUNNEL - Total Clients → MT5 Accounts → Depositors
         const totalClients = allUsers.length;
         const clientsWithAccounts = new Set(
@@ -201,12 +260,16 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         setRevenueData(timelineMode === 'today' ? sortedRevenueData : sortedRevenueData.slice(-15));
 
         // 3. ACQUISITION FUNNEL - Registered → MT5 Created → Funded
-        const clientsWithMT5 = clientsWithAccounts.size;
-        const clientsWhoFunded = clientsWithDeposits.size;
+        const totalRegisteredClients = totalClients;
+        const createdMt5LiveAccounts = registeredLiveAccounts.length;
+        const fundedAccounts = fundedLiveClientsCount;
+        const toFunnelPercent = (count: number) =>
+          totalRegisteredClients > 0 ? Math.min(100, Math.round((count / totalRegisteredClients) * 100)) : 0;
+
         const funnelSteps = [
-          { stage: 'Registered', count: totalClients, percentage: 100, fill: '#3b82f6' },
-          { stage: 'Created MT5', count: clientsWithMT5, percentage: totalClients > 0 ? Math.round((clientsWithMT5 / totalClients) * 100) : 0, fill: '#10b981' },
-          { stage: 'Funded Account', count: clientsWhoFunded, percentage: totalClients > 0 ? Math.round((clientsWhoFunded / totalClients) * 100) : 0, fill: '#f59e0b' },
+          { stage: 'Registered Clients', count: totalRegisteredClients, percentage: 100, fill: '#3b82f6' },
+          { stage: 'Created MT5 (Live)', count: createdMt5LiveAccounts, percentage: toFunnelPercent(createdMt5LiveAccounts), fill: '#10b981' },
+          { stage: 'Funded Live Accounts', count: fundedAccounts, percentage: toFunnelPercent(fundedAccounts), fill: '#f59e0b' },
         ];
         setFunnelData(funnelSteps);
 
@@ -255,17 +318,17 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         filteredWithdrawals.forEach(tx => {
           const psp = normalizePspName(tx);
           if (!pspWdMap[psp]) pspWdMap[psp] = { amount: 0, type: 'Withdrawal', count: 0 };
-          pspWdMap[psp].amount += Math.abs(tx.processedAmount) / 1000000;
+          pspWdMap[psp].amount += Math.abs(Number(tx.processedAmount) || 0);
           pspWdMap[psp].count += 1;
         });
         filteredIbWithdrawals.forEach(tx => {
           const ibLabel = 'IB Withdrawal';
           if (!pspWdMap[ibLabel]) pspWdMap[ibLabel] = { amount: 0, type: 'IB Withdrawal', count: 0 };
-          pspWdMap[ibLabel].amount += Math.abs(tx.processedAmount) / 1000000;
+          pspWdMap[ibLabel].amount += Math.abs(Number(tx.processedAmount) || 0);
           pspWdMap[ibLabel].count += 1;
         });
         const pspWithdrawalData = Object.entries(pspWdMap)
-          .map(([name, data]) => ({ name, value: parseFloat(data.amount.toFixed(2)), type: data.type, count: data.count }))
+          .map(([name, data]) => ({ name, value: Number(data.amount.toFixed(2)), type: data.type, count: data.count }))
           .sort((a, b) => b.value - a.value);
         setPspWithdrawals(pspWithdrawalData);
 
@@ -279,6 +342,8 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         });
 
         allAccounts.forEach((acc: any) => {
+          const group = String(acc?.groupName || acc?.group || '').trim().toLowerCase();
+          if (group.startsWith('demo') || group.startsWith('ib-wallet')) return;
           const user = allUsers.find((candidate: any) => candidate.id === acc.userId);
           if (!user) return;
           const entity = getEntityName(user);
@@ -562,12 +627,12 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                 <BarChart data={pspWithdrawals} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} fontSize={11} stroke="hsl(var(--muted-foreground))" />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: '$M', angle: -90, position: 'insideLeft' }} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} label={{ value: '$', angle: -90, position: 'insideLeft' }} />
                   <Tooltip contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }} formatter={(value) => {
                     let v = value;
                     if (Array.isArray(v)) v = v[0];
                     const num = typeof v === 'number' ? v : parseFloat(v);
-                    return [`$${isNaN(num) ? v : num.toFixed(2)}M`, 'Amount'];
+                    return [`$${isNaN(num) ? v : num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 'Amount'];
                   }} />
                   <Bar dataKey="value" fill="#ef4444" radius={[8, 8, 0, 0]}>
                     {pspWithdrawals.map((entry, index) => (
@@ -601,7 +666,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                       contentStyle={{ backgroundColor: 'hsl(var(--background))', border: '1px solid hsl(var(--border))' }}
                       formatter={(value: any, name: string) => {
                         if (name === 'clients') return [value, 'Registered Clients'];
-                        if (name === 'accounts') return [value, 'MT5 Accounts'];
+                        if (name === 'accounts') return [value, 'Live MT5 Accounts'];
                         return value;
                       }}
                       labelFormatter={(label) => `Entity: ${label}`}
@@ -614,7 +679,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                       stroke="#10b981" 
                       strokeWidth={3} 
                       dot={{ fill: '#10b981', r: 6 }} 
-                      name="MT5 Accounts"
+                      name="Live MT5 Accounts"
                     />
                   </ComposedChart>
                 </ResponsiveContainer>
@@ -637,7 +702,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
                             <div className="text-2xl font-bold" style={{ color }}>{entity.clients}</div>
                           </div>
                           <div>
-                            <div className="text-xs text-muted-foreground mb-1">MT5 Created</div>
+                            <div className="text-xs text-muted-foreground mb-1">MT5 Created (Live)</div>
                             <div className="text-2xl font-bold" style={{ color }}>{entity.accounts}</div>
                           </div>
                         </div>
