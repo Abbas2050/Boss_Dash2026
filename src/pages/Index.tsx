@@ -116,6 +116,7 @@ const Index = () => {
                 fromDate={appliedFromDate}
                 toDate={appliedToDate}
                 refreshKey={refreshKey}
+                variant="compact"
               />
             </div>
           </div>

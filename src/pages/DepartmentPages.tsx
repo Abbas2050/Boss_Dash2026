@@ -1,10 +1,10 @@
 import React from "react";
 import { useParams } from "react-router-dom";
 import { AccountsDepartment } from "@/components/dashboard/AccountsDepartment";
-import { MarketingDepartment } from "@/components/dashboard/MarketingDepartment";
 import { HRDepartment } from "@/components/dashboard/HRDepartment";
 import { DealingDepartmentPage } from "@/pages/departments/DealingDepartmentPage";
 import { BackofficeDepartmentPage } from "@/pages/departments/BackofficeDepartmentPage";
+import { MarketingDepartmentPage } from "@/pages/departments/MarketingDepartmentPage";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessDepartmentItem, getDepartmentItemBySlug, getVisibleDepartmentItems } from "@/lib/permissions";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
@@ -32,7 +32,7 @@ export const DepartmentPages: React.FC = () => {
       {selected === "dealing" && <DealingDepartmentPage />}
       {selected === "backoffice" && <BackofficeDepartmentPage />}
       {selected === "accounts" && <AccountsDepartment {...commonProps} />}
-      {selected === "marketing" && <MarketingDepartment {...commonProps} />}
+      {selected === "marketing" && <MarketingDepartmentPage />}
       {selected === "hr" && <HRDepartment {...commonProps} />}
 
       {!knownDepartmentSlugs.has(selected) && (

@@ -20,6 +20,7 @@ import {
   Clock3,
   CircleCheckBig,
   Activity,
+  RefreshCw,
 } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
@@ -28,6 +29,8 @@ import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi'
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
+import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from '@/lib/rebateApi';
+import { getRateForSymbol, normalizeRebateSymbol } from '@/pages/departments/dealing/rebateUtils';
 
 async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
   const PAGE = 1000;
@@ -59,6 +62,100 @@ type PSPBalance = {
   name: string;
   balance: number;
   status: 'active' | 'pending' | 'error';
+};
+
+type RebateCalcRow = {
+  login: string;
+  symbol: string;
+  trades: number;
+  tradedLots: number;
+  eligibleLots: number;
+  ineligibleLots: number;
+  rebatePerLot: number;
+  commissionUsd: number;
+};
+
+type RebateMode = 'all' | 'specific' | 'all-with-overrides';
+type RebateCloseMode = 'deal-out-only' | 'all-close-side';
+type RebateLoginScope = 'all' | 'enabled-only';
+type RebateDateMode = 'crm-calendar' | 'browser-local';
+type RebateCommissionSource = 'input-rate' | 'mt5-commission';
+
+type RebatePreset = {
+  name: string;
+  ibId: string;
+  fromDate: string;
+  toDate: string;
+  mode: RebateMode;
+  closeMode?: RebateCloseMode;
+  loginScope?: RebateLoginScope;
+  dateMode?: RebateDateMode;
+  commissionSource?: RebateCommissionSource;
+  defaultRate: string;
+  overridesText: string;
+  includeSubIb: boolean;
+};
+
+const REBATE_PRESETS_STORAGE_KEY = 'backoffice-ib-rebate-presets-v1';
+
+const parseRebateDateInput = (value: string, mode: RebateDateMode, endOfDay = false) => {
+  if (mode === 'browser-local') {
+    return new Date(`${value}T${endOfDay ? '23:59:59' : '00:00:00'}`);
+  }
+
+  const [yy, mm, dd] = String(value || '').split('-').map((part) => Number(part));
+  if (!Number.isFinite(yy) || !Number.isFinite(mm) || !Number.isFinite(dd)) {
+    return new Date(`${value}T${endOfDay ? '23:59:59' : '00:00:00'}`);
+  }
+
+  return new Date(Date.UTC(yy, mm - 1, dd, endOfDay ? 23 : 12, endOfDay ? 59 : 0, endOfDay ? 59 : 0));
+};
+
+const toInputDate = (date: Date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const getPositionLots = (position: { lots?: number; volume?: number; volumeExt?: number }) => {
+  const lots = Number(position.lots) || 0;
+  if (lots > 0) return lots;
+  const volumeExt = Number(position.volumeExt) || 0;
+  if (volumeExt > 0) return volumeExt / 100_000_000;
+  const volume = Number(position.volume) || 0;
+  return volume > 0 ? volume / 10_000 : 0;
+};
+
+const isDealOut = (deal: any, mode: RebateCloseMode) => {
+  const rawEntry = (deal?.entry ?? deal?.Entry ?? '').toString().trim();
+  const rawAction = (deal?.action ?? deal?.Action ?? '').toString().trim();
+
+  if (mode === 'deal-out-only') {
+    if (rawEntry === '1') return true;
+    const entryOut = rawEntry.toUpperCase();
+    return entryOut === 'OUT' || entryOut === 'DEAL_ENTRY_OUT';
+  }
+
+  // MT5 close-side entry enums: OUT=1, INOUT=2 (reverse), OUT_BY=3.
+  if (rawEntry === '1' || rawEntry === '2' || rawEntry === '3') return true;
+  const entryUpper = rawEntry.toUpperCase();
+  if (
+    entryUpper === 'OUT' ||
+    entryUpper === 'DEAL_ENTRY_OUT' ||
+    entryUpper === 'INOUT' ||
+    entryUpper === 'DEAL_ENTRY_INOUT' ||
+    entryUpper === 'OUT_BY' ||
+    entryUpper === 'DEAL_ENTRY_OUT_BY'
+  ) {
+    return true;
+  }
+
+  // Optional fallback for bridges that expose close semantics only via action labels.
+  const actionUpper = rawAction.toUpperCase();
+  if (actionUpper.includes('OUT') || actionUpper.includes('CLOSE')) return true;
+
+  return false;
 };
 
 export function BackOfficeDepartment({
@@ -128,6 +225,359 @@ export function BackOfficeDepartment({
   const [docusignOverview, setDocusignOverview] = useState<DocusignOverview | null>(null);
   const [docusignLoading, setDocusignLoading] = useState(false);
   const [docusignError, setDocusignError] = useState<string | null>(null);
+  const [rebateIbId, setRebateIbId] = useState('');
+  const [rebateFromDate, setRebateFromDate] = useState(() => toInputDate(fromDate || new Date()));
+  const [rebateToDate, setRebateToDate] = useState(() => toInputDate(toDate || new Date()));
+  const [rebateMode, setRebateMode] = useState<RebateMode>('all');
+  const [rebateCloseMode, setRebateCloseMode] = useState<RebateCloseMode>('deal-out-only');
+  const [rebateLoginScope, setRebateLoginScope] = useState<RebateLoginScope>('all');
+  const [rebateDateMode, setRebateDateMode] = useState<RebateDateMode>('crm-calendar');
+  const [rebateCommissionSource, setRebateCommissionSource] = useState<RebateCommissionSource>('input-rate');
+  const [rebateDefaultRate, setRebateDefaultRate] = useState('2.00');
+  const [rebateOverridesText, setRebateOverridesText] = useState('XAUUSD=2.00\nEURUSD=1.00');
+  const [rebateIncludeSubIb, setRebateIncludeSubIb] = useState(true);
+  const [rebateLoading, setRebateLoading] = useState(false);
+  const [rebateError, setRebateError] = useState<string | null>(null);
+  const [rebateRows, setRebateRows] = useState<RebateCalcRow[]>([]);
+  const [rebateLastUpdated, setRebateLastUpdated] = useState<Date | null>(null);
+  const [rebatePresetName, setRebatePresetName] = useState('');
+  const [rebateSelectedPreset, setRebateSelectedPreset] = useState('');
+  const [rebatePresets, setRebatePresets] = useState<RebatePreset[]>([]);
+  const [rebateStats, setRebateStats] = useState({
+    ibUsers: 0,
+    logins: 0,
+    deals: 0,
+    ibBalance: 0,
+    ibWithdrawnLifetime: 0,
+    ibWithdrawnPeriod: 0,
+  });
+
+  const parseRateOverrides = (text: string) => {
+    const lines = String(text || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const parsed: Array<{ symbolPattern: string; ratePerLot: number }> = [];
+    lines.forEach((line, idx) => {
+      const parts = line.split('=').map((p) => p.trim());
+      if (parts.length !== 2) {
+        throw new Error(`Invalid override on line ${idx + 1}. Use SYMBOL=RATE (example: XAUUSD=2.00).`);
+      }
+      const symbolPattern = normalizeRebateSymbol(parts[0]);
+      const ratePerLot = Number(parts[1]);
+      if (!symbolPattern) throw new Error(`Invalid symbol on line ${idx + 1}.`);
+      if (!Number.isFinite(ratePerLot) || ratePerLot < 0) throw new Error(`Invalid rate on line ${idx + 1}.`);
+      parsed.push({ symbolPattern, ratePerLot });
+    });
+
+    return parsed;
+  };
+
+  const runIbRebateCalculation = async () => {
+    const ibId = Number(rebateIbId);
+    const from = parseRebateDateInput(rebateFromDate, rebateDateMode, false);
+    const to = parseRebateDateInput(rebateToDate, rebateDateMode, true);
+    const defaultRateNum = Number(rebateDefaultRate);
+
+    if (!Number.isFinite(ibId) || ibId <= 0) {
+      setRebateError('Enter a valid IB CRM ID.');
+      return;
+    }
+    if (!rebateFromDate || !rebateToDate || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      setRebateError('Select valid from and to dates.');
+      return;
+    }
+    if (from.getTime() > to.getTime()) {
+      setRebateError('From date cannot be after to date.');
+      return;
+    }
+
+    try {
+      setRebateLoading(true);
+      setRebateError(null);
+      setRebateRows([]);
+
+      const overrides = parseRateOverrides(rebateOverridesText);
+      const effectiveRules = rebateMode === 'all' ? [] : overrides;
+      const tree = rebateIncludeSubIb ? await fetchIbTree(ibId) : [];
+      const userIds = new Set<number>([ibId]);
+      tree.forEach((node) => {
+        if (node.ibId) userIds.add(Number(node.ibId));
+        if (node.referralIbId) userIds.add(Number(node.referralIbId));
+      });
+
+      const ibUserIds = Array.from(userIds).filter((id) => Number.isFinite(id) && id > 0);
+      if (!ibUserIds.length) throw new Error('No IB users found.');
+
+      const [accountResults, ibAccounts, ibWithdrawalsLifetime, ibWithdrawalsPeriod] = await Promise.all([
+        Promise.allSettled(ibUserIds.map((userId) => fetchAccountsByUserId(userId))),
+        fetchAllAccounts({ userId: ibId }).catch(() => []),
+        fetchAllTransactions({ fromUserId: ibId, transactionTypes: ['ib withdrawal'], statuses: ['approved'] }).catch(() => []),
+        fetchAllTransactions({
+          fromUserId: ibId,
+          transactionTypes: ['ib withdrawal'],
+          statuses: ['approved'],
+          processedAt: { begin: formatDateTimeForAPI(from, false), end: formatDateTimeForAPI(to, true) },
+        }).catch(() => []),
+      ]);
+
+      const allAccounts = accountResults
+        .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof fetchAccountsByUserId>>> => result.status === 'fulfilled')
+        .flatMap((result) => result.value || []);
+
+      const logins = Array.from(
+        new Set(
+          allAccounts
+            .filter((acc) => acc.login && (rebateLoginScope === 'all' || Number(acc.isEnabled ?? 1) === 1))
+            .map((acc) => String(acc.login).trim())
+            .filter(Boolean),
+        ),
+      );
+
+      if (!logins.length) throw new Error('No MT5 accounts/logins found for this IB tree.');
+
+      const dealsResults = await Promise.allSettled(logins.map((login) => fetchDealsByLogin({ login, from, to })));
+      const aggregated = new Map<string, RebateCalcRow>();
+      let dealsCount = 0;
+
+      dealsResults.forEach((result, idx) => {
+        if (result.status !== 'fulfilled') return;
+        const login = logins[idx];
+        (result.value || []).forEach((deal) => {
+          if (!isDealOut(deal, rebateCloseMode)) return;
+          dealsCount += 1;
+          const symbol = normalizeRebateSymbol(String(deal.symbol || ''));
+          if (!symbol) return;
+          const lots = getPositionLots(deal);
+          if (!Number.isFinite(lots) || lots <= 0) return;
+
+          const dealCommissionRaw = Number((deal as any)?.commission ?? (deal as any)?.Commission ?? NaN);
+          const mt5DealCommission = Number.isFinite(dealCommissionRaw) ? Math.abs(dealCommissionRaw) : 0;
+
+          const effectiveDefaultRate = rebateMode === 'specific' ? 0 : (Number.isFinite(defaultRateNum) && defaultRateNum >= 0 ? defaultRateNum : 0);
+          const rate = getRateForSymbol(symbol, effectiveRules, effectiveDefaultRate);
+          const safeRate = Number.isFinite(rate) && rate > 0 ? rate : 0;
+
+          const commissionFromRate = lots * safeRate;
+          const useMt5Commission = rebateCommissionSource === 'mt5-commission' && mt5DealCommission > 0;
+          const commissionForDeal = useMt5Commission ? mt5DealCommission : commissionFromRate;
+          const appliedRate = lots > 0 ? commissionForDeal / lots : 0;
+
+          const key = `${login}|${symbol}`;
+          const existing = aggregated.get(key);
+          const eligibleLots = commissionForDeal > 0 ? lots : 0;
+          const ineligibleLots = commissionForDeal > 0 ? 0 : lots;
+          if (!existing) {
+            aggregated.set(key, {
+              login,
+              symbol,
+              trades: 1,
+              tradedLots: lots,
+              eligibleLots,
+              ineligibleLots,
+              rebatePerLot: appliedRate,
+              commissionUsd: commissionForDeal,
+            });
+            return;
+          }
+
+          existing.trades += 1;
+          existing.tradedLots += lots;
+          existing.eligibleLots += eligibleLots;
+          existing.ineligibleLots += ineligibleLots;
+          existing.commissionUsd += commissionForDeal;
+          if (existing.eligibleLots > 0) {
+            existing.rebatePerLot = existing.commissionUsd / existing.eligibleLots;
+          }
+        });
+      });
+
+      const rows = Array.from(aggregated.values()).sort((a, b) => b.commissionUsd - a.commissionUsd);
+
+      const ibWalletAccounts = ibAccounts.filter((acc: any) => String(acc?.groupName || acc?.group || '').toLowerCase().startsWith('ib-wallet'));
+      const balanceSource = ibWalletAccounts.length ? ibWalletAccounts : ibAccounts;
+      const ibBalance = balanceSource.reduce((sum, acc: any) => sum + Number(acc?.balance || 0), 0);
+      const withdrawnLifetime = Math.abs(
+        (ibWithdrawalsLifetime as any[]).reduce((sum, tx) => sum + Number(tx?.processedAmount || 0), 0),
+      );
+      const withdrawnPeriod = Math.abs(
+        (ibWithdrawalsPeriod as any[]).reduce((sum, tx) => sum + Number(tx?.processedAmount || 0), 0),
+      );
+
+      setRebateRows(rows);
+      setRebateStats({
+        ibUsers: ibUserIds.length,
+        logins: logins.length,
+        deals: dealsCount,
+        ibBalance,
+        ibWithdrawnLifetime: withdrawnLifetime,
+        ibWithdrawnPeriod: withdrawnPeriod,
+      });
+      setRebateLastUpdated(new Date());
+
+      if (!rows.length) {
+        setRebateError('No eligible trades found for the selected date/rates.');
+      }
+    } catch (error: any) {
+      setRebateError(error?.message || 'Failed to run IB rebate calculation.');
+    } finally {
+      setRebateLoading(false);
+    }
+  };
+
+  const rebateTotals = useMemo(
+    () =>
+      rebateRows.reduce(
+        (acc, row) => {
+          acc.trades += row.trades;
+          acc.tradedLots += row.tradedLots;
+          acc.eligibleLots += row.eligibleLots;
+          acc.ineligibleLots += row.ineligibleLots;
+          acc.commissionUsd += row.commissionUsd;
+          return acc;
+        },
+        { trades: 0, tradedLots: 0, eligibleLots: 0, ineligibleLots: 0, commissionUsd: 0 },
+      ),
+    [rebateRows],
+  );
+
+  const rebateNetPayable = useMemo(() => rebateTotals.commissionUsd - rebateStats.ibWithdrawnLifetime, [rebateTotals.commissionUsd, rebateStats.ibWithdrawnLifetime]);
+
+  const downloadRebateCsv = () => {
+    if (!rebateRows.length) return;
+    const header = [
+      'IB CRM ID',
+      'Login',
+      'Symbol',
+      'Trades',
+      'Traded Lots',
+      'Eligible Lots',
+      'Non-Eligible Lots',
+      'Rate/Lot',
+      'Commission USD',
+    ];
+    const rows = rebateRows.map((row) => [
+      rebateIbId,
+      row.login,
+      row.symbol,
+      row.trades,
+      row.tradedLots,
+      row.eligibleLots,
+      row.ineligibleLots,
+      row.rebatePerLot,
+      row.commissionUsd,
+    ]);
+    rows.push([
+      rebateIbId,
+      'TOTAL',
+      '',
+      rebateTotals.trades,
+      rebateTotals.tradedLots,
+      rebateTotals.eligibleLots,
+      rebateTotals.ineligibleLots,
+      '',
+      rebateTotals.commissionUsd,
+    ]);
+
+    const escapeCsv = (value: string | number) => {
+      const raw = String(value ?? '');
+      if (/[,"\n]/.test(raw)) return `"${raw.replace(/"/g, '""')}"`;
+      return raw;
+    };
+
+    const csv = [header, ...rows].map((line) => line.map((cell) => escapeCsv(cell as string | number)).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = href;
+    a.download = `ib-rebate-${rebateIbId || 'ib'}-${rebateFromDate}-${rebateToDate}.csv`;
+    a.click();
+    URL.revokeObjectURL(href);
+  };
+
+  const saveRebatePreset = () => {
+    const name = rebatePresetName.trim() || `IB-${rebateIbId || 'Preset'}`;
+    const preset: RebatePreset = {
+      name,
+      ibId: rebateIbId,
+      fromDate: rebateFromDate,
+      toDate: rebateToDate,
+      mode: rebateMode,
+      closeMode: rebateCloseMode,
+      loginScope: rebateLoginScope,
+      dateMode: rebateDateMode,
+      commissionSource: rebateCommissionSource,
+      defaultRate: rebateDefaultRate,
+      overridesText: rebateOverridesText,
+      includeSubIb: rebateIncludeSubIb,
+    };
+
+    setRebatePresets((prev) => {
+      const next = [...prev.filter((item) => item.name !== name), preset].sort((a, b) => a.name.localeCompare(b.name));
+      try {
+        localStorage.setItem(REBATE_PRESETS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore localStorage failures
+      }
+      return next;
+    });
+    setRebateSelectedPreset(name);
+    setRebatePresetName(name);
+  };
+
+  const loadRebatePreset = (name: string) => {
+    const preset = rebatePresets.find((item) => item.name === name);
+    if (!preset) return;
+    setRebateIbId(preset.ibId);
+    setRebateFromDate(preset.fromDate);
+    setRebateToDate(preset.toDate);
+    setRebateMode(preset.mode);
+    setRebateCloseMode(preset.closeMode || 'deal-out-only');
+    setRebateLoginScope(preset.loginScope || 'all');
+    setRebateDateMode(preset.dateMode || 'crm-calendar');
+    setRebateCommissionSource(preset.commissionSource || 'input-rate');
+    setRebateDefaultRate(preset.defaultRate);
+    setRebateOverridesText(preset.overridesText);
+    setRebateIncludeSubIb(Boolean(preset.includeSubIb));
+    setRebatePresetName(preset.name);
+    setRebateSelectedPreset(preset.name);
+  };
+
+  const deleteRebatePreset = () => {
+    if (!rebateSelectedPreset) return;
+    setRebatePresets((prev) => {
+      const next = prev.filter((item) => item.name !== rebateSelectedPreset);
+      try {
+        localStorage.setItem(REBATE_PRESETS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore localStorage failures
+      }
+      return next;
+    });
+    setRebateSelectedPreset('');
+  };
+
+  useEffect(() => {
+    if (fromDate) setRebateFromDate(toInputDate(fromDate));
+    if (toDate) setRebateToDate(toInputDate(toDate));
+  }, [fromDate, toDate]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(REBATE_PRESETS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as RebatePreset[];
+      if (!Array.isArray(parsed)) return;
+      setRebatePresets(
+        parsed
+          .filter((item) => item && typeof item.name === 'string' && item.name.trim().length > 0)
+          .sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    } catch {
+      // ignore localStorage failures
+    }
+  }, []);
 
   const formatTxDate = (value: string) => {
     const d = new Date(value);
@@ -1184,7 +1634,307 @@ export function BackOfficeDepartment({
           <section className="rounded-2xl border border-border/60 bg-card/70 p-3 sm:p-4">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
-                <div className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">4. Docusign</div>
+                <div className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">4. IB Rebate / Commission Calculator</div>
+                <div className="mt-1 text-sm font-semibold text-foreground">IB -&gt; Clients -&gt; Accounts -&gt; Deals -&gt; Commission</div>
+              </div>
+              {rebateLastUpdated && <div className="text-[11px] text-muted-foreground">Updated {rebateLastUpdated.toLocaleTimeString()}</div>}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-6">
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1">
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">IB CRM ID</label>
+                <input
+                  type="number"
+                  value={rebateIbId}
+                  onChange={(e) => setRebateIbId(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  placeholder="10342"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1">
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">From Date</label>
+                <input
+                  type="date"
+                  value={rebateFromDate}
+                  onChange={(e) => setRebateFromDate(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1">
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">To Date</label>
+                <input
+                  type="date"
+                  value={rebateToDate}
+                  onChange={(e) => setRebateToDate(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                />
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1">
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Default $ / Lot</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={rebateDefaultRate}
+                  onChange={(e) => setRebateDefaultRate(e.target.value)}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  placeholder="2.00"
+                />
+                <label className="mt-2 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Commission Source</label>
+                <select
+                  value={rebateCommissionSource}
+                  onChange={(e) => setRebateCommissionSource(e.target.value as RebateCommissionSource)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                >
+                  <option value="input-rate">Input rate x lots</option>
+                  <option value="mt5-commission">MT5 deal commission (reconcile)</option>
+                </select>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  {rebateCommissionSource === 'input-rate'
+                    ? 'Uses Default/Overrides you entered.'
+                    : 'Uses commission reported on each MT5 deal. Best for CRM reconciliation.'}
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1">
+                <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Commission Rule</label>
+                <select
+                  value={rebateMode}
+                  onChange={(e) => setRebateMode(e.target.value as RebateMode)}
+                  className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                >
+                  <option value="all">Same rate for every symbol</option>
+                  <option value="specific">Only symbols listed in overrides</option>
+                  <option value="all-with-overrides">Default rate + symbol overrides</option>
+                </select>
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                  {rebateMode === 'all' && 'All traded symbols use Default $ / Lot. Overrides are ignored.'}
+                  {rebateMode === 'specific' && 'Only symbols in the Overrides box will be paid. All others = 0.'}
+                  {rebateMode === 'all-with-overrides' && 'All symbols use Default $ / Lot, but symbols in Overrides get their own rate.'}
+                </div>
+                <label className="mt-2 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Closed Trade Filter</label>
+                <select
+                  value={rebateCloseMode}
+                  onChange={(e) => setRebateCloseMode(e.target.value as RebateCloseMode)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                >
+                  <option value="deal-out-only">Deal OUT only (strict)</option>
+                  <option value="all-close-side">All close-side (OUT, INOUT, OUT_BY)</option>
+                </select>
+                <label className="mt-2 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Login Scope</label>
+                <select
+                  value={rebateLoginScope}
+                  onChange={(e) => setRebateLoginScope(e.target.value as RebateLoginScope)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                >
+                  <option value="all">All logins under IB users</option>
+                  <option value="enabled-only">Enabled logins only</option>
+                </select>
+                <label className="mt-2 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Date Boundary</label>
+                <select
+                  value={rebateDateMode}
+                  onChange={(e) => setRebateDateMode(e.target.value as RebateDateMode)}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                >
+                  <option value="crm-calendar">CRM calendar day (recommended)</option>
+                  <option value="browser-local">Browser local day (legacy)</option>
+                </select>
+                <label className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={rebateIncludeSubIb}
+                    onChange={(e) => setRebateIncludeSubIb(e.target.checked)}
+                  />
+                  Include downline IBs (sub-IB tree)
+                </label>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  ON: selected IB + all child IBs. OFF: selected IB only.
+                </div>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-background/60 p-3 lg:col-span-1 flex items-end">
+                <button
+                  type="button"
+                  onClick={runIbRebateCalculation}
+                  disabled={rebateLoading}
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500 px-3 py-2 text-xs font-medium text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${rebateLoading ? 'animate-spin' : ''}`} />
+                  {rebateLoading ? 'Running...' : 'Run Calculation'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 rounded-lg border border-border/50 bg-background/60 p-3">
+              <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Symbol Overrides (one per line: SYMBOL=RATE, example: XAUUSD=2.00)
+              </label>
+              {rebateMode === 'all' ? (
+                <div className="rounded-md border border-slate-300/60 bg-slate-100/70 px-2 py-2 text-[11px] text-muted-foreground dark:border-slate-700 dark:bg-slate-900/50">
+                  Overrides are ignored in "Same rate for every symbol" mode.
+                </div>
+              ) : (
+                <>
+                  <div className="mb-2 text-[11px] text-muted-foreground">
+                    {rebateMode === 'specific'
+                      ? 'Required: only symbols listed here will be paid.'
+                      : 'Optional: listed symbols will override Default $ / Lot.'}
+                  </div>
+                  <textarea
+                    value={rebateOverridesText}
+                    onChange={(e) => setRebateOverridesText(e.target.value)}
+                    rows={4}
+                    className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs font-mono text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                  />
+                </>
+              )}
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2 rounded-lg border border-border/50 bg-background/60 p-3 md:grid-cols-[1fr_1fr_auto_auto_auto]">
+              <input
+                value={rebatePresetName}
+                onChange={(e) => setRebatePresetName(e.target.value)}
+                placeholder="Preset name (e.g. Gold IB Plan)"
+                className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+              />
+              <select
+                value={rebateSelectedPreset}
+                onChange={(e) => {
+                  setRebateSelectedPreset(e.target.value);
+                  loadRebatePreset(e.target.value);
+                }}
+                className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+              >
+                <option value="">Load saved preset</option>
+                {rebatePresets.map((preset) => (
+                  <option key={preset.name} value={preset.name}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={saveRebatePreset}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              >
+                Save Preset
+              </button>
+              <button
+                type="button"
+                onClick={deleteRebatePreset}
+                disabled={!rebateSelectedPreset}
+                className="rounded-md border border-rose-400/40 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-500/15 disabled:opacity-60 dark:text-rose-300"
+              >
+                Delete Preset
+              </button>
+              <button
+                type="button"
+                onClick={downloadRebateCsv}
+                disabled={rebateRows.length === 0}
+                className="rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-800 hover:bg-cyan-500/15 disabled:opacity-60 dark:text-cyan-200"
+              >
+                Export CSV
+              </button>
+            </div>
+
+            {rebateError && (
+              <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                {rebateError}
+              </div>
+            )}
+
+            <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">IB Users</div>
+                <div className="mt-1 font-mono text-base font-semibold">{rebateStats.ibUsers.toLocaleString()}</div>
+              </div>
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">Logins</div>
+                <div className="mt-1 font-mono text-base font-semibold">{rebateStats.logins.toLocaleString()}</div>
+              </div>
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">Deals Scanned</div>
+                <div className="mt-1 font-mono text-base font-semibold">{rebateStats.deals.toLocaleString()}</div>
+              </div>
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">Commission Earned</div>
+                <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">
+                  ${rebateTotals.commissionUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">IB Withdrawn (Lifetime)</div>
+                <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">
+                  ${rebateStats.ibWithdrawnLifetime.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-lg border border-primary/20 bg-primary/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">IB Balance</div>
+                <div className="mt-1 font-mono text-base font-semibold text-primary">
+                  ${rebateStats.ibBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-lg border border-violet-500/20 bg-violet-500/10 p-2.5">
+                <div className="text-[10px] text-muted-foreground">Net Payable</div>
+                <div className={`mt-1 font-mono text-base font-semibold ${rebateNetPayable >= 0 ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
+                  ${rebateNetPayable.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-2 text-[11px] text-muted-foreground">
+              Selected period: Eligible lots {rebateTotals.eligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })} | Non-eligible lots{' '}
+              {rebateTotals.ineligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })} | IB withdrawn in period ${rebateStats.ibWithdrawnPeriod.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </div>
+
+            <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+              <table className="min-w-full text-xs">
+                <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                  <tr>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Login</th>
+                    <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Symbol</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Trades</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Traded Lots</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Eligible Lots</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Non-Eligible Lots</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Rate/Lot</th>
+                    <th className="px-3 py-2 text-right font-semibold uppercase tracking-wide">Commission</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rebateRows.map((row) => (
+                    <tr key={`${row.login}-${row.symbol}-${row.rebatePerLot}`} className="bg-slate-50 dark:bg-slate-950/30">
+                      <td className="border-t border-slate-800 px-3 py-2 font-mono">{row.login}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 font-mono">{row.symbol}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">{row.trades.toLocaleString()}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">{row.tradedLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right text-emerald-700 dark:text-emerald-300">{row.eligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right text-amber-700 dark:text-amber-300">{row.ineligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">${row.rebatePerLot.toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">${row.commissionUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                {rebateRows.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-slate-100 font-semibold text-slate-800 dark:bg-slate-900 dark:text-slate-200">
+                      <td className="border-t border-slate-800 px-3 py-2" colSpan={2}>TOTAL</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">{rebateTotals.trades.toLocaleString()}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">{rebateTotals.tradedLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right text-emerald-700 dark:text-emerald-300">{rebateTotals.eligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right text-amber-700 dark:text-amber-300">{rebateTotals.ineligibleLots.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">-</td>
+                      <td className="border-t border-slate-800 px-3 py-2 text-right">${rebateTotals.commissionUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </section>
+        )}
+
+        {variant === 'full' && (
+          <section className="rounded-2xl border border-border/60 bg-card/70 p-3 sm:p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">5. Docusign</div>
                 <div className="mt-1 text-sm font-semibold text-foreground">Signature Operations</div>
               </div>
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">

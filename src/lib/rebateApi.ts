@@ -25,6 +25,12 @@ type Mt5Deal = {
   lots?: number;
   volume?: number;
   volumeExt?: number;
+  commission?: number | string;
+  Commission?: number | string;
+  entry?: number | string;
+  Entry?: number | string;
+  action?: number | string;
+  Action?: number | string;
 };
 
 const API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
@@ -155,5 +161,11 @@ export async function fetchDealsByLogin(params: { login: string | number; from: 
     lots: toNumber(item.lots),
     volume: toNumber(item.volume),
     volumeExt: toNumber(item.volumeExt),
+    commission: (item as any).commission,
+    Commission: (item as any).Commission,
+    entry: (item as any).entry,
+    Entry: (item as any).Entry,
+    action: (item as any).action,
+    Action: (item as any).Action,
   }));
 }
