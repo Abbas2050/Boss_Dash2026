@@ -1,5 +1,6 @@
 import { ReactNode } from 'react';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface MetricRowProps {
   label: string;
@@ -9,6 +10,7 @@ interface MetricRowProps {
   suffix?: string;
   icon?: ReactNode;
   size?: 'sm' | 'md' | 'lg';
+  tooltip?: ReactNode;
 }
 
 export function MetricRow({ 
@@ -18,7 +20,8 @@ export function MetricRow({
   prefix = '', 
   suffix = '',
   icon,
-  size = 'md'
+  size = 'md',
+  tooltip,
 }: MetricRowProps) {
   const sizeClasses = {
     sm: 'text-xs sm:text-sm',
@@ -38,7 +41,7 @@ export function MetricRow({
     return 'status-negative';
   };
 
-  return (
+  const content = (
     <div className="flex items-start sm:items-center justify-between py-1.5 group hover:bg-primary/5 px-2 -mx-2 rounded transition-colors gap-2">
       <div className="min-w-0 flex flex-1 items-start sm:items-center gap-2">
         {icon && <span className="text-muted-foreground">{icon}</span>}
@@ -56,5 +59,18 @@ export function MetricRow({
         )}
       </div>
     </div>
+  );
+
+  if (!tooltip) {
+    return content;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{content}</TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[22rem] text-xs leading-5">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
   );
 }

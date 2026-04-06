@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   Settings,
   Users,
@@ -29,6 +29,7 @@ import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi'
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from '@/lib/rebateApi';
 import { getRateForSymbol, normalizeRebateSymbol } from '@/pages/departments/dealing/rebateUtils';
 
@@ -184,7 +185,7 @@ export function BackOfficeDepartment({
     unverifiedClients: 0,
     individualClients: 0,
     corporateClients: 0,
-    testAccounts: 0,
+    testProfiles: 0,
     sumsubActive: 0,
     activeAccounts: 0,
     demoAccounts: 0,
@@ -722,24 +723,133 @@ export function BackOfficeDepartment({
     [],
   );
 
+  const resolvedNow = getDubaiDate();
+  const resolvedFromDate = fromDate ?? getDubaiDayStart(resolvedNow);
+  const resolvedToDate = toDate ?? getDubaiDayEnd(resolvedNow);
+  const metricsBegin = formatDateTimeForAPI(resolvedFromDate, false);
+  const metricsEnd = formatDateTimeForAPI(resolvedToDate, true);
+  const entityTooltip = selectedEntity === 'all'
+    ? 'Entity filter: all entities.'
+    : `Entity filter: custom_change_me_field = ${selectedEntity}.`;
+  const userSourceTooltip = [
+    'Source: /rest/users via the local /rest proxy.',
+    `Date filter: user.created between ${metricsBegin} and ${metricsEnd}.`,
+    'Base filters: lead = false.',
+    entityTooltip,
+  ];
+  const accountSourceTooltip = [
+    'Source: /rest/accounts via the local /rest proxy.',
+    `Date filter: account.createdAt between ${metricsBegin} and ${metricsEnd}.`,
+    'Entity scoping is applied by resolving entity user IDs first and then filtering accounts by userIds.',
+    entityTooltip,
+  ];
+  const transactionSourceTooltip = [
+    'Source: /rest/transactions via the local /rest proxy.',
+    `Date filter: transaction.processedAt between ${metricsBegin} and ${metricsEnd}.`,
+    'Base filters: status = approved.',
+    entityTooltip,
+  ];
+  const renderMetricTooltip = (title: string, lines: string[]): ReactNode => (
+    <div className="space-y-1.5">
+      <div className="font-semibold text-foreground">{title}</div>
+      {lines.map((line) => (
+        <div key={`${title}-${line}`} className="text-muted-foreground">
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+  const renderMetricSurface = (content: ReactNode, tooltip: ReactNode, className?: string) => (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className={className ? `${className} cursor-help` : 'cursor-help'}>{content}</div>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-[24rem] text-xs leading-5">
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
   const createdRate = metrics.totalClients > 0 ? Math.round((metrics.totalMT5Accounts / metrics.totalClients) * 100) : 0;
   const lookupDepositTotal = lookupResult?.deposits.reduce((s, t) => s + t.amount, 0) || 0;
   const lookupWithdrawalTotal = lookupResult?.withdrawals.reduce((s, t) => s + t.amount, 0) || 0;
   const hideZeroStatsInCompact = variant === 'compact';
   const clientBreakdownItems = [
-    { label: 'Unverified Clients', value: metrics.unverifiedClients, icon: <Shield className="h-3.5 w-3.5" /> },
-    { label: 'Individual Clients', value: metrics.individualClients, icon: <User className="h-3.5 w-3.5" /> },
-    { label: 'Corporate Clients', value: metrics.corporateClients, icon: <Briefcase className="h-3.5 w-3.5" /> },
-    { label: 'Test Accounts', value: metrics.testAccounts, icon: <Settings className="h-3.5 w-3.5" /> },
-    { label: 'Active Accounts', value: metrics.activeAccounts, icon: <Database className="h-3.5 w-3.5" /> },
-    { label: 'Demo Accounts', value: metrics.demoAccounts, icon: <Activity className="h-3.5 w-3.5" /> },
-    { label: 'Live Accounts', value: metrics.liveAccounts, icon: <TrendingUp className="h-3.5 w-3.5" /> },
+    {
+      label: 'Unverified Clients',
+      value: metrics.unverifiedClients,
+      icon: <Shield className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Unverified Clients', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where verified = false.',
+      ]),
+    },
+    {
+      label: 'Individual Clients',
+      value: metrics.individualClients,
+      icon: <User className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Individual Clients', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where clientTypes includes Individual.',
+      ]),
+    },
+    {
+      label: 'Corporate Clients',
+      value: metrics.corporateClients,
+      icon: <Briefcase className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Corporate Clients', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where clientTypes includes Corporate.',
+      ]),
+    },
+    {
+      label: 'Test Profiles',
+      value: metrics.testProfiles,
+      icon: <Settings className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Test Profiles', [
+        ...userSourceTooltip,
+        'Counts users where testProfile = true.',
+        'This was previously labeled Test Accounts, but the underlying source is users, not MT5 accounts.',
+      ]),
+    },
+    {
+      label: 'Active Accounts',
+      value: metrics.activeAccounts,
+      icon: <Database className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Active Accounts', [
+        ...accountSourceTooltip,
+        'Counts accounts where tradingStatus = active.',
+        'Excludes demo groups and ib-wallet groups.',
+      ]),
+    },
+    {
+      label: 'Demo Accounts',
+      value: metrics.demoAccounts,
+      icon: <Activity className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Demo Accounts', [
+        ...accountSourceTooltip,
+        'Counts accounts whose group starts with demo.',
+        'Excludes ib-wallet groups.',
+      ]),
+    },
+    {
+      label: 'Live Accounts',
+      value: metrics.liveAccounts,
+      icon: <TrendingUp className="h-3.5 w-3.5" />,
+      tooltip: renderMetricTooltip('Live Accounts', [
+        ...accountSourceTooltip,
+        'Counts MT5 accounts excluding demo groups and ib-wallet groups.',
+      ]),
+    },
   ].filter((item) => !hideZeroStatsInCompact || item.value > 0);
 
   const kycItems = [
     {
       label: 'Approved',
       value: metrics.kycApproved,
+      tooltip: renderMetricTooltip('KYC Approved', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = Approved.',
+      ]),
       cardClass: 'rounded-md border border-emerald-500/30 bg-emerald-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-emerald-700 dark:text-emerald-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-emerald-800 dark:text-emerald-200',
@@ -747,6 +857,10 @@ export function BackOfficeDepartment({
     {
       label: 'Approved w/ Conditions',
       value: metrics.kycApprovedWithConditions,
+      tooltip: renderMetricTooltip('KYC Approved with Conditions', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = Approved with Conditions.',
+      ]),
       cardClass: 'rounded-md border border-teal-500/30 bg-teal-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-teal-700 dark:text-teal-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-teal-800 dark:text-teal-200',
@@ -754,6 +868,10 @@ export function BackOfficeDepartment({
     {
       label: 'Pending Review',
       value: metrics.kycPendingReview,
+      tooltip: renderMetricTooltip('KYC Pending Review', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = Pending Review.',
+      ]),
       cardClass: 'rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-amber-700 dark:text-amber-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-amber-800 dark:text-amber-200',
@@ -761,6 +879,10 @@ export function BackOfficeDepartment({
     {
       label: 'Rejected',
       value: metrics.kycRejected,
+      tooltip: renderMetricTooltip('KYC Rejected', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = Rejected.',
+      ]),
       cardClass: 'rounded-md border border-rose-500/30 bg-rose-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-rose-700 dark:text-rose-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-rose-800 dark:text-rose-200',
@@ -768,6 +890,10 @@ export function BackOfficeDepartment({
     {
       label: 'Additional Info Req.',
       value: metrics.kycAdditionalInfo,
+      tooltip: renderMetricTooltip('KYC Additional Information Required', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = Additional Information Required.',
+      ]),
       cardClass: 'rounded-md border border-orange-500/30 bg-orange-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-orange-700 dark:text-orange-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-orange-800 dark:text-orange-200',
@@ -775,6 +901,10 @@ export function BackOfficeDepartment({
     {
       label: 'On Hold',
       value: metrics.kycOnHold,
+      tooltip: renderMetricTooltip('KYC On Hold', [
+        ...userSourceTooltip,
+        'Counts only non-test profiles where custom_compliance_approval = On Hold.',
+      ]),
       cardClass: 'rounded-md border border-sky-500/30 bg-sky-500/10 p-2 text-center',
       labelClass: 'text-[10px] text-sky-700 dark:text-sky-300',
       valueClass: 'mt-1 font-mono text-lg font-semibold text-sky-800 dark:text-sky-200',
@@ -1137,14 +1267,15 @@ export function BackOfficeDepartment({
 
         const clients = allUsers;
         const nonTestClients = clients.filter((u: any) => u.testProfile !== true);
-        const testAccounts = allUsers.filter((u: any) => u.testProfile === true).length;
+        const testProfiles = allUsers.filter((u: any) => u.testProfile === true).length;
         const filteredVerifiedUsers = verifiedUsers.filter((u: any) => u.testProfile !== true);
+        const filteredUnverifiedUsers = unverifiedUsers.filter((u: any) => u.testProfile !== true);
         const filteredIndividualUsers = individualUsers.filter((u: any) => u.testProfile !== true);
         const filteredCorporateUsers = corporateUsers.filter((u: any) => u.testProfile !== true);
 
         const rangeStart = new Date(begin);
         const rangeEnd = new Date(end);
-        const firstDepositCount = clients.filter((user: any) => {
+        const firstDepositCount = nonTestClients.filter((user: any) => {
           if (!user.firstDepositDate) return false;
           const userFirstDepositDate = new Date(user.firstDepositDate);
           return userFirstDepositDate >= rangeStart && userFirstDepositDate <= rangeEnd;
@@ -1155,38 +1286,77 @@ export function BackOfficeDepartment({
           const group = getAccountGroupText(account);
           return group.startsWith('demo') || group.startsWith('ib-wallet');
         };
-        const nonDemoNonIbAccounts = accounts.filter((account: any) => !isDemoOrIbWalletGroup(account));
+        const mt5Accounts = accounts.filter((account: any) => !getAccountGroupText(account).startsWith('ib-wallet'));
+        const nonDemoNonIbAccounts = mt5Accounts.filter((account: any) => !getAccountGroupText(account).startsWith('demo'));
         const activeAccountsCount = activeAccountsRaw.filter((account: any) => account?.tradingStatus === 'active' && !isDemoOrIbWalletGroup(account)).length;
 
-        setMetrics({
+        const nextMetrics = {
           totalIBs: ibWithdrawals.length,
           totalDeposits: validDeposits.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0),
           totalWithdrawals: Math.abs(allWithdrawals.reduce((sum, tx) => sum + Number(tx.processedAmount || 0), 0)),
           totalDepositCount: validDeposits.length,
           totalWithdrawalCount: allWithdrawals.length,
           totalClients: nonTestClients.length,
-          totalMT5Accounts: nonDemoNonIbAccounts.length,
+          totalMT5Accounts: mt5Accounts.length,
           firstDeposits: firstDepositCount,
-          verifiedClients: verifiedUsers.length,
-          unverifiedClients: unverifiedUsers.filter((u: any) => u.testProfile !== true).length,
+          verifiedClients: filteredVerifiedUsers.length,
+          unverifiedClients: filteredUnverifiedUsers.length,
           individualClients: filteredIndividualUsers.length,
           corporateClients: filteredCorporateUsers.length,
-          testAccounts,
+          testProfiles,
           sumsubActive: 0,
           activeAccounts: activeAccountsCount,
-          demoAccounts: accounts.filter((a: any) => getAccountGroupText(a).startsWith('demo')).length,
+          demoAccounts: mt5Accounts.filter((a: any) => getAccountGroupText(a).startsWith('demo')).length,
           liveAccounts: nonDemoNonIbAccounts.length,
-          kycApproved: clients.filter((u: any) => getKycStatus(u) === 'Approved').length,
-          kycApprovedWithConditions: clients.filter((u: any) => getKycStatus(u) === 'Approved with Conditions').length,
-          kycPendingReview: clients.filter((u: any) => getKycStatus(u) === 'Pending Review').length,
-          kycRejected: clients.filter((u: any) => getKycStatus(u) === 'Rejected').length,
-          kycAdditionalInfo: clients.filter((u: any) => getKycStatus(u) === 'Additional Information Required').length,
-          kycOnHold: clients.filter((u: any) => getKycStatus(u) === 'On Hold').length,
-          kycUnknown: clients.filter((u: any) => {
+          kycApproved: nonTestClients.filter((u: any) => getKycStatus(u) === 'Approved').length,
+          kycApprovedWithConditions: nonTestClients.filter((u: any) => getKycStatus(u) === 'Approved with Conditions').length,
+          kycPendingReview: nonTestClients.filter((u: any) => getKycStatus(u) === 'Pending Review').length,
+          kycRejected: nonTestClients.filter((u: any) => getKycStatus(u) === 'Rejected').length,
+          kycAdditionalInfo: nonTestClients.filter((u: any) => getKycStatus(u) === 'Additional Information Required').length,
+          kycOnHold: nonTestClients.filter((u: any) => getKycStatus(u) === 'On Hold').length,
+          kycUnknown: nonTestClients.filter((u: any) => {
             const v = getKycStatus(u);
             return !['Approved','Approved with Conditions','Pending Review','Rejected','Additional Information Required','On Hold',''].includes(v);
           }).length,
-        });
+        };
+
+        if (import.meta.env.DEV) {
+          console.groupCollapsed('[Backoffice] Operations Snapshot debug');
+          console.log('Filters', {
+            selectedEntity,
+            begin,
+            end,
+            hasEntityFilter,
+          });
+          console.log('Users payloads', {
+            allUsersInEntity,
+            allUsers,
+            verifiedUsers,
+            unverifiedUsers,
+            individualUsers,
+            corporateUsers,
+            nonTestClients,
+          });
+          console.log('Transactions payloads', {
+            allDepositsRaw,
+            allWithdrawalsRaw,
+            ibWithdrawalsRaw,
+            allDeposits,
+            allWithdrawals,
+            ibWithdrawals,
+            validDeposits,
+          });
+          console.log('Accounts payloads', {
+            accounts,
+            activeAccountsRaw,
+            mt5Accounts,
+            nonDemoNonIbAccounts,
+          });
+          console.log('Derived metrics', nextMetrics);
+          console.groupEnd();
+        }
+
+        setMetrics(nextMetrics);
       } catch {
         // silently ignore
       } finally {
@@ -1316,22 +1486,50 @@ export function BackOfficeDepartment({
                 {isLoading && <span className="animate-pulse rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1 text-[11px] text-cyan-700 dark:text-cyan-300">Refreshing</span>}
               </div>
               <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
-                <div className="rounded-xl border border-border/50 bg-background/80 p-3">
-                  <div className="text-[10px] text-slate-500">Clients</div>
-                  <div className="mt-1 font-mono text-base font-semibold">{metrics.totalClients.toLocaleString()}</div>
-                </div>
-                <div className="rounded-xl border border-border/50 bg-background/80 p-3">
-                  <div className="text-[10px] text-slate-500">MT5 Accounts</div>
-                  <div className="mt-1 font-mono text-base font-semibold">{metrics.totalMT5Accounts.toLocaleString()}</div>
-                </div>
-                <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
-                  <div className="text-[10px] text-slate-500">Deposits</div>
-                  <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrencyValue(metrics.totalDeposits)}</div>
-                </div>
-                <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
-                  <div className="text-[10px] text-slate-500">Withdrawals</div>
-                  <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{formatCurrencyValue(metrics.totalWithdrawals)}</div>
-                </div>
+                {renderMetricSurface(
+                  <div className="rounded-xl border border-border/50 bg-background/80 p-3">
+                    <div className="text-[10px] text-slate-500">Clients</div>
+                    <div className="mt-1 font-mono text-base font-semibold">{metrics.totalClients.toLocaleString()}</div>
+                  </div>,
+                  renderMetricTooltip('Clients', [
+                    ...userSourceTooltip,
+                    'Counts only non-test client profiles.',
+                  ])
+                )}
+                {renderMetricSurface(
+                  <div className="rounded-xl border border-border/50 bg-background/80 p-3">
+                    <div className="text-[10px] text-slate-500">MT5 Accounts</div>
+                    <div className="mt-1 font-mono text-base font-semibold">{metrics.totalMT5Accounts.toLocaleString()}</div>
+                  </div>,
+                  renderMetricTooltip('MT5 Accounts', [
+                    ...accountSourceTooltip,
+                    'Counts MT5 accounts excluding ib-wallet groups.',
+                    'Includes both demo and live accounts.',
+                  ])
+                )}
+                {renderMetricSurface(
+                  <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+                    <div className="text-[10px] text-slate-500">Deposits</div>
+                    <div className="mt-1 font-mono text-base font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrencyValue(metrics.totalDeposits)}</div>
+                  </div>,
+                  renderMetricTooltip('Deposits', [
+                    ...transactionSourceTooltip,
+                    'Counts only transactionTypes = deposit.',
+                    'Excludes rows whose platformComment contains negative bal.',
+                    'Displayed value is the sum of processedAmount.',
+                  ])
+                )}
+                {renderMetricSurface(
+                  <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
+                    <div className="text-[10px] text-slate-500">Withdrawals</div>
+                    <div className="mt-1 font-mono text-base font-semibold text-amber-700 dark:text-amber-300">{formatCurrencyValue(metrics.totalWithdrawals)}</div>
+                  </div>,
+                  renderMetricTooltip('Withdrawals', [
+                    ...transactionSourceTooltip,
+                    'Counts only transactionTypes = withdrawal.',
+                    'Displayed value is the absolute sum of processedAmount.',
+                  ])
+                )}
               </div>
             </div>
           </section>
@@ -1341,40 +1539,74 @@ export function BackOfficeDepartment({
         <section className={variant === 'compact' ? 'h-full rounded-2xl border border-border/60 bg-card/70 p-4' : 'h-full rounded-2xl border border-border/60 bg-card/70 p-4'}>
           <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">{variant === 'compact' ? 'Operations Overview' : '1. Backoffice Overview'}</div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="rounded-xl border border-primary/20 bg-primary/10 p-3 text-center">
-              <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
-              <div className="font-mono font-semibold">{metrics.totalIBs}</div>
-              <div className="text-xs text-muted-foreground">IB Withdrawals</div>
-            </div>
-            <div className="rounded-xl border border-success/20 bg-success/10 p-3 text-center">
-              <TrendingUp className="mx-auto mb-1 h-4 w-4 text-success" />
-              <div className="font-mono font-semibold">{metrics.totalDepositCount.toLocaleString()}</div>
-              <div className="text-xs text-muted-foreground">No. of Deposits</div>
-            </div>
-            <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-center">
-              <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
-              <div className="font-mono font-semibold">{metrics.totalWithdrawalCount.toLocaleString()}</div>
-              <div className="text-xs text-muted-foreground">No. of Withdrawals</div>
-            </div>
-            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3 text-center">
-              <CheckCircle className="mx-auto mb-1 h-4 w-4 text-cyan-500" />
-              <div className="font-mono font-semibold">{metrics.verifiedClients.toLocaleString()}</div>
-              <div className="text-xs text-muted-foreground">Verified Clients</div>
-            </div>
+            {renderMetricSurface(
+              <div className="rounded-xl border border-primary/20 bg-primary/10 p-3 text-center">
+                <Users className="mx-auto mb-1 h-4 w-4 text-primary" />
+                <div className="font-mono font-semibold">{metrics.totalIBs}</div>
+                <div className="text-xs text-muted-foreground">IB Withdrawals</div>
+              </div>,
+              renderMetricTooltip('IB Withdrawals', [
+                ...transactionSourceTooltip,
+                'Counts only transactionTypes = ib withdrawal.',
+                'Displayed value is the number of approved rows, not the amount.',
+              ])
+            )}
+            {renderMetricSurface(
+              <div className="rounded-xl border border-success/20 bg-success/10 p-3 text-center">
+                <TrendingUp className="mx-auto mb-1 h-4 w-4 text-success" />
+                <div className="font-mono font-semibold">{metrics.totalDepositCount.toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">No. of Deposits</div>
+              </div>,
+              renderMetricTooltip('No. of Deposits', [
+                ...transactionSourceTooltip,
+                'Counts only approved deposit rows.',
+                'Excludes rows whose platformComment contains negative bal.',
+              ])
+            )}
+            {renderMetricSurface(
+              <div className="rounded-xl border border-warning/20 bg-warning/10 p-3 text-center">
+                <AlertCircle className="mx-auto mb-1 h-4 w-4 text-warning" />
+                <div className="font-mono font-semibold">{metrics.totalWithdrawalCount.toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">No. of Withdrawals</div>
+              </div>,
+              renderMetricTooltip('No. of Withdrawals', [
+                ...transactionSourceTooltip,
+                'Counts only approved withdrawal rows.',
+              ])
+            )}
+            {renderMetricSurface(
+              <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3 text-center">
+                <CheckCircle className="mx-auto mb-1 h-4 w-4 text-cyan-500" />
+                <div className="font-mono font-semibold">{metrics.verifiedClients.toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">Verified Clients</div>
+              </div>,
+              renderMetricTooltip('Verified Clients', [
+                ...userSourceTooltip,
+                'Counts only non-test profiles where verified = true.',
+              ])
+            )}
           </div>
 
-          <div className="mt-3 rounded-lg border border-border/40 bg-background/60 p-3">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Accounts Created Rate</span>
-              <span className="font-mono text-sm font-semibold text-primary">{createdRate}%</span>
-            </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-              <div className="h-full bg-gradient-to-r from-primary to-cyan-500 transition-all" style={{ width: `${createdRate}%` }} />
-            </div>
-            <div className="mt-2 text-[11px] text-muted-foreground">
-              {metrics.totalMT5Accounts.toLocaleString()} accounts of {metrics.totalClients.toLocaleString()} clients
-            </div>
-          </div>
+          {renderMetricSurface(
+            <div className="mt-3 rounded-lg border border-border/40 bg-background/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs text-muted-foreground">Accounts Created Rate</span>
+                <span className="font-mono text-sm font-semibold text-primary">{createdRate}%</span>
+              </div>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full bg-gradient-to-r from-primary to-cyan-500 transition-all" style={{ width: `${createdRate}%` }} />
+              </div>
+              <div className="mt-2 text-[11px] text-muted-foreground">
+                {metrics.totalMT5Accounts.toLocaleString()} accounts of {metrics.totalClients.toLocaleString()} clients
+              </div>
+            </div>,
+            renderMetricTooltip('Accounts Created Rate', [
+              'Formula: Math.round((MT5 Accounts / Clients) * 100).',
+              `Current formula: ${metrics.totalMT5Accounts.toLocaleString()} / ${metrics.totalClients.toLocaleString()} => ${createdRate}%.`,
+              'Clients exclude test profiles.',
+              'MT5 Accounts exclude ib-wallet groups and include both demo and live accounts.',
+            ])
+          )}
 
           <div className={variant === 'compact' ? 'mt-3 grid grid-cols-1 gap-3' : 'mt-3 grid grid-cols-1 gap-3 md:grid-cols-2'}>
             <div className="space-y-1 rounded-lg border border-border/40 bg-background/50 p-3">
@@ -1383,7 +1615,7 @@ export function BackOfficeDepartment({
                 Client Breakdown
               </div>
               {clientBreakdownItems.map((item) => (
-                <MetricRow key={item.label} label={item.label} value={item.value} icon={item.icon} />
+                <MetricRow key={item.label} label={item.label} value={item.value} icon={item.icon} tooltip={item.tooltip} />
               ))}
             </div>
 
@@ -1394,10 +1626,17 @@ export function BackOfficeDepartment({
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {kycItems.map((item) => (
-                  <div key={item.label} className={item.cardClass}>
-                    <div className={item.labelClass}>{item.label}</div>
-                    <div className={item.valueClass}>{item.value}</div>
-                  </div>
+                  <Tooltip key={item.label}>
+                    <TooltipTrigger asChild>
+                      <div className={`${item.cardClass} cursor-help`}>
+                        <div className={item.labelClass}>{item.label}</div>
+                        <div className={item.valueClass}>{item.value}</div>
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="max-w-[24rem] text-xs leading-5">
+                      {item.tooltip}
+                    </TooltipContent>
+                  </Tooltip>
                 ))}
               </div>
               {metrics.kycUnknown > 0 && (
