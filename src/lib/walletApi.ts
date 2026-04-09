@@ -14,6 +14,9 @@ export interface WalletBalancesResponse {
     total_balance?: number;
     bank_receivable?: number;
     crypto_receivable?: number;
+    to_be_deposited_into_lps_k20?: number;
+    to_be_deposited_into_lps_k21?: number;
+    difference_between_actual_and_expected?: number;
     net_all_current_balance?: number;
     net_balance_after_expected_funds?: number;
   };
@@ -21,15 +24,8 @@ export interface WalletBalancesResponse {
 }
 
 export async function fetchWalletBalances(): Promise<WalletBalancesResponse | null> {
-  const walletUrl = (import.meta as any).env?.VITE_WALLET_URL;
-  const token = (import.meta as any).env?.VITE_WALLET_TOKEN;
-  if (!walletUrl || !token) return null;
-
   try {
-    const url = walletUrl.includes('?')
-      ? `${walletUrl}&token=${encodeURIComponent(token)}`
-      : `${walletUrl}?token=${encodeURIComponent(token)}`;
-    const response = await fetch(url);
+    const response = await fetch('/api/closing-balance-report');
     if (!response.ok) {
       return { ok: false, error: `HTTP ${response.status}` };
     }

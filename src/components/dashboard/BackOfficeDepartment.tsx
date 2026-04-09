@@ -221,6 +221,11 @@ export function BackOfficeDepartment({
   const [walletTotal, setWalletTotal] = useState(0);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
+  const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
+  const [toBeDepositedIntoLpsK21, setToBeDepositedIntoLpsK21] = useState(0);
+  const [differenceBetweenActualAndExpected, setDifferenceBetweenActualAndExpected] = useState(0);
+  const [netAllCurrentBalance, setNetAllCurrentBalance] = useState(0);
+  const [netBalanceAfterExpectedFunds, setNetBalanceAfterExpectedFunds] = useState(0);
   const [cashflowFullscreen, setCashflowFullscreen] = useState(false);
   const [snapshottingCashflow, setSnapshottingCashflow] = useState(false);
   const [docusignOverview, setDocusignOverview] = useState<DocusignOverview | null>(null);
@@ -1406,10 +1411,23 @@ export function BackOfficeDepartment({
           ? response.data.total_balance
           : mapped.reduce((sum, item) => sum + item.balance, 0);
 
+      const bankValue = Number(response.data.bank_receivable ?? 0);
+      const cryptoValue = Number(response.data.crypto_receivable ?? 0);
+      const lpDepositK20 = Number(response.data.to_be_deposited_into_lps_k20 ?? 0);
+      const lpDepositK21 = Number(response.data.to_be_deposited_into_lps_k21 ?? 0);
+      const diffActualExpected = Number(response.data.difference_between_actual_and_expected ?? 0);
+      const netCurrent = Number(response.data.net_all_current_balance ?? total);
+      const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
+
       setPspBalances(mapped);
       setWalletTotal(total);
-      setBankReceivable(Number(response.data.bank_receivable ?? 0));
-      setCryptoReceivable(Number(response.data.crypto_receivable ?? 0));
+      setBankReceivable(bankValue);
+      setCryptoReceivable(cryptoValue);
+      setToBeDepositedIntoLpsK20(lpDepositK20);
+      setToBeDepositedIntoLpsK21(lpDepositK21);
+      setDifferenceBetweenActualAndExpected(diffActualExpected);
+      setNetAllCurrentBalance(Number.isFinite(netCurrent) ? netCurrent : total);
+      setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
 
       if (response.timestamp) {
         const ts = new Date(response.timestamp.replace(' ', 'T'));
@@ -1663,36 +1681,84 @@ export function BackOfficeDepartment({
             <div className="space-y-1 rounded-xl border border-border/40 bg-background/50 p-2.5">
               {walletError && <div className="text-[11px] text-destructive">{walletError}</div>}
               {pspBalances.length === 0 && !isLoading && !walletError && <div className="text-[11px] text-muted-foreground">No wallet data available.</div>}
-              {pspBalances.map((psp) => (
-                <div key={psp.name} className="flex items-center justify-between rounded-lg border border-border/40 bg-secondary/25 p-2 text-xs">
-                  <div className="flex min-w-0 flex-1 items-center gap-2">
-                    {psp.status === 'error' ? <AlertCircle className="h-3 w-3 flex-shrink-0 text-destructive" /> : <CheckCircle className="h-3 w-3 flex-shrink-0 text-success" />}
-                    <span className="truncate text-foreground">{psp.name}</span>
+              {pspBalances.map((psp, index) => {
+                const cryptoCount = 5;
+                const cryptoSubtotal = pspBalances.slice(0, cryptoCount).reduce((sum, item) => sum + item.balance, 0);
+
+                return (
+                  <div key={psp.name}>
+                    <div className="flex items-center justify-between rounded-lg border border-border/40 bg-secondary/25 p-2 text-xs">
+                      <div className="flex min-w-0 flex-1 items-center gap-2">
+                        {psp.status === 'error' ? <AlertCircle className="h-3 w-3 flex-shrink-0 text-destructive" /> : <CheckCircle className="h-3 w-3 flex-shrink-0 text-success" />}
+                        <span className="truncate text-foreground">{psp.name}</span>
+                      </div>
+                      <span className="ml-2 flex-shrink-0 text-right font-mono font-semibold">
+                        ${psp.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    {index === cryptoCount - 1 && (
+                      <div className="mt-1 flex items-center justify-between rounded-lg border border-cyan-500/40 bg-cyan-500/15 p-2 text-xs">
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                          <CheckCircle className="h-3 w-3 flex-shrink-0 text-cyan-500" />
+                          <span className="truncate font-semibold text-foreground">🔐 SUBTOTAL CRYPTO</span>
+                        </div>
+                        <span className="ml-2 flex-shrink-0 text-right font-mono font-bold text-cyan-500">
+                          ${cryptoSubtotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                  <span className="ml-2 flex-shrink-0 text-right font-mono font-semibold">
-                    ${psp.balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div className="space-y-2.5">
               <div className="rounded-xl border border-primary/20 bg-primary/10 p-3">
-                <div className="text-[10px] text-muted-foreground">Total Combined</div>
+                <div className="text-[10px] text-muted-foreground">💎 Total Combined</div>
                 <div className="mt-1 font-mono text-base font-bold text-primary">
                   ${walletTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
               <div className="rounded-xl border border-warning/20 bg-warning/10 p-3">
-                <div className="text-[10px] text-muted-foreground">To be received in BANK</div>
+                <div className="text-[10px] text-muted-foreground">📊 To be received in BANK</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-warning">
                   ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
               <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 p-3">
-                <div className="text-[10px] text-muted-foreground">To be received in CRYPTO</div>
+                <div className="text-[10px] text-muted-foreground">🔐 To be received in CRYPTO</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-cyan-500">
                   ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">🏦 To be deposited into LPs (Bank - USD)</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-fuchsia-500">
+                  ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">🏦 To be deposited into LPs (Crypto USDT)</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-rose-500">
+                  ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">💼 Net all Current Balance</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-emerald-500">
+                  ${netAllCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-indigo-500/20 bg-indigo-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">📈 Net Balance after expected funds</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-indigo-500">
+                  ${netBalanceAfterExpectedFunds.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">⚖️ Difference between actual and expected (J28)</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-orange-500">
+                  ${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
             </div>

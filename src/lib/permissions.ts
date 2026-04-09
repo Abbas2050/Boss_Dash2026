@@ -143,6 +143,7 @@ export type SettingsMenuItem = {
 
 export const SETTINGS_MENU_ITEMS = [
   { key: "coverage", name: "Coverage", path: "/settings/coverage", icon: "Workflow", group: "core", requiredPermissions: ["Settings"] },
+  { key: "google-sheet-mapping", name: "Google Sheet Mapping", path: "/settings/google-sheet-mapping", icon: "Workflow", group: "core", requiredPermissions: ["Settings"] },
   { key: "lp-manager", name: "LP Manager", path: "/settings/lp-manager", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
   { key: "internal-accounts", name: "Internal Accounts", path: "/settings/internal-accounts", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
   { key: "symbol-mapping", name: "Symbol Mapping", path: "/settings/symbol-mapping", icon: "Link2", group: "core", requiredPermissions: ["Settings"] },

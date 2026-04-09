@@ -13,6 +13,14 @@ import clientProfileRouter from "./clientProfileRouter.js";
 import docusignRouter from "./docusign/router.js";
 import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import oauthRouter from "./oauth/router.js";
+import { checkAllBalances } from './wallet/walletMonitor.js';
+import { startDailyWalletReportScheduler } from './wallet/scheduler.js';
+import { GoogleSheetsClient } from './wallet/pspClients.js';
+import {
+  loadGoogleSheetsMappingConfig,
+  saveGoogleSheetsMappingConfig,
+  resetGoogleSheetsMappingConfig,
+} from './wallet/googleSheetsMappingConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,6 +48,73 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
+});
+
+app.get('/api/closing-balance-report', async (_req, res) => {
+  try {
+    const report = await checkAllBalances();
+    return res.json(report);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to fetch closing balance report',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/wallet/google-sheets-debug', async (req, res) => {
+  try {
+    const daysBack = Number.parseInt(String(req.query.daysBack ?? '7'), 10);
+    const client = new GoogleSheetsClient();
+    const debug = await client.getDebugSnapshot(Number.isFinite(daysBack) ? daysBack : 7);
+    return res.json(debug);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to inspect Google Sheets wallet cells',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/wallet/google-sheet-mapping', (_req, res) => {
+  try {
+    const config = loadGoogleSheetsMappingConfig();
+    return res.json({ ok: true, ...config });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to load Google Sheets mapping',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.put('/api/wallet/google-sheet-mapping', (req, res) => {
+  try {
+    const saved = saveGoogleSheetsMappingConfig({ fields: req.body?.fields || [] });
+    return res.json({ ok: true, ...saved });
+  } catch (error) {
+    return res.status(400).json({
+      ok: false,
+      error: 'Failed to save Google Sheets mapping',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/wallet/google-sheet-mapping/reset', (_req, res) => {
+  try {
+    const config = resetGoogleSheetsMappingConfig();
+    return res.json({ ok: true, ...config });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: 'Failed to reset Google Sheets mapping',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 function buildProxyHeaders(req) {
@@ -295,4 +370,5 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, () => {
   console.log(`Express + mock SignalR server running on http://localhost:${PORT}`);
   startDocusignApprovedSyncScheduler();
+  startDailyWalletReportScheduler();
 });

@@ -16,6 +16,7 @@ const LeverageUpdate = lazy(() => import("./pages/LeverageUpdate"));
 const LPManager = lazy(() => import("./pages/LPManager"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const CoveragePage = lazy(() => import("./pages/settings/CoveragePage").then((m) => ({ default: m.CoveragePage })));
+const GoogleSheetMappingPage = lazy(() => import("./pages/settings/GoogleSheetMappingPage").then((m) => ({ default: m.GoogleSheetMappingPage })));
 const LPManagerPage = lazy(() => import("./pages/settings/LPManagerPage").then((m) => ({ default: m.LPManagerPage })));
 const InternalAccountsSettingsPage = lazy(() => import("./pages/settings/InternalAccountsPage").then((m) => ({ default: m.InternalAccountsPage })));
 const SymbolMappingPage = lazy(() => import("./pages/settings/SymbolMappingPage").then((m) => ({ default: m.SymbolMappingPage })));
@@ -30,6 +31,7 @@ const queryClient = new QueryClient();
 
 const settingsPageComponents = {
   coverage: CoveragePage,
+  "google-sheet-mapping": GoogleSheetMappingPage,
   "lp-manager": LPManagerPage,
   "internal-accounts": InternalAccountsSettingsPage,
   "symbol-mapping": SymbolMappingPage,

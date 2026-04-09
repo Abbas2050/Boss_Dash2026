@@ -76,6 +76,9 @@ export function AccountsDepartment({
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
+  const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
+  const [toBeDepositedIntoLpsK21, setToBeDepositedIntoLpsK21] = useState(0);
+  const [differenceBetweenActualAndExpected, setDifferenceBetweenActualAndExpected] = useState(0);
   const [netAllCurrentBalance, setNetAllCurrentBalance] = useState(0);
   const [netBalanceAfterExpectedFunds, setNetBalanceAfterExpectedFunds] = useState(0);
   const [reportDate, setReportDate] = useState('—');
@@ -192,11 +195,17 @@ export function AccountsDepartment({
       setMetrics(prev => ({ ...prev, totalBalance: total }));
       const bankValue = Number(response.data.bank_receivable ?? 0);
       const cryptoValue = Number(response.data.crypto_receivable ?? 0);
+      const lpDepositK20 = Number(response.data.to_be_deposited_into_lps_k20 ?? 0);
+      const lpDepositK21 = Number(response.data.to_be_deposited_into_lps_k21 ?? 0);
+      const diffActualExpected = Number(response.data.difference_between_actual_and_expected ?? 0);
       const netCurrent = Number(response.data.net_all_current_balance ?? total);
       const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
 
       setBankReceivable(bankValue);
       setCryptoReceivable(cryptoValue);
+      setToBeDepositedIntoLpsK20(lpDepositK20);
+      setToBeDepositedIntoLpsK21(lpDepositK21);
+      setDifferenceBetweenActualAndExpected(diffActualExpected);
       setNetAllCurrentBalance(Number.isFinite(netCurrent) ? netCurrent : total);
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
     };
@@ -548,6 +557,14 @@ export function AccountsDepartment({
           <div className="text-[10px] text-muted-foreground mb-0.5">🔐 To be received in CRYPTO</div>
           <div className="font-mono font-semibold text-cyan-500">${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
+        <div className="p-2 rounded-md bg-fuchsia-500/10 border border-fuchsia-500/20">
+          <div className="text-[10px] text-muted-foreground mb-0.5">🏦 To be deposited into LPs (Bank - USD)</div>
+          <div className="font-mono font-semibold text-fuchsia-500">${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div className="p-2 rounded-md bg-rose-500/10 border border-rose-500/20">
+          <div className="text-[10px] text-muted-foreground mb-0.5">🏦 To be deposited into LPs (Crypto USDT)</div>
+          <div className="font-mono font-semibold text-rose-500">${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
         <div className="p-2 rounded-md bg-emerald-500/10 border border-emerald-500/20">
           <div className="text-[10px] text-muted-foreground mb-0.5">💼 Net all Current Balance</div>
           <div className="font-mono font-semibold text-emerald-500">${netAllCurrentBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
@@ -555,6 +572,10 @@ export function AccountsDepartment({
         <div className="p-2 rounded-md bg-indigo-500/10 border border-indigo-500/20">
           <div className="text-[10px] text-muted-foreground mb-0.5">📈 Net Balance after expected funds</div>
           <div className="font-mono font-semibold text-indigo-500">${netBalanceAfterExpectedFunds.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/20 col-span-2">
+          <div className="text-[10px] text-muted-foreground mb-0.5">⚖️ Difference between actual and expected (J28)</div>
+          <div className="font-mono font-semibold text-orange-500">${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
     </DepartmentCard>
