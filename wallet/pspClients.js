@@ -300,9 +300,10 @@ export class HeroPaymentClient {
 // Google Sheets Client
 // Auth: Service account from GA4_SERVICE_ACCOUNT_JSON env var
 // Reads cells from sheet named DD/MM/YYYY (today then yesterday fallback)
-// K8=Match2Pay, K11=GoldSouq, K14=FABAed, K15=FABUsd, K16=MBME
-// K18=bankReceivable, K19=cryptoReceivable, K20/K21=toBeDepositedIntoLPs,
-// J24=netAllCurrent, J26=netAfterExpected, J28=differenceActualExpected
+// K8=Match2Pay, K9=DeusXpay, K12=GoldSouq, K15=FABAed, K16=FABUsd, K17=MBME
+// K8=Match2Pay, K9=DeusXpay, K10=OpenPayed, K12=GoldSouq, K15=FABAed, K16=FABUsd, K17=MBME
+// K19=bankReceivable, K20=cryptoReceivable, K21/K22=toBeDepositedIntoLPs,
+// J25=netAllCurrent, J27=netAfterExpected, J29=differenceActualExpected
 // ─────────────────────────────────────────────────────────
 export class GoogleSheetsClient {
   constructor() {
@@ -470,6 +471,8 @@ export class GoogleSheetsClient {
     const wallet = await this._readWalletCells(sheets, sheetName);
     const knownKeys = new Set([
       'match2pay',
+      'deusXpay',
+      'openPayed',
       'goldSouq',
       'fabAed',
       'fabUsd',
@@ -492,6 +495,8 @@ export class GoogleSheetsClient {
     return {
       sheetUsed: sheetName,
       match2pay: wallet.values.match2pay ?? 0,
+      deusXpay: wallet.values.deusXpay ?? 0,
+      openPayed: wallet.values.openPayed ?? 0,
       goldSouq: wallet.values.goldSouq ?? 0,
       fabAed: wallet.values.fabAed ?? 0,
       fabUsd: wallet.values.fabUsd ?? 0,

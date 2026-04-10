@@ -8,18 +8,45 @@ const CONFIG_FILE = path.join(STORAGE_DIR, 'google_sheets_wallet_mapping.json');
 
 export const DEFAULT_GOOGLE_SHEETS_FIELDS = [
   { key: 'match2pay', label: 'Match2Pay', cell: 'K8', required: true },
-  { key: 'goldSouq', label: 'Gold Souq', cell: 'K11', required: true },
-  { key: 'fabAed', label: 'FAB AED', cell: 'K14', required: true },
-  { key: 'fabUsd', label: 'FAB USD', cell: 'K15', required: true },
-  { key: 'mbme', label: 'MBME', cell: 'K16', required: true },
-  { key: 'bankReceivable', label: 'To be received in BANK', cell: 'K18', required: true },
-  { key: 'cryptoReceivable', label: 'To be received in CRYPTO', cell: 'K19', required: true },
-  { key: 'toBeDepositedIntoLPsK20', label: 'To be deposited into LPs (Bank - USD)', cell: 'K20', required: true },
-  { key: 'toBeDepositedIntoLPsK21', label: 'To be deposited into LPs (Crypto USDT)', cell: 'K21', required: true },
-  { key: 'netAllCurrentBalance', label: 'Net all Current Balance', cell: 'J24', required: true },
-  { key: 'netBalanceAfterExpectedFunds', label: 'Net Balance after expected funds', cell: 'J26', required: true },
-  { key: 'differenceBetweenActualAndExpected', label: 'Difference between actual and expected', cell: 'J28', required: true },
+  { key: 'deusXpay', label: 'DeusXpay', cell: 'K9', required: true },
+  { key: 'openPayed', label: 'OpenPayed', cell: 'K10', required: true },
+  { key: 'goldSouq', label: 'Gold Souq', cell: 'K12', required: true },
+  { key: 'fabAed', label: 'FAB AED', cell: 'K15', required: true },
+  { key: 'fabUsd', label: 'FAB USD', cell: 'K16', required: true },
+  { key: 'mbme', label: 'MBME', cell: 'K17', required: true },
+  { key: 'bankReceivable', label: 'To be received in BANK', cell: 'K19', required: true },
+  { key: 'cryptoReceivable', label: 'To be received in CRYPTO', cell: 'K20', required: true },
+  { key: 'toBeDepositedIntoLPsK20', label: 'To be deposited into LPs (Bank - USD)', cell: 'K21', required: true },
+  { key: 'toBeDepositedIntoLPsK21', label: 'To be deposited into LPs (Crypto USDT)', cell: 'K22', required: true },
+  { key: 'netAllCurrentBalance', label: 'Net all Current Balance', cell: 'J25', required: true },
+  { key: 'netBalanceAfterExpectedFunds', label: 'Net Balance after expected funds', cell: 'J27', required: true },
+  { key: 'differenceBetweenActualAndExpected', label: 'Difference between actual and expected', cell: 'J29', required: true },
 ];
+
+const LEGACY_GOOGLE_SHEETS_FIELDS = [
+  { key: 'match2pay', cell: 'K8' },
+  { key: 'deusXpay', cell: 'K9' },
+  { key: 'openPayed', cell: 'K10' },
+  { key: 'goldSouq', cell: 'K11' },
+  { key: 'fabAed', cell: 'K14' },
+  { key: 'fabUsd', cell: 'K15' },
+  { key: 'mbme', cell: 'K16' },
+  { key: 'bankReceivable', cell: 'K18' },
+  { key: 'cryptoReceivable', cell: 'K19' },
+  { key: 'toBeDepositedIntoLPsK20', cell: 'K20' },
+  { key: 'toBeDepositedIntoLPsK21', cell: 'K21' },
+  { key: 'netAllCurrentBalance', cell: 'J24' },
+  { key: 'netBalanceAfterExpectedFunds', cell: 'J26' },
+  { key: 'differenceBetweenActualAndExpected', cell: 'J28' },
+];
+
+const LEGACY_REQUIRED_CELL_BY_KEY = Object.fromEntries(
+  LEGACY_GOOGLE_SHEETS_FIELDS.map((field) => [field.key, field.cell])
+);
+
+const DEFAULT_REQUIRED_FIELD_BY_KEY = Object.fromEntries(
+  DEFAULT_GOOGLE_SHEETS_FIELDS.map((field) => [field.key, field])
+);
 
 function ensureStorageDir() {
   if (!fs.existsSync(STORAGE_DIR)) {
@@ -68,7 +95,15 @@ function mergeWithRequiredDefaults(fields) {
       byKey.set(req.key, { ...req });
     } else {
       const existing = byKey.get(req.key);
-      byKey.set(req.key, { ...existing, required: true });
+      const legacyCell = LEGACY_REQUIRED_CELL_BY_KEY[req.key];
+      const normalizedExistingCell = normalizeCell(existing?.cell);
+      const shouldMigrateLegacyCell = legacyCell && normalizedExistingCell === normalizeCell(legacyCell);
+
+      byKey.set(req.key, {
+        ...existing,
+        cell: shouldMigrateLegacyCell ? DEFAULT_REQUIRED_FIELD_BY_KEY[req.key].cell : existing.cell,
+        required: true,
+      });
     }
   }
 

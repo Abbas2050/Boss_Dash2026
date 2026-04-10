@@ -1390,6 +1390,8 @@ export function BackOfficeDepartment({
         { key: 'ownbit', label: 'OwnBit' },
         { key: 'heropayment', label: 'HeroPayment' },
         { key: 'googlesheets_match2pay', label: 'Match2Pay' },
+        { key: 'googlesheets_deusxpay', label: 'DeusXpay' },
+        { key: 'googlesheets_openpayed', label: 'OpenPayed' },
         { key: 'googlesheets_goldsouq', label: 'Gold Souq' },
         { key: 'googlesheets_fab', label: 'FAB Bank' },
         { key: 'googlesheets_mbme', label: 'MBME' },
@@ -1682,7 +1684,7 @@ export function BackOfficeDepartment({
               {walletError && <div className="text-[11px] text-destructive">{walletError}</div>}
               {pspBalances.length === 0 && !isLoading && !walletError && <div className="text-[11px] text-muted-foreground">No wallet data available.</div>}
               {pspBalances.map((psp, index) => {
-                const cryptoCount = 5;
+                const cryptoCount = 7;
                 const cryptoSubtotal = pspBalances.slice(0, cryptoCount).reduce((sum, item) => sum + item.balance, 0);
 
                 return (
@@ -1756,7 +1758,7 @@ export function BackOfficeDepartment({
                 </div>
               </div>
               <div className="rounded-xl border border-orange-500/20 bg-orange-500/10 p-3">
-                <div className="text-[10px] text-muted-foreground">⚖️ Difference between actual and expected (J28)</div>
+                <div className="text-[10px] text-muted-foreground">⚖️ Difference between actual and expected (J29)</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-orange-500">
                   ${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>

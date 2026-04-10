@@ -31,87 +31,137 @@ export async function checkAllBalances() {
 
   const now = () => new Date().toISOString();
 
-  // ── Bitpace ──────────────────────────────────────────────
-  try {
-    const client = new BitpaceClient();
-    const result = await client.getBalance();
-    widgets.bitpace = { name: 'Bitpace', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() };
-    total += result.balance;
-  } catch (e) {
-    console.error('[WalletMonitor] Bitpace error:', e.message);
-    widgets.bitpace = { name: 'Bitpace', balance: 0, currencies: {}, status: 'error', error: e.message, checked_at: now() };
-  }
+  const sourceResults = await Promise.all([
+    (async () => {
+      try {
+        const result = await new BitpaceClient().getBalance();
+        return {
+          entries: [['bitpace', { name: 'Bitpace', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          totalDelta: result.balance,
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] Bitpace error:', message);
+        return {
+          entries: [['bitpace', { name: 'Bitpace', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          totalDelta: 0,
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const result = await new LetKnowPayClient().getBalance();
+        return {
+          entries: [['letknowpay', { name: 'LetKnow Pay', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          totalDelta: result.balance,
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] LetKnow Pay error:', message);
+        return {
+          entries: [['letknowpay', { name: 'LetKnow Pay', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          totalDelta: 0,
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const result = await new OwnBitClient().getBalance();
+        return {
+          entries: [['ownbit', { name: 'OwnBit', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          totalDelta: result.balance,
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] OwnBit error:', message);
+        return {
+          entries: [['ownbit', { name: 'OwnBit', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          totalDelta: 0,
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const result = await new HeroPaymentClient().getBalance();
+        return {
+          entries: [['heropayment', { name: 'HeroPayment', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          totalDelta: result.balance,
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] HeroPayment error:', message);
+        return {
+          entries: [['heropayment', { name: 'HeroPayment', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          totalDelta: 0,
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const gs = await new GoogleSheetsClient().getBalance();
+        const sheetUsed = gs.sheetUsed;
+        return {
+          entries: [
+            ['googlesheets_match2pay', { name: 'Match2Pay', balance: gs.match2pay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_deusxpay', { name: 'DeusXpay', balance: gs.deusXpay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_openpayed', { name: 'OpenPayed', balance: gs.openPayed, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_goldsouq', { name: 'Gold Souq', balance: gs.goldSouq, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_fab', {
+              name: 'FAB Bank',
+              balance: gs.fabTotal,
+              currencies: { 'FAB AED': gs.fabAed, 'FAB USD': gs.fabUsd },
+              status: 'ok',
+              checked_at: now(),
+              sheet_used: sheetUsed,
+            }],
+            ['googlesheets_mbme', { name: 'MBME', balance: gs.mbme, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+          ],
+          totalDelta: gs.match2pay + gs.deusXpay + gs.openPayed + gs.goldSouq + gs.fabTotal + gs.mbme,
+          extra: {
+            bankReceivable: gs.bankReceivable,
+            cryptoReceivable: gs.cryptoReceivable,
+            toBeDepositedIntoLPsK20: gs.toBeDepositedIntoLPsK20,
+            toBeDepositedIntoLPsK21: gs.toBeDepositedIntoLPsK21,
+            differenceBetweenActualAndExpected: gs.differenceBetweenActualAndExpected,
+            netAllCurrentBalance: gs.netAllCurrentBalance,
+            netBalanceAfterExpectedFunds: gs.netBalanceAfterExpectedFunds,
+          },
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] Google Sheets error:', message);
+        const names = {
+          googlesheets_match2pay: 'Match2Pay',
+          googlesheets_deusxpay: 'DeusXpay',
+          googlesheets_openpayed: 'OpenPayed',
+          googlesheets_goldsouq: 'Gold Souq',
+          googlesheets_fab: 'FAB Bank',
+          googlesheets_mbme: 'MBME',
+        };
+        const entries = Object.entries(names).map(([id, name]) => [
+          id,
+          { name, balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() },
+        ]);
+        return { entries, totalDelta: 0 };
+      }
+    })(),
+  ]);
 
-  // ── LetKnow Pay ───────────────────────────────────────────
-  try {
-    const client = new LetKnowPayClient();
-    const result = await client.getBalance();
-    widgets.letknowpay = { name: 'LetKnow Pay', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() };
-    total += result.balance;
-  } catch (e) {
-    console.error('[WalletMonitor] LetKnow Pay error:', e.message);
-    widgets.letknowpay = { name: 'LetKnow Pay', balance: 0, currencies: {}, status: 'error', error: e.message, checked_at: now() };
-  }
+  for (const sourceResult of sourceResults) {
+    for (const [id, widget] of sourceResult.entries) {
+      widgets[id] = widget;
+    }
 
-  // ── OwnBit / TRON ─────────────────────────────────────────
-  try {
-    const client = new OwnBitClient();
-    const result = await client.getBalance();
-    widgets.ownbit = { name: 'OwnBit', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() };
-    total += result.balance;
-  } catch (e) {
-    console.error('[WalletMonitor] OwnBit error:', e.message);
-    widgets.ownbit = { name: 'OwnBit', balance: 0, currencies: {}, status: 'error', error: e.message, checked_at: now() };
-  }
+    total += Number(sourceResult.totalDelta || 0);
 
-  // ── HeroPayment ───────────────────────────────────────────
-  try {
-    const client = new HeroPaymentClient();
-    const result = await client.getBalance();
-    widgets.heropayment = { name: 'HeroPayment', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() };
-    total += result.balance;
-  } catch (e) {
-    console.error('[WalletMonitor] HeroPayment error:', e.message);
-    widgets.heropayment = { name: 'HeroPayment', balance: 0, currencies: {}, status: 'error', error: e.message, checked_at: now() };
-  }
-
-  // ── Google Sheets (4 widgets) ─────────────────────────────
-  try {
-    const client = new GoogleSheetsClient();
-    const gs = await client.getBalance();
-    const sheetUsed = gs.sheetUsed;
-
-    widgets.googlesheets_match2pay = { name: 'Match2Pay', balance: gs.match2pay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed };
-    total += gs.match2pay;
-
-    widgets.googlesheets_goldsouq = { name: 'Gold Souq', balance: gs.goldSouq, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed };
-    total += gs.goldSouq;
-
-    widgets.googlesheets_fab = {
-      name: 'FAB Bank',
-      balance: gs.fabTotal,
-      currencies: { 'FAB AED': gs.fabAed, 'FAB USD': gs.fabUsd },
-      status: 'ok',
-      checked_at: now(),
-      sheet_used: sheetUsed,
-    };
-    total += gs.fabTotal;
-
-    widgets.googlesheets_mbme = { name: 'MBME', balance: gs.mbme, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed };
-    total += gs.mbme;
-
-    bankReceivable = gs.bankReceivable;
-    cryptoReceivable = gs.cryptoReceivable;
-    toBeDepositedIntoLPsK20 = gs.toBeDepositedIntoLPsK20;
-    toBeDepositedIntoLPsK21 = gs.toBeDepositedIntoLPsK21;
-    differenceBetweenActualAndExpected = gs.differenceBetweenActualAndExpected;
-    netAllCurrentBalance = gs.netAllCurrentBalance;
-    netBalanceAfterExpectedFunds = gs.netBalanceAfterExpectedFunds;
-  } catch (e) {
-    console.error('[WalletMonitor] Google Sheets error:', e.message);
-    for (const id of ['googlesheets_match2pay', 'googlesheets_goldsouq', 'googlesheets_fab', 'googlesheets_mbme']) {
-      const names = { googlesheets_match2pay: 'Match2Pay', googlesheets_goldsouq: 'Gold Souq', googlesheets_fab: 'FAB Bank', googlesheets_mbme: 'MBME' };
-      widgets[id] = { name: names[id], balance: 0, currencies: {}, status: 'error', error: e.message, checked_at: now() };
+    if (sourceResult.extra) {
+      bankReceivable = Number(sourceResult.extra.bankReceivable || 0);
+      cryptoReceivable = Number(sourceResult.extra.cryptoReceivable || 0);
+      toBeDepositedIntoLPsK20 = Number(sourceResult.extra.toBeDepositedIntoLPsK20 || 0);
+      toBeDepositedIntoLPsK21 = Number(sourceResult.extra.toBeDepositedIntoLPsK21 || 0);
+      differenceBetweenActualAndExpected = Number(sourceResult.extra.differenceBetweenActualAndExpected || 0);
+      netAllCurrentBalance = Number(sourceResult.extra.netAllCurrentBalance || 0);
+      netBalanceAfterExpectedFunds = Number(sourceResult.extra.netBalanceAfterExpectedFunds || 0);
     }
   }
 

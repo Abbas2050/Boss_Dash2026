@@ -154,6 +154,8 @@ export function AccountsDepartment({
         { key: 'ownbit', label: 'OwnBit' },
         { key: 'heropayment', label: 'HeroPayment' },
         { key: 'googlesheets_match2pay', label: 'Match2Pay' },
+        { key: 'googlesheets_deusxpay', label: 'DeusXpay' },
+        { key: 'googlesheets_openpayed', label: 'OpenPayed' },
         { key: 'googlesheets_goldsouq', label: 'Gold Souq' },
         { key: 'googlesheets_fab', label: 'FAB Bank' },
         { key: 'googlesheets_mbme', label: 'MBME' },
@@ -346,8 +348,14 @@ export function AccountsDepartment({
   }, [refreshKey, isLpMode]);
 
   const periodLabel = 'Today';
-  const lpPlusPspDifference = lpEquitySummary.difference + metrics.totalBalance + cryptoReceivable + bankReceivable;
-  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+  const lpDepositsTotal = toBeDepositedIntoLpsK20 + toBeDepositedIntoLpsK21;
+  const lpPlusPspDifference =
+    lpEquitySummary.difference +
+    metrics.totalBalance +
+    cryptoReceivable +
+    bankReceivable +
+    lpDepositsTotal;
+  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -502,7 +510,7 @@ export function AccountsDepartment({
             <div className="text-[11px] text-muted-foreground">No wallet data available.</div>
           )}
           {pspBalances.map((psp, index) => {
-            const cryptoCount = 5; // Bitpace, LetKnow Pay, OwnBit, HeroPayment, Match2Pay
+            const cryptoCount = 7; // Bitpace, LetKnow Pay, OwnBit, HeroPayment, Match2Pay, DeusXpay, OpenPayed
             const cryptoSubtotal = pspBalances.slice(0, cryptoCount).reduce((sum, item) => sum + item.balance, 0);
             
             return (
@@ -574,7 +582,7 @@ export function AccountsDepartment({
           <div className="font-mono font-semibold text-indigo-500">${netBalanceAfterExpectedFunds.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
         <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/20 col-span-2">
-          <div className="text-[10px] text-muted-foreground mb-0.5">⚖️ Difference between actual and expected (J28)</div>
+          <div className="text-[10px] text-muted-foreground mb-0.5">⚖️ Difference between actual and expected (J29)</div>
           <div className="font-mono font-semibold text-orange-500">${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}

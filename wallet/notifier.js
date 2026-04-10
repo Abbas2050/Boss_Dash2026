@@ -3,7 +3,7 @@
  * Sends daily balance reports via Brevo (email) and Telegram Bot.
  */
 
-const CRYPTO_WIDGETS = ['bitpace', 'letknowpay', 'ownbit', 'heropayment', 'googlesheets_match2pay'];
+const CRYPTO_WIDGETS = ['bitpace', 'letknowpay', 'ownbit', 'heropayment', 'googlesheets_match2pay', 'googlesheets_deusxpay', 'googlesheets_openpayed'];
 const BANK_WIDGETS   = ['googlesheets_goldsouq', 'googlesheets_fab', 'googlesheets_mbme'];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -65,7 +65,7 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
     <strong>🔐 To be received in CRYPTO:</strong> $${fmt(cryptoReceivable)}<br>
     <strong>🏦 To be deposited into LPs (Bank - USD):</strong> $${fmt(toBeDepositedIntoLPsK20)}<br>
     <strong>🏦 To be deposited into LPs (Crypto USDT):</strong> $${fmt(toBeDepositedIntoLPsK21)}<br>
-    <strong>⚖️ Difference between actual and expected (J28):</strong> $${fmt(differenceBetweenActualAndExpected)}<br>
+    <strong>⚖️ Difference between actual and expected (J29):</strong> $${fmt(differenceBetweenActualAndExpected)}<br>
     <strong>🧮 Net all Current Balance:</strong> $${fmt(netAllCurrent)}<br>
     <strong>📈 Net Balance after expected funds:</strong> $${fmt(netAfterExpected)}
   </div>
@@ -144,7 +144,7 @@ function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceiv
   msg += `🔐 *To be received in CRYPTO:* \`$${fmt(cryptoReceivable)}\`\n`;
   msg += `🏦 *To be deposited into LPs (Bank - USD):* \`$${fmt(toBeDepositedIntoLPsK20)}\`\n`;
   msg += `🏦 *To be deposited into LPs (Crypto USDT):* \`$${fmt(toBeDepositedIntoLPsK21)}\`\n`;
-  msg += `⚖️ *Difference between actual and expected (J28):* \`$${fmt(differenceBetweenActualAndExpected)}\`\n`;
+  msg += `⚖️ *Difference between actual and expected (J29):* \`$${fmt(differenceBetweenActualAndExpected)}\`\n`;
   msg += `🧮 *Net all Current Balance:* \`$${fmt(netAllCurrent)}\`\n`;
   msg += `📈 *Net Balance after expected funds:* \`$${fmt(netAfterExpected)}\``;
 

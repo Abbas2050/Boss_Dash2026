@@ -22,9 +22,20 @@ export const GoogleSheetMappingPage: React.FC = () => {
   const isLocalhost =
     typeof window !== "undefined" &&
     ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+  const shouldUseSameOrigin = (() => {
+    if (typeof window === "undefined") return true;
+    if (isLocalhost) return true;
+    if (!backendBaseUrl) return true;
+    try {
+      const configuredHost = new URL(backendBaseUrl).hostname;
+      return configuredHost !== window.location.hostname;
+    } catch {
+      return true;
+    }
+  })();
   const apiUrl = (path: string) => {
-    // In local dev, bypass Vite proxy because /api/wallet is reserved for CRM proxy rules.
     if (isLocalhost) return `http://localhost:3001${path}`;
+    if (shouldUseSameOrigin) return path;
     return backendBaseUrl ? `${backendBaseUrl}${path}` : path;
   };
 
