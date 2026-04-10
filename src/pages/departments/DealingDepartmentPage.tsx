@@ -271,6 +271,18 @@ type EquitySummaryData = {
   difference: number;
 };
 
+const coerceMetricsItem = (raw: any): MetricsItem => ({
+  lp: String(raw?.lp ?? raw?.LP ?? "-"),
+  login: raw?.login ?? raw?.Login ?? "-",
+  equity: Number(raw?.equity) || 0,
+  realEquity: Number(raw?.realEquity ?? raw?.real_equity) || 0,
+  credit: Number(raw?.credit) || 0,
+  balance: Number(raw?.balance) || 0,
+  margin: Number(raw?.margin) || 0,
+  freeMargin: Number(raw?.freeMargin ?? raw?.free_margin) || 0,
+  marginLevel: Number(raw?.marginLevel ?? raw?.margin_level) || 0,
+});
+
 type SwapPosition = {
   lpName: string;
   ticket: number | string;
@@ -557,6 +569,94 @@ const formatDollar = (value: number) => {
   if (value === 0) return <span className="text-slate-500">$0.00</span>;
   if (value > 0) return <span className="text-emerald-700 dark:text-emerald-300">${abs}</span>;
   return <span className="text-rose-700 dark:text-rose-300">-${abs}</span>;
+};
+
+const normalizeLpName = (value: unknown) => String(value || "").trim().toLowerCase();
+
+const normalizeLpForMatch = (value: unknown) =>
+  normalizeLpName(value)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const LP_BUCKET_ALIASES: Record<"Bank" | "Both" | "Crypto", string[]> = {
+  Bank: [
+    "CMC MARKETS MIDDLE EAST LIMITED",
+    "CMC Coverage",
+    "CMC 2 Coverage",
+    "FXCM",
+    "FXCM Coverage",
+    "FXCM 2 Coverage",
+    "LMAX",
+    "LMAX 2nd ACC TOB1 OmnibusAc",
+    "Lmax 3rd acc TOBS",
+    "Lmax 3rd acc TOB5",
+    "LMAX Old",
+    "Noor Capital",
+    "XTB",
+    "XTB Bonus 1(Coverage)",
+    "XTB Bonus 1 (Coverage)",
+  ],
+  Both: [
+    "AFS Global Limited - Amana",
+    "Amana 1",
+    "Amana2",
+    "ATFX",
+    "ATFX 2 coverage acc #186",
+    "FINALTO",
+    "Finalto Coverage 33931 REV",
+    "Coverage Finalto 2nd acc",
+    "Finalto 3rd account coverage",
+    "FX-EDGE SC LTD",
+    "FX Edge Coverage",
+    "Hantec Markets",
+    "Hantec",
+  ],
+  Crypto: [
+    "AIDI Financial",
+    "AIDI",
+    "B2Prime",
+    "B2B Coverage account",
+    "Broctagon Prime Markets Limited",
+    "Broctagon1",
+    "Broctagon2",
+    "CFI - Credit Financier Invest International LTD",
+    "CFI",
+    "ICM Capital Limited",
+    "ICM",
+    "Infinox Limited",
+    "Infinox",
+    "Logan Capital (PTY) LTD - LP PRIME",
+    "LP Prime",
+    "Mex Atlantic Corporation - Multi Bank",
+    "Multi Bank",
+    "Startrader Financial Markets Limited (Star Prime)",
+    "Taurex (Zenfinex Global Limited)",
+    "Taurex",
+    "Taurex2",
+  ],
+};
+
+const LP_BUCKET_MATCHERS: Record<"Bank" | "Both" | "Crypto", string[]> = {
+  Bank: LP_BUCKET_ALIASES.Bank.map(normalizeLpForMatch),
+  Both: LP_BUCKET_ALIASES.Both.map(normalizeLpForMatch),
+  Crypto: LP_BUCKET_ALIASES.Crypto.map(normalizeLpForMatch),
+};
+
+const classifyLpBucket = (lpName: unknown): "Bank" | "Both" | "Crypto" | null => {
+  const normalized = normalizeLpForMatch(lpName);
+  if (!normalized) return null;
+
+  for (const alias of LP_BUCKET_MATCHERS.Bank) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Bank";
+  }
+  for (const alias of LP_BUCKET_MATCHERS.Both) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Both";
+  }
+  for (const alias of LP_BUCKET_MATCHERS.Crypto) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Crypto";
+  }
+  return null;
 };
 
 const formatMaybeNumber = (value: unknown, digits = 2) => {
@@ -1370,6 +1470,9 @@ export function DealingDepartmentPage() {
         metricsData?.totals?.freeMargin || 0,
         "-",
       ]);
+      rows.push(["Bank (Real Equity)", "", "", metricsRealEquityByBucket.Bank, "", "", "", "", "-"]);
+      rows.push(["Both (Real Equity)", "", "", metricsRealEquityByBucket.Both, "", "", "", "", "-"]);
+      rows.push(["Crypto (Real Equity)", "", "", metricsRealEquityByBucket.Crypto, "", "", "", "", "-"]);
       downloadTableSnapshot({ filePrefix: "metrics-snapshot", title: "LP Metrics Snapshot", updatedAt: metricsLastUpdated, headers, rows });
     });
 
@@ -1581,7 +1684,7 @@ export function DealingDepartmentPage() {
         const dashboard = (await resp.json()) as Partial<MetricsData & EquitySummaryData>;
         if (cancelled) return;
         setMetricsData({
-          items: Array.isArray(dashboard.items) ? dashboard.items : [],
+          items: Array.isArray(dashboard.items) ? dashboard.items.map(coerceMetricsItem) : [],
           totals: {
             equity: Number(dashboard.totals?.equity) || 0,
             realEquity: Number(dashboard.totals?.realEquity) || 0,
@@ -2974,6 +3077,18 @@ export function DealingDepartmentPage() {
     []
   );
 
+  const metricsRealEquityByBucket = useMemo(() => {
+    const totals = { Bank: 0, Both: 0, Crypto: 0 } as const;
+    const next = { ...totals };
+    const rows = metricsData?.items || [];
+    for (const row of rows) {
+      const bucket = classifyLpBucket(row.lp);
+      if (!bucket) continue;
+      next[bucket] += Number(row.realEquity) || 0;
+    }
+    return next;
+  }, [metricsData]);
+
   const historyDealsColumns = useMemo<SortableTableColumn<HistoryDeal>[]>(
     () => [
       { key: "dealTicket", label: "Ticket", hideable: false, sortValue: (row) => Number(row.dealTicket) || 0, searchValue: (row) => String(row.dealTicket), render: (row) => row.dealTicket },
@@ -3720,7 +3835,12 @@ export function DealingDepartmentPage() {
               {(metricsData?.totals || null) && (
                 <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
                   <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
-                  <span className="text-slate-500 dark:text-slate-400">Equity {formatDollar(metricsData?.totals?.equity || 0)} | Real Equity {formatDollar(metricsData?.totals?.realEquity || 0)} | Credit {formatDollar(metricsData?.totals?.credit || 0)} | Balance {formatDollar(metricsData?.totals?.balance || 0)} | Margin {formatDollar(metricsData?.totals?.margin || 0)} | Free Margin {formatDollar(metricsData?.totals?.freeMargin || 0)}</span>
+                  <span className="text-slate-500 dark:text-slate-400">
+                    Equity {formatDollar(metricsData?.totals?.equity || 0)} | Real Equity {formatDollar(metricsData?.totals?.realEquity || 0)} | Credit {formatDollar(metricsData?.totals?.credit || 0)} | Balance {formatDollar(metricsData?.totals?.balance || 0)} | Margin {formatDollar(metricsData?.totals?.margin || 0)} | Free Margin {formatDollar(metricsData?.totals?.freeMargin || 0)} |{" "}
+                    <span className="font-semibold text-sky-700 dark:text-sky-300">Bank (RE)</span> {formatDollar(metricsRealEquityByBucket.Bank)} |{" "}
+                    <span className="font-semibold text-amber-700 dark:text-amber-300">Both (RE)</span> {formatDollar(metricsRealEquityByBucket.Both)} |{" "}
+                    <span className="font-semibold text-violet-700 dark:text-violet-300">Crypto (RE)</span> {formatDollar(metricsRealEquityByBucket.Crypto)}
+                  </span>
                 </div>
               )}
               {!metricsLoading && !(metricsData?.items || []).length && (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTriangle } from 'lucide-react';
+import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { fetchTransactions } from '@/lib/api';
@@ -33,6 +33,96 @@ interface LpEquityPoint {
   clientWithdrawableEquity: number;
   difference: number;
 }
+
+type LpBucket = 'Bank' | 'Both' | 'Crypto';
+
+const normalizeLpName = (value: unknown) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const LP_BUCKET_ALIASES: Record<LpBucket, string[]> = {
+  Bank: [
+    'CMC MARKETS MIDDLE EAST LIMITED',
+    'CMC Coverage',
+    'CMC 2 Coverage',
+    'FXCM',
+    'FXCM Coverage',
+    'FXCM 2 Coverage',
+    'LMAX',
+    'LMAX 2nd ACC TOB1 OmnibusAc',
+    'Lmax 3rd acc TOBS',
+    'Lmax 3rd acc TOB5',
+    'LMAX Old',
+    'Noor Capital',
+    'XTB',
+    'XTB Bonus 1(Coverage)',
+    'XTB Bonus 1 (Coverage)',
+  ],
+  Both: [
+    'AFS Global Limited - Amana',
+    'Amana 1',
+    'Amana2',
+    'ATFX',
+    'ATFX 2 coverage acc #186',
+    'FINALTO',
+    'Finalto Coverage 33931 REV',
+    'Coverage Finalto 2nd acc',
+    'Finalto 3rd account coverage',
+    'FX-EDGE SC LTD',
+    'FX Edge Coverage',
+    'Hantec Markets',
+    'Hantec',
+  ],
+  Crypto: [
+    'AIDI Financial',
+    'AIDI',
+    'B2Prime',
+    'B2B Coverage account',
+    'Broctagon Prime Markets Limited',
+    'Broctagon1',
+    'Broctagon2',
+    'CFI - Credit Financier Invest International LTD',
+    'CFI',
+    'ICM Capital Limited',
+    'ICM',
+    'Infinox Limited',
+    'Infinox',
+    'Logan Capital (PTY) LTD - LP PRIME',
+    'LP Prime',
+    'Mex Atlantic Corporation - Multi Bank',
+    'Multi Bank',
+    'Startrader Financial Markets Limited (Star Prime)',
+    'Taurex (Zenfinex Global Limited)',
+    'Taurex',
+    'Taurex2',
+  ],
+};
+
+const LP_BUCKET_MATCHERS: Record<LpBucket, string[]> = {
+  Bank: LP_BUCKET_ALIASES.Bank.map(normalizeLpName),
+  Both: LP_BUCKET_ALIASES.Both.map(normalizeLpName),
+  Crypto: LP_BUCKET_ALIASES.Crypto.map(normalizeLpName),
+};
+
+const classifyLpBucket = (lpName: unknown): LpBucket | null => {
+  const normalized = normalizeLpName(lpName);
+  if (!normalized) return null;
+
+  for (const alias of LP_BUCKET_MATCHERS.Bank) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return 'Bank';
+  }
+  for (const alias of LP_BUCKET_MATCHERS.Both) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return 'Both';
+  }
+  for (const alias of LP_BUCKET_MATCHERS.Crypto) {
+    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return 'Crypto';
+  }
+  return null;
+};
 
 export function AccountsDepartment({
   selectedEntity,
@@ -72,6 +162,12 @@ export function AccountsDepartment({
     avgMarginLevel: 0,
   });
   const [lpEquitySeries, setLpEquitySeries] = useState<LpEquityPoint[]>([]);
+  const [lpRealEquityBuckets, setLpRealEquityBuckets] = useState<Record<LpBucket, number>>({
+    Bank: 0,
+    Both: 0,
+    Crypto: 0,
+  });
+  const [showLpBreakdownTooltip, setShowLpBreakdownTooltip] = useState(false);
 
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
   const [bankReceivable, setBankReceivable] = useState(0);
@@ -270,6 +366,7 @@ export function AccountsDepartment({
         let totalEquity = 0;
         let totalMargin = 0;
         let avgMarginLevel = 0;
+        const nextBuckets: Record<LpBucket, number> = { Bank: 0, Both: 0, Crypto: 0 };
 
         if (coverageResp.status === 'fulfilled' && coverageResp.value.ok) {
           const coverageData = await coverageResp.value.json();
@@ -303,6 +400,12 @@ export function AccountsDepartment({
           totalMargin = Number(metricsData?.totals?.margin) || 0;
           const marginLevels = items.map((item: any) => Number(item?.marginLevel)).filter((v: number) => Number.isFinite(v));
           avgMarginLevel = marginLevels.length ? marginLevels.reduce((sum: number, v: number) => sum + v, 0) / marginLevels.length : 0;
+
+          for (const item of items) {
+            const bucket = classifyLpBucket(item?.lp);
+            if (!bucket) continue;
+            nextBuckets[bucket] += Number(item?.realEquity) || 0;
+          }
         }
 
         if (historyResp.status === 'fulfilled' && historyResp.value.ok) {
@@ -320,6 +423,7 @@ export function AccountsDepartment({
           totalMargin,
           avgMarginLevel,
         });
+        setLpRealEquityBuckets(nextBuckets);
       } catch (err) {
         // silently ignore
       }
@@ -363,11 +467,43 @@ export function AccountsDepartment({
       {isLpMode ? (
         <div className="space-y-2">
           <div className="grid grid-cols-3 gap-2">
-            <div className="p-2 rounded-lg bg-success/10 border border-success/20">
+            <div
+              className="relative p-2 rounded-lg bg-success/10 border border-success/20"
+              onMouseEnter={() => setShowLpBreakdownTooltip(true)}
+            >
               <div className="text-xs text-muted-foreground mb-1">LP Withdrawable Equity</div>
               <div className="font-mono font-semibold text-lg">
                 ${lpEquitySummary.lpWithdrawableEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
+              {showLpBreakdownTooltip && (
+                <div className="absolute left-0 top-full z-30 mt-2 w-72 rounded-md border border-slate-300 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-950">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">LP Real Equity Breakdown</div>
+                    <button
+                      type="button"
+                      onClick={() => setShowLpBreakdownTooltip(false)}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      aria-label="Close breakdown"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="space-y-1 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-sky-700 dark:text-sky-300">Bank</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-200">${lpRealEquityBuckets.Bank.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-amber-700 dark:text-amber-300">Both</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-200">${lpRealEquityBuckets.Both.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-violet-700 dark:text-violet-300">Crypto</span>
+                      <span className="font-mono text-slate-700 dark:text-slate-200">${lpRealEquityBuckets.Crypto.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <div className="p-2 rounded-lg bg-primary/10 border border-primary/20">
               <div className="text-xs text-muted-foreground mb-1">Client Withdrawable Equity</div>
