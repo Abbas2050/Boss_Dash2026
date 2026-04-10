@@ -40,3 +40,6 @@ skylinkscapital-12ac4c6a138f.json
 
 # Local runtime SQLite DB (must stay untracked to avoid deployment lock failures)
 crm_mt5.db
+
+# Local wallet token cache
+storage/bitpace_token.json
