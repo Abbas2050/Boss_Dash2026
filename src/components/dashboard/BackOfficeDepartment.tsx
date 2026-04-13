@@ -244,6 +244,7 @@ export function BackOfficeDepartment({
   const [rebateIncludeSubIb, setRebateIncludeSubIb] = useState(true);
   const [rebateLoading, setRebateLoading] = useState(false);
   const [rebateError, setRebateError] = useState<string | null>(null);
+  const [rebateInfo, setRebateInfo] = useState<string | null>(null);
   const [rebateRows, setRebateRows] = useState<RebateCalcRow[]>([]);
   const [rebateLastUpdated, setRebateLastUpdated] = useState<Date | null>(null);
   const [rebatePresetName, setRebatePresetName] = useState('');
@@ -302,11 +303,20 @@ export function BackOfficeDepartment({
     try {
       setRebateLoading(true);
       setRebateError(null);
+      setRebateInfo(null);
       setRebateRows([]);
 
       const overrides = parseRateOverrides(rebateOverridesText);
       const effectiveRules = rebateMode === 'all' ? [] : overrides;
-      const tree = rebateIncludeSubIb ? await fetchIbTree(ibId) : [];
+      let tree: Array<{ ibId: number; level?: number; referralIbId?: number }> = [];
+      let treeLookupFailed = false;
+      if (rebateIncludeSubIb) {
+        try {
+          tree = await fetchIbTree(ibId);
+        } catch {
+          treeLookupFailed = true;
+        }
+      }
       const userIds = new Set<number>([ibId]);
       tree.forEach((node) => {
         if (node.ibId) userIds.add(Number(node.ibId));
@@ -332,16 +342,30 @@ export function BackOfficeDepartment({
         .filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof fetchAccountsByUserId>>> => result.status === 'fulfilled')
         .flatMap((result) => result.value || []);
 
+      const ibWalletAccounts = ibAccounts.filter((acc: any) => String(acc?.groupName || acc?.group || '').toLowerCase().startsWith('ib-wallet'));
+      const isIbRoot = tree.length > 0 || ibWalletAccounts.length > 0;
+      const scopedAccounts = isIbRoot
+        ? allAccounts
+        : allAccounts.filter((acc) => !String(acc.groupName || '').toLowerCase().startsWith('ib-wallet'));
+
+      if (!isIbRoot) {
+        setRebateInfo(`CRM ID ${ibId} is not an IB. Commission was calculated using this CRM user's trading accounts only.`);
+      } else if (treeLookupFailed) {
+        setRebateInfo('Sub-IB tree lookup failed, so only directly available accounts were used for this run.');
+      }
+
       const logins = Array.from(
         new Set(
-          allAccounts
+          scopedAccounts
             .filter((acc) => acc.login && (rebateLoginScope === 'all' || Number(acc.isEnabled ?? 1) === 1))
             .map((acc) => String(acc.login).trim())
             .filter(Boolean),
         ),
       );
 
-      if (!logins.length) throw new Error('No MT5 accounts/logins found for this IB tree.');
+      if (!logins.length) {
+        throw new Error(isIbRoot ? 'No MT5 accounts/logins found for this IB tree.' : 'No trading accounts/logins found for this CRM ID.');
+      }
 
       const dealsResults = await Promise.allSettled(logins.map((login) => fetchDealsByLogin({ login, from, to })));
       const aggregated = new Map<string, RebateCalcRow>();
@@ -401,7 +425,6 @@ export function BackOfficeDepartment({
 
       const rows = Array.from(aggregated.values()).sort((a, b) => b.commissionUsd - a.commissionUsd);
 
-      const ibWalletAccounts = ibAccounts.filter((acc: any) => String(acc?.groupName || acc?.group || '').toLowerCase().startsWith('ib-wallet'));
       const balanceSource = ibWalletAccounts.length ? ibWalletAccounts : ibAccounts;
       const ibBalance = balanceSource.reduce((sum, acc: any) => sum + Number(acc?.balance || 0), 0);
       const withdrawnLifetime = Math.abs(
@@ -2144,6 +2167,12 @@ export function BackOfficeDepartment({
             {rebateError && (
               <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
                 {rebateError}
+              </div>
+            )}
+
+            {rebateInfo && (
+              <div className="mt-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-800 dark:text-cyan-200">
+                {rebateInfo}
               </div>
             )}
 
