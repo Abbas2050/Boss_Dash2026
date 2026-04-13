@@ -396,7 +396,7 @@ router.post("/users", authRequired, async (req, res) => {
   }
 });
 
-router.put("/users/:id", authRequired, async (req, res) => {
+async function handleUpdateUser(req, res) {
   try {
     await ensureInitialized();
     if (!canManageUsers(req.auth)) return res.status(403).json({ error: "forbidden" });
@@ -453,7 +453,12 @@ router.put("/users/:id", authRequired, async (req, res) => {
   } catch (error) {
     return res.status(500).json({ error: "update_user_failed", message: error instanceof Error ? error.message : String(error) });
   }
-});
+}
+
+router.put("/users/:id", authRequired, handleUpdateUser);
+
+// Fallback for environments where upstream blocks PUT (e.g., restrictive IIS/WAF rules)
+router.post("/users/:id/update", authRequired, handleUpdateUser);
 
 router.delete("/users/:id", authRequired, async (req, res) => {
   try {

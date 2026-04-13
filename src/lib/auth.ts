@@ -123,8 +123,11 @@ export async function refreshUsers(): Promise<AuthUser[]> {
 
 export async function upsertUser(next: AuthUpsertInput): Promise<AuthUser> {
   const isUpdate = Boolean(next.id);
-  const endpoint = isUpdate ? `/api/auth/users/${encodeURIComponent(String(next.id))}` : "/api/auth/users";
-  const method = isUpdate ? "PUT" : "POST";
+  const endpoint = isUpdate
+    ? `/api/auth/users/${encodeURIComponent(String(next.id))}/update`
+    : "/api/auth/users";
+  const updateFallbackEndpoint = isUpdate ? `/api/auth/users/${encodeURIComponent(String(next.id))}` : null;
+  const method = "POST";
   const body = {
     name: next.name,
     email: next.email,
@@ -134,7 +137,7 @@ export async function upsertUser(next: AuthUpsertInput): Promise<AuthUser> {
     ...(next.password ? { password: next.password } : {}),
   };
 
-  const res = await fetch(endpoint, {
+  let res = await fetch(endpoint, {
     method,
     headers: {
       "Content-Type": "application/json",
@@ -143,6 +146,19 @@ export async function upsertUser(next: AuthUpsertInput): Promise<AuthUser> {
     },
     body: JSON.stringify(body),
   });
+
+  if (isUpdate && (res.status === 404 || res.status === 405) && updateFallbackEndpoint) {
+    res = await fetch(updateFallbackEndpoint, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(text || `Save user failed (${res.status})`);
