@@ -3829,6 +3829,16 @@ export function DealingDepartmentPage() {
                   rows={metricsData?.items || []}
                   columns={metricsTableColumns}
                   exportFilePrefix="dealing-metrics"
+                  exportFooterRows={[
+                    ["Totals", "", String(metricsData?.totals?.equity || 0), String(metricsData?.totals?.realEquity || 0), String(metricsData?.totals?.credit || 0), String(metricsData?.totals?.balance || 0), String(metricsData?.totals?.margin || 0), String(metricsData?.totals?.freeMargin || 0), ""],
+                    ["Bank (RE)", "", String(metricsRealEquityByBucket.Bank), "", "", "", "", "", ""],
+                    ["Both (RE)", "", String(metricsRealEquityByBucket.Both), "", "", "", "", "", ""],
+                    ["Crypto (RE)", "", String(metricsRealEquityByBucket.Crypto), "", "", "", "", "", ""],
+                    ["", "", "", "", "", "", "", "", ""],
+                    ["LP Withdrawable Equity", "", String(metricsEquitySummary?.lpWithdrawableEquity || 0), "", "", "", "", "", ""],
+                    ["Client Withdrawable Equity", "", String(metricsEquitySummary?.clientWithdrawableEquity || 0), "", "", "", "", "", ""],
+                    ["LP-Client WD Equity Difference", "", String(metricsEquitySummary?.difference || 0), "", "", "", "", "", ""],
+                  ]}
                   emptyText="No LP accounts found."
                 />
               </div>

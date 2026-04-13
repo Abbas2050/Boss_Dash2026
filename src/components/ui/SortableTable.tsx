@@ -22,6 +22,7 @@ type SortableTableProps<T> = {
   tableClassName?: string;
   emptyText?: string;
   exportFilePrefix?: string;
+  exportFooterRows?: string[][];
   rowClassName?: (row: T, index: number) => string;
 };
 
@@ -87,6 +88,7 @@ export function SortableTable<T>({
   tableClassName = "min-w-full text-xs",
   emptyText = "No data available.",
   exportFilePrefix = "table",
+  exportFooterRows = [],
   rowClassName,
 }: SortableTableProps<T>) {
   const [query, setQuery] = useState("");
@@ -258,7 +260,8 @@ export function SortableTable<T>({
           .join(","),
       )
       .join("\n");
-    const csv = `${header}\n${body}`;
+    const footer = exportFooterRows.map((row) => row.map(csvEscape).join(",")).join("\n");
+    const csv = footer ? `${header}\n${body}\n\n${footer}` : `${header}\n${body}`;
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     const stamp = new Date().toISOString().replace(/[:]/g, "-").replace(/\..+$/, "");
