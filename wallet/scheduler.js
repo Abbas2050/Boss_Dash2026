@@ -113,6 +113,19 @@ function buildChangeItems(previousSnapshot, currentSnapshot) {
   return changes;
 }
 
+function filterIgnoredChangeItems(changeItems) {
+  const ignoreBitpaceZeroRecovery = process.env.WALLET_IGNORE_BITPACE_ZERO_RECOVERY !== 'false';
+  if (!ignoreBitpaceZeroRecovery) return changeItems;
+
+  return changeItems.filter((item) => {
+    if (item?.key !== 'bitpace') return true;
+    const before = roundMoney(item.before);
+    const after = roundMoney(item.after);
+    // Ignore transient recovery noise when Bitpace previously failed and reported 0.
+    return !(before === 0 && after > 0);
+  });
+}
+
 async function loadState(stateFile) {
   try {
     const raw = await fs.readFile(stateFile, 'utf8');
@@ -122,6 +135,7 @@ async function loadState(stateFile) {
         email: { lastSentHash: parsed?.channels?.email?.lastSentHash || null },
         telegram: { lastSentHash: parsed?.channels?.telegram?.lastSentHash || null },
       },
+      lastNotifiedHash: parsed?.lastNotifiedHash || null,
       lastSnapshotHash: parsed?.lastSnapshotHash || null,
       lastSnapshot: parsed?.lastSnapshot || null,
       updatedAt: parsed?.updatedAt || null,
@@ -132,11 +146,40 @@ async function loadState(stateFile) {
         email: { lastSentHash: null },
         telegram: { lastSentHash: null },
       },
+      lastNotifiedHash: null,
       lastSnapshotHash: null,
       lastSnapshot: null,
       updatedAt: null,
     };
   }
+}
+
+function sanitizeState(state) {
+  const next = state || {
+    channels: {
+      email: { lastSentHash: null },
+      telegram: { lastSentHash: null },
+    },
+    lastNotifiedHash: null,
+    lastSnapshotHash: null,
+    lastSnapshot: null,
+    updatedAt: null,
+  };
+
+  const fallbackHash = typeof next.lastSnapshotHash === 'string' ? next.lastSnapshotHash : null;
+  const looksLikeSnapshotHash = (value) => typeof value === 'string' && value.includes('"total_balance"') && value.includes('"widgets"');
+
+  if (!looksLikeSnapshotHash(next.channels?.email?.lastSentHash)) {
+    next.channels.email.lastSentHash = fallbackHash;
+  }
+  if (!looksLikeSnapshotHash(next.channels?.telegram?.lastSentHash)) {
+    next.channels.telegram.lastSentHash = fallbackHash;
+  }
+  if (typeof next.lastNotifiedHash !== 'string' || !looksLikeSnapshotHash(next.lastNotifiedHash)) {
+    next.lastNotifiedHash = fallbackHash;
+  }
+
+  return next;
 }
 
 async function saveState(stateFile, state) {
@@ -219,7 +262,7 @@ async function runOnChangeWalletReport() {
 
   const snapshot = extractSnapshot(report);
   const hash = snapshotHash(snapshot);
-  const state = await loadState(stateFile);
+  const state = sanitizeState(await loadState(stateFile));
 
   const isFirstRun = !state.channels.email.lastSentHash && !state.channels.telegram.lastSentHash;
   const sendOnFirstRun = process.env.WALLET_REPORT_SEND_ON_FIRST_RUN === 'true';
@@ -244,15 +287,40 @@ async function runOnChangeWalletReport() {
     return;
   }
 
+  // Hard de-dupe: if this exact snapshot was already notified once, never re-send it.
+  if (state.lastNotifiedHash === hash) {
+    state.lastSnapshotHash = hash;
+    state.lastSnapshot = snapshot;
+    await saveState(stateFile, state);
+    return;
+  }
+
   console.log('[WalletScheduler] Balance change detected, sending notifications...', {
     email: needsEmail,
     telegram: needsTelegram,
   });
 
   const changeItems = buildChangeItems(state.lastSnapshot, snapshot);
+  const effectiveChangeItems = filterIgnoredChangeItems(changeItems);
+
+  if (!effectiveChangeItems.length) {
+    state.channels.email.lastSentHash = hash;
+    state.channels.telegram.lastSentHash = hash;
+    state.lastSnapshotHash = hash;
+    state.lastSnapshot = snapshot;
+    await saveState(stateFile, state);
+    console.log('[WalletScheduler] Change detected but ignored by rules (no notifications sent).');
+    return;
+  }
+
+  // Mark this snapshot as already notified before channel sends to avoid duplicate bursts.
+  state.lastNotifiedHash = hash;
+  state.lastSnapshotHash = hash;
+  state.lastSnapshot = snapshot;
+  await saveState(stateFile, state);
 
   const sendResult = await sendWalletReport(report, date, {
-    changeItems,
+    changeItems: effectiveChangeItems,
     sendEmail: needsEmail,
     sendTelegram: needsTelegram,
   });
@@ -264,8 +332,6 @@ async function runOnChangeWalletReport() {
     state.channels.telegram.lastSentHash = hash;
   }
 
-  state.lastSnapshotHash = hash;
-  state.lastSnapshot = snapshot;
   await saveState(stateFile, state);
 }
 
