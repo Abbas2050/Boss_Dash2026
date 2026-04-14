@@ -147,38 +147,44 @@ async function saveState(stateFile, state) {
 async function sendWalletReport(report, date, options = {}) {
   const ctx = buildSendContext(report);
   const changeItems = Array.isArray(options.changeItems) ? options.changeItems : [];
+  const sendEmail = options.sendEmail !== false;
+  const sendTelegram = options.sendTelegram !== false;
 
   let emailOk = false;
   let telegramOk = false;
 
-  try {
-    emailOk = await sendDailyEmailReport(
-      ctx.widgets,
-      ctx.total,
-      date,
-      ctx.bankReceivable,
-      ctx.cryptoReceivable,
-      ctx.netAllCurrent,
-      ctx.netAfterExpected,
-      { ...ctx.extras, changeItems },
-    );
-  } catch (e) {
-    console.error('[WalletScheduler] Email send failed:', e.message);
+  if (sendEmail) {
+    try {
+      emailOk = await sendDailyEmailReport(
+        ctx.widgets,
+        ctx.total,
+        date,
+        ctx.bankReceivable,
+        ctx.cryptoReceivable,
+        ctx.netAllCurrent,
+        ctx.netAfterExpected,
+        { ...ctx.extras, changeItems },
+      );
+    } catch (e) {
+      console.error('[WalletScheduler] Email send failed:', e.message);
+    }
   }
 
-  try {
-    telegramOk = await sendDailyTelegramReport(
-      ctx.widgets,
-      ctx.total,
-      date,
-      ctx.bankReceivable,
-      ctx.cryptoReceivable,
-      ctx.netAllCurrent,
-      ctx.netAfterExpected,
-      { ...ctx.extras, changeItems },
-    );
-  } catch (e) {
-    console.error('[WalletScheduler] Telegram send failed:', e.message);
+  if (sendTelegram) {
+    try {
+      telegramOk = await sendDailyTelegramReport(
+        ctx.widgets,
+        ctx.total,
+        date,
+        ctx.bankReceivable,
+        ctx.cryptoReceivable,
+        ctx.netAllCurrent,
+        ctx.netAfterExpected,
+        { ...ctx.extras, changeItems },
+      );
+    } catch (e) {
+      console.error('[WalletScheduler] Telegram send failed:', e.message);
+    }
   }
 
   return { emailOk, telegramOk };
@@ -245,7 +251,11 @@ async function runOnChangeWalletReport() {
 
   const changeItems = buildChangeItems(state.lastSnapshot, snapshot);
 
-  const sendResult = await sendWalletReport(report, date, { changeItems });
+  const sendResult = await sendWalletReport(report, date, {
+    changeItems,
+    sendEmail: needsEmail,
+    sendTelegram: needsTelegram,
+  });
 
   if (needsEmail && sendResult.emailOk) {
     state.channels.email.lastSentHash = hash;
