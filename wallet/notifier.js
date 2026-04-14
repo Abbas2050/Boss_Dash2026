@@ -11,9 +11,16 @@ const BANK_WIDGETS   = ['googlesheets_goldsouq', 'googlesheets_fab', 'googleshee
 // ─────────────────────────────────────────────────────────────────────────────
 function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtDelta = (n) => {
+    const v = Number(n || 0);
+    if (v > 0) return `+$${fmt(v)}`;
+    if (v < 0) return `-$${fmt(Math.abs(v))}`;
+    return '$0.00';
+  };
   const toBeDepositedIntoLPsK20 = Number(extras.toBeDepositedIntoLPsK20 ?? 0);
   const toBeDepositedIntoLPsK21 = Number(extras.toBeDepositedIntoLPsK21 ?? 0);
   const differenceBetweenActualAndExpected = Number(extras.differenceBetweenActualAndExpected ?? 0);
+  const changeItems = Array.isArray(extras.changeItems) ? extras.changeItems : [];
 
   let rows = '';
   let cryptoSubtotal = 0;
@@ -31,6 +38,11 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
   }
 
   const updatedTime = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai' });
+  const changesHtml = changeItems.length
+    ? `<div class="meta-info"><strong>Changes Detected:</strong><br>${changeItems
+        .map((item) => `${item.label}: $${fmt(item.before)} → $${fmt(item.after)} (${fmtDelta(item.delta)})`)
+        .join('<br>')}</div>`
+    : '';
 
   return `<!DOCTYPE html>
 <html>
@@ -69,6 +81,7 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
     <strong>🧮 Net all Current Balance:</strong> $${fmt(netAllCurrent)}<br>
     <strong>📈 Net Balance after expected funds:</strong> $${fmt(netAfterExpected)}
   </div>
+  ${changesHtml}
   <div class="footer"><p>This is an automated daily report from the PSP Wallet Monitoring System.</p><p>Please do not reply to this email.</p></div>
 </div>
 </body>
@@ -113,10 +126,17 @@ export async function sendDailyEmailReport(widgets, total, date, bankReceivable,
 // ─────────────────────────────────────────────────────────────────────────────
 function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtDelta = (n) => {
+    const v = Number(n || 0);
+    if (v > 0) return `+$${fmt(v)}`;
+    if (v < 0) return `-$${fmt(Math.abs(v))}`;
+    return '$0.00';
+  };
   const line = '─'.repeat(30);
   const toBeDepositedIntoLPsK20 = Number(extras.toBeDepositedIntoLPsK20 ?? 0);
   const toBeDepositedIntoLPsK21 = Number(extras.toBeDepositedIntoLPsK21 ?? 0);
   const differenceBetweenActualAndExpected = Number(extras.differenceBetweenActualAndExpected ?? 0);
+  const changeItems = Array.isArray(extras.changeItems) ? extras.changeItems : [];
 
   let msg = `💎 *Closing Balance Report*\n📅 ${date}\n\n`;
 
@@ -147,6 +167,14 @@ function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceiv
   msg += `⚖️ *Difference between actual and expected (J29):* \`$${fmt(differenceBetweenActualAndExpected)}\`\n`;
   msg += `🧮 *Net all Current Balance:* \`$${fmt(netAllCurrent)}\`\n`;
   msg += `📈 *Net Balance after expected funds:* \`$${fmt(netAfterExpected)}\``;
+
+  if (changeItems.length) {
+    msg += `\n\n${line}\n`;
+    msg += `🔔 *Changes Detected:*\n`;
+    for (const item of changeItems) {
+      msg += `• *${item.label}:* \`$${fmt(item.before)}\` → \`$${fmt(item.after)}\` (${fmtDelta(item.delta)})\n`;
+    }
+  }
 
   return msg;
 }
