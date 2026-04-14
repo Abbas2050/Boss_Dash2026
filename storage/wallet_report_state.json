@@ -1,0 +1,27 @@
+{
+  "channels": {
+    "email": {
+      "lastSentHash": "{\"total_balance\":4956500.21,\"widgets\":{\"bitpace\":0,\"letknowpay\":357269.79,\"ownbit\":17179.32,\"heropayment\":74386.31,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":445746.17,\"googlesheets_fab\":4053697.83,\"googlesheets_mbme\":7685.49}}"
+    },
+    "telegram": {
+      "lastSentHash": "{\"total_balance\":4956500.21,\"widgets\":{\"bitpace\":0,\"letknowpay\":357269.79,\"ownbit\":17179.32,\"heropayment\":74386.31,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":445746.17,\"googlesheets_fab\":4053697.83,\"googlesheets_mbme\":7685.49}}"
+    }
+  },
+  "lastSnapshotHash": "{\"total_balance\":4956500.21,\"widgets\":{\"bitpace\":0,\"letknowpay\":357269.79,\"ownbit\":17179.32,\"heropayment\":74386.31,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":445746.17,\"googlesheets_fab\":4053697.83,\"googlesheets_mbme\":7685.49}}",
+  "lastSnapshot": {
+    "total_balance": 4956500.21,
+    "widgets": {
+      "bitpace": 0,
+      "letknowpay": 357269.79,
+      "ownbit": 17179.32,
+      "heropayment": 74386.31,
+      "googlesheets_match2pay": 504.5,
+      "googlesheets_deusxpay": 30.8,
+      "googlesheets_openpayed": 0,
+      "googlesheets_goldsouq": 445746.17,
+      "googlesheets_fab": 4053697.83,
+      "googlesheets_mbme": 7685.49
+    }
+  },
+  "updatedAt": "2026-04-14T08:38:01.103Z"
+}
