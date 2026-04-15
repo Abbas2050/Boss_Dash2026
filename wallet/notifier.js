@@ -21,6 +21,8 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
   const toBeDepositedIntoLPsK21 = Number(extras.toBeDepositedIntoLPsK21 ?? 0);
   const differenceBetweenActualAndExpected = Number(extras.differenceBetweenActualAndExpected ?? 0);
   const changeItems = Array.isArray(extras.changeItems) ? extras.changeItems : [];
+  const changeMap = {};
+  for (const item of changeItems) changeMap[item.key] = item;
 
   let rows = '';
   let cryptoSubtotal = 0;
@@ -28,21 +30,38 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
     if (!widgets[id]) continue;
     cryptoSubtotal += widgets[id].balance ?? 0;
     const tick = widgets[id].status === 'ok' ? '✓' : '✗';
-    rows += `<tr><td>${tick} ${widgets[id].name}</td><td>$${fmt(widgets[id].balance)}</td></tr>`;
+    const ch = changeMap[id];
+    const rowBg = ch ? (ch.delta > 0 ? 'background:#e8f5e9;' : 'background:#ffebee;') : '';
+    const valColor = ch ? (ch.delta > 0 ? 'color:#2e7d32;font-weight:bold;' : 'color:#c62828;font-weight:bold;') : '';
+    const deltaHtml = ch ? ` <span style="${valColor}font-size:11px;">(${fmtDelta(ch.delta)})</span>` : '';
+    rows += `<tr style="${rowBg}"><td>${tick} ${widgets[id].name}</td><td style="${valColor}">$${fmt(widgets[id].balance)}${deltaHtml}</td></tr>`;
   }
   rows += `<tr style="background:#fff3cd;font-weight:bold;"><td>🔐 SUBTOTAL CRYPTO</td><td>$${fmt(cryptoSubtotal)}</td></tr>`;
   for (const id of BANK_WIDGETS) {
     if (!widgets[id]) continue;
     const tick = widgets[id].status === 'ok' ? '✓' : '✗';
-    rows += `<tr><td>${tick} ${widgets[id].name}</td><td>$${fmt(widgets[id].balance)}</td></tr>`;
+    const ch = changeMap[id];
+    const rowBg = ch ? (ch.delta > 0 ? 'background:#e8f5e9;' : 'background:#ffebee;') : '';
+    const valColor = ch ? (ch.delta > 0 ? 'color:#2e7d32;font-weight:bold;' : 'color:#c62828;font-weight:bold;') : '';
+    const deltaHtml = ch ? ` <span style="${valColor}font-size:11px;">(${fmtDelta(ch.delta)})</span>` : '';
+    rows += `<tr style="${rowBg}"><td>${tick} ${widgets[id].name}</td><td style="${valColor}">$${fmt(widgets[id].balance)}${deltaHtml}</td></tr>`;
   }
 
   const updatedTime = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai' });
   const changesHtml = changeItems.length
-    ? `<div class="meta-info"><strong>Changes Detected:</strong><br>${changeItems
-        .map((item) => `${item.label}: $${fmt(item.before)} → $${fmt(item.after)} (${fmtDelta(item.delta)})`)
+    ? `<div style="background:#fff8e1;border-left:4px solid #f9a825;padding:12px;margin:15px 0;border-radius:4px;font-size:13px;line-height:1.8"><strong>🔔 Changes Detected:</strong><br>${changeItems
+        .map((item) => {
+          const color = item.delta > 0 ? '#2e7d32' : '#c62828';
+          const arrow = item.delta > 0 ? '▲' : '▼';
+          return `${item.label}: $${fmt(item.before)} ${arrow} <strong style="color:${color}">$${fmt(item.after)}</strong> <span style="color:${color}">(${fmtDelta(item.delta)})</span>`;
+        })
         .join('<br>')}</div>`
     : '';
+
+  const chTotal = changeMap['total_balance'];
+  const totalRowBg = chTotal ? (chTotal.delta > 0 ? '#e8f5e9' : '#ffebee') : '#e8f5e9';
+  const totalRowColor = chTotal ? (chTotal.delta > 0 ? 'color:#2e7d32;' : 'color:#c62828;') : '';
+  const totalDeltaHtml = chTotal ? ` <span style="${totalRowColor}font-size:11px;">(${fmtDelta(chTotal.delta)})</span>` : '';
 
   return `<!DOCTYPE html>
 <html>
@@ -68,7 +87,7 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
     <thead><tr><th>PSP Name</th><th>Balance</th></tr></thead>
     <tbody>
       ${rows}
-      <tr class="total-row"><td>💎 TOTAL COMBINED</td><td>$${fmt(total)}</td></tr>
+      <tr style="background:${totalRowBg};font-weight:bold;${totalRowColor}"><td>💎 TOTAL COMBINED</td><td style="${totalRowColor}">$${fmt(total)}${totalDeltaHtml}</td></tr>
     </tbody>
   </table>
   <div class="meta-info">

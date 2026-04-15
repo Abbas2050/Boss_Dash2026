@@ -117,12 +117,25 @@ function filterIgnoredChangeItems(changeItems) {
   const ignoreBitpaceZeroRecovery = process.env.WALLET_IGNORE_BITPACE_ZERO_RECOVERY !== 'false';
   if (!ignoreBitpaceZeroRecovery) return changeItems;
 
+  const bitpaceItem = changeItems.find((item) => item?.key === 'bitpace');
+  if (!bitpaceItem) return changeItems;
+
+  const before = roundMoney(bitpaceItem.before);
+  const after = roundMoney(bitpaceItem.after);
+  // API failure: Bitpace balance drops to 0 (balance > 0 → 0)
+  const isBitpaceApiFail = after === 0 && before > 0;
+  // API recovery: Bitpace balance recovers from 0 (0 → balance > 0)
+  const isBitpaceApiRecovery = before === 0 && after > 0;
+  const isBitpaceNoise = isBitpaceApiFail || isBitpaceApiRecovery;
+
+  if (!isBitpaceNoise) return changeItems;
+
   return changeItems.filter((item) => {
-    if (item?.key !== 'bitpace') return true;
-    const before = roundMoney(item.before);
-    const after = roundMoney(item.after);
-    // Ignore transient recovery noise when Bitpace previously failed and reported 0.
-    return !(before === 0 && after > 0);
+    // Drop the Bitpace item itself
+    if (item?.key === 'bitpace') return false;
+    // Also drop the total_balance item if Bitpace was the sole cause of the total change
+    if (item?.key === 'total_balance' && roundMoney(item.delta) === roundMoney(bitpaceItem.delta)) return false;
+    return true;
   });
 }
 
@@ -248,6 +261,17 @@ async function runDailyWalletReport() {
   await sendWalletReport(report, date);
 }
 
+/**
+ * Called with an already-fetched report every time balances are loaded.
+ * Sends email + Telegram only when Total Combined balance changes.
+ * Fire-and-forget safe — never throws.
+ */
+export async function notifyIfTotalChanged(report) {
+  const stateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+  const date = new Date().toISOString().split('T')[0];
+  return _runNotifyLogic(report, stateFile, date);
+}
+
 async function runOnChangeWalletReport() {
   const stateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
   const date = new Date().toISOString().split('T')[0];
@@ -260,6 +284,10 @@ async function runOnChangeWalletReport() {
     return;
   }
 
+  return _runNotifyLogic(report, stateFile, date);
+}
+
+async function _runNotifyLogic(report, stateFile, date) {
   const snapshot = extractSnapshot(report);
   const hash = snapshotHash(snapshot);
   const state = sanitizeState(await loadState(stateFile));
@@ -310,6 +338,19 @@ async function runOnChangeWalletReport() {
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
     console.log('[WalletScheduler] Change detected but ignored by rules (no notifications sent).');
+    return;
+  }
+
+  // Only notify when the Total Combined balance actually changed — individual PSP movements alone are not enough.
+  const totalCombinedChanged = effectiveChangeItems.some((item) => item.key === 'total_balance');
+  if (!totalCombinedChanged) {
+    state.channels.email.lastSentHash = hash;
+    state.channels.telegram.lastSentHash = hash;
+    state.lastNotifiedHash = hash;
+    state.lastSnapshotHash = hash;
+    state.lastSnapshot = snapshot;
+    await saveState(stateFile, state);
+    console.log('[WalletScheduler] PSP balances changed but Total Combined unchanged — skipping notifications.');
     return;
   }
 

@@ -14,7 +14,7 @@ import docusignRouter from "./docusign/router.js";
 import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
-import { startDailyWalletReportScheduler } from './wallet/scheduler.js';
+import { notifyIfTotalChanged } from './wallet/scheduler.js';
 import { GoogleSheetsClient } from './wallet/pspClients.js';
 import {
   loadGoogleSheetsMappingConfig,
@@ -53,6 +53,8 @@ app.use((req, res, next) => {
 app.get('/api/closing-balance-report', async (_req, res) => {
   try {
     const report = await checkAllBalances();
+    // Fire-and-forget: send email+Telegram if Total Combined changed
+    notifyIfTotalChanged(report).catch((e) => console.error('[Server] notifyIfTotalChanged error:', e.message));
     return res.json(report);
   } catch (error) {
     return res.status(500).json({
@@ -370,5 +372,4 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, () => {
   console.log(`Express + mock SignalR server running on http://localhost:${PORT}`);
   startDocusignApprovedSyncScheduler();
-  startDailyWalletReportScheduler();
 });
