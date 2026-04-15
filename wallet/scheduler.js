@@ -6,6 +6,7 @@
 
 import cron from 'node-cron';
 import path from 'path';
+import os from 'os';
 import { promises as fs } from 'fs';
 import { checkAllBalances } from './walletMonitor.js';
 import { sendDailyEmailReport, sendDailyTelegramReport } from './notifier.js';
@@ -37,8 +38,30 @@ const TRACKED_WIDGET_LABELS = {
 };
 
 const DEFAULT_STATE_FILE = path.join(process.cwd(), 'storage', 'wallet_report_state.json');
+const FALLBACK_STATE_FILE = path.join(os.tmpdir(), 'boss_dash_wallet_report_state.json');
 
 const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
+
+async function resolveWritableStateFile(preferredStateFile) {
+  const candidates = [preferredStateFile, FALLBACK_STATE_FILE].filter(Boolean);
+  let lastError = null;
+
+  for (const stateFile of candidates) {
+    try {
+      await fs.mkdir(path.dirname(stateFile), { recursive: true });
+      const fd = await fs.open(stateFile, 'a');
+      await fd.close();
+      if (stateFile !== preferredStateFile) {
+        console.warn(`[WalletScheduler] State file not writable: ${preferredStateFile}. Using fallback: ${stateFile}`);
+      }
+      return stateFile;
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  throw lastError || new Error('No writable state file path available');
+}
 
 function toWidgetMap(report) {
   const widgetsArray = Array.isArray(report?.data?.widgets) ? report.data.widgets : [];
@@ -275,13 +298,15 @@ async function runDailyWalletReport() {
  * Fire-and-forget safe — never throws.
  */
 export async function notifyIfTotalChanged(report) {
-  const stateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+  const preferredStateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+  const stateFile = await resolveWritableStateFile(preferredStateFile);
   const date = new Date().toISOString().split('T')[0];
   return _runNotifyLogic(report, stateFile, date);
 }
 
 async function runOnChangeWalletReport() {
-  const stateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+  const preferredStateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+  const stateFile = await resolveWritableStateFile(preferredStateFile);
   const date = new Date().toISOString().split('T')[0];
 
   let report;
