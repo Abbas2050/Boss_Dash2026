@@ -466,13 +466,13 @@ export function AccountsDepartment({
       {/* LP Equity Summary or Deposits/Withdrawals */}
       {isLpMode ? (
         <div className="space-y-2">
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 min-[440px]:grid-cols-3 gap-2">
             <div
               className="relative p-2 rounded-lg bg-success/10 border border-success/20"
               onMouseEnter={() => setShowLpBreakdownTooltip(true)}
             >
               <div className="text-xs text-muted-foreground mb-1">LP Withdrawable Equity</div>
-              <div className="font-mono font-semibold text-lg">
+              <div className="font-mono font-semibold text-sm sm:text-base">
                 ${lpEquitySummary.lpWithdrawableEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
               {showLpBreakdownTooltip && (
@@ -507,13 +507,13 @@ export function AccountsDepartment({
             </div>
             <div className="p-2 rounded-lg bg-primary/10 border border-primary/20">
               <div className="text-xs text-muted-foreground mb-1">Client Withdrawable Equity</div>
-              <div className="font-mono font-semibold text-lg">
+              <div className="font-mono font-semibold text-sm sm:text-base">
                 ${lpEquitySummary.clientWithdrawableEquity.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
             </div>
             <div className="p-2 rounded-lg bg-destructive/10 border border-destructive/20">
               <div className="text-xs text-muted-foreground mb-1">LP-Client WD Equity Difference</div>
-              <div className={`font-mono font-semibold text-lg ${lpEquitySummary.difference >= 0 ? 'text-success' : 'text-destructive'}`}>
+              <div className={`font-mono font-semibold text-sm sm:text-base ${lpEquitySummary.difference >= 0 ? 'text-success' : 'text-destructive'}`}>
                 ${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
             </div>
@@ -521,7 +521,7 @@ export function AccountsDepartment({
           <div className="grid grid-cols-2 gap-2">
             <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20">
               <div className="text-xs text-muted-foreground mb-1">Total PSP balance</div>
-              <div className="font-mono font-semibold text-lg">
+              <div className="font-mono font-semibold text-sm sm:text-base">
                 ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
             </div>
@@ -533,7 +533,7 @@ export function AccountsDepartment({
                 Equity Difference
               </div>
               <div
-                className={`font-mono font-semibold text-lg ${lpPlusPspDifference >= 0 ? 'text-success' : 'text-destructive'}`}
+                className={`font-mono font-semibold text-sm sm:text-base ${lpPlusPspDifference >= 0 ? 'text-success' : 'text-destructive'}`}
                 title={equityDifferenceTooltip}
               >
                 ${lpPlusPspDifference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

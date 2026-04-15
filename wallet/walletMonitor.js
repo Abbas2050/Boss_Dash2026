@@ -160,7 +160,7 @@ export async function checkAllBalances() {
       toBeDepositedIntoLPsK20 = Number(sourceResult.extra.toBeDepositedIntoLPsK20 || 0);
       toBeDepositedIntoLPsK21 = Number(sourceResult.extra.toBeDepositedIntoLPsK21 || 0);
       differenceBetweenActualAndExpected = Number(sourceResult.extra.differenceBetweenActualAndExpected || 0);
-      netAllCurrentBalance = Number(sourceResult.extra.netAllCurrentBalance || 0);
+      // netAllCurrentBalance is derived from total (sum of all PSPs), not from the sheet
       netBalanceAfterExpectedFunds = Number(sourceResult.extra.netBalanceAfterExpectedFunds || 0);
     }
   }
@@ -180,7 +180,7 @@ export async function checkAllBalances() {
       to_be_deposited_into_lps_k20: toBeDepositedIntoLPsK20,
       to_be_deposited_into_lps_k21: toBeDepositedIntoLPsK21,
       difference_between_actual_and_expected: differenceBetweenActualAndExpected,
-      net_all_current_balance: netAllCurrentBalance,
+      net_all_current_balance: total,
       net_balance_after_expected_funds: netBalanceAfterExpectedFunds,
     },
   };
