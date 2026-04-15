@@ -112,8 +112,16 @@ export async function sendDailyEmailReport(widgets, total, date, bankReceivable,
   const from   = process.env.EMAIL_FROM || process.env.WALLET_FROM || 'noreply@skylinkscapital.com';
   const recipientsCsv = process.env.WALLET_RECIPIENTS || process.env.ALERT_RECIPIENTS || '';
 
-  if (!apiKey) { console.warn('[Notifier] BREVO_API_KEY not set — skipping email'); return false; }
-  if (!recipientsCsv) { console.warn('[Notifier] WALLET_RECIPIENTS not set — skipping email'); return false; }
+  if (!apiKey) {
+    const reason = 'BREVO_API_KEY not set';
+    console.warn(`[Notifier] ${reason} — skipping email`);
+    return { ok: false, reason };
+  }
+  if (!recipientsCsv) {
+    const reason = 'WALLET_RECIPIENTS not set';
+    console.warn(`[Notifier] ${reason} — skipping email`);
+    return { ok: false, reason };
+  }
 
   const recipients = recipientsCsv.split(',').map((r) => ({ email: r.trim() })).filter((r) => r.email);
   const subject = `[WALLET] Closing Balance - ${date} - Total: $${Number(total).toFixed(2)}`;
@@ -132,12 +140,13 @@ export async function sendDailyEmailReport(widgets, total, date, bankReceivable,
 
   if (!res.ok) {
     const body = await res.text();
+    const reason = `Brevo HTTP ${res.status}: ${body.slice(0, 200)}`;
     console.error(`[Notifier] Brevo email failed HTTP ${res.status}:`, body.slice(0, 200));
-    return false;
+    return { ok: false, reason };
   }
 
   console.log('[Notifier] Daily wallet email sent to', recipients.map((r) => r.email).join(', '));
-  return true;
+  return { ok: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -213,7 +222,11 @@ export async function sendDailyTelegramReport(widgets, total, date, bankReceivab
   const botToken = process.env.TELEGRAM_BOT_TOKEN || '';
   const channelId = process.env.TELEGRAM_CHANNEL_ID || '';
 
-  if (!botToken || !channelId) { console.warn('[Notifier] TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID not set — skipping Telegram'); return false; }
+  if (!botToken || !channelId) {
+    const reason = 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHANNEL_ID not set';
+    console.warn(`[Notifier] ${reason} — skipping Telegram`);
+    return { ok: false, reason };
+  }
 
   const message = buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras);
 
@@ -226,10 +239,11 @@ export async function sendDailyTelegramReport(widgets, total, date, bankReceivab
 
   if (!res.ok) {
     const body = await res.text();
+    const reason = `Telegram HTTP ${res.status}: ${body.slice(0, 200)}`;
     console.error(`[Notifier] Telegram send failed HTTP ${res.status}:`, body.slice(0, 200));
-    return false;
+    return { ok: false, reason };
   }
 
   console.log('[Notifier] Daily wallet Telegram report sent');
-  return true;
+  return { ok: true };
 }

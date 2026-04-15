@@ -34,6 +34,16 @@ const BACKEND_API_TARGET =
   process.env.VITE_BACKEND_BASE_URL ||
   'https://api.skylinkscapital.com';
 
+const walletNotifyLogs = [];
+const MAX_WALLET_NOTIFY_LOGS = 100;
+
+function pushWalletNotifyLog(entry) {
+  walletNotifyLogs.unshift({ timestamp: new Date().toISOString(), ...entry });
+  if (walletNotifyLogs.length > MAX_WALLET_NOTIFY_LOGS) {
+    walletNotifyLogs.length = MAX_WALLET_NOTIFY_LOGS;
+  }
+}
+
 app.set('trust proxy', true);
 
 app.disable('x-powered-by');
@@ -54,7 +64,22 @@ app.get('/api/closing-balance-report', async (_req, res) => {
   try {
     const report = await checkAllBalances();
     // Fire-and-forget: send email+Telegram if Total Combined changed
-    notifyIfTotalChanged(report).catch((e) => console.error('[Server] notifyIfTotalChanged error:', e.message));
+    notifyIfTotalChanged(report)
+      .then((result) => {
+        pushWalletNotifyLog({
+          source: 'closing-balance-report',
+          totalBalance: Number(report?.data?.total_balance || 0),
+          result,
+        });
+      })
+      .catch((e) => {
+        console.error('[Server] notifyIfTotalChanged error:', e.message);
+        pushWalletNotifyLog({
+          source: 'closing-balance-report',
+          totalBalance: Number(report?.data?.total_balance || 0),
+          result: { ok: false, status: 'error', reason: e?.message || String(e) },
+        });
+      });
     return res.json(report);
   } catch (error) {
     return res.status(500).json({
@@ -63,6 +88,17 @@ app.get('/api/closing-balance-report', async (_req, res) => {
       message: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+// Temporary diagnostics endpoint for wallet notification delivery status.
+app.get('/api/closing-balance-report/notify-log', (req, res) => {
+  const limitRaw = Number.parseInt(String(req.query.limit ?? '20'), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, limitRaw)) : 20;
+  return res.json({
+    ok: true,
+    count: Math.min(limit, walletNotifyLogs.length),
+    logs: walletNotifyLogs.slice(0, limit),
+  });
 });
 
 app.get('/api/wallet/google-sheets-debug', async (req, res) => {

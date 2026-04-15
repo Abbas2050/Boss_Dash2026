@@ -208,10 +208,12 @@ async function sendWalletReport(report, date, options = {}) {
 
   let emailOk = false;
   let telegramOk = false;
+  let emailReason = '';
+  let telegramReason = '';
 
   if (sendEmail) {
     try {
-      emailOk = await sendDailyEmailReport(
+      const emailResult = await sendDailyEmailReport(
         ctx.widgets,
         ctx.total,
         date,
@@ -221,14 +223,17 @@ async function sendWalletReport(report, date, options = {}) {
         ctx.netAfterExpected,
         { ...ctx.extras, changeItems },
       );
+      emailOk = !!emailResult?.ok;
+      emailReason = emailResult?.reason || '';
     } catch (e) {
       console.error('[WalletScheduler] Email send failed:', e.message);
+      emailReason = e?.message || String(e);
     }
   }
 
   if (sendTelegram) {
     try {
-      telegramOk = await sendDailyTelegramReport(
+      const telegramResult = await sendDailyTelegramReport(
         ctx.widgets,
         ctx.total,
         date,
@@ -238,12 +243,15 @@ async function sendWalletReport(report, date, options = {}) {
         ctx.netAfterExpected,
         { ...ctx.extras, changeItems },
       );
+      telegramOk = !!telegramResult?.ok;
+      telegramReason = telegramResult?.reason || '';
     } catch (e) {
       console.error('[WalletScheduler] Telegram send failed:', e.message);
+      telegramReason = e?.message || String(e);
     }
   }
 
-  return { emailOk, telegramOk };
+  return { emailOk, telegramOk, emailReason, telegramReason };
 }
 
 async function runDailyWalletReport() {
@@ -302,7 +310,7 @@ async function _runNotifyLogic(report, stateFile, date) {
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
     console.log('[WalletScheduler] On-change baseline initialized (no notifications sent on first run).');
-    return;
+    return { ok: true, status: 'baseline-initialized', hash, reason: 'first-run-no-send' };
   }
 
   const needsEmail = state.channels.email.lastSentHash !== hash;
@@ -312,7 +320,7 @@ async function _runNotifyLogic(report, stateFile, date) {
     state.lastSnapshotHash = hash;
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
-    return;
+    return { ok: true, status: 'no-change', hash, reason: 'snapshot-unchanged' };
   }
 
   console.log('[WalletScheduler] Balance change detected, sending notifications...', {
@@ -330,7 +338,7 @@ async function _runNotifyLogic(report, stateFile, date) {
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
     console.log('[WalletScheduler] Change detected but ignored by rules (no notifications sent).');
-    return;
+    return { ok: true, status: 'ignored', hash, reason: 'change-filtered', changeItems: [] };
   }
 
   // Only notify when the Total Combined balance actually changed — individual PSP movements alone are not enough.
@@ -343,7 +351,13 @@ async function _runNotifyLogic(report, stateFile, date) {
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
     console.log('[WalletScheduler] PSP balances changed but Total Combined unchanged — skipping notifications.');
-    return;
+    return {
+      ok: true,
+      status: 'skipped',
+      hash,
+      reason: 'total-combined-unchanged',
+      changeItems: effectiveChangeItems,
+    };
   }
 
   state.lastSnapshotHash = hash;
@@ -368,6 +382,18 @@ async function _runNotifyLogic(report, stateFile, date) {
   }
 
   await saveState(stateFile, state);
+
+  return {
+    ok: sendResult.emailOk || sendResult.telegramOk,
+    status: sendResult.emailOk && sendResult.telegramOk ? 'sent-both' : (sendResult.emailOk || sendResult.telegramOk ? 'sent-partial' : 'send-failed'),
+    hash,
+    reason: sendResult.emailOk || sendResult.telegramOk ? 'sent' : 'all-channels-failed',
+    channels: {
+      email: { requested: needsEmail, ok: sendResult.emailOk, reason: sendResult.emailReason || '' },
+      telegram: { requested: needsTelegram, ok: sendResult.telegramOk, reason: sendResult.telegramReason || '' },
+    },
+    changeItems: effectiveChangeItems,
+  };
 }
 
 /**
