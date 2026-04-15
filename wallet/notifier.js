@@ -151,49 +151,60 @@ function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceiv
     if (v < 0) return `-$${fmt(Math.abs(v))}`;
     return '$0.00';
   };
-  const line = '─'.repeat(30);
-  const toBeDepositedIntoLPsK20 = Number(extras.toBeDepositedIntoLPsK20 ?? 0);
-  const toBeDepositedIntoLPsK21 = Number(extras.toBeDepositedIntoLPsK21 ?? 0);
-  const differenceBetweenActualAndExpected = Number(extras.differenceBetweenActualAndExpected ?? 0);
+  const line = '━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
   const changeItems = Array.isArray(extras.changeItems) ? extras.changeItems : [];
+  const changeMap = {};
+  for (const item of changeItems) {
+    changeMap[item.key] = item;
+  }
+  const shortName = {
+    bitpace: 'Bitpace',
+    letknowpay: 'LetKnow',
+    ownbit: 'OwnBit',
+    heropayment: 'Hero',
+    googlesheets_match2pay: 'M2P',
+    googlesheets_deusxpay: 'DeusX',
+    googlesheets_openpayed: 'OpenPay',
+    googlesheets_goldsouq: 'GoldSouq',
+    googlesheets_fab: 'FAB',
+    googlesheets_mbme: 'MBME',
+  };
 
-  let msg = `💎 *Closing Balance Report*\n📅 ${date}\n\n`;
+  const trendBadge = (delta) => {
+    const v = Number(delta || 0);
+    if (v > 0) return '🟢';
+    if (v < 0) return '🔴';
+    return '⚪';
+  };
+
+  const changeSuffix = (item) => {
+    if (!item) return '';
+    return ` ${trendBadge(item.delta)} \`${fmtDelta(item.delta)}\``;
+  };
+
+  let msg = `*CRYPTO*\n`;
 
   let cryptoSubtotal = 0;
   for (const id of CRYPTO_WIDGETS) {
     if (!widgets[id]) continue;
     cryptoSubtotal += widgets[id].balance ?? 0;
-    const icon = widgets[id].status === 'ok' ? '✅' : '❌';
-    msg += `${icon} *${widgets[id].name}:* \`$${fmt(widgets[id].balance)}\`\n`;
+    const ch = changeMap[id];
+    msg += `• ${shortName[id] || widgets[id].name} \`$${fmt(widgets[id].balance)}\`${changeSuffix(ch)}\n`;
   }
 
+  msg += `C-Total \`$${fmt(cryptoSubtotal)}\`\n`;
   msg += `${line}\n`;
-  msg += `🔐 *SUBTOTAL CRYPTO:* \`$${fmt(cryptoSubtotal)}\`\n`;
-  msg += `${line}\n`;
+  msg += `*BANK*\n`;
 
   for (const id of BANK_WIDGETS) {
     if (!widgets[id]) continue;
-    const icon = widgets[id].status === 'ok' ? '✅' : '❌';
-    msg += `${icon} *${widgets[id].name}:* \`$${fmt(widgets[id].balance)}\`\n`;
+    const ch = changeMap[id];
+    msg += `• ${shortName[id] || widgets[id].name} \`$${fmt(widgets[id].balance)}\`${changeSuffix(ch)}\n`;
   }
 
   msg += `${line}\n`;
-  msg += `💎 *TOTAL COMBINED:* \`$${fmt(total)}\`\n`;
-  msg += `📊 *To be received in BANK:* \`$${fmt(bankReceivable)}\`\n`;
-  msg += `🔐 *To be received in CRYPTO:* \`$${fmt(cryptoReceivable)}\`\n`;
-  msg += `🏦 *To be deposited into LPs (Bank - USD):* \`$${fmt(toBeDepositedIntoLPsK20)}\`\n`;
-  msg += `🏦 *To be deposited into LPs (Crypto USDT):* \`$${fmt(toBeDepositedIntoLPsK21)}\`\n`;
-  msg += `⚖️ *Difference between actual and expected (J29):* \`$${fmt(differenceBetweenActualAndExpected)}\`\n`;
-  msg += `🧮 *Net all Current Balance:* \`$${fmt(netAllCurrent)}\`\n`;
-  msg += `📈 *Net Balance after expected funds:* \`$${fmt(netAfterExpected)}\``;
-
-  if (changeItems.length) {
-    msg += `\n\n${line}\n`;
-    msg += `🔔 *Changes Detected:*\n`;
-    for (const item of changeItems) {
-      msg += `• *${item.label}:* \`$${fmt(item.before)}\` → \`$${fmt(item.after)}\` (${fmtDelta(item.delta)})\n`;
-    }
-  }
+  const totalChange = changeMap.total_balance;
+  msg += `*TOTAL* \`$${fmt(total)}\`${changeSuffix(totalChange)}`;
 
   return msg;
 }
