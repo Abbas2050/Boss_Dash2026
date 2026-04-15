@@ -315,14 +315,6 @@ async function _runNotifyLogic(report, stateFile, date) {
     return;
   }
 
-  // Hard de-dupe: if this exact snapshot was already notified once, never re-send it.
-  if (state.lastNotifiedHash === hash) {
-    state.lastSnapshotHash = hash;
-    state.lastSnapshot = snapshot;
-    await saveState(stateFile, state);
-    return;
-  }
-
   console.log('[WalletScheduler] Balance change detected, sending notifications...', {
     email: needsEmail,
     telegram: needsTelegram,
@@ -354,8 +346,6 @@ async function _runNotifyLogic(report, stateFile, date) {
     return;
   }
 
-  // Mark this snapshot as already notified before channel sends to avoid duplicate bursts.
-  state.lastNotifiedHash = hash;
   state.lastSnapshotHash = hash;
   state.lastSnapshot = snapshot;
   await saveState(stateFile, state);
@@ -371,6 +361,10 @@ async function _runNotifyLogic(report, stateFile, date) {
   }
   if (needsTelegram && sendResult.telegramOk) {
     state.channels.telegram.lastSentHash = hash;
+  }
+
+  if (sendResult.emailOk || sendResult.telegramOk) {
+    state.lastNotifiedHash = hash;
   }
 
   await saveState(stateFile, state);

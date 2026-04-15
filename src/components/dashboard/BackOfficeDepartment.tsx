@@ -1441,7 +1441,7 @@ export function BackOfficeDepartment({
       const lpDepositK20 = Number(response.data.to_be_deposited_into_lps_k20 ?? 0);
       const lpDepositK21 = Number(response.data.to_be_deposited_into_lps_k21 ?? 0);
       const diffActualExpected = Number(response.data.difference_between_actual_and_expected ?? 0);
-      const netCurrent = Number(response.data.net_all_current_balance ?? total);
+        const netCurrent = total;
       const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
 
       setPspBalances(mapped);
