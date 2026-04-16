@@ -25,7 +25,13 @@ export interface WalletBalancesResponse {
 
 export async function fetchWalletBalances(): Promise<WalletBalancesResponse | null> {
   try {
-    const response = await fetch('/api/closing-balance-report');
+    const response = await fetch(`/api/closing-balance-report?_ts=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+      },
+    });
     if (!response.ok) {
       return { ok: false, error: `HTTP ${response.status}` };
     }

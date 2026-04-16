@@ -62,6 +62,11 @@ app.use((req, res, next) => {
 
 app.get('/api/closing-balance-report', async (_req, res) => {
   try {
+    // Ensure every poll gets fresh balances (avoid browser/proxy caching).
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
     const report = await checkAllBalances();
     // Fire-and-forget: send email+Telegram if Total Combined changed
     notifyIfTotalChanged(report)

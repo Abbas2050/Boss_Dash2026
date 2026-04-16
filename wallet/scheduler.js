@@ -137,27 +137,27 @@ function buildChangeItems(previousSnapshot, currentSnapshot) {
 }
 
 function filterIgnoredChangeItems(changeItems) {
-  const ignoreBitpaceZeroRecovery = process.env.WALLET_IGNORE_BITPACE_ZERO_RECOVERY !== 'false';
-  if (!ignoreBitpaceZeroRecovery) return changeItems;
+  // Identify any PSP (non-total) item that dropped to exactly 0 (API failure)
+  // or recovered from exactly 0 (API recovery). Both are treated as noise.
+  const noiseItems = changeItems.filter((item) => {
+    if (!item?.key || item.key === 'total_balance') return false;
+    const before = roundMoney(item.before);
+    const after = roundMoney(item.after);
+    const isApiFail = after === 0 && before > 0;
+    const isApiRecovery = before === 0 && after > 0;
+    return isApiFail || isApiRecovery;
+  });
 
-  const bitpaceItem = changeItems.find((item) => item?.key === 'bitpace');
-  if (!bitpaceItem) return changeItems;
+  if (noiseItems.length === 0) return changeItems;
 
-  const before = roundMoney(bitpaceItem.before);
-  const after = roundMoney(bitpaceItem.after);
-  // API failure: Bitpace balance drops to 0 (balance > 0 → 0)
-  const isBitpaceApiFail = after === 0 && before > 0;
-  // API recovery: Bitpace balance recovers from 0 (0 → balance > 0)
-  const isBitpaceApiRecovery = before === 0 && after > 0;
-  const isBitpaceNoise = isBitpaceApiFail || isBitpaceApiRecovery;
-
-  if (!isBitpaceNoise) return changeItems;
+  // Sum of deltas for all noise PSPs
+  const noiseDeltaSum = roundMoney(noiseItems.reduce((sum, item) => sum + (item.delta ?? 0), 0));
 
   return changeItems.filter((item) => {
-    // Drop the Bitpace item itself
-    if (item?.key === 'bitpace') return false;
-    // Also drop the total_balance item if Bitpace was the sole cause of the total change
-    if (item?.key === 'total_balance' && roundMoney(item.delta) === roundMoney(bitpaceItem.delta)) return false;
+    // Drop any noise PSP item
+    if (noiseItems.some((n) => n.key === item?.key)) return false;
+    // Drop total_balance if its change is fully explained by the noise PSPs
+    if (item?.key === 'total_balance' && roundMoney(item.delta) === noiseDeltaSum) return false;
     return true;
   });
 }
