@@ -115,6 +115,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
 
         // Fetch all data in parallel
         const [
+          allUsersInScope,
           allDeposits,
           allWithdrawals,
           allIBWithdrawals,
@@ -123,6 +124,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
           individualUsers,
           corporateUsers,
         ] = await Promise.all([
+          fetchAllUsers({ ...baseUsersFilter, lead: false }),
           fetchAllTransactions({ 
             processedAt: { begin, end },
             transactionTypes: ['deposit'],
@@ -146,10 +148,10 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
 
         const allAccounts = await fetchAllAccounts({
           createdAt: { begin, end },
-          userIds: hasEntityFilter ? allUsers.map((user) => user.id) : undefined,
+          userIds: hasEntityFilter ? allUsersInScope.map((user) => user.id) : undefined,
         }).catch(() => []);
 
-        const entityUserIds = new Set((allUsers || []).map((user) => user.id));
+        const entityUserIds = new Set((allUsersInScope || []).map((user) => user.id));
         const filteredDeposits = hasEntityFilter
           ? (allDeposits || []).filter((tx) => entityUserIds.has(tx.fromUserId))
           : (allDeposits || []);
@@ -344,7 +346,7 @@ export function AnalyticsSection({ selectedEntity, fromDate, toDate, refreshKey 
         allAccounts.forEach((acc: any) => {
           const group = String(acc?.groupName || acc?.group || '').trim().toLowerCase();
           if (group.startsWith('demo') || group.startsWith('ib-wallet')) return;
-          const user = allUsers.find((candidate: any) => candidate.id === acc.userId);
+          const user = allUsersInScope.find((candidate: any) => candidate.id === acc.userId);
           if (!user) return;
           const entity = getEntityName(user);
           if (!entityMap[entity]) entityMap[entity] = { clients: 0, accounts: 0 };
