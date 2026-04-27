@@ -5,6 +5,7 @@ import { HubConnection, HubConnectionBuilder, LogLevel } from "@microsoft/signal
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/dealingApi";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
+import { classifyLpBucket } from "@/lib/lpBuckets";
 import { hasAccess } from "@/lib/auth";
 import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
@@ -569,96 +570,6 @@ const formatDollar = (value: number) => {
   if (value === 0) return <span className="text-slate-500">$0.00</span>;
   if (value > 0) return <span className="text-emerald-700 dark:text-emerald-300">${abs}</span>;
   return <span className="text-rose-700 dark:text-rose-300">-${abs}</span>;
-};
-
-const normalizeLpName = (value: unknown) => String(value || "").trim().toLowerCase();
-
-const normalizeLpForMatch = (value: unknown) =>
-  normalizeLpName(value)
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const LP_BUCKET_ALIASES: Record<"Bank" | "Both" | "Crypto", string[]> = {
-  Bank: [
-    "CMC MARKETS MIDDLE EAST LIMITED",
-    "CMC Coverage",
-    "CMC 2 Coverage",
-    "Coverage XopenHub2nd Acc (101797)",
-    "FXCM",
-    "FXCM Coverage",
-    "FXCM 2 Coverage",
-    "IG Coverage (101971)",
-    "LMAX",
-    "LMAX 2nd ACC TOB1 OmnibusAc",
-    "Lmax 3rd acc TOBS",
-    "Lmax 3rd acc TOB5",
-    "LMAX Old",
-    "Noor Capital",
-    "XTB",
-    "XTB Bonus 1(Coverage)",
-    "XTB Bonus 1 (Coverage)",
-  ],
-  Both: [
-    "AFS Global Limited - Amana",
-    "Amana 1",
-    "Amana2",
-    "ATFX",
-    "ATFX 2 coverage acc #186",
-    "FINALTO",
-    "Finalto Coverage 33931 REV",
-    "Coverage Finalto 2nd acc",
-    "Finalto 3rd account coverage",
-    "FX-EDGE SC LTD",
-    "FX Edge Coverage",
-    "Hantec Markets",
-    "Hantec",
-  ],
-  Crypto: [
-    "AIDI Financial",
-    "AIDI",
-    "B2Prime",
-    "B2B Coverage account",
-    "Broctagon Prime Markets Limited",
-    "Broctagon1",
-    "Broctagon2",
-    "CFI - Credit Financier Invest International LTD",
-    "CFI",
-    "ICM Capital Limited",
-    "ICM",
-    "Infinox Limited",
-    "Infinox",
-    "Logan Capital (PTY) LTD - LP PRIME",
-    "LP Prime",
-    "Mex Atlantic Corporation - Multi Bank",
-    "Multi Bank",
-    "Startrader Financial Markets Limited (Star Prime)",
-    "Taurex (Zenfinex Global Limited)",
-    "Taurex",
-    "Taurex2",
-  ],
-};
-
-const LP_BUCKET_MATCHERS: Record<"Bank" | "Both" | "Crypto", string[]> = {
-  Bank: LP_BUCKET_ALIASES.Bank.map(normalizeLpForMatch),
-  Both: LP_BUCKET_ALIASES.Both.map(normalizeLpForMatch),
-  Crypto: LP_BUCKET_ALIASES.Crypto.map(normalizeLpForMatch),
-};
-
-const classifyLpBucket = (lpName: unknown): "Bank" | "Both" | "Crypto" | null => {
-  const normalized = normalizeLpForMatch(lpName);
-  if (!normalized) return null;
-
-  for (const alias of LP_BUCKET_MATCHERS.Bank) {
-    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Bank";
-  }
-  for (const alias of LP_BUCKET_MATCHERS.Both) {
-    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Both";
-  }
-  for (const alias of LP_BUCKET_MATCHERS.Crypto) {
-    if (alias && (normalized.includes(alias) || alias.includes(normalized))) return "Crypto";
-  }
-  return null;
 };
 
 const formatMaybeNumber = (value: unknown, digits = 2) => {
@@ -2379,12 +2290,29 @@ export function DealingDepartmentPage() {
       setNopLoading(true);
       setNopError(null);
       try {
+        const isLocalHost = ["localhost", "127.0.0.1"].includes(window.location.hostname);
+        const nopBase = isLocalHost ? "" : BACKEND_BASE_URL;
         const endpoint = nopSymbol
-          ? `/NopReport?symbol=${encodeURIComponent(nopSymbol)}`
-          : "/NopReport";
-        const resp = await fetch(endpoint);
+          ? `${nopBase}/NopReport?symbol=${encodeURIComponent(nopSymbol)}`
+          : `${nopBase}/NopReport`;
+        const resp = await fetch(endpoint, {
+          headers: {
+            Accept: "application/json",
+          },
+        });
+        const rawBody = await resp.text();
         if (!resp.ok) throw new Error(`NopReport ${resp.status}`);
-        const payload = (await resp.json()) as Partial<NopReportData>;
+
+        let payload: Partial<NopReportData>;
+        try {
+          payload = JSON.parse(rawBody) as Partial<NopReportData>;
+        } catch {
+          const snippet = rawBody.slice(0, 120).replace(/\s+/g, " ").trim();
+          if (snippet.toLowerCase().startsWith("<!doctype") || snippet.startsWith("<")) {
+            throw new Error("NopReport returned HTML instead of JSON. Check live API routing for /NopReport.");
+          }
+          throw new Error("NopReport returned an invalid JSON response.");
+        }
         const symbols = Array.isArray(payload?.symbols) ? payload.symbols : [];
         const normalized: NopReportData = {
           timestamp: String(payload?.timestamp || new Date().toISOString()),

@@ -28,6 +28,7 @@ interface LpOverview {
 
 interface LpEquityPoint {
   ts: number;
+  snapshotDate: string;
   time: string;
   lpWithdrawableEquity: number;
   clientWithdrawableEquity: number;
@@ -35,6 +36,22 @@ interface LpEquityPoint {
 }
 
 type LpBucket = 'Bank' | 'Both' | 'Crypto';
+const LP_EQUITY_HISTORY_DAYS = 120;
+
+const formatSnapshotLabel = (snapshotDate: string) =>
+  new Date(`${snapshotDate}T00:00:00`).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+
+const buildDubaiDateKey = () => {
+  const dubaiNow = getDubaiDate();
+  const year = dubaiNow.getFullYear();
+  const month = String(dubaiNow.getMonth() + 1).padStart(2, '0');
+  const day = String(dubaiNow.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const normalizeLpName = (value: unknown) =>
   String(value || '')
@@ -308,6 +325,52 @@ export function AccountsDepartment({
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
     };
 
+    const loadLpEquitySeries = async () => {
+      try {
+        const response = await fetch(`/api/lp-equity-snapshots?days=${LP_EQUITY_HISTORY_DAYS}`);
+        if (!response.ok) return;
+        const payload = await response.json();
+        const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+        const mapped: LpEquityPoint[] = rows
+          .map((row: any) => {
+            const snapshotDateRaw = String(row?.snapshotDate || row?.snapshot_date || '').slice(0, 10);
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDateRaw)) return null;
+            const ts = new Date(`${snapshotDateRaw}T00:00:00`).getTime();
+            return {
+              ts: Number.isFinite(ts) ? ts : Date.now(),
+              snapshotDate: snapshotDateRaw,
+              time: formatSnapshotLabel(snapshotDateRaw),
+              lpWithdrawableEquity: Number(row?.lpWithdrawableEquity ?? row?.lp_withdrawable_equity ?? 0) || 0,
+              clientWithdrawableEquity: Number(row?.clientWithdrawableEquity ?? row?.client_withdrawable_equity ?? 0) || 0,
+              difference: Number(row?.difference ?? row?.equity_difference ?? 0) || 0,
+            } satisfies LpEquityPoint;
+          })
+          .filter((point: LpEquityPoint | null): point is LpEquityPoint => Boolean(point));
+
+        setLpEquitySeries(mapped.slice(-LP_EQUITY_HISTORY_DAYS));
+      } catch (_err) {
+        // silently ignore
+      }
+    };
+
+    const upsertLpEquitySnapshot = async (point: LpEquityPoint) => {
+      try {
+        await fetch('/api/lp-equity-snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            snapshotDate: point.snapshotDate,
+            lpWithdrawableEquity: point.lpWithdrawableEquity,
+            clientWithdrawableEquity: point.clientWithdrawableEquity,
+            difference: point.difference,
+            source: 'dashboard',
+          }),
+        });
+      } catch (_err) {
+        // silently ignore
+      }
+    };
+
     const fetchLpEquitySummary = async () => {
       try {
         const data = await fetchEquityOverviewDashboard({ includeDetails: false });
@@ -319,16 +382,21 @@ export function AccountsDepartment({
           clientWithdrawableEquity,
           difference,
         });
+        const snapshotDate = buildDubaiDateKey();
+        const pointTs = new Date(`${snapshotDate}T00:00:00`).getTime();
         const nextPoint: LpEquityPoint = {
-          ts: Date.now(),
-          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+          ts: Number.isFinite(pointTs) ? pointTs : Date.now(),
+          snapshotDate,
+          time: formatSnapshotLabel(snapshotDate),
           lpWithdrawableEquity,
           clientWithdrawableEquity,
           difference,
         };
+        await upsertLpEquitySnapshot(nextPoint);
         setLpEquitySeries((prev) => {
-          const next = [...prev, nextPoint];
-          return next.slice(-36);
+          const withoutCurrentDate = prev.filter((item) => item.snapshotDate !== nextPoint.snapshotDate);
+          const next = [...withoutCurrentDate, nextPoint].sort((a, b) => a.ts - b.ts);
+          return next.slice(-LP_EQUITY_HISTORY_DAYS);
         });
       } catch (err) {
         // silently ignore
@@ -436,6 +504,7 @@ export function AccountsDepartment({
       fetchWalletData();
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
     } else {
+      loadLpEquitySeries();
       fetchLpEquitySummary();
       fetchLpOverview();
       fetchWalletData();
@@ -541,7 +610,7 @@ export function AccountsDepartment({
             </div>
           </div>
           <div className="rounded-lg border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-success/10 p-2">
-            <div className="mb-2 text-xs text-muted-foreground">Live Equity Trend (time)</div>
+            <div className="mb-2 text-xs text-muted-foreground">Live Equity Trend (date)</div>
             <div className="h-32">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={lpEquitySeries}>
@@ -549,7 +618,7 @@ export function AccountsDepartment({
                   <YAxis hide domain={['auto', 'auto']} />
                   <Tooltip
                     formatter={(value: number) => `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                    labelFormatter={(label) => `Time: ${label}`}
+                    labelFormatter={(label) => `Date: ${label}`}
                   />
                   <Area type="monotone" dataKey="lpWithdrawableEquity" stroke="#22c55e" fill="#22c55e22" strokeWidth={2} />
                   <Area type="monotone" dataKey="clientWithdrawableEquity" stroke="#38bdf8" fill="#38bdf822" strokeWidth={2} />
@@ -725,5 +794,3 @@ export function AccountsDepartment({
     </DepartmentCard>
   );
 }
-
-

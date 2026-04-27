@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { BackOfficeDepartment } from '@/components/dashboard/BackOfficeDepartment';
 import { FilterSection } from '@/components/dashboard/FilterSection';
 import { AnalyticsSection } from '@/components/dashboard/AnalyticsSection';
-import { getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
+import { getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 
 export function BackofficeDepartmentPage() {
   const [selectedEntity, setSelectedEntity] = useState('all');

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Settings,
   Users,
@@ -32,6 +32,7 @@ import { SortableTable, type SortableTableColumn } from '@/components/ui/Sortabl
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from '@/lib/rebateApi';
 import { getRateForSymbol, normalizeRebateSymbol } from '@/pages/departments/dealing/rebateUtils';
+import { aggregateRealEquityByLpBucket, EMPTY_LP_BUCKET_TOTALS } from '@/lib/lpBuckets';
 
 async function fetchAllAccounts(filter: Omit<AccountRequest, 'segment'>): Promise<Account[]> {
   const PAGE = 1000;
@@ -218,6 +219,8 @@ export function BackOfficeDepartment({
   const [reportDate, setReportDate] = useState('-');
   const [reportUpdated, setReportUpdated] = useState('-');
   const [walletError, setWalletError] = useState<string | null>(null);
+  const [realEquityByBucket, setRealEquityByBucket] = useState({ ...EMPTY_LP_BUCKET_TOTALS });
+  const [realEquityByBucketError, setRealEquityByBucketError] = useState<string | null>(null);
   const [walletTotal, setWalletTotal] = useState(0);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
@@ -258,6 +261,7 @@ export function BackOfficeDepartment({
     ibWithdrawnLifetime: 0,
     ibWithdrawnPeriod: 0,
   });
+  const metricsBucketsRequestRef = useRef<{ at: number }>({ at: 0 });
 
   const parseRateOverrides = (text: string) => {
     const lines = String(text || '')
@@ -800,6 +804,13 @@ export function BackOfficeDepartment({
   const createdRate = metrics.totalClients > 0 ? Math.round((metrics.totalMT5Accounts / metrics.totalClients) * 100) : 0;
   const lookupDepositTotal = lookupResult?.deposits.reduce((s, t) => s + t.amount, 0) || 0;
   const lookupWithdrawalTotal = lookupResult?.withdrawals.reduce((s, t) => s + t.amount, 0) || 0;
+  const realEquityBucketTotal = Math.max(
+    0,
+    (Number(realEquityByBucket.Bank) || 0) +
+      (Number(realEquityByBucket.Both) || 0) +
+      (Number(realEquityByBucket.Crypto) || 0),
+  );
+  const getBucketShare = (value: number) => (realEquityBucketTotal > 0 ? (value / realEquityBucketTotal) * 100 : 0);
   const hideZeroStatsInCompact = variant === 'compact';
   const clientBreakdownItems = [
     {
@@ -1480,6 +1491,62 @@ export function BackOfficeDepartment({
   useEffect(() => {
     if (variant !== 'full') return;
 
+    const dashboardEndpoint = `${String((import.meta as any).env?.VITE_BACKEND_BASE_URL || 'https://api.skylinkscapital.com').replace(/\/+$/, '')}/Metrics/dashboard`;
+    let cancelled = false;
+    const describeRateLimit = (resp: Response) => {
+      if (resp.status !== 429) return `Metrics dashboard ${resp.status}`;
+      const retryAfter = resp.headers.get('Retry-After');
+      return retryAfter
+        ? `Rate limit reached (429) for Metrics dashboard. Retry after ${retryAfter}s.`
+        : 'Rate limit reached (429) for Metrics dashboard. Please wait a few seconds.';
+    };
+
+    const fetchRealEquityBuckets = async (force = false) => {
+      const now = Date.now();
+      if (!force && now - metricsBucketsRequestRef.current.at < 1200) return;
+      metricsBucketsRequestRef.current.at = now;
+      try {
+        const res = await fetch(dashboardEndpoint);
+        if (!res.ok) throw new Error(describeRateLimit(res));
+
+        const dashboard = await res.json();
+        if (cancelled) return;
+        const items = Array.isArray(dashboard?.items) ? dashboard.items : [];
+        const bucketTotals = aggregateRealEquityByLpBucket(
+          items.map((item: any) => ({
+            lp: item?.lp ?? item?.LP,
+            realEquity: item?.realEquity ?? item?.real_equity,
+          })),
+        );
+        setRealEquityByBucket(bucketTotals);
+        setRealEquityByBucketError(null);
+      } catch (e: any) {
+        if (cancelled) return;
+        setRealEquityByBucketError(e?.message || 'Failed to load LP real equity buckets.');
+      }
+    };
+
+    fetchRealEquityBuckets();
+    const onFocus = () => {
+      fetchRealEquityBuckets(true);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') fetchRealEquityBuckets(true);
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    const iv = setInterval(fetchRealEquityBuckets, 5000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      clearInterval(iv);
+    };
+  }, [refreshKey, variant]);
+
+  useEffect(() => {
+    if (variant !== 'full') return;
+
     let cancelled = false;
 
     const loadDocusignOverview = async () => {
@@ -1735,6 +1802,54 @@ export function BackOfficeDepartment({
                   </div>
                 );
               })}
+
+              <div className="mt-3 rounded-xl border border-sky-500/30 bg-gradient-to-br from-sky-500/10 via-indigo-500/5 to-violet-500/10 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                    LP Real Equity Buckets
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">Synced from Dealing Metrics</div>
+                </div>
+
+                <div className="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  <div className="rounded-lg border border-sky-500/25 bg-sky-500/10 p-2.5">
+                    <div className="text-[10px] text-sky-700 dark:text-sky-300">Bank (RE)</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-sky-800 dark:text-sky-200">
+                      {formatCurrencyValue(realEquityByBucket.Bank)}
+                    </div>
+                    <div className="mt-1 text-[10px] text-sky-700/80 dark:text-sky-300/80">{getBucketShare(realEquityByBucket.Bank).toFixed(1)}%</div>
+                  </div>
+                  <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-2.5">
+                    <div className="text-[10px] text-amber-700 dark:text-amber-300">Both (RE)</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-amber-800 dark:text-amber-200">
+                      {formatCurrencyValue(realEquityByBucket.Both)}
+                    </div>
+                    <div className="mt-1 text-[10px] text-amber-700/80 dark:text-amber-300/80">{getBucketShare(realEquityByBucket.Both).toFixed(1)}%</div>
+                  </div>
+                  <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2.5">
+                    <div className="text-[10px] text-violet-700 dark:text-violet-300">Crypto (RE)</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-violet-800 dark:text-violet-200">
+                      {formatCurrencyValue(realEquityByBucket.Crypto)}
+                    </div>
+                    <div className="mt-1 text-[10px] text-violet-700/80 dark:text-violet-300/80">{getBucketShare(realEquityByBucket.Crypto).toFixed(1)}%</div>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <div className="mb-1 text-[10px] text-muted-foreground">Bucket split</div>
+                  <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200/70 dark:bg-slate-800/70">
+                    <div className="flex h-full w-full">
+                      <div className="bg-sky-500/80" style={{ width: `${getBucketShare(realEquityByBucket.Bank)}%` }} />
+                      <div className="bg-amber-500/80" style={{ width: `${getBucketShare(realEquityByBucket.Both)}%` }} />
+                      <div className="bg-violet-500/80" style={{ width: `${getBucketShare(realEquityByBucket.Crypto)}%` }} />
+                    </div>
+                  </div>
+                </div>
+
+                {realEquityByBucketError && (
+                  <div className="mt-2 text-[10px] text-destructive">{realEquityByBucketError}</div>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2.5">
@@ -2399,7 +2514,4 @@ export function BackOfficeDepartment({
     </DepartmentCard>
   );
 }
-
-
-
 

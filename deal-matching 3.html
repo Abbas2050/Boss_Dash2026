@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>Deal Match Analysis</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { theme:{ extend:{ colors:{ line:'#2a3344', neon:'#14f195' } } } }</script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        .collapse-header { cursor: pointer; user-select: none; }
+        .collapse-arrow { display: inline-block; color: var(--fg-dim, #94a3b8); font-size: 10px;
+            margin-right: 6px; transition: transform 0.15s ease; }
+        .collapsed .collapse-arrow { transform: rotate(-90deg); }
+        .collapsed .collapse-body { display: none !important; }
+        .collapsed { height: auto !important; }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Control Header -->
+    <div class="glass" style="padding:8px 10px;">
+        <div class="flex flex-wrap items-center gap-4">
+            <h2 class="font-bold" style="color:var(--neon);">Deal Match Analysis</h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Group:</span>
+                <input type="text" id="group" value="*" style="width:60px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">From:</span>
+                <input type="date" id="dm-from">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">To:</span>
+                <input type="date" id="dm-to">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Symbol:</span>
+                <input type="text" id="symbol" placeholder="all" style="width:80px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Login:</span>
+                <input type="text" id="login" placeholder="all" style="width:90px;">
+            </div>
+            <button onclick="runMatch()" id="runBtn" class="btn btn-primary">Run Match</button>
+            <span id="dm-stats" class="text-xs text-slate-400 ml-auto"></span>
+        </div>
+    </div>
+
+    <!-- Summary -->
+    <!-- KPI cards - always visible, non-collapsible -->
+    <div id="kpi-section" style="display:none;">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+            <div class="kpi"><div class="val" style="font-size:16px;color:var(--pos)" id="kMarkup">$0</div><div class="lbl">Markup Revenue</div></div>
+            <div class="kpi"><div class="val" style="font-size:16px;color:var(--amber)" id="kComm">$0</div><div class="lbl">Commission Revenue</div></div>
+            <div class="kpi"><div class="val" style="font-size:16px;color:var(--rose)" id="kLpComm">-$0</div><div class="lbl">LP Commission</div></div>
+            <div class="kpi" style="background:linear-gradient(180deg, rgba(20,241,149,0.08), rgba(0,229,255,0.04));">
+                <div class="val" style="font-size:16px;color:var(--neon)" id="kNet">$0</div><div class="lbl">Total Net Revenue</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Summary grid (MT5 / Client / Bonus / Centroid) - collapsible -->
+    <div id="summary-section" class="collapsed glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:25vh;">
+        <div class="collapse-header flex items-center mb-1">
+                <span class="collapse-arrow">v</span>
+            <h3 class="text-xs font-semibold" style="color:var(--neon);">Overall summary - MT5 / Client / Bonus / Centroid</h3>
+        </div>
+        <div id="grid-summary" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Client systems - commissions breakdown (Client / Bonus) -->
+    <div id="systems-section" class="collapsed glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:30vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold" style="color:#93c5fd;">Client systems - lots &amp; commission charged</h3>
+            </div>
+        </div>
+        <div id="grid-systems" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- 1. Revenue by Client -->
+    <div id="client-revenue-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:38vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-emerald-300">Revenue by Client</h3>
+            </div>
+        </div>
+        <div id="grid-client-revenue" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <div id="client-revenue-detail-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:32vh;">
+        <div class="flex items-center justify-between mb-1">
+            <h3 class="text-xs font-semibold text-cyan-300">Client LP allocation detail</h3>
+            <span id="client-revenue-detail-label" class="text-xs text-slate-400"></span>
+        </div>
+        <div id="grid-client-revenue-detail" class="ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- 2. Commission charged by LP -->
+    <div id="coverage-lps-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:38vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold" style="color:var(--neon);">Commission charged by LP</h3>
+            </div>
+        </div>
+        <div id="grid-coverage-lps" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- LP drill-down detail card (shown when a row in Commission charged by LP is clicked) -->
+    <div id="coverage-lp-detail-section" class="glass rounded-lg p-2 mb-2" style="display:none;">
+        <div class="flex items-center justify-between mb-1">
+            <h3 class="text-xs font-semibold text-cyan-300">LP Detail</h3>
+            <span id="coverage-lp-detail-label" class="text-xs text-slate-400"></span>
+        </div>
+        <div id="coverage-lp-detail-body" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+    </div>
+
+    <!-- 3. Match Details (on-demand) - matched / unmatched / partial fills -->
+    <div id="match-details-toolbar" class="glass rounded-lg p-2 flex items-center justify-between mb-2" style="display:none;">
+        <div class="flex items-center gap-2">
+            <h3 class="text-xs font-semibold" style="color:#fbbf24;">Match Details</h3>
+            <span class="text-xs text-slate-400">Matched / Unmatched / Partial fills - on demand</span>
+        </div>
+        <button id="loadDetailsBtn" onclick="loadMatchDetails()" class="btn btn-primary" style="padding:4px 12px;font-size:12px;">Load Match Details</button>
+    </div>
+
+    <!-- Matched Trades -->
+    <div id="matched-section" class="collapsed glass rounded-lg p-2 flex flex-col" style="display:none; height:50vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-emerald-400">Matched Trades</h3>
+            </div>
+        </div>
+        <div id="grid-matched" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Unmatched MT5 Deals -->
+    <div id="unmatched-mt5-section" class="collapsed glass rounded-lg p-2 flex flex-col" style="display:none; height:35vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-red-300">Unmatched MT5 Deals by Client</h3>
+            </div>
+        </div>
+        <div id="grid-unmatched-mt5" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Unmatched Centroid Orders -->
+    <div id="unmatched-cen-section" class="collapsed glass rounded-lg p-2 flex flex-col" style="display:none; height:35vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-orange-400">Unmatched Centroid Orders</h3>
+            </div>
+        </div>
+        <div id="grid-unmatched-cen" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Partial Fills -->
+    <div id="partial-section" style="display:none;">
+        <div id="partial-main" class="collapsed glass rounded-lg p-2 flex flex-col" style="height:25vh; margin-bottom:6px;">
+            <div class="collapse-header flex items-center justify-between mb-1">
+                <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                    <h3 class="text-xs font-semibold text-amber-300">Partial Fills - click a row to drill down</h3>
+                </div>
+            </div>
+            <div id="grid-partial" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+        </div>
+        <div id="partial-detail" class="grid grid-cols-1 lg:grid-cols-2 gap-2" style="display:none;">
+            <div class="collapsed glass rounded-lg p-2 flex flex-col" style="height:30vh;">
+                <div class="collapse-header flex items-center justify-between mb-1">
+                    <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                        <h3 class="text-xs font-semibold text-cyan-300">MT5 Deal Details</h3>
+                    </div>
+                    <span id="partial-mt5-label" class="text-xs text-slate-400"></span>
+                </div>
+                <div id="grid-partial-mt5" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+            </div>
+            <div class="collapsed glass rounded-lg p-2 flex flex-col" style="height:30vh;">
+                <div class="collapse-header flex items-center justify-between mb-1">
+                    <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                        <h3 class="text-xs font-semibold text-purple-300">Centroid Legs</h3>
+                    </div>
+                    <span id="partial-cen-label" class="text-xs text-slate-400"></span>
+                </div>
+                <div id="grid-partial-cen" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+            </div>
+        </div>
+    </div>
+
+</div><!-- .page -->
+
+<script>
+    const { fmtUSD, fmtNum, fmtNum5, fmtInt, fmtPct, posStyle, boldPosStyle, sideStyle } = SLC;
+
+    // -- Grids ------------------------------------------------
+    let gridSummary, gridMatched, gridUnMt5, gridUnCen, gridPartial, gridPartialMt5, gridPartialCen, gridSystems, gridCoverageLps, gridClientRevenue, gridClientRevenueDetail;
+
+    // Toggle collapse state when a collapse-header is clicked.
+    document.addEventListener('click', (e) => {
+        const header = e.target.closest('.collapse-header');
+        if (header) header.parentElement.classList.toggle('collapsed');
+    });
+
+    const systemStyle = p => ({
+        color: p.value === 'Bonus' ? '#fbbf24'
+             : p.value === 'LP Charged' ? '#fb7185'
+             : p.value === 'Net (Client - LP)' ? 'var(--neon)'
+             : '#93c5fd',
+        fontWeight: 'bold'
+    });
+
+    // Coverage LP columns - mirror the LP Commissions page grid
+    const lpSourceStyle = p => ({
+        color: p.value === 'Manager' ? '#93c5fd' : p.value === 'Terminal' ? '#fbbf24' : '#64748b',
+        fontWeight: 'bold'
+    });
+    const lpCommMethodStyle = p => ({
+        color: p.value === 'Calculated' ? '#93c5fd' : 'var(--amber)',
+        fontWeight: 'bold'
+    });
+    const coverageLpCols = [
+        { field:'lpName', headerName:'LP', minWidth:180, pinned:'left' },
+        { field:'lpLogin', headerName:'Login', minWidth:100,
+          valueFormatter: p => p.value == null || p.value === '' ? '' : p.value },
+        { field:'lots', headerName:'Lots', minWidth:100, valueFormatter:fmtNum },
+        { field:'millionsUsd', headerName:'$M', minWidth:100, valueFormatter:fmtNum,
+          cellStyle: { color:'var(--pos)' } },
+        { field:'effectiveCommission', headerName:'LP Commission', minWidth:150, valueFormatter:fmtUSD,
+          cellStyle: { color:'var(--neon)', fontWeight:'bold' } },
+    ];
+
+    const systemCommStyle = p => {
+        const sys = p.data?.system;
+        if (sys === 'LP Charged') return { color:'#fb7185', fontWeight:'bold' };
+        if (sys === 'Net (Client - LP)')
+            return { color: (p.value||0) >= 0 ? 'var(--pos)' : 'var(--neg)', fontWeight:'bold' };
+        return { color:'var(--amber)', fontWeight:'bold' };
+    };
+
+    const systemCols = [
+        { field:'system', headerName:'System', minWidth:100, cellStyle: systemStyle },
+        { field:'lots', headerName:'Lots', minWidth:100, valueFormatter:fmtNum },
+        { field:'markupRevenueUsd', headerName:'Markup Revenue', minWidth:140, valueFormatter:fmtUSD,
+          cellStyle: p => ((p.value||0) >= 0 ? { color:'var(--pos)', fontWeight:'bold' } : { color:'var(--neg)', fontWeight:'bold' }) },
+        { field:'commission', headerName:'Commission charged', minWidth:160, valueFormatter:fmtUSD,
+          cellStyle: systemCommStyle },
+    ];
+
+    const clientRevenueCols = [
+        { field:'login', headerName:'Login', pinned:'left', minWidth:90,
+          valueFormatter: p => p.value == null || p.value === '' ? '' : p.value },
+        { field:'name', headerName:'Name', minWidth:130 },
+        { field:'group', headerName:'Group', minWidth:120 },
+        { field:'system', headerName:'System', minWidth:85, cellStyle: systemStyle },
+        { field:'lots', headerName:'Lots', minWidth:90, valueFormatter:fmtNum },
+        { field:'markupRevenueUsd', headerName:'Markup Rev', minWidth:110, valueFormatter:fmtUSD, cellStyle: posStyle },
+        { field:'clientCommissionUsd', headerName:'Client Comm', minWidth:110, valueFormatter:fmtUSD, cellStyle:{ color:'var(--amber)' } },
+        { field:'lpCommissionUsd', headerName:'LP Comm', minWidth:100, valueFormatter:fmtUSD, cellStyle:{ color:'#f7768e' } },
+        { field:'totalRevenueUsd', headerName:'Total Rev', minWidth:110, valueFormatter:fmtUSD, cellStyle:boldPosStyle },
+    ];
+
+    const clientRevenueDetailCols = [
+        { field:'lpsid', headerName:'LP', pinned:'left', minWidth:110 },
+        { field:'lpName', headerName:'TEM', minWidth:150 },
+        { field:'tradeCount', headerName:'Trades', minWidth:80, valueFormatter:fmtInt },
+        { field:'symbols', headerName:'Symbols', minWidth:150 },
+        { field:'clientLotsPlaced', headerName:'Client Lots', minWidth:100, valueFormatter:fmtNum, cellStyle:{ color:'var(--cyan)' } },
+        { field:'lpLotsSent', headerName:'LP Lots', minWidth:100, valueFormatter:fmtNum, cellStyle:{ color:'var(--purple)' } },
+        { field:'allocationPct', headerName:'Alloc %', minWidth:90, valueFormatter:fmtPct },
+        { field:'markupRevenueUsd', headerName:'Markup Rev', minWidth:110, valueFormatter:fmtUSD, cellStyle:posStyle },
+        { field:'clientCommissionUsd', headerName:'Client Comm', minWidth:110, valueFormatter:fmtUSD, cellStyle:{ color:'var(--amber)' } },
+        { field:'lpCommissionUsd', headerName:'LP Comm', minWidth:100, valueFormatter:fmtUSD, cellStyle:{ color:'#f7768e' } },
+        { field:'netRevenueUsd', headerName:'Net Rev', minWidth:110, valueFormatter:fmtUSD, cellStyle:boldPosStyle,
+          valueGetter: p => (p.data?.markupRevenueUsd || 0) + (p.data?.clientCommissionUsd || 0) - (p.data?.lpCommissionUsd || 0) },
+    ];
+
+    const summaryCols = [
+        { field:'source', headerName:'', pinned:'left', cellStyle:{fontWeight:'bold'} },
+        { field:'deals', headerName:'Deals', valueFormatter:fmtInt },
+        { field:'lots', headerName:'Lots', valueFormatter:fmtNum },
+        { field:'unmatchedDeals', headerName:'Unmatched Deals', valueFormatter:fmtInt, cellStyle:p=>((p.value||0)>0?{color:'var(--neg)'}:{}) },
+        { field:'matchPct', headerName:'Match %', valueFormatter:fmtPct },
+    ];
+
+    const matchedCols = [
+        // Priority: Login, Name, Symbol, Side, Entry, Client, LP, Revenue, IDs
+        { field:'clientLogin', headerName:'Login', pinned:'left', minWidth:80 },
+        { field:'clientName', headerName:'Name', minWidth:90 },
+        { field:'symbol', headerName:'Symbol', pinned:'left', minWidth:90, cellStyle:{fontWeight:'bold'} },
+        { field:'side', headerName:'Side', minWidth:55, cellStyle: sideStyle },
+        { field:'entry', headerName:'Entry', minWidth:50 },
+        { field:'clientVolume', headerName:'Client Lots', minWidth:80, valueFormatter:fmtNum },
+        { field:'clientPrice', headerName:'Client Price', minWidth:90, valueFormatter:fmtNum5 },
+        { field:'lpVolume', headerName:'LP Lots', minWidth:70, valueFormatter:fmtNum },
+        { field:'lpPrice', headerName:'LP Price', minWidth:90, valueFormatter:fmtNum5 },
+        { field:'rawLpPrice', headerName:'Raw LP Price', minWidth:85, valueFormatter:fmtNum5, cellStyle:{color:'var(--fg-dim)'} },
+        { field:'rawFillVolume', headerName:'Raw Fill Vol', minWidth:80, valueFormatter:fmtNum, cellStyle:{color:'var(--fg-dim)'} },
+        { field:'spread', headerName:'Markup (pts)', minWidth:80, valueFormatter:fmtNum5, cellStyle:posStyle },
+        { field:'spreadRevenueUsd', headerName:'Markup Rev', minWidth:85, valueFormatter:fmtUSD, cellStyle:posStyle },
+        { field:'clientCommission', headerName:'Client Comm', minWidth:80, valueFormatter:fmtUSD },
+        { field:'lpCommission', headerName:'LP Comm', minWidth:75, valueFormatter:fmtUSD, cellStyle:p=>({color:'#f7768e'}) },
+        { field:'_totalRevenue', headerName:'Total Rev', minWidth:85, valueFormatter:fmtUSD, cellStyle:boldPosStyle,
+          valueGetter: p => (p.data?.spreadRevenueUsd||0) + (p.data?.clientCommission||0) - Math.abs(p.data?.lpCommission||0) },
+        { field:'lpsid', headerName:'LP SID', minWidth:90 },
+        { field:'lpName', headerName:'LP', minWidth:90 },
+        { field:'dealCategory', headerName:'Category', minWidth:70 },
+        { field:'dealTime', headerName:'Time', minWidth:140 },
+        { field:'aggregatedDealCount', headerName:'Agg', minWidth:45, valueFormatter:p=> p.value > 1 ? p.value : '',
+          cellStyle:p=>((p.value||0)>1 ? {color:'var(--amber)', fontWeight:'bold'} : {}) },
+        { field:'matchMethod', headerName:'Method', minWidth:80 },
+        { field:'matchStatus', headerName:'Status', minWidth:70 },
+        { field:'dealTicket', headerName:'Deal', minWidth:80 },
+        { field:'orderTicket', headerName:'Order', minWidth:80 },
+        { field:'centroidOrderId', headerName:'Cen Ord ID', minWidth:85 },
+        { field:'centroidExtOrder', headerName:'Cen Ext Order', minWidth:85 },
+        { field:'externalDealId', headerName:'Ext Deal ID', minWidth:85 },
+        { field:'centroidTime', headerName:'LP Time', minWidth:140 },
+    ];
+
+    const unmatchedMt5Cols = [
+        { field:'login', headerName:'Login', pinned:'left', minWidth:90 },
+        { field:'clientName', headerName:'Name', minWidth:130 },
+        { field:'group', headerName:'Group', minWidth:120 },
+        { field:'system', headerName:'System', minWidth:85, cellStyle: systemStyle },
+        { field:'dealCount', headerName:'Deals', minWidth:80, valueFormatter:fmtInt },
+        { field:'lots', headerName:'Lots', minWidth:90, valueFormatter:fmtNum },
+        { field:'buyLots', headerName:'Buy Lots', minWidth:90, valueFormatter:fmtNum, cellStyle:{ color:'var(--pos)' } },
+        { field:'sellLots', headerName:'Sell Lots', minWidth:90, valueFormatter:fmtNum, cellStyle:{ color:'var(--neg)' } },
+        { field:'symbols', headerName:'Symbols', minWidth:160 },
+        { field:'latestTime', headerName:'Latest Time', minWidth:140 },
+        { field:'sampleExternalIds', headerName:'Sample Ext IDs', minWidth:180 },
+    ];
+
+    const unmatchedCenCols = [
+        { field:'ext_login', headerName:'Ext Login', pinned:'left' },
+        { field:'account_name', headerName:'Account Name', minWidth:150 },
+        { field:'manager_source', headerName:'Manager Source', minWidth:110 },
+        { field:'symbol', headerName:'Symbol', pinned:'left', cellStyle:{fontWeight:'bold'} },
+        { field:'side', headerName:'Side', cellStyle: sideStyle },
+        { field:'volume', headerName:'Volume', valueFormatter:fmtNum },
+        { field:'fill_volume', headerName:'Fill Vol', valueFormatter:fmtNum },
+        { field:'avg_price', headerName:'Avg Price', valueFormatter:fmtNum5 },
+        { field:'raw_avg_price', headerName:'Raw Avg Price', valueFormatter:fmtNum5 },
+        { field:'total_markup', headerName:'Total Markup', valueFormatter:fmtNum5 },
+        { field:'lpsid', headerName:'LP SID' },
+        { field:'maker', headerName:'Maker' },
+        { field:'create_time', headerName:'Time' },
+        { field:'cen_ord_id', headerName:'Cen Ord ID' },
+        { field:'client_ord_id', headerName:'Client Ord ID' },
+        { field:'ext_order', headerName:'Ext Order' },
+        { field:'ext_posid', headerName:'Ext Posid' },
+        { field:'party_symbol', headerName:'Party Symbol' },
+        { field:'node', headerName:'Node' },
+        { field:'node_account', headerName:'Node Account' },
+        { field:'state', headerName:'State' },
+    ];
+
+    const partialCols = [
+        { field:'clientLogin', headerName:'Login', pinned:'left' },
+        { field:'clientName', headerName:'Name' },
+        { field:'symbol', headerName:'Symbol', pinned:'left', cellStyle:{fontWeight:'bold'} },
+        { field:'side', headerName:'Side', cellStyle: sideStyle },
+        { field:'entry', headerName:'Entry' },
+        { field:'clientVolume', headerName:'MT5 Lots', valueFormatter:fmtNum, cellStyle:{color:'var(--cyan)'} },
+        { field:'clientPrice', headerName:'MT5 Price', valueFormatter:fmtNum5 },
+        { field:'lpVolume', headerName:'Cen Lots', valueFormatter:fmtNum, cellStyle:{color:'var(--purple)'} },
+        { field:'lpPrice', headerName:'Cen Price', valueFormatter:fmtNum5 },
+        { field:'rawLpPrice', headerName:'Raw LP Price', valueFormatter:fmtNum5, cellStyle:{color:'var(--fg-dim)'} },
+        { field:'rawFillVolume', headerName:'Raw Fill Vol', valueFormatter:fmtNum, cellStyle:{color:'var(--fg-dim)'} },
+        { field:'_volDiff', headerName:'Vol Diff', valueFormatter:fmtNum, cellStyle:p=>({color:'var(--neg)', fontWeight:'bold'}),
+          valueGetter: p => Math.abs((p.data?.clientVolume||0) - (p.data?.lpVolume||0)) },
+        { field:'_volPct', headerName:'Fill %', valueFormatter:fmtPct,
+          valueGetter: p => (p.data?.clientVolume||0) > 0 ? (p.data?.lpVolume||0) / (p.data?.clientVolume||0) * 100 : 0 },
+        { field:'matchMethod', headerName:'Method' },
+        { field:'matchStatus', headerName:'Status', cellStyle:p=>({color:'var(--amber)'}) },
+        { field:'contractSize', headerName:'CS' },
+        { field:'centroidFillCount', headerName:'Legs' },
+        { field:'lpsid', headerName:'LP SID' },
+        { field:'lpName', headerName:'LP' },
+        { field:'dealTime', headerName:'Time' },
+        { field:'dealTicket', headerName:'MT5 Deal' },
+        { field:'orderTicket', headerName:'MT5 Order' },
+        { field:'externalDealId', headerName:'MT5 Ext ID' },
+        { field:'centroidOrderId', headerName:'Cen Ord ID' },
+        { field:'centroidExtOrder', headerName:'Cen Ext Order' },
+    ];
+
+    // MT5 deal detail - shows as key-value pairs (transposed)
+    const partialMt5Cols = [
+        { field:'field', headerName:'Field', pinned:'left', cellStyle:{fontWeight:'bold', color:'var(--cyan)'} },
+        { field:'value', headerName:'Value', valueFormatter: p => p.value != null ? String(p.value) : '' },
+    ];
+
+    // Centroid legs - each row is one leg from the maker_orders report
+    const partialCenCols = [
+        { field:'cenOrdId', headerName:'Cen Ord ID', cellStyle:{fontWeight:'bold'} },
+        { field:'cenClientOrdId', headerName:'Cen Client Ord ID' },
+        { field:'clientOrdId', headerName:'Client Ord ID' },
+        { field:'extOrder', headerName:'Ext Order' },
+        { field:'extLogin', headerName:'Ext Login' },
+        { field:'lpsid', headerName:'LP SID' },
+        { field:'symbol', headerName:'Symbol' },
+        { field:'partySymbol', headerName:'Party Symbol' },
+        { field:'side', headerName:'Side', cellStyle: sideStyle },
+        { field:'state', headerName:'State' },
+        { field:'avgPrice', headerName:'Avg Price', valueFormatter:fmtNum5 },
+        { field:'rawAvgPrice', headerName:'Raw Avg Price', valueFormatter:fmtNum5 },
+        { field:'volume', headerName:'Volume (raw)' },
+        { field:'fillVolume', headerName:'Fill Vol (raw)' },
+        { field:'volumeValue', headerName:'Vol Value' },
+        { field:'fillVolumeValue', headerName:'Fill Vol Value' },
+        { field:'contractSize', headerName:'Contract Size' },
+        { field:'totalMarkup', headerName:'Total Markup', valueFormatter:fmtNum5 },
+        { field:'createTime', headerName:'Time' },
+        { field:'node', headerName:'Node' },
+        { field:'nodeAccount', headerName:'Node Account' },
+    ];
+
+    // -- Init -------------------------------------------------
+    document.addEventListener('DOMContentLoaded', () => {
+        const today = new Date().toISOString().slice(0,10);
+        document.getElementById('dm-from').value = today;
+        document.getElementById('dm-to').value = today;
+
+        gridSummary = SLC.createGrid(document.getElementById('grid-summary'), { columnDefs: summaryCols });
+        gridMatched = SLC.createGrid(document.getElementById('grid-matched'), { columnDefs: matchedCols, pinnedBottomRowData: [] });
+        gridUnMt5 = SLC.createGrid(document.getElementById('grid-unmatched-mt5'), { columnDefs: unmatchedMt5Cols });
+        gridUnCen = SLC.createGrid(document.getElementById('grid-unmatched-cen'), { columnDefs: unmatchedCenCols });
+        gridPartial = SLC.createGrid(document.getElementById('grid-partial'), {
+            columnDefs: partialCols,
+            rowSelection: 'single',
+            onRowClicked: onPartialRowClicked,
+        });
+        gridPartialMt5 = SLC.createGrid(document.getElementById('grid-partial-mt5'), { columnDefs: partialMt5Cols });
+        gridPartialCen = SLC.createGrid(document.getElementById('grid-partial-cen'), { columnDefs: partialCenCols });
+        gridSystems = SLC.createGrid(document.getElementById('grid-systems'), { columnDefs: systemCols });
+        gridClientRevenue = SLC.createGrid(document.getElementById('grid-client-revenue'), {
+            columnDefs: clientRevenueCols,
+            rowSelection: 'single',
+            onRowClicked: onClientRevenueRowClicked,
+        });
+        gridClientRevenueDetail = SLC.createGrid(document.getElementById('grid-client-revenue-detail'), { columnDefs: clientRevenueDetailCols });
+        gridCoverageLps = SLC.createGrid(document.getElementById('grid-coverage-lps'), {
+            columnDefs: coverageLpCols,
+            onRowClicked: e => showCoverageLpDetail(e.data),
+        });
+    });
+
+    function showCoverageLpDetail(lp) {
+        if (!lp) return;
+        const fmt$ = v => v == null ? '-' : '$' + Number(v).toFixed(2);
+        const fmtN = v => v == null ? '-' : Number(v).toFixed(2);
+        const item = (lbl, val, color) =>
+            `<div class="p-2 rounded" style="background:var(--bg3)">
+                <div class="text-slate-400" style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px">${lbl}</div>
+                <div style="color:${color || 'var(--fg)'};font-weight:bold;font-size:13px">${val}</div>
+             </div>`;
+        document.getElementById('coverage-lp-detail-label').textContent =
+            `${lp.lpName} | ${lp.lpLogin} | ${lp.source || ''}`;
+        document.getElementById('coverage-lp-detail-body').innerHTML = [
+            item('Source', lp.source || '-', lp.source === 'Manager' ? '#93c5fd' : lp.source === 'Terminal' ? '#fbbf24' : '#64748b'),
+            item('Deals', lp.dealCount ?? '-'),
+            item('Method', lp.commissionSource || '-', lp.commissionSource === 'Calculated' ? '#93c5fd' : 'var(--amber)'),
+            item('Actual Commission', fmt$(lp.actualCommission), 'var(--amber)'),
+            item('Calculated Commission', fmt$(lp.calculatedCommission), '#93c5fd'),
+            item('Configured $/M', fmtN(lp.configuredRatePerMillion), '#93c5fd'),
+            item('Live $/M', fmtN(lp.effectiveRatePerMillion)),
+        ].join('');
+        document.getElementById('coverage-lp-detail-section').style.display = '';
+    }
+
+    // -- Run Match --------------------------------------------
+    function onPartialRowClicked(event) {
+        const m = event.data;
+        if (!m) return;
+        document.getElementById('partial-detail').style.display = '';
+
+        // MT5 side - transpose deal fields into key-value rows
+        const f = (v, d) => v != null && v !== '' ? Number(v).toFixed(d) : '';
+        const mt5Rows = [
+            { field:'Deal Ticket', value: String(m.dealTicket || '') },
+            { field:'Order Ticket', value: String(m.orderTicket || '') },
+            { field:'Position ID', value: String(m.positionId || '') },
+            { field:'External ID', value: m.externalDealId || '' },
+            { field:'Login', value: String(m.clientLogin || '') },
+            { field:'Name', value: m.clientName || '' },
+            { field:'Group', value: m.clientGroup || '' },
+            { field:'Symbol', value: m.symbol || '' },
+            { field:'Side', value: m.side || '' },
+            { field:'Entry', value: m.entry || '' },
+            { field:'Category', value: m.dealCategory || '' },
+            { field:'Price', value: f(m.clientPrice, 5) },
+            { field:'Volume (lots)', value: f(m.clientVolume, 4) },
+            { field:'Contract Size', value: String(m.contractSize || '') },
+            { field:'Client Units', value: f(m.clientUnits, 4) },
+            { field:'Commission', value: '$' + (m.clientCommission||0).toFixed(2) },
+            { field:'Time', value: m.dealTime || '' },
+            { field:'Market Bid', value: f(m.marketBid, 5) },
+            { field:'Market Ask', value: f(m.marketAsk, 5) },
+            { field:'Match Method', value: m.matchMethod || '' },
+            { field:'Match Status', value: m.matchStatus || '' },
+            { field:'LP Price (agg)', value: f(m.lpPrice, 5) },
+            { field:'LP Volume (agg)', value: f(m.lpVolume, 4) },
+            { field:'LP SID', value: m.lpsid || '' },
+            { field:'LP Name', value: m.lpName || '' },
+            { field:'Cen Ord ID', value: m.centroidOrderId || '' },
+            { field:'Cen Ext Order', value: m.centroidExtOrder || '' },
+            { field:'Cen Ext Login', value: m.centroidExtLogin || '' },
+            { field:'Cen Fill Count', value: String(m.centroidFillCount || '') },
+            { field:'Spread', value: f(m.spread, 5) },
+            { field:'Spread Revenue', value: '$' + (m.spreadRevenueUsd||0).toFixed(2) },
+            { field:'LP Commission', value: '$' + (m.lpCommission||0).toFixed(2) },
+        ];
+        // If aggregated, show sub-deals as additional rows
+        const subDeals = m.subDeals || [];
+        if (subDeals.length > 1) {
+            mt5Rows.push({ field:'', value:'' });
+            mt5Rows.push({ field:'-- Sub-Deals --', value: `${subDeals.length} deals aggregated` });
+            subDeals.forEach((sd, i) => {
+                mt5Rows.push({ field:`  Deal #${i+1} Ticket`, value: String(sd.deal) });
+                mt5Rows.push({ field:`  Deal #${i+1} Price`, value: f(sd.price, 5) });
+                mt5Rows.push({ field:`  Deal #${i+1} Volume`, value: f(sd.volume, 4) });
+                mt5Rows.push({ field:`  Deal #${i+1} Commission`, value: '$' + (sd.commission||0).toFixed(2) });
+                mt5Rows.push({ field:`  Deal #${i+1} Time`, value: sd.time || '' });
+                mt5Rows.push({ field:`  Deal #${i+1} Entry`, value: sd.entry || '' });
+            });
+        }
+        const aggLabel = subDeals.length > 1 ? ` (${subDeals.length} deals aggregated)` : '';
+        document.getElementById('partial-mt5-label').textContent = `Deal ${m.dealTicket} | ${m.symbol} ${m.side} ${m.clientVolume?.toFixed(2)} lots${aggLabel}`;
+        gridPartialMt5.setRowData(mt5Rows);
+
+        // Centroid side - raw legs from maker_orders
+        const legs = m.centroidLegs || [];
+        document.getElementById('partial-cen-label').textContent = `${legs.length} leg(s) | Cen Ord ID: ${m.centroidOrderId}`;
+        gridPartialCen.setRowData(legs);
+    }
+
+    async function runMatch() {
+        const group = document.getElementById('group').value || '*';
+        const fromDate = document.getElementById('dm-from').value;
+        const toDate = document.getElementById('dm-to').value;
+        const symbol = document.getElementById('symbol').value || '';
+        const loginRaw = (document.getElementById('login').value || '').trim();
+        const login = loginRaw && /^\d+$/.test(loginRaw) ? loginRaw : '';
+        if (loginRaw && !login) return alert('Login must be a positive integer.');
+        if (!fromDate || !toDate) return alert('Please select dates.');
+
+        const from = Math.floor(new Date(fromDate + 'T00:00:00Z').getTime() / 1000);
+        const to = Math.floor(new Date(toDate + 'T23:59:59Z').getTime() / 1000);
+
+        const btn = document.getElementById('runBtn');
+        btn.disabled = true; btn.textContent = 'Running...';
+        document.getElementById('dm-stats').textContent = 'Loading...';
+
+        try {
+            // Lite mode: returns KPIs + revenue-by-client + revenue-by-LP only.
+            // Full match/unmatched/partial arrays are fetched on demand via Load Match Details.
+            let url = `/DealMatch/Run?group=${encodeURIComponent(group)}&from=${from}&to=${to}&symbol=${encodeURIComponent(symbol)}&lite=true`;
+            if (login) url += `&login=${login}`;
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(await resp.text());
+            lastRunParams = { group, from, to, symbol, login };
+            renderAll(await resp.json());
+        } catch (e) {
+            document.getElementById('dm-stats').textContent = 'Error: ' + e.message;
+        } finally {
+            btn.disabled = false; btn.textContent = 'Run Match';
+        }
+    }
+
+    // -- Render -----------------------------------------------
+    function aggregateUnmatchedMt5(unmatchedDeals) {
+        const rows = new Map();
+        for (const u of unmatchedDeals) {
+            const key = String(u.login || '');
+            if (!rows.has(key)) {
+                rows.set(key, {
+                    login: u.login || 0,
+                    clientName: u.clientName || '',
+                    group: u.group || '',
+                    system: u.isBonus ? 'Bonus' : 'Client',
+                    dealCount: 0,
+                    lots: 0,
+                    buyLots: 0,
+                    sellLots: 0,
+                    symbols: new Set(),
+                    latestTime: '',
+                    externalIds: [],
+                });
+            }
+
+            const row = rows.get(key);
+            const lots = u.volume || 0;
+            row.dealCount += 1;
+            row.lots += lots;
+            if ((u.side || '').toLowerCase() === 'buy') row.buyLots += lots;
+            if ((u.side || '').toLowerCase() === 'sell') row.sellLots += lots;
+            if (u.symbol) row.symbols.add(u.symbol);
+            if (u.time && (!row.latestTime || u.time > row.latestTime)) row.latestTime = u.time;
+            if (u.externalId && row.externalIds.length < 3 && !row.externalIds.includes(u.externalId))
+                row.externalIds.push(u.externalId);
+        }
+
+        return Array.from(rows.values())
+            .map(r => ({
+                ...r,
+                symbols: Array.from(r.symbols).sort().join(', '),
+                sampleExternalIds: r.externalIds.join(', '),
+            }))
+            .sort((a, b) => b.lots - a.lots);
+    }
+
+    async function onClientRevenueRowClicked(event) {
+        const row = event.data;
+        if (!row) return;
+        document.getElementById('client-revenue-detail-section').style.display = '';
+        document.getElementById('client-revenue-detail-label').textContent =
+            `${row.login} | ${row.name || ''} | loading...`;
+        gridClientRevenueDetail.setGridOption('rowData', []);
+
+        try {
+            const resp = await fetch(`/DealMatch/ClientRevenueDetail?login=${encodeURIComponent(row.login)}`);
+            if (!resp.ok) throw new Error(await resp.text());
+            const detailRows = await resp.json();
+            const totalClientLots = detailRows.reduce((s, r) => s + (r.clientLotsPlaced || 0), 0);
+            const totalLpComm = detailRows.reduce((s, r) => s + (r.lpCommissionUsd || 0), 0);
+            document.getElementById('client-revenue-detail-label').textContent =
+                `${row.login} | ${row.name || ''} | ${totalClientLots.toFixed(2)} lots | LP comm $${totalLpComm.toFixed(2)}`;
+            gridClientRevenueDetail.setGridOption('rowData', detailRows);
+        } catch (e) {
+            document.getElementById('client-revenue-detail-label').textContent =
+                `${row.login} | ${row.name || ''} | Error: ${e.message}`;
+        }
+    }
+
+    let lastReport = null;
+    let lastRunParams = null;
+    let matchDetailsRendered = false;
+
+    function renderAll(d) {
+        lastReport = d;
+        matchDetailsRendered = false;
+        // Always-visible sections (revenue first, LP second, match-details toolbar)
+        ['kpi-section','systems-section','client-revenue-section','coverage-lps-section','match-details-toolbar']
+            .forEach(id => document.getElementById(id).style.display = '');
+        // Detail sections (including Overall Summary) stay hidden until user clicks "Load Match Details"
+        ['summary-section','matched-section','unmatched-mt5-section','unmatched-cen-section','partial-section','coverage-lp-detail-section']
+            .forEach(id => document.getElementById(id).style.display = 'none');
+        // Reset the load button each time a new report comes in
+        const btn = document.getElementById('loadDetailsBtn');
+        btn.disabled = false;
+        btn.textContent = 'Load Match Details';
+
+        // Coverage LPs - per-LP commission (same shape as LP Commissions page)
+        const coverageLps = d.coverageLps || [];
+        gridCoverageLps.setGridOption('rowData', coverageLps);
+        gridCoverageLps.setGridOption('pinnedBottomRowData', [{
+            lpName: 'TOTAL',
+            lpLogin: '',
+            lots: coverageLps.reduce((s,x) => s + (x.lots||0), 0),
+            millionsUsd: coverageLps.reduce((s,x) => s + (x.millionsUsd||0), 0),
+            effectiveCommission: coverageLps.reduce((s,x) => s + (x.effectiveCommission||0), 0),
+        }]);
+        const lpEffectiveTotal = coverageLps.reduce((s,x) => s + (x.effectiveCommission||0), 0);
+        const lpActualTotal = coverageLps.reduce((s,x) => s + (x.actualCommission||0), 0);
+        const lpDealsTotal = coverageLps.reduce((s,x) => s + (x.dealCount||0), 0);
+        const lpLotsTotal = coverageLps.reduce((s,x) => s + (x.lots||0), 0);
+
+        // Client systems breakdown - append LP Charged + Net rows so the difference is visible.
+        const systems = (d.clientSystems || []).slice();
+        const clientCommTotal = systems.reduce((s,x) => s + (x.commission||0), 0);
+        const clientMarkupTotal = systems.reduce((s,x) => s + (x.markupRevenueUsd||0), 0);
+        systems.push({
+            system: 'LP Charged', lots: lpLotsTotal,
+            markupRevenueUsd: null,
+            commission: lpEffectiveTotal,
+        });
+        systems.push({
+            system: 'Net (Client - LP)', lots: null,
+            markupRevenueUsd: clientMarkupTotal,
+            commission: clientCommTotal + clientMarkupTotal - lpEffectiveTotal,
+        });
+        gridSystems.setGridOption('rowData', systems);
+
+        const clientRevenueRows = d.clientRevenueSummaries || [];
+
+        // KPIs use the scalar totals from the server response so they work in both
+        // lite mode (no matches array) and full mode.
+        const totalMarkup = d.totalSpreadRevenueUsd || 0;
+        const totalComm = d.totalClientCommission || 0;
+        const totalLpComm = Math.abs(lpEffectiveTotal || d.totalLpCommission || 0);
+        const totalNet = totalMarkup + totalComm - totalLpComm;
+
+        document.getElementById('kMarkup').textContent = '$' + totalMarkup.toFixed(2);
+        document.getElementById('kComm').textContent = '$' + totalComm.toFixed(2);
+        document.getElementById('kLpComm').textContent = '-$' + totalLpComm.toFixed(2);
+        document.getElementById('kNet').textContent = '$' + totalNet.toFixed(2);
+        gridClientRevenue.setGridOption('rowData', clientRevenueRows);
+        gridClientRevenue.setGridOption('pinnedBottomRowData', [{
+            login: '',
+            name: 'TOTAL',
+            lots: clientRevenueRows.reduce((s,x) => s + (x.lots||0), 0),
+            markupRevenueUsd: clientRevenueRows.reduce((s,x) => s + (x.markupRevenueUsd||0), 0),
+            clientCommissionUsd: clientRevenueRows.reduce((s,x) => s + (x.clientCommissionUsd||0), 0),
+            lpCommissionUsd: clientRevenueRows.reduce((s,x) => s + (x.lpCommissionUsd||0), 0),
+            totalRevenueUsd: clientRevenueRows.reduce((s,x) => s + (x.totalRevenueUsd||0), 0),
+        }]);
+        document.getElementById('client-revenue-detail-section').style.display = 'none';
+        document.getElementById('client-revenue-detail-label').textContent = '';
+        gridClientRevenueDetail.setGridOption('rowData', []);
+
+        // Header status - uses server scalar counts, no per-row data needed.
+        document.getElementById('dm-stats').textContent =
+            `${d.fromDate} to ${d.toDate} | ${d.totalClientDeals} MT5 deals, ${d.totalCentroidOrders} Centroid orders, ${d.matchedCount} matched`;
+
+        // The Overall Summary grid requires per-deal arrays — render it only after
+        // the user loads match details. Hide its section until then.
+        document.getElementById('summary-section').style.display = 'none';
+    }
+
+    // On-demand: fetch the full report (lite=false hits the cached server-side report)
+    // and render matched / unmatched / partial-fill grids. Expensive payload (~45 MB for a month)
+    // is only fetched when the user explicitly clicks Load Match Details.
+    async function loadMatchDetails() {
+        if (matchDetailsRendered) return;
+        if (!lastRunParams) return;
+        const btn = document.getElementById('loadDetailsBtn');
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        try {
+            const { group, from, to, symbol, login } = lastRunParams;
+            let url = `/DealMatch/Run?group=${encodeURIComponent(group)}&from=${from}&to=${to}&symbol=${encodeURIComponent(symbol)}&lite=false`;
+            if (login) url += `&login=${login}`;
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(await resp.text());
+            lastReport = await resp.json();
+        } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Load Match Details';
+            alert('Failed to load details: ' + e.message);
+            return;
+        }
+        const d = lastReport;
+        const matches = d.matches || [];
+        const unMt5 = d.unmatchedClientDeals || [];
+        const unCen = (d.unmatchedCentroidOrders || []).concat(d.fixApiOrders || []);
+        const unmatchedMt5Rows = aggregateUnmatchedMt5(unMt5);
+        const unmatchedMt5Lots = unMt5.reduce((s,u) => s + (u.volume||0), 0);
+        const totalMarkup = d.totalSpreadRevenueUsd || 0;
+
+        ['summary-section','matched-section','unmatched-mt5-section','unmatched-cen-section','partial-section']
+            .forEach(id => document.getElementById(id).style.display = '');
+
+        // Overall Summary grid - per-source counts, needs the full match/unmatched arrays
+        const mt5Lots = unmatchedMt5Lots + matches.reduce((s,m) => s + (m.clientVolume||0), 0);
+        const matchedLpLots = matches.reduce((s,m) => s + (m.lpVolume||0), 0);
+        const unmatchedCenLots = unCen.reduce((s,o) => s + (o.fill_volume||o.volume||0), 0);
+        const centroidTotalLots = matchedLpLots + unmatchedCenLots;
+        const bonusMatches = matches.filter(m => m.isBonus);
+        const bonusUnMt5 = unMt5.filter(u => u.isBonus);
+        const bonusLots = bonusMatches.reduce((s,m) => s + (m.clientVolume||0), 0)
+                        + bonusUnMt5.reduce((s,u) => s + (u.volume||0), 0);
+        const liveMatches = matches.filter(m => !m.isBonus);
+        const liveUnMt5 = unMt5.filter(u => !u.isBonus);
+        const liveLots = liveMatches.reduce((s,m) => s + (m.clientVolume||0), 0)
+                       + liveUnMt5.reduce((s,u) => s + (u.volume||0), 0);
+        const bonusTotalDeals = d.totalBonusClientDeals || 0;
+        const liveTotalDeals = Math.max((d.totalClientDeals || 0) - bonusTotalDeals, 0);
+        gridSummary.setRowData([
+            { source:'MT5 Deals', deals:d.totalClientDeals, lots:mt5Lots,
+              unmatchedDeals:unMt5.length,
+              matchPct: d.totalClientDeals > 0 ? matches.length / d.totalClientDeals * 100 : 0 },
+            { source:'Client', deals:liveTotalDeals, lots:liveLots,
+              unmatchedDeals:liveUnMt5.length,
+              matchPct: liveTotalDeals > 0 ? liveMatches.length / liveTotalDeals * 100 : 0 },
+            { source:'Bonus', deals:bonusTotalDeals, lots:bonusLots,
+              unmatchedDeals:bonusUnMt5.length,
+              matchPct: bonusTotalDeals > 0 ? bonusMatches.length / bonusTotalDeals * 100 : 0 },
+            { source:'Centroid Orders', deals:d.totalCentroidOrders, lots:centroidTotalLots,
+              unmatchedDeals:unCen.length,
+              matchPct: d.totalCentroidOrders > 0 ? matches.length / d.totalCentroidOrders * 100 : 0 },
+        ].filter(r => (r.deals || r.unmatchedDeals || r.source === 'MT5 Deals' || r.source === 'Centroid Orders')));
+
+        gridMatched.setRowData(matches);
+        gridMatched.setGridOption('pinnedBottomRowData', [{
+            dealTime:'TOTAL', symbol:'', side:'',
+            clientVolume: matches.reduce((s,m) => s + (m.clientVolume||0), 0),
+            lpVolume: matches.reduce((s,m) => s + (m.lpVolume||0), 0),
+            spreadRevenueUsd: totalMarkup,
+            clientCommission: matches.reduce((s,m) => s + (m.clientCommission||0), 0),
+            lpCommission: matches.reduce((s,m) => s + Math.abs(m.lpCommission||0), 0),
+        }]);
+
+        gridUnMt5.setRowData(unmatchedMt5Rows);
+        gridUnCen.setRowData(unCen);
+
+        const partials = matches.filter(m => m.matchStatus === 'Partial' || (m.lpVolume > 0 && Math.abs((m.clientVolume||0) - (m.lpVolume||0)) > 0.005));
+        gridPartial.setRowData(partials);
+
+        matchDetailsRendered = true;
+        btn.disabled = true;
+        btn.textContent = 'Loaded';
+    }
+</script>
+</body>
+</html>

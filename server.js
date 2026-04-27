@@ -4,6 +4,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import http from 'http';
+import mysql from 'mysql2/promise';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import marketingApi from './api.js';
@@ -36,12 +37,73 @@ const BACKEND_API_TARGET =
 
 const walletNotifyLogs = [];
 const MAX_WALLET_NOTIFY_LOGS = 100;
+const LP_EQUITY_DB_HOST = process.env.LP_EQUITY_DB_HOST || process.env.AUTH_DB_HOST || process.env.DB_HOST;
+const LP_EQUITY_DB_PORT = Number(process.env.LP_EQUITY_DB_PORT || process.env.AUTH_DB_PORT || process.env.DB_PORT || 3306);
+const LP_EQUITY_DB_NAME = process.env.LP_EQUITY_DB_NAME || process.env.AUTH_DB_NAME || process.env.DB_NAME;
+const LP_EQUITY_DB_USER = process.env.LP_EQUITY_DB_USER || process.env.AUTH_DB_USER || process.env.DB_USER;
+const LP_EQUITY_DB_PASSWORD = process.env.LP_EQUITY_DB_PASSWORD || process.env.AUTH_DB_PASSWORD || process.env.DB_PASSWORD;
+let lpEquityPool = null;
+let lpEquityInitPromise = null;
 
 function pushWalletNotifyLog(entry) {
   walletNotifyLogs.unshift({ timestamp: new Date().toISOString(), ...entry });
   if (walletNotifyLogs.length > MAX_WALLET_NOTIFY_LOGS) {
     walletNotifyLogs.length = MAX_WALLET_NOTIFY_LOGS;
   }
+}
+
+function hasLpEquityDbConfig() {
+  return Boolean(LP_EQUITY_DB_HOST && LP_EQUITY_DB_NAME && LP_EQUITY_DB_USER && LP_EQUITY_DB_PASSWORD);
+}
+
+function toSnapshotDate(value) {
+  const text = String(value || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  return null;
+}
+
+function toFixedNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+async function ensureLpEquityStore() {
+  if (!hasLpEquityDbConfig()) {
+    throw new Error('LP equity DB env vars are missing.');
+  }
+  if (lpEquityPool) return lpEquityPool;
+  if (lpEquityInitPromise) return lpEquityInitPromise;
+
+  lpEquityInitPromise = (async () => {
+    lpEquityPool = mysql.createPool({
+      host: LP_EQUITY_DB_HOST,
+      port: LP_EQUITY_DB_PORT,
+      database: LP_EQUITY_DB_NAME,
+      user: LP_EQUITY_DB_USER,
+      password: LP_EQUITY_DB_PASSWORD,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+    });
+
+    await lpEquityPool.query(`
+      CREATE TABLE IF NOT EXISTS lp_equity_snapshots (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        snapshot_date DATE NOT NULL,
+        lp_withdrawable_equity DECIMAL(20,2) NOT NULL DEFAULT 0,
+        client_withdrawable_equity DECIMAL(20,2) NOT NULL DEFAULT 0,
+        equity_difference DECIMAL(20,2) NOT NULL DEFAULT 0,
+        source VARCHAR(50) NOT NULL DEFAULT 'dashboard',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_lp_equity_snapshot_date (snapshot_date)
+      )
+    `);
+
+    return lpEquityPool;
+  })();
+
+  return lpEquityInitPromise;
 }
 
 app.set('trust proxy', true);
@@ -58,6 +120,96 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
+});
+
+app.get('/api/lp-equity-snapshots', async (req, res) => {
+  try {
+    const pool = await ensureLpEquityStore();
+    const daysRaw = Number.parseInt(String(req.query.days ?? '120'), 10);
+    const days = Number.isFinite(daysRaw) ? Math.max(7, Math.min(365, daysRaw)) : 120;
+    const [rows] = await pool.query(
+      `
+        SELECT
+          DATE_FORMAT(snapshot_date, '%Y-%m-%d') AS snapshotDate,
+          lp_withdrawable_equity AS lpWithdrawableEquity,
+          client_withdrawable_equity AS clientWithdrawableEquity,
+          equity_difference AS difference,
+          source,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM lp_equity_snapshots
+        WHERE snapshot_date >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
+        ORDER BY snapshot_date ASC
+      `,
+      [days]
+    );
+
+    return res.json({
+      ok: true,
+      rows: rows.map((row) => ({
+        snapshotDate: row.snapshotDate,
+        lpWithdrawableEquity: toFixedNumber(row.lpWithdrawableEquity),
+        clientWithdrawableEquity: toFixedNumber(row.clientWithdrawableEquity),
+        difference: toFixedNumber(row.difference),
+        source: row.source || 'dashboard',
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+    });
+  } catch (error) {
+    return res.status(503).json({
+      ok: false,
+      error: 'lp_equity_store_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/lp-equity-snapshots', async (req, res) => {
+  try {
+    const pool = await ensureLpEquityStore();
+    const body = req.body || {};
+    const snapshotDate = toSnapshotDate(body.snapshotDate);
+    if (!snapshotDate) {
+      return res.status(400).json({ ok: false, error: 'invalid_snapshot_date' });
+    }
+
+    const lpWithdrawableEquity = toFixedNumber(body.lpWithdrawableEquity);
+    const clientWithdrawableEquity = toFixedNumber(body.clientWithdrawableEquity);
+    const difference = toFixedNumber(body.difference);
+    const source = String(body.source || 'dashboard').slice(0, 50);
+
+    await pool.query(
+      `
+        INSERT INTO lp_equity_snapshots
+          (snapshot_date, lp_withdrawable_equity, client_withdrawable_equity, equity_difference, source)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          lp_withdrawable_equity = VALUES(lp_withdrawable_equity),
+          client_withdrawable_equity = VALUES(client_withdrawable_equity),
+          equity_difference = VALUES(equity_difference),
+          source = VALUES(source)
+      `,
+      [snapshotDate, lpWithdrawableEquity, clientWithdrawableEquity, difference, source]
+    );
+
+    return res.json({
+      ok: true,
+      snapshot: {
+        snapshotDate,
+        lpWithdrawableEquity,
+        clientWithdrawableEquity,
+        difference,
+        source,
+      },
+    });
+  } catch (error) {
+    return res.status(503).json({
+      ok: false,
+      error: 'lp_equity_store_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 });
 
 app.get('/api/closing-balance-report', async (_req, res) => {
