@@ -39,6 +39,7 @@ const TRACKED_WIDGET_LABELS = {
 
 const DEFAULT_STATE_FILE = path.join(process.cwd(), 'storage', 'wallet_report_state.json');
 const FALLBACK_STATE_FILE = path.join(os.tmpdir(), 'boss_dash_wallet_report_state.json');
+let notifyQueue = Promise.resolve();
 
 const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
 
@@ -298,10 +299,18 @@ async function runDailyWalletReport() {
  * Fire-and-forget safe — never throws.
  */
 export async function notifyIfTotalChanged(report) {
-  const preferredStateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
-  const stateFile = await resolveWritableStateFile(preferredStateFile);
-  const date = new Date().toISOString().split('T')[0];
-  return _runNotifyLogic(report, stateFile, date);
+  // Serialize notify decisions to avoid concurrent requests sending duplicate emails/telegram.
+  // Home dashboard can trigger multiple /api/closing-balance-report calls in parallel.
+  notifyQueue = notifyQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const preferredStateFile = process.env.WALLET_REPORT_STATE_FILE || DEFAULT_STATE_FILE;
+      const stateFile = await resolveWritableStateFile(preferredStateFile);
+      const date = new Date().toISOString().split('T')[0];
+      return _runNotifyLogic(report, stateFile, date);
+    });
+
+  return notifyQueue;
 }
 
 async function runOnChangeWalletReport() {
