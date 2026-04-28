@@ -51,6 +51,8 @@ export const DASHBOARD_SECTION_ITEMS: readonly DashboardSectionItem[] = [
 
 export const DEPARTMENT_KEYS = [
   { key: "LiveAgent", label: "Live Agent" },
+  { key: "Tickets:Own", label: "Tickets (Own)" },
+  { key: "Tickets:All", label: "Tickets (All)" },
   { key: "Dealing", label: "Dealing Department" },
   { key: "Accounts", label: "Accounts Department" },
   { key: "Backoffice", label: "Back Office Department" },
@@ -108,7 +110,7 @@ export const DEPARTMENT_NAV_ITEMS: readonly DepartmentNavItem[] = [
   },
 ] as const;
 
-export const DEALING_TAB_KEYS = DEALING_TABS.map((tab) => ({
+export const DEALING_TAB_KEYS: { key: string; label: string }[] = DEALING_TABS.map((tab) => ({
   key: `Dealing:${tab}`,
   label: tab,
 })).concat(
@@ -202,21 +204,24 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
   ]),
   Manager: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    "Tickets:Own",
     ...DEPARTMENT_KEYS
-      .filter((item) => item.key !== "LiveAgent")
+      .filter((item) => !["LiveAgent", "Tickets:All"].includes(item.key))
       .map((item) => item.key),
     ...rootPrefixes(NOTIFICATION_KEYS),
   ]),
   Analyst: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    "Tickets:Own",
     ...DEPARTMENT_KEYS
-      .filter((item) => ["Dealing", "Accounts", "Backoffice", "Alerts"].includes(item.key))
+      .filter((item) => ["Dealing", "Accounts", "Backoffice", "Alerts", "Tickets:Own"].includes(item.key))
       .map((item) => item.key),
   ]),
   Support: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    "Tickets:Own",
     ...DEPARTMENT_KEYS
-      .filter((item) => ["Accounts", "Alerts"].includes(item.key))
+      .filter((item) => ["Accounts", "Alerts", "Tickets:Own"].includes(item.key))
       .map((item) => item.key),
   ]),
 };
@@ -224,12 +229,14 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
 export function hasUserAccess(user: AuthUser | null | undefined, permission: string): boolean {
   if (!user) return false;
   if (user.role === "Super Admin") return true;
+  if (permission === "Tickets:Own") return true;
   const owned = Array.isArray(user.access) ? user.access : [];
   if (owned.includes(permission)) return true;
   const idx = permission.indexOf(":");
   if (idx > 0) {
     const prefix = permission.slice(0, idx);
     if (owned.includes(prefix)) return true;
+    if (owned.includes(`${prefix}:All`)) return true;
   }
   return false;
 }

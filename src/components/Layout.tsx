@@ -5,6 +5,7 @@ import { DashboardHeader } from "./dashboard/DashboardHeader";
 import { getCurrentUser, hasAccess, isAuthenticated, syncCurrentSession } from "@/lib/auth";
 import { getDefaultRouteForUser } from "@/lib/permissions";
 import { LiveChatAgent } from "./LiveChatAgent";
+import { TicketsFab } from "./TicketsFab";
 
 export const Layout: React.FC = () => {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -65,6 +66,7 @@ export const Layout: React.FC = () => {
           <Outlet />
         </main>
       </div>
+      <TicketsFab />
       {hasAccess("LiveAgent") ? <LiveChatAgent /> : null}
     </div>
   );

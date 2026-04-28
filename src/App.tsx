@@ -26,6 +26,7 @@ const AlertsSettingsPage = lazy(() => import("./pages/settings/AlertsSettingsPag
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const TicketsPage = lazy(() => import("./pages/TicketsPage"));
 
 const queryClient = new QueryClient();
 
@@ -41,6 +42,20 @@ const settingsPageComponents = {
 } as const;
 
 function SettingsRoute({
+  children,
+  requiredPermissions,
+  title,
+}: {
+  children: React.ReactNode;
+  requiredPermissions: readonly string[];
+  title: string;
+}) {
+  const currentUser = getCurrentUser();
+  if (!canAccessAll(currentUser, requiredPermissions)) return <UnauthorizedPage title={title} />;
+  return children;
+}
+
+function ProtectedRoute({
   children,
   requiredPermissions,
   title,
@@ -73,6 +88,14 @@ const App = () => (
               </Route>
               <Route path="leverage-update" element={<LeverageUpdate />} />
               <Route path="LPManager" element={<LPManager />} />
+              <Route
+                path="tickets"
+                element={
+                  <ProtectedRoute requiredPermissions={["Tickets:Own"]} title="Tickets Access Required">
+                    <TicketsPage />
+                  </ProtectedRoute>
+                }
+              />
 
             {/* Legacy static HTML aliases */}
             {LEGACY_ROUTE_ALIASES.map((item) => (
