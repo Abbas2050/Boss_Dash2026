@@ -238,30 +238,43 @@ export async function approveCrmApplication(applicationId: number, managerId?: n
   }
   const acceptedBy = Number(managerId);
 
-  const response = await fetchWithFallback(
-    [
-      `/rest/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
-      `/rest/user/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
-    ],
-    {
-      method: "PUT",
-      headers: apiHeaders(),
-      body: JSON.stringify(
-        Number.isFinite(acceptedBy) && acceptedBy > 0
-          ? { acceptedBy }
-          : {}
-      ),
-    }
-  );
+  const urls = [
+    `/rest/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
+    `/rest/user/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
+  ];
+  const bodies: Array<Record<string, unknown> | null> = [
+    Number.isFinite(acceptedBy) && acceptedBy > 0 ? { acceptedBy } : null,
+    null,
+  ];
 
-  if (!response.ok) {
-    const txt = await response.text().catch(() => "");
-    throw new Error(`Approve application failed (${response.status}) ${txt ? `- ${txt.slice(0, 220)}` : ""}`);
+  let bestStatus = 0;
+  let bestText = "";
+  for (const body of bodies) {
+    for (const url of urls) {
+      const response = await fetch(url, {
+        method: "PUT",
+        headers: apiHeaders(),
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        if (Array.isArray(payload) && payload.length > 0) return toApplicationRecord(payload[0]);
+        return toApplicationRecord(payload);
+      }
+      const txt = await response.text().catch(() => "");
+      if (response.status >= bestStatus) {
+        bestStatus = response.status;
+        bestText = txt;
+      }
+    }
   }
 
-  const payload = await response.json();
-  if (Array.isArray(payload) && payload.length > 0) return toApplicationRecord(payload[0]);
-  return toApplicationRecord(payload);
+  if (bestStatus === 403) {
+    throw new Error(
+      "Approve application failed (403) - CRM denied access for this application under current API user scope."
+    );
+  }
+  throw new Error(`Approve application failed (${bestStatus || "unknown"}) ${bestText ? `- ${bestText.slice(0, 220)}` : ""}`);
 }
 
 export async function declineCrmApplication(

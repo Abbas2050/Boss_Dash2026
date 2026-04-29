@@ -245,8 +245,8 @@ export function LiveAlertsNotifier() {
     const currentEmail = String(currentUser?.email || "").trim().toLowerCase();
     const myApproverId = APPROVER_EMAIL_TO_MANAGER_ID[currentEmail] ?? null;
 
-    const canPending = prefsRef.current.ApplicationPendingApproval && hasAccess("Notifications:ApplicationPendingApproval");
-    const canApproved = prefsRef.current.ApplicationApproved && hasAccess("Notifications:ApplicationApproved");
+    const canPending = prefsRef.current.ApplicationPendingApproval;
+    const canApproved = prefsRef.current.ApplicationApproved;
     if (!canPending && !canApproved) return;
 
     const poll = async () => {
@@ -258,7 +258,6 @@ export function LiveAlertsNotifier() {
           for (const row of rows) {
             const id = Number(row.id);
             if (Number.isFinite(id) && id > 0) {
-              seenPendingRef.current.add(id);
               seenApprovedRef.current.add(id);
             }
           }
