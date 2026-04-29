@@ -280,7 +280,13 @@ export default function TicketsPage() {
       const offset = (appsPage - 1) * pageSize;
       const rows = canSeeAll
         ? await listCrmApplicationsPage({ limit: pageSize + 1, offset })
-        : await listCrmApplicationsForActor({ actorEmail, userId: currentUserId, limit: pageSize + 1, offset });
+        : await listCrmApplicationsForActor({
+            actorEmail,
+            userId: currentUserId,
+            managerId: approverManagerId,
+            limit: pageSize + 1,
+            offset,
+          });
       setHasMore(rows.length > pageSize);
       const currentRows = rows.slice(0, pageSize);
       setRecords(currentRows);
@@ -312,7 +318,7 @@ export default function TicketsPage() {
 
   useEffect(() => {
     void loadApplications();
-  }, [managerId, currentUserId, canSeeAll, actorEmail, appsPage, pageSize]);
+  }, [managerId, currentUserId, canSeeAll, actorEmail, approverManagerId, appsPage, pageSize]);
 
   useEffect(() => {
     void loadApprovalQueue();
@@ -321,7 +327,7 @@ export default function TicketsPage() {
   useEffect(() => {
     const iv = setInterval(() => void loadApplications(), 30000);
     return () => clearInterval(iv);
-  }, [managerId, currentUserId, canSeeAll, actorEmail, appsPage, pageSize]);
+  }, [managerId, currentUserId, canSeeAll, actorEmail, approverManagerId, appsPage, pageSize]);
 
   useEffect(() => {
     const iv = setInterval(() => void loadApprovalQueue(), 30000);

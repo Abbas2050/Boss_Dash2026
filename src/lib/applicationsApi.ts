@@ -214,9 +214,16 @@ export async function listCrmApplicationsPage(input: { limit: number; offset: nu
   return postApplicationsSearch(payload);
 }
 
-export async function listCrmApplicationsForActor(input: { actorEmail?: string; userId?: number | null; limit?: number; offset?: number }): Promise<ApplicationRecord[]> {
+export async function listCrmApplicationsForActor(input: {
+  actorEmail?: string;
+  userId?: number | null;
+  managerId?: number | null;
+  limit?: number;
+  offset?: number;
+}): Promise<ApplicationRecord[]> {
   const actorEmail = String(input?.actorEmail || "").trim().toLowerCase();
   const userId = Number(input?.userId);
+  const managerId = Number(input?.managerId);
   const rows = await listCrmApplicationsPage({
     limit: Math.max(1, Math.min(200, Number(input?.limit) || 20)),
     offset: Math.max(0, Number(input?.offset) || 0),
@@ -226,7 +233,11 @@ export async function listCrmApplicationsForActor(input: { actorEmail?: string; 
     const processedBy = String(row.processedBy || "").trim().toLowerCase();
     const matchesEmail = actorEmail ? createdBy === actorEmail || processedBy === actorEmail : false;
     const matchesUser = Number.isFinite(userId) && userId > 0 ? row.userId === userId : false;
-    return matchesEmail || matchesUser;
+    const processedByDigits = Number((processedBy.match(/\d+/)?.[0] || ""));
+    const matchesManager = Number.isFinite(managerId) && managerId > 0
+      ? processedBy === String(managerId) || processedByDigits === managerId
+      : false;
+    return matchesEmail || matchesUser || matchesManager;
   });
 }
 
@@ -246,25 +257,28 @@ export async function approveCrmApplication(applicationId: number, managerId?: n
     Number.isFinite(acceptedBy) && acceptedBy > 0 ? { acceptedBy } : null,
     null,
   ];
+  const methods: Array<"PUT" | "PATCH" | "POST"> = ["PUT", "PATCH", "POST"];
 
   let bestStatus = 0;
   let bestText = "";
-  for (const body of bodies) {
-    for (const url of urls) {
-      const response = await fetch(url, {
-        method: "PUT",
-        headers: apiHeaders(),
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      if (response.ok) {
-        const payload = await response.json();
-        if (Array.isArray(payload) && payload.length > 0) return toApplicationRecord(payload[0]);
-        return toApplicationRecord(payload);
-      }
-      const txt = await response.text().catch(() => "");
-      if (response.status >= bestStatus) {
-        bestStatus = response.status;
-        bestText = txt;
+  for (const method of methods) {
+    for (const body of bodies) {
+      for (const url of urls) {
+        const response = await fetch(url, {
+          method,
+          headers: apiHeaders(),
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        if (response.ok) {
+          const payload = await response.json();
+          if (Array.isArray(payload) && payload.length > 0) return toApplicationRecord(payload[0]);
+          return toApplicationRecord(payload);
+        }
+        const txt = await response.text().catch(() => "");
+        if (response.status >= bestStatus) {
+          bestStatus = response.status;
+          bestText = txt;
+        }
       }
     }
   }
