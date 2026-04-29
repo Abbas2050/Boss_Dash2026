@@ -34,6 +34,11 @@ export interface User {
   phone: string;
 }
 
+export interface UpdateUserManagerRequest {
+  user: number;
+  manager: number;
+}
+
 export interface RangeFilter {
   lt?: number;
   gt?: number;
@@ -222,6 +227,29 @@ export async function fetchAllUsers(body: Omit<UserRequest, 'segment'>): Promise
     offset += PAGE;
   }
   return all;
+}
+
+export async function updateUserManager(body: UpdateUserManagerRequest): Promise<User> {
+  const baseUrl = '/rest/users/update';
+  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
+  const token = import.meta.env.VITE_API_TOKEN;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Update user manager error ${res.status}: ${text || 'no body'}`);
+  }
+
+  return res.json();
 }
 
 export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {

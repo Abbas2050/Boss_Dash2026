@@ -24,12 +24,22 @@ import {
 } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
-import { fetchUsers, fetchAllUsers, fetchTransactions, fetchAllTransactions, fetchAccounts, type AccountRequest, type Account } from '@/lib/api';
+import {
+  fetchUsers,
+  fetchAllUsers,
+  fetchTransactions,
+  fetchAllTransactions,
+  fetchAccounts,
+  updateUserManager,
+  type AccountRequest,
+  type Account,
+} from '@/lib/api';
 import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { getCurrentUser } from '@/lib/auth';
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from '@/lib/rebateApi';
 import { getRateForSymbol, normalizeRebateSymbol } from '@/pages/departments/dealing/rebateUtils';
 import { aggregateRealEquityByLpBucket, EMPTY_LP_BUCKET_TOTALS } from '@/lib/lpBuckets';
@@ -173,6 +183,7 @@ export function BackOfficeDepartment({
   refreshKey: number;
   variant?: 'full' | 'compact';
 }) {
+  const isSuperAdmin = getCurrentUser()?.role === 'Super Admin';
   const [metrics, setMetrics] = useState({
     totalIBs: 0,
     totalDeposits: 0,
@@ -214,6 +225,13 @@ export function BackOfficeDepartment({
     deposits: CashflowTx[];
     withdrawals: CashflowTx[];
   } | null>(null);
+  const [managerUpdateUserIds, setManagerUpdateUserIds] = useState('');
+  const [managerUpdateManagerId, setManagerUpdateManagerId] = useState('');
+  const [managerUpdateLoading, setManagerUpdateLoading] = useState(false);
+  const [managerUpdateError, setManagerUpdateError] = useState<string | null>(null);
+  const [managerUpdateResults, setManagerUpdateResults] = useState<
+    Array<{ userId: number; success: boolean; managerId?: number | null; error?: string }>
+  >([]);
 
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
   const [reportDate, setReportDate] = useState('-');
@@ -1584,6 +1602,59 @@ export function BackOfficeDepartment({
     });
   };
 
+  const runBulkManagerUpdate = async () => {
+    const managerId = Number(managerUpdateManagerId);
+    if (!Number.isFinite(managerId) || managerId <= 0) {
+      setManagerUpdateError('Enter a valid manager ID.');
+      return;
+    }
+
+    const parsedUserIds = Array.from(
+      new Set(
+        managerUpdateUserIds
+          .split(/[\s,]+/)
+          .map((value) => Number(value.trim()))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    if (!parsedUserIds.length) {
+      setManagerUpdateError('Enter at least one valid user ID.');
+      return;
+    }
+
+    setManagerUpdateLoading(true);
+    setManagerUpdateError(null);
+    setManagerUpdateResults([]);
+
+    try {
+      const settled = await Promise.allSettled(
+        parsedUserIds.map(async (userId) => {
+          const updated = await updateUserManager({ user: userId, manager: managerId });
+          return { userId, success: true as const, managerId: updated.managerId };
+        }),
+      );
+
+      const results = settled.map((item, index) => {
+        const userId = parsedUserIds[index];
+        if (item.status === 'fulfilled') return item.value;
+        return {
+          userId,
+          success: false as const,
+          error: item.reason?.message || 'Failed to update user.',
+        };
+      });
+
+      setManagerUpdateResults(results);
+      const hasFailure = results.some((row) => !row.success);
+      if (hasFailure) setManagerUpdateError('Some users failed. Check results below.');
+    } catch (error: any) {
+      setManagerUpdateError(error?.message || 'Failed to update user managers.');
+    } finally {
+      setManagerUpdateLoading(false);
+    }
+  };
+
   return (
     <DepartmentCard title="Back Office" icon={Settings}>
       <div className="space-y-5">
@@ -1642,6 +1713,70 @@ export function BackOfficeDepartment({
                 )}
               </div>
             </div>
+          </section>
+        )}
+
+        {variant === 'full' && isSuperAdmin && (
+          <section className="rounded-2xl border border-border/60 bg-card/70 p-4">
+            <div className="mb-3 text-[11px] font-mono uppercase tracking-[0.16em] text-muted-foreground">Manager Assignment</div>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_220px_auto]">
+              <textarea
+                value={managerUpdateUserIds}
+                onChange={(e) => setManagerUpdateUserIds(e.target.value)}
+                rows={4}
+                placeholder="User IDs (comma, space, or new line). Example: 10001, 10002"
+                className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-mono text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+              />
+              <input
+                type="number"
+                min={1}
+                value={managerUpdateManagerId}
+                onChange={(e) => setManagerUpdateManagerId(e.target.value)}
+                placeholder="Manager ID"
+                className="h-fit rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-mono text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+              />
+              <button
+                type="button"
+                onClick={runBulkManagerUpdate}
+                disabled={managerUpdateLoading}
+                className="h-fit rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-800 hover:bg-cyan-500/15 disabled:opacity-60 dark:text-cyan-200"
+              >
+                {managerUpdateLoading ? 'Updating...' : 'Update Managers'}
+              </button>
+            </div>
+
+            {managerUpdateError && (
+              <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                {managerUpdateError}
+              </div>
+            )}
+
+            {managerUpdateResults.length > 0 && (
+              <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">User ID</th>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Status</th>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Manager ID</th>
+                      <th className="px-3 py-2 text-left font-semibold uppercase tracking-wide">Message</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {managerUpdateResults.map((row) => (
+                      <tr key={`mgr-update-${row.userId}`} className="bg-slate-50 dark:bg-slate-950/30">
+                        <td className="border-t border-slate-800 px-3 py-2 font-mono">{row.userId}</td>
+                        <td className={`border-t border-slate-800 px-3 py-2 font-medium ${row.success ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'}`}>
+                          {row.success ? 'Updated' : 'Failed'}
+                        </td>
+                        <td className="border-t border-slate-800 px-3 py-2 font-mono">{row.managerId ?? '-'}</td>
+                        <td className="border-t border-slate-800 px-3 py-2">{row.error || 'OK'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         )}
 
@@ -2514,4 +2649,3 @@ export function BackOfficeDepartment({
     </DepartmentCard>
   );
 }
-
