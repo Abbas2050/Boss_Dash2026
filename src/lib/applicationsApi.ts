@@ -66,6 +66,14 @@ export type ApplicationConfigDefinition = {
 
 const API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
 const API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
+const APPROVER_RULES: Record<number, number> = {
+  54: 11,
+  57: 11,
+  59: 11,
+  55: 4,
+  56: 4,
+  58: 4,
+};
 
 function apiHeaders() {
   return {
@@ -243,7 +251,10 @@ export async function listCrmApplicationsForActor(input: {
     const matchesManager = Number.isFinite(managerId) && managerId > 0
       ? processedBy === String(managerId) || processedByDigits === managerId
       : false;
-    return matchesEmail || matchesUser || matchesAcceptedBy || matchesManager;
+    const matchesApproverScope = Number.isFinite(managerId) && managerId > 0
+      ? APPROVER_RULES[Number(row.configId)] === managerId
+      : false;
+    return matchesEmail || matchesUser || matchesAcceptedBy || matchesManager || matchesApproverScope;
   });
 }
 
@@ -254,26 +265,22 @@ export async function approveCrmApplication(applicationId: number, managerId?: n
     throw new Error("Invalid application id.");
   }
   const acceptedBy = Number(managerId);
-
   const urls = [
     `/rest/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
     `/rest/user/applications/${encodeURIComponent(String(id))}/approve?version=${encodeURIComponent(API_VERSION)}`,
   ];
-  const bodies: Array<Record<string, unknown> | null> = [
-    Number.isFinite(acceptedBy) && acceptedBy > 0 ? { acceptedBy } : null,
-    null,
+  const attempts: Array<RequestInit> = [
+    { method: "PUT", headers: apiHeaders() },
+    Number.isFinite(acceptedBy) && acceptedBy > 0
+      ? { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ acceptedBy }) }
+      : { method: "PUT", headers: apiHeaders(), body: JSON.stringify({}) },
   ];
+
   let lastStatus = 0;
   let lastText = "";
-  let saw403 = false;
-  let saw403Text = "";
-  for (const body of bodies) {
+  for (const init of attempts) {
     for (const url of urls) {
-      const response = await fetch(url, {
-        method: "PUT",
-        headers: apiHeaders(),
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
+      const response = await fetch(url, init);
       if (response.ok) {
         const payload = await response.json();
         if (Array.isArray(payload) && payload.length > 0) return toApplicationRecord(payload[0]);
@@ -282,20 +289,10 @@ export async function approveCrmApplication(applicationId: number, managerId?: n
       const txt = await response.text().catch(() => "");
       lastStatus = response.status;
       lastText = txt;
-      if (response.status === 403) {
-        saw403 = true;
-        saw403Text = txt;
-      }
+      if (response.status !== 404) break;
     }
   }
 
-  if (saw403) {
-    throw new Error(
-      `Approve application failed (403) - CRM denied access for this application under current API user scope.${
-        saw403Text ? ` ${saw403Text.slice(0, 180)}` : ""
-      }`
-    );
-  }
   throw new Error(`Approve application failed (${lastStatus || "unknown"}) ${lastText ? `- ${lastText.slice(0, 220)}` : ""}`);
 }
 
