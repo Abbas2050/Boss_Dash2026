@@ -15,6 +15,12 @@ const quickPrompts = [
   "Give me marketing sessions for current date range.",
 ];
 
+const LIVE_AGENT_FAB_WIDTH = 168;
+const LIVE_AGENT_FAB_HEIGHT = 56;
+const LIVE_AGENT_FAB_MARGIN = 16;
+const LIVE_AGENT_CLICK_DRAG_THRESHOLD = 5;
+const LIVE_AGENT_STORAGE_KEY = "live_agent_fab_position_v1";
+
 type LiveAgentUiMessage = AgentChatMessage & {
   toolsUsed?: string[];
   at?: string;
@@ -105,158 +111,165 @@ const formatMetricValue = (value: unknown, percent = false) => {
   return String(value);
 };
 
+type SummaryCard = {
+  tool: string;
+  label: string;
+  value: string;
+};
+
 const buildSummaryCards = (toolSummaries: AgentChatResponse["toolSummaries"] = []) => {
-  return (toolSummaries || []).flatMap((summary) => {
+  return ((toolSummaries || []) as Array<{ tool?: string; data?: Record<string, any> }>).flatMap<SummaryCard>((summary) => {
     const data = summary?.data || {};
+    const toolName = String(summary?.tool || "unknown");
     switch (summary?.tool) {
       case "get_dealing_metrics":
         return [
-          { tool: summary.tool, label: "Equity", value: formatMetricValue(data.totalEquity) },
-          { tool: summary.tool, label: "Credit", value: formatMetricValue(data.totalCredit) },
-          { tool: summary.tool, label: "Net Lots", value: formatMetricValue(data.netLots) },
-          { tool: summary.tool, label: "Deals", value: formatMetricValue(data.deals) },
+          { tool: toolName, label: "Equity", value: formatMetricValue(data.totalEquity) },
+          { tool: toolName, label: "Credit", value: formatMetricValue(data.totalCredit) },
+          { tool: toolName, label: "Net Lots", value: formatMetricValue(data.netLots) },
+          { tool: toolName, label: "Deals", value: formatMetricValue(data.deals) },
         ];
       case "get_coverage_metrics":
         return [
-          { tool: summary.tool, label: "Coverage", value: formatMetricValue(data.coveragePct, true) },
-          { tool: summary.tool, label: "Uncovered", value: formatMetricValue(data.totalUncovered) },
-          { tool: summary.tool, label: "Symbols", value: formatMetricValue(data.symbolCount) },
-          { tool: summary.tool, label: "LPs", value: formatMetricValue(data.lpCount) },
+          { tool: toolName, label: "Coverage", value: formatMetricValue(data.coveragePct, true) },
+          { tool: toolName, label: "Uncovered", value: formatMetricValue(data.totalUncovered) },
+          { tool: toolName, label: "Symbols", value: formatMetricValue(data.symbolCount) },
+          { tool: toolName, label: "LPs", value: formatMetricValue(data.lpCount) },
         ];
       case "list_app_endpoints":
         return [
-          { tool: summary.tool, label: "Matched", value: formatMetricValue(data.totalMatched) },
-          { tool: summary.tool, label: "Available", value: formatMetricValue(data.totalAvailable) },
-          { tool: summary.tool, label: "First Endpoint", value: formatMetricValue(data.endpoints?.[0]?.id) },
+          { tool: toolName, label: "Matched", value: formatMetricValue(data.totalMatched) },
+          { tool: toolName, label: "Available", value: formatMetricValue(data.totalAvailable) },
+          { tool: toolName, label: "First Endpoint", value: formatMetricValue(data.endpoints?.[0]?.id) },
         ];
       case "call_app_endpoint":
         return [
-          { tool: summary.tool, label: "Endpoint", value: formatMetricValue(data.endpointId) },
-          { tool: summary.tool, label: "Status", value: formatMetricValue(data.status) },
-          { tool: summary.tool, label: "OK", value: formatMetricValue(data.ok) },
+          { tool: toolName, label: "Endpoint", value: formatMetricValue(data.endpointId) },
+          { tool: toolName, label: "Status", value: formatMetricValue(data.status) },
+          { tool: toolName, label: "OK", value: formatMetricValue(data.ok) },
         ];
       case "get_symbol_coverage":
         return [
-          { tool: summary.tool, label: "Symbol", value: formatMetricValue(data.symbol) },
-          { tool: summary.tool, label: "Coverage", value: formatMetricValue(data.coveragePct, true) },
-          { tool: summary.tool, label: "Client Net", value: formatMetricValue(data.clientNet) },
-          { tool: summary.tool, label: "Uncovered", value: formatMetricValue(data.uncovered) },
+          { tool: toolName, label: "Symbol", value: formatMetricValue(data.symbol) },
+          { tool: toolName, label: "Coverage", value: formatMetricValue(data.coveragePct, true) },
+          { tool: toolName, label: "Client Net", value: formatMetricValue(data.clientNet) },
+          { tool: toolName, label: "Uncovered", value: formatMetricValue(data.uncovered) },
         ];
       case "get_bonus_metrics":
         return [
-          { tool: summary.tool, label: "Gross PnL", value: formatMetricValue(data.grossPnl) },
-          { tool: summary.tool, label: "LP Realized", value: formatMetricValue(data.lpRealizedPnl) },
-          { tool: summary.tool, label: "LP Unrealized", value: formatMetricValue(data.lpUnrealizedPnl) },
-          { tool: summary.tool, label: "Monthly Rows", value: formatMetricValue(data.monthlyRows) },
+          { tool: toolName, label: "Gross PnL", value: formatMetricValue(data.grossPnl) },
+          { tool: toolName, label: "LP Realized", value: formatMetricValue(data.lpRealizedPnl) },
+          { tool: toolName, label: "LP Unrealized", value: formatMetricValue(data.lpUnrealizedPnl) },
+          { tool: toolName, label: "Monthly Rows", value: formatMetricValue(data.monthlyRows) },
         ];
       case "get_swap_metrics":
         return [
-          { tool: summary.tool, label: "Positions", value: formatMetricValue(data.positionCount) },
-          { tool: summary.tool, label: "Due Tonight", value: formatMetricValue(data.dueTonight) },
-          { tool: summary.tool, label: "Negative Swap", value: formatMetricValue(data.negativeSwapPositions) },
-          { tool: summary.tool, label: "Total Swap", value: formatMetricValue(data.totalSwap) },
+          { tool: toolName, label: "Positions", value: formatMetricValue(data.positionCount) },
+          { tool: toolName, label: "Due Tonight", value: formatMetricValue(data.dueTonight) },
+          { tool: toolName, label: "Negative Swap", value: formatMetricValue(data.negativeSwapPositions) },
+          { tool: toolName, label: "Total Swap", value: formatMetricValue(data.totalSwap) },
         ];
       case "get_trading_activity":
         return [
-          { tool: summary.tool, label: "Deals", value: formatMetricValue(data.dealCount) },
-          { tool: summary.tool, label: "Symbols", value: formatMetricValue(data.symbolCount) },
-          { tool: summary.tool, label: "Lots", value: formatMetricValue(data.totals?.totalLots) },
-          { tool: summary.tool, label: "Profit", value: formatMetricValue(data.totals?.totalProfit) },
+          { tool: toolName, label: "Deals", value: formatMetricValue(data.dealCount) },
+          { tool: toolName, label: "Symbols", value: formatMetricValue(data.symbolCount) },
+          { tool: toolName, label: "Lots", value: formatMetricValue(data.totals?.totalLots) },
+          { tool: toolName, label: "Profit", value: formatMetricValue(data.totals?.totalProfit) },
         ];
       case "get_history_aggregate":
         return [
-          { tool: summary.tool, label: "Net P/L", value: formatMetricValue(data.totals?.netPL) },
-          { tool: summary.tool, label: "Real LP P/L", value: formatMetricValue(data.totals?.realLpPL) },
-          { tool: summary.tool, label: "LP P/L", value: formatMetricValue(data.totals?.lpPL) },
-          { tool: summary.tool, label: "Gross Profit", value: formatMetricValue(data.totals?.grossProfit) },
+          { tool: toolName, label: "Net P/L", value: formatMetricValue(data.totals?.netPL) },
+          { tool: toolName, label: "Real LP P/L", value: formatMetricValue(data.totals?.realLpPL) },
+          { tool: toolName, label: "LP P/L", value: formatMetricValue(data.totals?.lpPL) },
+          { tool: toolName, label: "Gross Profit", value: formatMetricValue(data.totals?.grossProfit) },
         ];
       case "get_history_deals":
         return [
-          { tool: summary.tool, label: "Login", value: formatMetricValue(data.login) },
-          { tool: summary.tool, label: "Deals", value: formatMetricValue(data.totalDeals) },
-          { tool: summary.tool, label: "Profit", value: formatMetricValue(data.totals?.profit) },
-          { tool: summary.tool, label: "Commission", value: formatMetricValue(data.totals?.commission) },
+          { tool: toolName, label: "Login", value: formatMetricValue(data.login) },
+          { tool: toolName, label: "Deals", value: formatMetricValue(data.totalDeals) },
+          { tool: toolName, label: "Profit", value: formatMetricValue(data.totals?.profit) },
+          { tool: toolName, label: "Commission", value: formatMetricValue(data.totals?.commission) },
         ];
       case "get_history_volume":
         return [
-          { tool: summary.tool, label: "Rows", value: formatMetricValue(data.rowCount) },
-          { tool: summary.tool, label: "Trades", value: formatMetricValue(data.totals?.tradeCount) },
-          { tool: summary.tool, label: "Lots", value: formatMetricValue(data.totals?.totalLots) },
-          { tool: summary.tool, label: "Yards", value: formatMetricValue(data.totals?.volumeYards) },
+          { tool: toolName, label: "Rows", value: formatMetricValue(data.rowCount) },
+          { tool: toolName, label: "Trades", value: formatMetricValue(data.totals?.tradeCount) },
+          { tool: toolName, label: "Lots", value: formatMetricValue(data.totals?.totalLots) },
+          { tool: toolName, label: "Yards", value: formatMetricValue(data.totals?.volumeYards) },
         ];
       case "get_accounts_metrics":
         return [
-          { tool: summary.tool, label: "Deposits", value: formatMetricValue(data.totalDeposits) },
-          { tool: summary.tool, label: "Withdrawals", value: formatMetricValue(data.totalWithdrawals) },
-          { tool: summary.tool, label: "Net Flow", value: formatMetricValue(data.netFlow) },
-          { tool: summary.tool, label: "Wallet", value: formatMetricValue(data.walletTotal) },
+          { tool: toolName, label: "Deposits", value: formatMetricValue(data.totalDeposits) },
+          { tool: toolName, label: "Withdrawals", value: formatMetricValue(data.totalWithdrawals) },
+          { tool: toolName, label: "Net Flow", value: formatMetricValue(data.netFlow) },
+          { tool: toolName, label: "Wallet", value: formatMetricValue(data.walletTotal) },
         ];
       case "get_backoffice_metrics":
         return [
-          { tool: summary.tool, label: "Clients", value: formatMetricValue(data.totalClients) },
-          { tool: summary.tool, label: "MT5 Accounts", value: formatMetricValue(data.totalMt5Accounts) },
-          { tool: summary.tool, label: "Deposits", value: formatMetricValue(data.deposits) },
-          { tool: summary.tool, label: "Withdrawals", value: formatMetricValue(data.withdrawals) },
+          { tool: toolName, label: "Clients", value: formatMetricValue(data.totalClients) },
+          { tool: toolName, label: "MT5 Accounts", value: formatMetricValue(data.totalMt5Accounts) },
+          { tool: toolName, label: "Deposits", value: formatMetricValue(data.deposits) },
+          { tool: toolName, label: "Withdrawals", value: formatMetricValue(data.withdrawals) },
         ];
       case "get_marketing_metrics":
         return [
-          { tool: summary.tool, label: "Sessions", value: formatMetricValue(data.sessions) },
-          { tool: summary.tool, label: "Active Users", value: formatMetricValue(data.activeUsers) },
-          { tool: summary.tool, label: "New Users", value: formatMetricValue(data.newUsers) },
-          { tool: summary.tool, label: "Conversions", value: formatMetricValue(data.conversions) },
+          { tool: toolName, label: "Sessions", value: formatMetricValue(data.sessions) },
+          { tool: toolName, label: "Active Users", value: formatMetricValue(data.activeUsers) },
+          { tool: toolName, label: "New Users", value: formatMetricValue(data.newUsers) },
+          { tool: toolName, label: "Conversions", value: formatMetricValue(data.conversions) },
         ];
       case "get_lp_metrics":
         return [
-          { tool: summary.tool, label: "Accounts", value: formatMetricValue(data.accountCount) },
-          { tool: summary.tool, label: "Avg Margin", value: formatMetricValue(data.avgMarginLevel, true) },
-          { tool: summary.tool, label: "Equity", value: formatMetricValue(data.totals?.equity) },
-          { tool: summary.tool, label: "Free Margin", value: formatMetricValue(data.totals?.freeMargin) },
+          { tool: toolName, label: "Accounts", value: formatMetricValue(data.accountCount) },
+          { tool: toolName, label: "Avg Margin", value: formatMetricValue(data.avgMarginLevel, true) },
+          { tool: toolName, label: "Equity", value: formatMetricValue(data.totals?.equity) },
+          { tool: toolName, label: "Free Margin", value: formatMetricValue(data.totals?.freeMargin) },
         ];
       case "get_lp_equity_summary":
         return [
-          { tool: summary.tool, label: "LP Withdrawable", value: formatMetricValue(data.lpWithdrawableEquity) },
-          { tool: summary.tool, label: "Client Withdrawable", value: formatMetricValue(data.clientWithdrawableEquity) },
-          { tool: summary.tool, label: "Difference", value: formatMetricValue(data.difference) },
+          { tool: toolName, label: "LP Withdrawable", value: formatMetricValue(data.lpWithdrawableEquity) },
+          { tool: toolName, label: "Client Withdrawable", value: formatMetricValue(data.clientWithdrawableEquity) },
+          { tool: toolName, label: "Difference", value: formatMetricValue(data.difference) },
         ];
       case "get_lp_positions":
         return [
-          { tool: summary.tool, label: "LP", value: formatMetricValue(data.lpName) },
-          { tool: summary.tool, label: "Positions", value: formatMetricValue(data.positionCount) },
-          { tool: summary.tool, label: "Symbols", value: formatMetricValue(data.symbolCount) },
-          { tool: summary.tool, label: "Net Lots", value: formatMetricValue(data.totalNetLots) },
+          { tool: toolName, label: "LP", value: formatMetricValue(data.lpName) },
+          { tool: toolName, label: "Positions", value: formatMetricValue(data.positionCount) },
+          { tool: toolName, label: "Symbols", value: formatMetricValue(data.symbolCount) },
+          { tool: toolName, label: "Net Lots", value: formatMetricValue(data.totalNetLots) },
         ];
       case "get_account_details":
         return [
-          { tool: summary.tool, label: "Login", value: formatMetricValue(data.login) },
-          { tool: summary.tool, label: "Equity", value: formatMetricValue(data.account?.equity) },
-          { tool: summary.tool, label: "Balance", value: formatMetricValue(data.account?.balance) },
-          { tool: summary.tool, label: "Margin %", value: formatMetricValue(data.account?.marginLevel, true) },
+          { tool: toolName, label: "Login", value: formatMetricValue(data.login) },
+          { tool: toolName, label: "Equity", value: formatMetricValue(data.account?.equity) },
+          { tool: toolName, label: "Balance", value: formatMetricValue(data.account?.balance) },
+          { tool: toolName, label: "Margin %", value: formatMetricValue(data.account?.marginLevel, true) },
         ];
       case "get_user_accounts_by_email":
         return [
-          { tool: summary.tool, label: "Email", value: formatMetricValue(data.email) },
-          { tool: summary.tool, label: "Users", value: formatMetricValue(data.matchedUsers?.length) },
-          { tool: summary.tool, label: "Accounts", value: formatMetricValue(data.tradingAccountsCount) },
-          { tool: summary.tool, label: "First Login", value: formatMetricValue(data.logins?.[0]?.login) },
+          { tool: toolName, label: "Email", value: formatMetricValue(data.email) },
+          { tool: toolName, label: "Users", value: formatMetricValue(data.matchedUsers?.length) },
+          { tool: toolName, label: "Accounts", value: formatMetricValue(data.tradingAccountsCount) },
+          { tool: toolName, label: "First Login", value: formatMetricValue(data.logins?.[0]?.login) },
         ];
       case "get_crm_cashflow":
         return [
-          { tool: summary.tool, label: "CRM/User", value: formatMetricValue(data.userId) },
-          { tool: summary.tool, label: "Deposits", value: formatMetricValue(data.totalDeposits) },
-          { tool: summary.tool, label: "Withdrawals", value: formatMetricValue(data.totalWithdrawals) },
-          { tool: summary.tool, label: "Net Flow", value: formatMetricValue(data.netFlow) },
+          { tool: toolName, label: "CRM/User", value: formatMetricValue(data.userId) },
+          { tool: toolName, label: "Deposits", value: formatMetricValue(data.totalDeposits) },
+          { tool: toolName, label: "Withdrawals", value: formatMetricValue(data.totalWithdrawals) },
+          { tool: toolName, label: "Net Flow", value: formatMetricValue(data.netFlow) },
         ];
       case "get_contract_sizes":
         return [
-          { tool: summary.tool, label: "Symbol", value: formatMetricValue(data.symbol) },
-          { tool: summary.tool, label: "Mappings", value: formatMetricValue(data.count) },
-          { tool: summary.tool, label: "Detected", value: formatMetricValue(data.detected ? "yes" : "-") },
+          { tool: toolName, label: "Symbol", value: formatMetricValue(data.symbol) },
+          { tool: toolName, label: "Mappings", value: formatMetricValue(data.count) },
+          { tool: toolName, label: "Detected", value: formatMetricValue(data.detected ? "yes" : "-") },
         ];
       case "get_symbol_mappings":
         return [
-          { tool: summary.tool, label: "Mappings", value: formatMetricValue(data.count) },
-          { tool: summary.tool, label: "First Raw", value: formatMetricValue(data.items?.[0]?.rawSymbol) },
-          { tool: summary.tool, label: "First Mapped", value: formatMetricValue(data.items?.[0]?.mappedSymbol) },
+          { tool: toolName, label: "Mappings", value: formatMetricValue(data.count) },
+          { tool: toolName, label: "First Raw", value: formatMetricValue(data.items?.[0]?.rawSymbol) },
+          { tool: toolName, label: "First Mapped", value: formatMetricValue(data.items?.[0]?.mappedSymbol) },
         ];
       default:
         return [];
@@ -292,6 +305,31 @@ export function LiveChatAgent() {
   const visibleSettingsPaths = useMemo(() => new Set(getVisibleSettingsMenuItems(currentUser).map((item) => item.path)), [currentUser]);
   const canUseLiveAgent = hasAccess("LiveAgent") || hasAccess("Backoffice");
   const [open, setOpen] = useState(false);
+  const suppressClickRef = useRef(false);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    moved: boolean;
+  } | null>(null);
+  const [fabPosition, setFabPosition] = useState<{ x: number; y: number }>(() => {
+    if (typeof window === "undefined") return { x: 0, y: 0 };
+    const defaultPos = {
+      x: window.innerWidth - LIVE_AGENT_FAB_WIDTH - 20,
+      y: window.innerHeight - LIVE_AGENT_FAB_HEIGHT - 20,
+    };
+    try {
+      const raw = window.localStorage.getItem(LIVE_AGENT_STORAGE_KEY);
+      if (!raw) return defaultPos;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.x !== "number" || typeof parsed?.y !== "number") return defaultPos;
+      return parsed;
+    } catch {
+      return defaultPos;
+    }
+  });
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<LiveAgentUiMessage[]>([
     {
@@ -306,6 +344,29 @@ export function LiveChatAgent() {
     if (!scrollerRef.current) return;
     scrollerRef.current.scrollTop = scrollerRef.current.scrollHeight;
   }, [messages, open, loading]);
+
+  const clampFabPosition = (x: number, y: number) => {
+    const maxX = Math.max(LIVE_AGENT_FAB_MARGIN, window.innerWidth - LIVE_AGENT_FAB_WIDTH - LIVE_AGENT_FAB_MARGIN);
+    const maxY = Math.max(LIVE_AGENT_FAB_MARGIN, window.innerHeight - LIVE_AGENT_FAB_HEIGHT - LIVE_AGENT_FAB_MARGIN);
+    return {
+      x: Math.min(Math.max(LIVE_AGENT_FAB_MARGIN, x), maxX),
+      y: Math.min(Math.max(LIVE_AGENT_FAB_MARGIN, y), maxY),
+    };
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => {
+      setFabPosition((prev) => clampFabPosition(prev.x, prev.y));
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LIVE_AGENT_STORAGE_KEY, JSON.stringify(fabPosition));
+  }, [fabPosition]);
 
   const send = async (question: string) => {
     const content = question.trim();
@@ -480,11 +541,55 @@ export function LiveChatAgent() {
   };
 
   return (
-    <div className="fixed bottom-5 right-5 z-[80]">
+    <div
+      className="fixed z-[80]"
+      style={{ left: `${fabPosition.x}px`, top: `${fabPosition.y}px` }}
+    >
       {!open && (
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onPointerDown={(e) => {
+            suppressClickRef.current = false;
+            dragRef.current = {
+              pointerId: e.pointerId,
+              startX: e.clientX,
+              startY: e.clientY,
+              originX: fabPosition.x,
+              originY: fabPosition.y,
+              moved: false,
+            };
+            (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            const drag = dragRef.current;
+            if (!drag || drag.pointerId !== e.pointerId) return;
+            const deltaX = e.clientX - drag.startX;
+            const deltaY = e.clientY - drag.startY;
+            if (!drag.moved && Math.hypot(deltaX, deltaY) > LIVE_AGENT_CLICK_DRAG_THRESHOLD) {
+              drag.moved = true;
+              suppressClickRef.current = true;
+            }
+            setFabPosition(clampFabPosition(drag.originX + deltaX, drag.originY + deltaY));
+          }}
+          onPointerUp={(e) => {
+            if (dragRef.current?.pointerId === e.pointerId) {
+              (e.currentTarget as HTMLButtonElement).releasePointerCapture(e.pointerId);
+              dragRef.current = null;
+            }
+          }}
+          onPointerCancel={(e) => {
+            if (dragRef.current?.pointerId === e.pointerId) {
+              (e.currentTarget as HTMLButtonElement).releasePointerCapture(e.pointerId);
+              dragRef.current = null;
+            }
+          }}
+          onClick={() => {
+            if (suppressClickRef.current) {
+              suppressClickRef.current = false;
+              return;
+            }
+            setOpen(true);
+          }}
           className="group inline-flex items-center gap-2 rounded-full border border-cyan-500/50 bg-gradient-to-r from-cyan-600 to-emerald-600 px-4 py-3 text-white shadow-lg shadow-cyan-900/25"
         >
           <Bot className="h-4 w-4" />

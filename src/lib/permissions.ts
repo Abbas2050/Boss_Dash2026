@@ -110,15 +110,16 @@ export const DEPARTMENT_NAV_ITEMS: readonly DepartmentNavItem[] = [
   },
 ] as const;
 
-export const DEALING_TAB_KEYS: { key: string; label: string }[] = DEALING_TABS.map((tab) => ({
-  key: `Dealing:${tab}`,
-  label: tab,
-})).concat(
-  BONUS_SUB_TABS.map((tab) => ({
+export const DEALING_TAB_KEYS: { key: string; label: string }[] = [
+  ...DEALING_TABS.map((tab) => ({
     key: `Dealing:${tab}`,
-    label: tab,
-  }))
-);
+    label: String(tab),
+  })),
+  ...BONUS_SUB_TABS.map((tab) => ({
+    key: `Dealing:${tab}`,
+    label: String(tab),
+  })),
+];
 
 export const NOTIFICATION_KEYS = [
   { key: "Notifications:UserChangeAlert", label: "User Change Alert" },

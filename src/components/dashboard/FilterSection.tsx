@@ -289,7 +289,7 @@ export function FilterSection({
               variant="default"
               size="sm"
               className="h-9 shrink-0"
-              onClick={onSubmit}
+              onClick={() => onSubmit()}
             >
               Submit
             </Button>

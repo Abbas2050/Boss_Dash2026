@@ -1,28 +1,28 @@
 {
   "channels": {
     "email": {
-      "lastSentHash": "{\"total_balance\":2922911.23,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":277388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853444.04,\"googlesheets_mbme\":7685.49}}"
+      "lastSentHash": "{\"total_balance\":2672870.39,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":27388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853403.2,\"googlesheets_mbme\":7685.49}}"
     },
     "telegram": {
-      "lastSentHash": "{\"total_balance\":2922911.23,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":277388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853444.04,\"googlesheets_mbme\":7685.49}}"
+      "lastSentHash": "{\"total_balance\":2672870.39,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":27388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853403.2,\"googlesheets_mbme\":7685.49}}"
     }
   },
-  "lastNotifiedHash": "{\"total_balance\":2922911.23,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":277388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853444.04,\"googlesheets_mbme\":7685.49}}",
-  "lastSnapshotHash": "{\"total_balance\":2922911.23,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":277388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853444.04,\"googlesheets_mbme\":7685.49}}",
+  "lastNotifiedHash": "{\"total_balance\":2672870.39,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":27388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853403.2,\"googlesheets_mbme\":7685.49}}",
+  "lastSnapshotHash": "{\"total_balance\":2672870.39,\"widgets\":{\"bitpace\":0,\"letknowpay\":241610.15,\"ownbit\":27388.82,\"heropayment\":146888.99,\"googlesheets_match2pay\":504.5,\"googlesheets_deusxpay\":30.8,\"googlesheets_openpayed\":0,\"googlesheets_goldsouq\":395358.44,\"googlesheets_fab\":1853403.2,\"googlesheets_mbme\":7685.49}}",
   "lastSnapshot": {
-    "total_balance": 2922911.23,
+    "total_balance": 2672870.39,
     "widgets": {
       "bitpace": 0,
       "letknowpay": 241610.15,
-      "ownbit": 277388.82,
+      "ownbit": 27388.82,
       "heropayment": 146888.99,
       "googlesheets_match2pay": 504.5,
       "googlesheets_deusxpay": 30.8,
       "googlesheets_openpayed": 0,
       "googlesheets_goldsouq": 395358.44,
-      "googlesheets_fab": 1853444.04,
+      "googlesheets_fab": 1853403.2,
       "googlesheets_mbme": 7685.49
     }
   },
-  "updatedAt": "2026-04-28T08:31:40.365Z"
+  "updatedAt": "2026-04-28T10:37:45.550Z"
 }
