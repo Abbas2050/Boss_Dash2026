@@ -363,6 +363,7 @@ async function proxyHttp(req, res, options) {
   }
 }
 
+app.use('/rest/applications', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
 app.use('/rest', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })

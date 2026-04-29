@@ -65,7 +65,7 @@ export const AlertsSettingsPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="p-6 md:p-8 space-y-6">
+      <main className="space-y-6 p-4 sm:p-6 md:p-8">
         <section className="rounded-2xl border border-border/40 bg-gradient-to-br from-card/90 to-card/60 p-5">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -88,21 +88,21 @@ export const AlertsSettingsPage: React.FC = () => {
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               onClick={enableAll}
-              className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-primary text-primary-foreground hover:opacity-90"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground hover:opacity-90 sm:w-auto"
             >
               <Bell className="h-4 w-4" />
               Enable All
             </button>
             <button
               onClick={disableAll}
-              className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm bg-secondary text-secondary-foreground border border-border/60 hover:bg-secondary/80"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border/60 bg-secondary px-3 py-2 text-sm text-secondary-foreground hover:bg-secondary/80 sm:w-auto"
             >
               <BellOff className="h-4 w-4" />
               Disable All
             </button>
             <button
               onClick={resetDefaults}
-              className="rounded-lg px-3 py-2 text-sm border border-border/60 bg-background/60 hover:bg-secondary/40"
+              className="w-full rounded-lg border border-border/60 bg-background/60 px-3 py-2 text-sm hover:bg-secondary/40 sm:w-auto"
             >
               Reset Defaults
             </button>
@@ -118,7 +118,7 @@ export const AlertsSettingsPage: React.FC = () => {
                   <div className="text-xs text-muted-foreground mt-0.5 font-mono">{key}</div>
                   <p className="text-sm text-muted-foreground mt-2">{ALERT_EVENT_META[key].description}</p>
                 </div>
-                <label className="inline-flex items-center cursor-pointer">
+                <label className="inline-flex cursor-pointer items-center self-center">
                   <input
                     type="checkbox"
                     className="sr-only"

@@ -290,12 +290,16 @@ export function hasAccess(page: string): boolean {
   const currentUser = getCurrentUser();
   if (!currentUser) return false;
   if (currentUser.role === "Super Admin") return true;
-  if (page === "Tickets:Own") return true;
+  const normalizedPage =
+    page === "Applications:Own" ? "Tickets:Own" :
+    page === "Applications:All" ? "Tickets:All" :
+    page;
+  if (normalizedPage === "Tickets:Own") return true;
   const owned = Array.isArray(currentUser.access) ? currentUser.access : [];
-  if (owned.includes(page)) return true;
-  const idx = page.indexOf(":");
+  if (owned.includes(normalizedPage)) return true;
+  const idx = normalizedPage.indexOf(":");
   if (idx > 0) {
-    const prefix = page.slice(0, idx);
+    const prefix = normalizedPage.slice(0, idx);
     if (owned.includes(prefix)) return true;
     if (owned.includes(`${prefix}:All`)) return true;
     return false;

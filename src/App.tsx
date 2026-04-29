@@ -89,13 +89,14 @@ const App = () => (
               <Route path="leverage-update" element={<LeverageUpdate />} />
               <Route path="LPManager" element={<LPManager />} />
               <Route
-                path="tickets"
+                path="applications"
                 element={
-                  <ProtectedRoute requiredPermissions={["Tickets:Own"]} title="Tickets Access Required">
+                  <ProtectedRoute requiredPermissions={["Applications:Own"]} title="Applications Access Required">
                     <TicketsPage />
                   </ProtectedRoute>
                 }
               />
+              <Route path="tickets" element={<Navigate to="/applications" replace />} />
 
             {/* Legacy static HTML aliases */}
             {LEGACY_ROUTE_ALIASES.map((item) => (

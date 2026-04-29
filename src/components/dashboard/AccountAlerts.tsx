@@ -24,8 +24,8 @@ export const AccountAlerts: React.FC = () => {
 
   return (
     <DepartmentCard title="Account Alerts" icon={Zap} accentColor="primary">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <div className={`px-2 py-1 rounded text-xs ${status === 'connected' ? 'bg-success/10 text-success' : status === 'connecting' || status === 'reconnecting' ? 'bg-warning/10 text-warning' : 'bg-destructive/10 text-destructive'}`}>
             {status === 'connected' ? 'WS Connected' : status === 'connecting' ? 'WS Connecting' : status === 'reconnecting' ? 'WS Reconnecting' : 'WS Disconnected'}
           </div>
@@ -33,16 +33,16 @@ export const AccountAlerts: React.FC = () => {
           <div className="text-xs text-muted-foreground">Alerts: {marginEvents.length}</div>
           <div className="text-xs text-muted-foreground">All: {allEvents.length}</div>
         </div>
-        {lastError && <div className="text-[11px] text-destructive ml-2">{String(lastError).slice(0,160)}</div>}
+        {lastError && <div className="max-w-full text-[11px] text-destructive sm:ml-2">{String(lastError).slice(0,160)}</div>}
       </div>
 
-      <div className="pt-2 flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 pt-2">
         <button className={`px-2 py-1 text-xs rounded ${tab === 'all' ? 'bg-primary/20 text-primary' : 'bg-secondary/20 text-muted-foreground'}`} onClick={() => setTab('all')}>All</button>
         <button className={`px-2 py-1 text-xs rounded ${tab === 'users' ? 'bg-primary/20 text-primary' : 'bg-secondary/20 text-muted-foreground'}`} onClick={() => setTab('users')}>User Changes</button>
         <button className={`px-2 py-1 text-xs rounded ${tab === 'margin' ? 'bg-primary/20 text-primary' : 'bg-secondary/20 text-muted-foreground'}`} onClick={() => setTab('margin')}>Margin/Stopout</button>
       </div>
 
-      <div className="pt-3 grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 pt-3 sm:grid-cols-2">
         <div className="p-2 rounded-md bg-secondary/10 border border-border/30 text-xs">
           <div className="text-muted-foreground">New Accounts</div>
           <div className="font-mono font-semibold text-lg text-success">{summary.adds}</div>
@@ -61,9 +61,10 @@ export const AccountAlerts: React.FC = () => {
         </div>
       </div>
 
-      <div className="pt-3 border-t border-border/30 max-h-64 overflow-auto">
+      <div className="max-h-64 overflow-auto border-t border-border/30 pt-3">
         {tab === 'users' && (
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] text-xs">
             <thead>
               <tr className="text-left text-muted-foreground"><th>Time</th><th>Event</th><th>Login</th><th>Name</th><th>Group</th><th>Balance</th></tr>
             </thead>
@@ -81,10 +82,12 @@ export const AccountAlerts: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
 
         {tab === 'margin' && (
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] text-xs">
             <thead>
               <tr className="text-left text-muted-foreground"><th>Time</th><th>Type</th><th>Login</th><th>Equity</th><th>Balance</th><th>Margin</th></tr>
             </thead>
@@ -102,10 +105,12 @@ export const AccountAlerts: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
 
         {tab === 'all' && (
-          <table className="w-full text-xs">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-xs">
             <thead>
               <tr className="text-left text-muted-foreground"><th>Time</th><th>Type</th><th>Login</th><th>Name/Group</th><th>Details</th></tr>
             </thead>
@@ -122,6 +127,7 @@ export const AccountAlerts: React.FC = () => {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </DepartmentCard>

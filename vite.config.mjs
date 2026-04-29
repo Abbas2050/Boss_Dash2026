@@ -50,6 +50,11 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         rewrite: (reqPath) => reqPath,
       },
+      "/rest/applications": {
+        target: "https://portal.skylinkscapital.com",
+        changeOrigin: true,
+        rewrite: (reqPath) => reqPath,
+      },
       "/api/mt5": {
         target: "http://127.0.0.1:8001",
         changeOrigin: true,

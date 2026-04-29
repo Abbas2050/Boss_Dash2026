@@ -6,6 +6,8 @@ export const ALERT_EVENT_KEYS = [
   "PositionUpdate",
   "OrderUpdate",
   "TransactionAlert",
+  "ApplicationPendingApproval",
+  "ApplicationApproved",
 ] as const;
 
 export type AlertEventKey = (typeof ALERT_EVENT_KEYS)[number];
@@ -42,6 +44,14 @@ export const ALERT_EVENT_META: Record<
     title: "Transaction Alert",
     description: "A balance transaction notification arrived.",
   },
+  ApplicationPendingApproval: {
+    title: "Application Pending Approval",
+    description: "A new application assigned to you requires approval.",
+  },
+  ApplicationApproved: {
+    title: "Application Approved",
+    description: "Your created application has been approved.",
+  },
 };
 
 const STORAGE_KEY = "slc.alert.preferences.v1";
@@ -58,6 +68,8 @@ export function getDefaultAlertPreferences(): AlertPreferences {
     PositionUpdate: false,
     OrderUpdate: false,
     TransactionAlert: true,
+    ApplicationPendingApproval: true,
+    ApplicationApproved: true,
   };
 }
 

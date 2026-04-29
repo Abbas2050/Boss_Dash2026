@@ -51,8 +51,8 @@ export const DASHBOARD_SECTION_ITEMS: readonly DashboardSectionItem[] = [
 
 export const DEPARTMENT_KEYS = [
   { key: "LiveAgent", label: "Live Agent" },
-  { key: "Tickets:Own", label: "Tickets (Own)" },
-  { key: "Tickets:All", label: "Tickets (All)" },
+  { key: "Tickets:Own", label: "Applications (Own)" },
+  { key: "Tickets:All", label: "Applications (All)" },
   { key: "Dealing", label: "Dealing Department" },
   { key: "Accounts", label: "Accounts Department" },
   { key: "Backoffice", label: "Back Office Department" },
@@ -129,6 +129,8 @@ export const NOTIFICATION_KEYS = [
   { key: "Notifications:PositionUpdate", label: "Position Update" },
   { key: "Notifications:OrderUpdate", label: "Order Update" },
   { key: "Notifications:TransactionAlert", label: "Transaction Alert" },
+  { key: "Notifications:ApplicationPendingApproval", label: "Application Pending Approval" },
+  { key: "Notifications:ApplicationApproved", label: "Application Approved" },
 ] as const;
 
 export const ADMIN_ACCESS_KEYS = [
@@ -230,12 +232,16 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
 export function hasUserAccess(user: AuthUser | null | undefined, permission: string): boolean {
   if (!user) return false;
   if (user.role === "Super Admin") return true;
-  if (permission === "Tickets:Own") return true;
+  const normalizedPermission =
+    permission === "Applications:Own" ? "Tickets:Own" :
+    permission === "Applications:All" ? "Tickets:All" :
+    permission;
+  if (normalizedPermission === "Tickets:Own") return true;
   const owned = Array.isArray(user.access) ? user.access : [];
-  if (owned.includes(permission)) return true;
-  const idx = permission.indexOf(":");
+  if (owned.includes(normalizedPermission)) return true;
+  const idx = normalizedPermission.indexOf(":");
   if (idx > 0) {
-    const prefix = permission.slice(0, idx);
+    const prefix = normalizedPermission.slice(0, idx);
     if (owned.includes(prefix)) return true;
     if (owned.includes(`${prefix}:All`)) return true;
   }
