@@ -276,21 +276,56 @@ async function ensureDbInitialized() {
     `).catch(() => undefined);
 
     // On server startup: close any runs still marked "running" from a previous server process.
-    // Since activeRunPromise is null at startup, those runs can't be genuinely running.
-    // However, only close if no step activity in the last 3 minutes to avoid killing a run
-    // that was active very recently (e.g. server hot-reloaded during active processing).
+    // If the run already has processed activity, classify it as partial instead of failed.
     await pool.query(`
-      UPDATE client_profile_run_log
-      SET status = 'failed',
-          error_message = 'Auto-closed: server restarted while run was in progress',
-          finished_at = NOW()
-      WHERE status = 'running'
+      UPDATE client_profile_run_log r
+      LEFT JOIN (
+        SELECT
+          run_id,
+          COALESCE(SUM(CASE WHEN step_key = 'client_persisted' THEN 1 ELSE 0 END), 0) AS processed_count,
+          COALESCE(SUM(CASE WHEN step_key = 'client_failed' THEN 1 ELSE 0 END), 0) AS failed_count
+        FROM client_profile_run_step_log
+        GROUP BY run_id
+      ) agg ON agg.run_id = r.id
+      SET r.status = CASE
+            WHEN COALESCE(agg.processed_count, 0) + COALESCE(agg.failed_count, 0) > 0 THEN 'partial'
+            ELSE 'failed'
+          END,
+          r.clients_processed = GREATEST(COALESCE(r.clients_processed, 0), COALESCE(agg.processed_count, 0)),
+          r.clients_failed = GREATEST(COALESCE(r.clients_failed, 0), COALESCE(agg.failed_count, 0)),
+          r.error_message = CASE
+            WHEN COALESCE(agg.processed_count, 0) + COALESCE(agg.failed_count, 0) > 0
+              THEN 'Auto-closed: server restarted while run was in progress (progress preserved).'
+            ELSE 'Auto-closed: server restarted while run was in progress'
+          END,
+          r.finished_at = NOW()
+      WHERE r.status = 'running'
         AND NOT EXISTS (
           SELECT 1
           FROM client_profile_run_step_log s
-          WHERE s.run_id = client_profile_run_log.id
+          WHERE s.run_id = r.id
             AND s.created_at >= DATE_SUB(NOW(), INTERVAL 3 MINUTE)
         )
+    `).catch(() => undefined);
+
+    // Backfill historical restart auto-closed runs that have progress but were left as failed.
+    await pool.query(`
+      UPDATE client_profile_run_log r
+      LEFT JOIN (
+        SELECT
+          run_id,
+          COALESCE(SUM(CASE WHEN step_key = 'client_persisted' THEN 1 ELSE 0 END), 0) AS processed_count,
+          COALESCE(SUM(CASE WHEN step_key = 'client_failed' THEN 1 ELSE 0 END), 0) AS failed_count
+        FROM client_profile_run_step_log
+        GROUP BY run_id
+      ) agg ON agg.run_id = r.id
+      SET r.status = 'partial',
+          r.clients_processed = GREATEST(COALESCE(r.clients_processed, 0), COALESCE(agg.processed_count, 0)),
+          r.clients_failed = GREATEST(COALESCE(r.clients_failed, 0), COALESCE(agg.failed_count, 0)),
+          r.error_message = 'Auto-closed: server restarted while run was in progress (progress preserved).'
+      WHERE r.status = 'failed'
+        AND r.error_message = 'Auto-closed: server restarted while run was in progress'
+        AND (COALESCE(agg.processed_count, 0) + COALESCE(agg.failed_count, 0)) > 0
     `).catch(() => undefined);
 
     return pool;
@@ -303,20 +338,37 @@ async function closeStaleRunningRuns(conn) {
   // Close runs that have been "running" beyond the stale threshold and have no recent step activity.
   await conn.query(
     `
-      UPDATE client_profile_run_log
-      SET status = 'failed',
-          error_message = COALESCE(NULLIF(error_message, ''), CONCAT('Auto-closed stale run after ', ?, ' minutes without completion')),
-          finished_at = NOW()
-      WHERE status = 'running'
-        AND started_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
+      UPDATE client_profile_run_log r
+      LEFT JOIN (
+        SELECT
+          run_id,
+          COALESCE(SUM(CASE WHEN step_key = 'client_persisted' THEN 1 ELSE 0 END), 0) AS processed_count,
+          COALESCE(SUM(CASE WHEN step_key = 'client_failed' THEN 1 ELSE 0 END), 0) AS failed_count
+        FROM client_profile_run_step_log
+        GROUP BY run_id
+      ) agg ON agg.run_id = r.id
+      SET r.status = CASE
+            WHEN COALESCE(agg.processed_count, 0) + COALESCE(agg.failed_count, 0) > 0 THEN 'partial'
+            ELSE 'failed'
+          END,
+          r.clients_processed = GREATEST(COALESCE(r.clients_processed, 0), COALESCE(agg.processed_count, 0)),
+          r.clients_failed = GREATEST(COALESCE(r.clients_failed, 0), COALESCE(agg.failed_count, 0)),
+          r.error_message = CASE
+            WHEN COALESCE(agg.processed_count, 0) + COALESCE(agg.failed_count, 0) > 0
+              THEN COALESCE(NULLIF(r.error_message, ''), CONCAT('Auto-closed stale run after ', ?, ' minutes without completion (progress preserved).'))
+            ELSE COALESCE(NULLIF(r.error_message, ''), CONCAT('Auto-closed stale run after ', ?, ' minutes without completion'))
+          END,
+          r.finished_at = NOW()
+      WHERE r.status = 'running'
+        AND r.started_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
         AND NOT EXISTS (
           SELECT 1
           FROM client_profile_run_step_log s
-          WHERE s.run_id = client_profile_run_log.id
+          WHERE s.run_id = r.id
             AND s.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
         )
     `,
-    [STALE_RUN_MINUTES, STALE_RUN_MINUTES, STALE_RUN_MINUTES],
+    [STALE_RUN_MINUTES, STALE_RUN_MINUTES, STALE_RUN_MINUTES, STALE_RUN_MINUTES],
   ).catch(() => undefined);
 }
 
@@ -1785,8 +1837,6 @@ export async function listClientProfileRuns(limit = 50) {
   );
   const runRows = Array.isArray(rows) ? rows : [];
   for (const row of runRows) {
-    const status = String(row?.status || "").toLowerCase();
-    if (status !== "running") continue;
     const runId = Number(row?.id || 0);
     if (!runId) continue;
     const [stepAgg] = await db.query(

@@ -69,6 +69,18 @@ function ProtectedRoute({
   return children;
 }
 
+function SuperAdminRoute({
+  children,
+  title,
+}: {
+  children: React.ReactNode;
+  title: string;
+}) {
+  const currentUser = getCurrentUser();
+  if (currentUser?.role !== "Super Admin") return <UnauthorizedPage title={title} />;
+  return children;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -91,9 +103,9 @@ const App = () => (
               <Route
                 path="applications"
                 element={
-                  <ProtectedRoute requiredPermissions={["Applications:Own"]} title="Applications Access Required">
+                  <SuperAdminRoute title="Applications Access Required">
                     <TicketsPage />
-                  </ProtectedRoute>
+                  </SuperAdminRoute>
                 }
               />
               <Route path="tickets" element={<Navigate to="/applications" replace />} />
