@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/components/ui/sonner";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { getCurrentUser, hasAccess } from "@/lib/auth";
@@ -12,36 +12,78 @@ import {
   readAlertPreferences,
 } from "@/lib/alertPreferences";
 import {
-  approveCrmApplication,
   declineCrmApplication,
+  getApproverRoutingForRecord,
   listCrmApplicationsPage,
+  resolveCrmManagerIdFromSession,
+  updateCrmApplicationStatus,
   type ApplicationRecord,
 } from "@/lib/applicationsApi";
 
 const APPROVER_EMAIL_TO_MANAGER_ID: Record<string, number> = {
   "elias@skylinkscapital.com": 11,
+  "dealing@skylinkscapital.com": 24,
   "d.takieddine@gmail.com": 4,
+  "d.takieddine@skylinkscapital.com": 4,
+  "dtakieddine@skylinkscapital.com": 4,
+  "backoffice@skylinkscapital.com": 7,
 };
 
 const APPROVER_RULES: Record<number, number> = {
-  54: 11,
-  57: 11,
-  59: 11,
-  55: 4,
-  56: 4,
-  58: 4,
+  61: 4,  // Change Entity -> Daniel
+  62: 11, // Create Account Type -> Elias
+  63: 4,  // Create New IB Structure -> Daniel
+  64: 11, // Change IB -> Elias
+  65: 11, // Change Account Type -> Elias
+  66: 4,  // Change IB Commission -> Daniel
+  67: 11, // Change Leverage -> Elias
 };
+const FINAL_APPROVER_RULES: Record<number, number> = {
+  61: 7,  // Change Entity -> Backoffice
+  62: 7,  // Create Account Type -> Backoffice
+  63: 3,  // Create New IB Structure -> Abbas
+  64: 7,  // Change IB -> Backoffice
+  65: 7,  // Change Account Type -> Backoffice
+  66: 3,  // Change IB Commission -> Abbas
+  67: 3,  // Change Leverage -> Abbas
+};
+
+const ACTION_APPROVER_EMAILS = new Set<string>([
+  "elias@skylinkscapital.com",
+  "d.takieddine@gmail.com",
+]);
+const BACKOFFICE_MANAGER_ID = 7;
 
 function appTypeLabel(configId: number, fallback: string): string {
   const map: Record<number, string> = {
-    54: "Create Account Type",
-    55: "Create New IB Structure",
-    56: "Change IB",
-    57: "Change Account Type",
-    58: "Change IB commission",
-    59: "Change Leverage",
+    61: "Change Entity",
+    62: "Create Account Type",
+    63: "Create New IB Structure",
+    64: "Change IB",
+    65: "Change Account Type",
+    66: "Change IB commission",
+    67: "Change Leverage",
   };
   return map[Number(configId)] || fallback || `Config ${configId}`;
+}
+
+function deriveWorkflowStatus(row: ApplicationRecord): string {
+  const status = String(row.status || "").trim().toLowerCase();
+  const routing = getApproverRoutingForRecord(row);
+  const owner = routing.firstApproverId;
+  const finalOwner = routing.finalApproverId;
+  let acceptedBy = Number(row.acceptedBy || 0);
+  if (!(Number.isFinite(acceptedBy) && acceptedBy > 0)) {
+    const processedByRaw = String(row.processedBy || "").trim().toLowerCase();
+    const processedByDigits = Number((processedByRaw.match(/\d+/)?.[0] || ""));
+    acceptedBy = APPROVER_EMAIL_TO_MANAGER_ID[processedByRaw] || (Number.isFinite(processedByDigits) ? processedByDigits : 0);
+  }
+  if (status === "approved") {
+    if (acceptedBy > 0 && finalOwner > 0 && acceptedBy === finalOwner) return "approved";
+    if (acceptedBy > 0 && owner > 0 && acceptedBy === owner) return "approved by manager";
+    if (acceptedBy > 0) return "approved";
+  }
+  return status;
 }
 
 function eventPulseClass(eventName: AlertEventKey): string {
@@ -117,14 +159,33 @@ function buildDescription(eventName: AlertEventKey, payload: any): string {
   return JSON.stringify(payload ?? {});
 }
 
+function extractCreatorEmail(row: ApplicationRecord): string {
+  const createdBy = String(row.createdBy || "").trim().toLowerCase();
+  if (createdBy) return createdBy;
+  const extract = (text: string): string => {
+    if (!text) return "";
+    const explicit = text.match(/created\s*by\s*:\s*([^\s]+@[^\s]+)/i);
+    if (explicit?.[1]) return String(explicit[1]).trim().toLowerCase();
+    const plain = text.match(/^[^\s]+@[^\s]+$/i);
+    if (plain?.[0]) return String(plain[0]).trim().toLowerCase();
+    const any = text.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+    return any?.[1] ? String(any[1]).trim().toLowerCase() : "";
+  };
+  const description = String((row as any).description || "").trim();
+  const comment = String((row as any).comment || "").trim();
+  return extract(description) || extract(comment);
+}
+
 export function LiveAlertsNotifier() {
   const managerRef = useRef<SignalRConnectionManager | null>(null);
   const prefsRef = useRef<AlertPreferences>(readAlertPreferences());
   const lastShownRef = useRef<Record<string, number>>({});
   const [prefs, setPrefs] = useState<AlertPreferences>(prefsRef.current);
-  const seenPendingRef = useRef<Set<number>>(new Set());
-  const seenApprovedRef = useRef<Set<number>>(new Set());
+  const seenPendingRef = useRef<Set<string>>(new Set());
+  const seenApprovedRef = useRef<Set<string>>(new Set());
   const appsBaselineReadyRef = useRef(false);
+  const lastReminderRef = useRef<Record<number, number>>({});
+  const REMINDER_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
   const enabledEvents = useMemo(
     () =>
@@ -241,41 +302,123 @@ export function LiveAlertsNotifier() {
 
   useEffect(() => {
     let mounted = true;
-    const currentUser = getCurrentUser();
-    const currentEmail = String(currentUser?.email || "").trim().toLowerCase();
-    const myApproverId = APPROVER_EMAIL_TO_MANAGER_ID[currentEmail] ?? null;
 
     const canPending = prefsRef.current.ApplicationPendingApproval;
     const canApproved = prefsRef.current.ApplicationApproved;
     if (!canPending && !canApproved) return;
 
     const poll = async () => {
+      // Re-read user identity on every poll to avoid stale closure bugs.
+      const currentUser = getCurrentUser();
+      const currentEmail = String(currentUser?.email || "").trim().toLowerCase();
+      const myApproverId = APPROVER_EMAIL_TO_MANAGER_ID[currentEmail] ?? null;
+      const isActionApprover = ACTION_APPROVER_EMAILS.has(currentEmail);
+      const isSuperAdmin = String(currentUser?.role || "") === "Super Admin";
+      const actorManagerIdForActions = (() => {
+        try {
+          const id = Number(resolveCrmManagerIdFromSession());
+          return Number.isFinite(id) && id > 0 ? id : null;
+        } catch {
+          const id = Number(myApproverId);
+          return Number.isFinite(id) && id > 0 ? id : null;
+        }
+      })();
+
       try {
-        const rows = await listCrmApplicationsPage({ limit: 100, offset: 0 });
+        const batchSize = 100;
+        const maxPages = 4;
+        const allRows: ApplicationRecord[] = [];
+        for (let page = 0; page < maxPages; page += 1) {
+          const pageRows = await listCrmApplicationsPage({
+            limit: batchSize,
+            offset: page * batchSize,
+          });
+          if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+          allRows.push(...pageRows);
+          if (pageRows.length < batchSize) break;
+        }
+        const rows = Array.from(new Map(allRows.map((row) => [Number(row.id), row])).values())
+          .sort((a, b) => {
+            const byId = Number(b.id) - Number(a.id);
+            if (Number.isFinite(byId) && byId !== 0) return byId;
+            const at = new Date(String(a.createdAt || "")).getTime();
+            const bt = new Date(String(b.createdAt || "")).getTime();
+            return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+          });
         if (!mounted) return;
 
         if (!appsBaselineReadyRef.current) {
           for (const row of rows) {
             const id = Number(row.id);
             if (Number.isFinite(id) && id > 0) {
-              seenApprovedRef.current.add(id);
+              const wf = deriveWorkflowStatus(row);
+              // Seed approved/declined set so status-change alerts don't fire for pre-existing records.
+              seenApprovedRef.current.add(`${id}:${wf}`);
+              // Do NOT seed seenPendingRef — we want pending apps to show a notification on
+              // the very first real poll (15s after load) so approvers know what needs action.
+              // Set lastReminderRef to 0 so the first poll will show them, then reminders every 5 min.
+              lastReminderRef.current[id] = 0;
             }
           }
           appsBaselineReadyRef.current = true;
           return;
         }
 
-        if (canPending && myApproverId) {
+        if (canPending && (myApproverId || isSuperAdmin)) {
           const pendingMine = rows.filter((row) => {
-            const status = String(row.status || "").trim().toLowerCase();
-            const owner = APPROVER_RULES[Number(row.configId)];
+            const createdBy = extractCreatorEmail(row);
+            if (!isSuperAdmin && createdBy && createdBy === currentEmail) return false;
+            const status = deriveWorkflowStatus(row);
+            const routing = getApproverRoutingForRecord(row);
+            const owner = routing.firstApproverId;
+            const finalOwner = routing.finalApproverId;
+            if (isSuperAdmin) {
+              return status === "pending" || status === "approved by manager";
+            }
+            // Final approvers get informational alerts for their assigned configs.
+            if (Number(myApproverId) > 0 && finalOwner === Number(myApproverId)) {
+              return status === "pending" || status === "approved by manager";
+            }
+            if (!isActionApprover) return false;
             return status === "pending" && owner === myApproverId;
           });
 
           for (const row of pendingMine) {
             const appId = Number(row.id);
-            if (!Number.isFinite(appId) || appId <= 0 || seenPendingRef.current.has(appId)) continue;
-            seenPendingRef.current.add(appId);
+            if (!Number.isFinite(appId) || appId <= 0) continue;
+            const wf = deriveWorkflowStatus(row);
+            const pendingKey = `${appId}:${wf}`;
+            const now = Date.now();
+            const lastReminder = lastReminderRef.current[appId] || 0;
+            const isNew = !seenPendingRef.current.has(pendingKey);
+            const isDueForReminder = now - lastReminder >= REMINDER_INTERVAL_MS;
+            if (!isNew && !isDueForReminder) continue;
+            seenPendingRef.current.add(pendingKey);
+            lastReminderRef.current[appId] = now;
+            const isReminder = !isNew && isDueForReminder;
+            const isBackoffice = myApproverId === BACKOFFICE_MANAGER_ID;
+            const isFinalStage = wf === "approved by manager";
+            const routing = getApproverRoutingForRecord(row);
+            const owner = routing.firstApproverId;
+            const finalOwner = routing.finalApproverId;
+            const canTakeAction = Boolean(actorManagerIdForActions) && (
+              isSuperAdmin ||
+              (isActionApprover && wf === "pending" && owner === Number(myApproverId)) ||
+              (wf === "approved by manager" && finalOwner === Number(myApproverId))
+            );
+            const header = isBackoffice
+              ? (isFinalStage ? "Final Approval Needed" : "New Application Created")
+              : (isReminder ? "Reminder: Application Pending Approval" : "Application Pending Approval");
+            const hint = isBackoffice
+              ? (isFinalStage ? "Approved by manager, waiting final approval" : "Newly created application needs review")
+              : "Waiting manager approval";
+            const approveStatus = (isSuperAdmin || (wf === "approved by manager" && finalOwner === Number(myApproverId)))
+              ? "approved"
+              : "Approved by manager";
+            const approveLabel = approveStatus === "approved" ? "Final Approve" : "Approve";
+            const approveSuccess = approveStatus === "approved"
+              ? `Application #${appId} finally approved.`
+              : `Application #${appId} approved by manager.`;
             toast.custom((toastId) => (
               <div className="w-full max-w-full p-3 rounded-lg border text-blue-700 dark:text-blue-300 border-blue-400/40 bg-blue-100/60 dark:bg-blue-500/10 relative overflow-hidden">
                 <div className="relative">
@@ -283,7 +426,7 @@ export function LiveAlertsNotifier() {
                     <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium text-sm truncate">Application Pending Approval</span>
+                        <span className="font-medium text-sm truncate">{header}</span>
                         <button
                           type="button"
                           aria-label="Close alert"
@@ -294,7 +437,7 @@ export function LiveAlertsNotifier() {
                         </button>
                       </div>
                       <p className="text-xs opacity-90 mt-1 leading-relaxed">
-                        #{row.id} • {appTypeLabel(Number(row.configId), row.type)} • Client {row.userId ?? "-"}
+                        #{row.id} • {appTypeLabel(Number(row.configId), row.type)} • Client {row.userId ?? "-"} • {hint}
                       </p>
                       <div className="mt-2">
                         <button
@@ -308,63 +451,86 @@ export function LiveAlertsNotifier() {
                           Open Application
                         </button>
                       </div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              await approveCrmApplication(appId, myApproverId);
-                              toast.dismiss(toastId);
-                              toast.success(`Application #${appId} approved.`);
-                            } catch (e: any) {
-                              toast.error(e?.message || "Approve failed.");
-                            }
-                          }}
-                          className="rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300"
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            try {
-                              await declineCrmApplication(appId, myApproverId);
-                              toast.dismiss(toastId);
-                              toast.success(`Application #${appId} rejected.`);
-                            } catch (e: any) {
-                              toast.error(e?.message || "Reject failed.");
-                            }
-                          }}
-                          className="rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-700 dark:text-rose-300"
-                        >
-                          Reject
-                        </button>
-                      </div>
+                      {canTakeAction ? (
+                        <div className="mt-2 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await updateCrmApplicationStatus(
+                                  appId,
+                                  approveStatus,
+                                  Number(actorManagerIdForActions),
+                                );
+                                toast.dismiss(toastId);
+                                toast.success(approveSuccess);
+                              } catch (e: any) {
+                                toast.error(e?.message || "Approve failed.");
+                              }
+                            }}
+                            className="rounded-md border border-emerald-500/35 bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300"
+                          >
+                            {approveLabel}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                await declineCrmApplication(appId, Number(actorManagerIdForActions));
+                                toast.dismiss(toastId);
+                                toast.success(`Application #${appId} rejected.`);
+                              } catch (e: any) {
+                                toast.error(e?.message || "Reject failed.");
+                              }
+                            }}
+                            className="rounded-md border border-rose-500/35 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-700 dark:text-rose-300"
+                          >
+                            Reject
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-[11px] opacity-80">You can view this alert, but approval actions are not available at your current stage.</p>
+                      )}
                     </div>
                   </div>
                 </div>
               </div>
-            ));
+            ), { duration: Infinity });
           }
         }
 
         if (canApproved && currentEmail) {
-          const approvedMine = rows.filter((row) => {
-            const status = String(row.status || "").trim().toLowerCase();
-            const createdBy = String(row.createdBy || "").trim().toLowerCase();
-            return status === "approved" && createdBy === currentEmail;
+          const relevantMine = rows.filter((row) => {
+            const wf = deriveWorkflowStatus(row);
+            const createdBy = extractCreatorEmail(row);
+            return (wf === "approved" || wf === "approved by manager" || wf === "declined") && createdBy === currentEmail;
           });
-          for (const row of approvedMine) {
+          for (const row of relevantMine) {
             const appId = Number(row.id);
-            if (!Number.isFinite(appId) || appId <= 0 || seenApprovedRef.current.has(appId)) continue;
-            seenApprovedRef.current.add(appId);
-            toast.success(`Application #${appId} approved`, {
-              description: `${appTypeLabel(Number(row.configId), row.type)} is now approved.`,
-            });
+            if (!Number.isFinite(appId) || appId <= 0) continue;
+            const wf = deriveWorkflowStatus(row);
+            const key = `${appId}:${wf}`;
+            if (seenApprovedRef.current.has(key)) continue;
+            seenApprovedRef.current.add(key);
+            const label = appTypeLabel(Number(row.configId), row.type);
+            if (wf === "approved by manager") {
+              toast.success(`Application #${appId} approved by manager`, {
+                description: `${label} is waiting final backoffice approval.`,
+              });
+            } else if (wf === "approved") {
+              toast.success(`Application #${appId} fully approved`, {
+                description: `${label} has been fully approved.`,
+              });
+            } else if (wf === "declined") {
+              toast.error(`Application #${appId} declined`, {
+                description: `${label}${row.declineReason ? ` — ${row.declineReason}` : ""}.`,
+              });
+            }
           }
         }
-      } catch {
-        // silent for notification poll
+      } catch (err) {
+        // Log to console so we can diagnose API failures — not surfaced as a toast to avoid noise.
+        console.error("[LiveAlertsNotifier] poll error:", err);
       }
     };
 
@@ -378,3 +544,4 @@ export function LiveAlertsNotifier() {
 
   return null;
 }
+

@@ -245,6 +245,7 @@ export function BackOfficeDepartment({
   const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
   const [toBeDepositedIntoLpsK21, setToBeDepositedIntoLpsK21] = useState(0);
   const [differenceBetweenActualAndExpected, setDifferenceBetweenActualAndExpected] = useState(0);
+  const [creditByLps, setCreditByLps] = useState(0);
   const [netAllCurrentBalance, setNetAllCurrentBalance] = useState(0);
   const [netBalanceAfterExpectedFunds, setNetBalanceAfterExpectedFunds] = useState(0);
   const [cashflowFullscreen, setCashflowFullscreen] = useState(false);
@@ -1470,7 +1471,8 @@ export function BackOfficeDepartment({
       const lpDepositK20 = Number(response.data.to_be_deposited_into_lps_k20 ?? 0);
       const lpDepositK21 = Number(response.data.to_be_deposited_into_lps_k21 ?? 0);
       const diffActualExpected = Number(response.data.difference_between_actual_and_expected ?? 0);
-        const netCurrent = total;
+      const creditByLpsValue = Number(response.data.credit_by_lps ?? 0);
+      const netCurrent = total;
       const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
 
       setPspBalances(mapped);
@@ -1480,6 +1482,7 @@ export function BackOfficeDepartment({
       setToBeDepositedIntoLpsK20(lpDepositK20);
       setToBeDepositedIntoLpsK21(lpDepositK21);
       setDifferenceBetweenActualAndExpected(diffActualExpected);
+      setCreditByLps(creditByLpsValue);
       setNetAllCurrentBalance(Number.isFinite(netCurrent) ? netCurrent : total);
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
 
@@ -2034,6 +2037,12 @@ export function BackOfficeDepartment({
                 <div className="text-[10px] text-muted-foreground">⚖️ Difference between actual and expected (J29)</div>
                 <div className="mt-1 font-mono text-sm font-semibold text-orange-500">
                   ${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              </div>
+              <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-3">
+                <div className="text-[10px] text-muted-foreground">Credit by LPs (J30)</div>
+                <div className="mt-1 font-mono text-sm font-semibold text-sky-500">
+                  ${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
               </div>
             </div>

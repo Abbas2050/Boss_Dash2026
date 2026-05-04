@@ -5,10 +5,12 @@ import cors from 'cors';
 import path from 'path';
 import http from 'http';
 import mysql from 'mysql2/promise';
+import cron from 'node-cron';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import marketingApi from './api.js';
 import agentRouter from "./agent/router.js";
+import { runClientProfilingJob } from "./agent/clientProfilingService.js";
 import authRouter from "./auth/router.js";
 import clientProfileRouter from "./clientProfileRouter.js";
 import docusignRouter from "./docusign/router.js";
@@ -123,6 +125,13 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/lp-equity-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'lp_equity_store_not_configured',
+    });
+  }
   try {
     const pool = await ensureLpEquityStore();
     const daysRaw = Number.parseInt(String(req.query.days ?? '120'), 10);
@@ -157,15 +166,23 @@ app.get('/api/lp-equity-snapshots', async (req, res) => {
       })),
     });
   } catch (error) {
-    return res.status(503).json({
-      ok: false,
-      error: 'lp_equity_store_unavailable',
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'lp_equity_store_unavailable',
       message: error instanceof Error ? error.message : String(error),
     });
   }
 });
 
 app.post('/api/lp-equity-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: false,
+      error: 'lp_equity_store_not_configured',
+      warning: true,
+    });
+  }
   try {
     const pool = await ensureLpEquityStore();
     const body = req.body || {};
@@ -204,9 +221,10 @@ app.post('/api/lp-equity-snapshots', async (req, res) => {
       },
     });
   } catch (error) {
-    return res.status(503).json({
+    return res.json({
       ok: false,
       error: 'lp_equity_store_unavailable',
+      warning: true,
       message: error instanceof Error ? error.message : String(error),
     });
   }
@@ -365,6 +383,9 @@ async function proxyHttp(req, res, options) {
 
 app.use('/rest/applications', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
 app.use('/rest', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
+app.use('/api/rest', (req, res) =>
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api' })
+);
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
 );
@@ -566,4 +587,19 @@ wss.on('connection', (ws, req) => {
 server.listen(PORT, () => {
   console.log(`Express + mock SignalR server running on http://localhost:${PORT}`);
   startDocusignApprovedSyncScheduler();
+
+  const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
+  const profileCronExpr = String(process.env.CLIENT_PROFILE_CRON || "15 2 * * *");
+  if (profileCronEnabled) {
+    cron.schedule(profileCronExpr, async () => {
+      try {
+        await runClientProfilingJob({ runType: "daily" });
+      } catch (error) {
+        console.error("[ClientProfileCron] run failed:", error?.message || error);
+      }
+    });
+    console.log(`[ClientProfileCron] scheduled with expression "${profileCronExpr}"`);
+  } else {
+    console.log("[ClientProfileCron] disabled by CLIENT_PROFILE_CRON_ENABLED=false");
+  }
 });

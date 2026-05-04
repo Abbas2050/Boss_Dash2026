@@ -71,6 +71,7 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
     accounts: <Users className="w-4 h-4" />,
     marketing: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 10v6a1 1 0 0 0 1 1h3m10-7v6a1 1 0 0 1-1 1h-3m-6-7V7a1 1 0 0 1 1-1h3m6 0v2m0 0a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z" /></svg>,
     hr: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="7" r="4" /><path d="M5.5 21a7.5 7.5 0 0 1 13 0" /></svg>,
+    cp: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 19h16" /><path d="M6 16V8" /><path d="M10 16V5" /><path d="M14 16v-6" /><path d="M18 16V10" /></svg>,
   };
 
   return (

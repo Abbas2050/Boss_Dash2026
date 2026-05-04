@@ -192,6 +192,7 @@ export function AccountsDepartment({
   const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
   const [toBeDepositedIntoLpsK21, setToBeDepositedIntoLpsK21] = useState(0);
   const [differenceBetweenActualAndExpected, setDifferenceBetweenActualAndExpected] = useState(0);
+  const [creditByLps, setCreditByLps] = useState(0);
   const [netAllCurrentBalance, setNetAllCurrentBalance] = useState(0);
   const [netBalanceAfterExpectedFunds, setNetBalanceAfterExpectedFunds] = useState(0);
   const [reportDate, setReportDate] = useState('—');
@@ -313,6 +314,7 @@ export function AccountsDepartment({
       const lpDepositK20 = Number(response.data.to_be_deposited_into_lps_k20 ?? 0);
       const lpDepositK21 = Number(response.data.to_be_deposited_into_lps_k21 ?? 0);
       const diffActualExpected = Number(response.data.difference_between_actual_and_expected ?? 0);
+      const creditByLpsValue = Number(response.data.credit_by_lps ?? 0);
       const netCurrent = Number(response.data.net_all_current_balance ?? total);
       const netAfterExpected = Number(response.data.net_balance_after_expected_funds ?? (netCurrent + bankValue + cryptoValue));
 
@@ -321,6 +323,7 @@ export function AccountsDepartment({
       setToBeDepositedIntoLpsK20(lpDepositK20);
       setToBeDepositedIntoLpsK21(lpDepositK21);
       setDifferenceBetweenActualAndExpected(diffActualExpected);
+      setCreditByLps(creditByLpsValue);
       setNetAllCurrentBalance(Number.isFinite(netCurrent) ? netCurrent : total);
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
     };
@@ -527,8 +530,9 @@ export function AccountsDepartment({
     metrics.totalBalance +
     cryptoReceivable +
     bankReceivable +
-    lpDepositsTotal;
-  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+    lpDepositsTotal -
+    creditByLps;
+  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT) - Credit by LPs (J30)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} - ${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -786,9 +790,13 @@ export function AccountsDepartment({
           <div className="text-[10px] text-muted-foreground mb-0.5">📈 Net Balance after expected funds</div>
           <div className="font-mono font-semibold text-indigo-500">${netBalanceAfterExpectedFunds.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
-        <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/20 col-span-2">
+        <div className="p-2 rounded-md bg-orange-500/10 border border-orange-500/20">
           <div className="text-[10px] text-muted-foreground mb-0.5">⚖️ Difference between actual and expected (J29)</div>
           <div className="font-mono font-semibold text-orange-500">${differenceBetweenActualAndExpected.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        </div>
+        <div className="p-2 rounded-md bg-sky-500/10 border border-sky-500/20">
+          <div className="text-[10px] text-muted-foreground mb-0.5">Credit by LPs (J30)</div>
+          <div className="font-mono font-semibold text-sky-500">${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
     </DepartmentCard>

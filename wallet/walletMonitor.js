@@ -26,6 +26,8 @@ export async function checkAllBalances() {
   let toBeDepositedIntoLPsK20 = 0;
   let toBeDepositedIntoLPsK21 = 0;
   let differenceBetweenActualAndExpected = 0;
+  let creditByLPs = 0;
+  let goldSouqDeductionJ31 = 0;
   let netAllCurrentBalance = 0;
   let netBalanceAfterExpectedFunds = 0;
 
@@ -100,12 +102,16 @@ export async function checkAllBalances() {
       try {
         const gs = await new GoogleSheetsClient().getBalance();
         const sheetUsed = gs.sheetUsed;
+        const goldSouqOriginal = Number(gs.goldSouq || 0);
+        const goldSouqDeduction = Number(gs.goldSouqDeductionJ31 || 0);
+        const goldSouqAdjusted = goldSouqOriginal - goldSouqDeduction;
+        const deductionLabel = goldSouqDeduction.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         return {
           entries: [
             ['googlesheets_match2pay', { name: 'Match2Pay', balance: gs.match2pay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_deusxpay', { name: 'DeusXpay', balance: gs.deusXpay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_openpayed', { name: 'OpenPayed', balance: gs.openPayed, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
-            ['googlesheets_goldsouq', { name: 'Gold Souq', balance: gs.goldSouq, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_goldsouq', { name: `Gold Souq (-$${deductionLabel} deducted, J31)`, balance: goldSouqAdjusted, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_fab', {
               name: 'FAB Bank',
               balance: gs.fabTotal,
@@ -116,13 +122,15 @@ export async function checkAllBalances() {
             }],
             ['googlesheets_mbme', { name: 'MBME', balance: gs.mbme, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
           ],
-          totalDelta: gs.match2pay + gs.deusXpay + gs.openPayed + gs.goldSouq + gs.fabTotal + gs.mbme,
+          totalDelta: gs.match2pay + gs.deusXpay + gs.openPayed + goldSouqAdjusted + gs.fabTotal + gs.mbme,
           extra: {
             bankReceivable: gs.bankReceivable,
             cryptoReceivable: gs.cryptoReceivable,
             toBeDepositedIntoLPsK20: gs.toBeDepositedIntoLPsK20,
             toBeDepositedIntoLPsK21: gs.toBeDepositedIntoLPsK21,
             differenceBetweenActualAndExpected: gs.differenceBetweenActualAndExpected,
+            creditByLPs: gs.creditByLPs,
+            goldSouqDeductionJ31: goldSouqDeduction,
             netAllCurrentBalance: gs.netAllCurrentBalance,
             netBalanceAfterExpectedFunds: gs.netBalanceAfterExpectedFunds,
           },
@@ -160,6 +168,8 @@ export async function checkAllBalances() {
       toBeDepositedIntoLPsK20 = Number(sourceResult.extra.toBeDepositedIntoLPsK20 || 0);
       toBeDepositedIntoLPsK21 = Number(sourceResult.extra.toBeDepositedIntoLPsK21 || 0);
       differenceBetweenActualAndExpected = Number(sourceResult.extra.differenceBetweenActualAndExpected || 0);
+      creditByLPs = Number(sourceResult.extra.creditByLPs || 0);
+      goldSouqDeductionJ31 = Number(sourceResult.extra.goldSouqDeductionJ31 || 0);
       // netAllCurrentBalance is derived from total (sum of all PSPs), not from the sheet
       netBalanceAfterExpectedFunds = Number(sourceResult.extra.netBalanceAfterExpectedFunds || 0);
     }
@@ -180,6 +190,8 @@ export async function checkAllBalances() {
       to_be_deposited_into_lps_k20: toBeDepositedIntoLPsK20,
       to_be_deposited_into_lps_k21: toBeDepositedIntoLPsK21,
       difference_between_actual_and_expected: differenceBetweenActualAndExpected,
+      credit_by_lps: creditByLPs,
+      gold_souq_deduction_j31: goldSouqDeductionJ31,
       net_all_current_balance: total,
       net_balance_after_expected_funds: netBalanceAfterExpectedFunds,
     },

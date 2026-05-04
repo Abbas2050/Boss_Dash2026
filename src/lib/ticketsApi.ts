@@ -69,9 +69,11 @@ const API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
 const DEFAULT_TICKET_STATUS = "pending support";
 
 const MANAGER_EMAIL_TO_ID: Record<string, number> = {
-  "dealing@skylinkscapital.com": 11,
+  "elias@skylinkscapital.com": 11,
+  "dealing@skylinkscapital.com": 24,
   "backoffice@skylinkscapital.com": 7,
   "d.takieddine@gmail.com": 4,
+  "d.takieddine@skylinkscapital.com": 4,
   "abbas@skylinkscapital.com": 3,
   "irungbam@skylinkscapital.com": 16,
 };

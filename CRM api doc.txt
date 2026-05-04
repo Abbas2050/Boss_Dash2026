@@ -10422,6 +10422,10 @@ FULL CRM API DOCUMENTATION
                         "type": "string",
                         "nullable": true
                     },
+                    "cellxpertCxd": {
+                        "type": "string",
+                        "nullable": true
+                    },
                     "firstName": {
                         "type": "string",
                         "example": "First",
@@ -10693,7 +10697,8 @@ FULL CRM API DOCUMENTATION
                     "sendWelcomeEmail": {
                         "title": "Send email with password. If parameter not passed, welcome email will be sent.",
                         "type": "boolean",
-                        "default": true
+                        "default": true,
+                        "nullable": true
                     }
                 },
                 "type": "object"

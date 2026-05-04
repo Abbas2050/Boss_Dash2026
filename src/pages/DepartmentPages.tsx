@@ -5,6 +5,7 @@ import { HRDepartment } from "@/components/dashboard/HRDepartment";
 import { DealingDepartmentPage } from "@/pages/departments/DealingDepartmentPage";
 import { BackofficeDepartmentPage } from "@/pages/departments/BackofficeDepartmentPage";
 import { MarketingDepartmentPage } from "@/pages/departments/MarketingDepartmentPage";
+import { ClientProfileDepartmentPage } from "@/pages/departments/ClientProfileDepartmentPage";
 import { getCurrentUser } from "@/lib/auth";
 import { canAccessDepartmentItem, getDepartmentItemBySlug, getVisibleDepartmentItems } from "@/lib/permissions";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
@@ -19,13 +20,16 @@ export const DepartmentPages: React.FC = () => {
   if (departmentItem && !canAccessDepartmentItem(currentUser, departmentItem)) {
     return <UnauthorizedPage />;
   }
+  if (selected === "cp" && currentUser?.role !== "Super Admin") {
+    return <UnauthorizedPage />;
+  }
 
   const commonProps = {
     selectedEntity: "all",
     refreshKey: 0,
   };
 
-  const knownDepartmentSlugs = new Set(getVisibleDepartmentItems(currentUser).map((item) => item.slug).concat(["dealing", "backoffice", "accounts", "marketing", "hr"]));
+  const knownDepartmentSlugs = new Set(getVisibleDepartmentItems(currentUser).map((item) => item.slug).concat(["dealing", "backoffice", "accounts", "marketing", "hr", "cp"]));
 
   return (
     <div className="min-h-screen p-3 sm:p-4 md:p-6 lg:p-8">
@@ -34,6 +38,7 @@ export const DepartmentPages: React.FC = () => {
       {selected === "accounts" && <AccountsDepartment {...commonProps} />}
       {selected === "marketing" && <MarketingDepartmentPage />}
       {selected === "hr" && <HRDepartment {...commonProps} />}
+      {selected === "cp" && <ClientProfileDepartmentPage />}
 
       {!knownDepartmentSlugs.has(selected) && (
         <div className="rounded-2xl border border-border/40 bg-card/75 p-6 shadow-sm">

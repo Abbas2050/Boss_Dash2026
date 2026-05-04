@@ -10,9 +10,11 @@ const BACKEND_API_TARGET =
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  cacheDir: ".vite-cache",
   server: {
-    host: "::",
+    host: "127.0.0.1",
     port: 8080,
+    strictPort: true,
     hmr: {
       overlay: false,
     },
@@ -43,6 +45,21 @@ export default defineConfig(({ mode }) => ({
         rewrite: (path) => path,
       },
       '/rest/help-desk': {
+        target: 'https://portal.skylinkscapital.com',
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      '/rest/documents': {
+        target: 'https://portal.skylinkscapital.com',
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      '/rest/user/documents': {
+        target: 'https://portal.skylinkscapital.com',
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      '/rest': {
         target: 'https://portal.skylinkscapital.com',
         changeOrigin: true,
         rewrite: (path) => path,
@@ -83,6 +100,9 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  optimizeDeps: {
+    force: true,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

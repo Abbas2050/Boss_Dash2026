@@ -29,6 +29,7 @@ export const DASHBOARD_SECTION_KEYS = [
   { key: "Dashboard:Backoffice", label: "Back Office Section" },
   { key: "Dashboard:Marketing", label: "Marketing Section" },
   { key: "Dashboard:HR", label: "HR Section" },
+  { key: "Dashboard:CP", label: "Client Profile Section" },
   { key: "Dashboard:Alerts", label: "Alerts Section" },
 ] as const;
 
@@ -46,6 +47,7 @@ export const DASHBOARD_SECTION_ITEMS: readonly DashboardSectionItem[] = [
   { key: "Dashboard:Backoffice", label: "Backoffice", title: "Back Office Section" },
   { key: "Dashboard:Marketing", label: "Marketing", title: "Marketing Section" },
   { key: "Dashboard:HR", label: "HR", title: "HR Section" },
+  { key: "Dashboard:CP", label: "CP", title: "Client Profile Section" },
   { key: "Dashboard:Alerts", label: "Alerts", title: "Alerts Section" },
 ] as const;
 
@@ -58,6 +60,7 @@ export const DEPARTMENT_KEYS = [
   { key: "Backoffice", label: "Back Office Department" },
   { key: "Marketing", label: "Marketing Department" },
   { key: "HR", label: "HR Department" },
+  { key: "CP", label: "Client Profile Department" },
   { key: "Settings", label: "Settings" },
   { key: "Alerts", label: "Alerts" },
 ] as const;
@@ -107,6 +110,13 @@ export const DEPARTMENT_NAV_ITEMS: readonly DepartmentNavItem[] = [
     path: "/departments/hr",
     slug: "hr",
     requiredPermissions: ["HR"],
+  },
+  {
+    key: "cp",
+    label: "CP",
+    path: "/departments/cp",
+    slug: "cp",
+    requiredPermissions: ["CP"],
   },
 ] as const;
 
@@ -270,6 +280,7 @@ export function canAccessAll(user: AuthUser | null | undefined, permissions: rea
 }
 
 export function canAccessDepartmentItem(user: AuthUser | null | undefined, item: DepartmentNavItem): boolean {
+  if (item.slug === "cp" && user?.role !== "Super Admin") return false;
   if (canAccessAll(user, item.requiredPermissions)) return true;
   if (item.scopedPrefix) return hasAnyScopedAccess(user, item.scopedPrefix);
   return false;

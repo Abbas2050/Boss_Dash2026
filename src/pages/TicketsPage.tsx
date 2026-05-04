@@ -3,10 +3,14 @@ import { FileText, Loader2, RefreshCcw, Send, UserRound } from "lucide-react";
 import { getCurrentUser, hasAccess } from "@/lib/auth";
 import { useLocation } from "react-router-dom";
 import {
+  type ApproverRouting,
   type ApplicationConfigDefinition,
   type ApplicationRecord,
-  approveCrmApplication,
   createCrmApplication,
+  declineCrmApplication,
+  getApproverRoutingForRecord,
+  updateCrmApplicationStatus,
+  updateCrmApplicationRouting,
   getCrmApplicationConfig,
   getCurrentActorEmail,
   listCrmApplicationsPage,
@@ -24,7 +28,8 @@ type RequestTypeKey =
   | "change-ib"
   | "change-account-type"
   | "change-ib-commission"
-  | "change-leverage";
+  | "change-leverage"
+  | "special-request-60";
 
 type RequestTypeConfig = {
   key: RequestTypeKey;
@@ -34,9 +39,11 @@ type RequestTypeConfig = {
 
 type DynamicField = {
   id: string;
+  configKey: string;
   sectionTitle: string;
   question: string;
   type: "text" | "date" | "country" | "checkbox";
+  configType: string;
   options: string[];
   required: boolean;
 };
@@ -48,44 +55,78 @@ type LookupSuggestion = {
 };
 
 const REQUEST_TYPES: RequestTypeConfig[] = [
-  { key: "create-account-type", label: "Create Account Type", configId: 54 },
-  { key: "create-new-ib-structure", label: "Create New IB Structure", configId: 55 },
-  { key: "change-ib", label: "Change IB", configId: 56 },
-  { key: "change-account-type", label: "Change Account Type", configId: 57 },
-  { key: "change-ib-commission", label: "Change IB commission", configId: 58 },
-  { key: "change-leverage", label: "Change Leverage", configId: 59 },
+  { key: "create-account-type", label: "Create Account Type", configId: 62 },
+  { key: "create-new-ib-structure", label: "Create New IB Structure", configId: 63 },
+  { key: "change-ib", label: "Change IB", configId: 64 },
+  { key: "change-account-type", label: "Change Account Type", configId: 65 },
+  { key: "change-ib-commission", label: "Change IB commission", configId: 66 },
+  { key: "change-leverage", label: "Change Leverage", configId: 67 },
+  { key: "special-request-60", label: "Change Entity", configId: 61 },
 ];
 
 const MANAGER_ID_TO_EMAIL: Record<number, string> = {
-  11: "dealing@skylinkscapital.com",
+  24: "dealing@skylinkscapital.com",
   7: "backoffice@skylinkscapital.com",
   4: "d.takieddine@gmail.com",
   3: "abbas@skylinkscapital.com",
   16: "irungbam@skylinkscapital.com",
 };
 
+const APPROVER_OPTIONS: Array<{ id: number; label: string; email: string }> = [
+  { id: 11, label: "Mr. Elias", email: "elias@skylinkscapital.com" },
+  { id: 4, label: "Mr. Daniel", email: "d.takieddine@gmail.com" },
+  { id: 7, label: "Backoffice Team", email: "backoffice@skylinkscapital.com" },
+  { id: 3, label: "Mr. Abbas", email: "abbas@skylinkscapital.com" },
+];
+
+const APPROVER_ID_TO_EMAIL: Record<number, string> = APPROVER_OPTIONS.reduce((acc, item) => {
+  acc[item.id] = item.email;
+  return acc;
+}, {} as Record<number, string>);
+
 const REQUEST_TYPE_BY_CONFIG_ID: Record<number, string> = {
-  54: "Create Account Type",
-  55: "Create New IB Structure",
-  56: "Change IB",
-  57: "Change Account Type",
-  58: "Change IB commission",
-  59: "Change Leverage",
+  61: "Change Entity",
+  62: "Create Account Type",
+  63: "Create New IB Structure",
+  64: "Change IB",
+  65: "Change Account Type",
+  66: "Change IB commission",
+  67: "Change Leverage",
 };
 
 const APPROVER_RULES: Record<number, number> = {
-  54: 11,
-  57: 11,
-  59: 11,
-  55: 4,
-  56: 4,
-  58: 4,
+  61: 4,  // Change Entity -> Daniel
+  62: 11, // Create Account Type -> Elias
+  63: 4,  // Create New IB Structure -> Daniel
+  64: 11, // Change IB -> Elias
+  65: 11, // Change Account Type -> Elias
+  66: 4,  // Change IB Commission -> Daniel
+  67: 11, // Change Leverage -> Elias
+};
+const FINAL_APPROVER_RULES: Record<number, number> = {
+  61: 7,  // Change Entity -> Backoffice
+  62: 7,  // Create Account Type -> Backoffice
+  63: 3,  // Create New IB Structure -> Abbas
+  64: 7,  // Change IB -> Backoffice
+  65: 7,  // Change Account Type -> Backoffice
+  66: 3,  // Change IB Commission -> Abbas
+  67: 3,  // Change Leverage -> Abbas
 };
 
 const APPROVER_EMAIL_TO_MANAGER_ID: Record<string, number> = {
   "elias@skylinkscapital.com": 11,
+  "dealing@skylinkscapital.com": 24,
   "d.takieddine@gmail.com": 4,
+  "d.takieddine@skylinkscapital.com": 4,
+  "abbas@skylinkscapital.com": 3,
+  "backoffice@skylinkscapital.com": 7,
 };
+
+const ACTION_APPROVER_EMAILS = new Set<string>([
+  "elias@skylinkscapital.com",
+  "d.takieddine@gmail.com",
+]);
+const BACKOFFICE_MANAGER_ID = 7;
 
 const INITIAL_FORM = {
   requestType: "create-account-type" as RequestTypeKey,
@@ -108,6 +149,7 @@ function toDubaiDisplayDate(value: string): string {
 function statusBadgeClass(status: string): string {
   const v = String(status || "").trim().toLowerCase();
   if (v === "approved") return "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+  if (v === "approved by manager") return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300";
   if (v === "pending") return "border-blue-500/35 bg-blue-500/10 text-blue-700 dark:text-blue-300";
   if (v === "rejected" || v === "declined") return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-300";
   return "border-primary/25 bg-primary/10 text-primary";
@@ -146,6 +188,46 @@ function looksLikeQuestionNode(node: any): boolean {
   return hasLabel && hasType;
 }
 
+function normalizeConfigKey(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function resolveConfigKeyFromPath(path: string[]): string {
+  const ignored = new Set([
+    "value",
+    "label",
+    "title",
+    "name",
+    "type",
+    "options",
+    "values",
+    "items",
+    "choices",
+    "choicelabels",
+    "required",
+    "optional",
+    "search",
+    "displaypriority",
+    "block",
+    "config",
+    "data",
+    "section",
+    "sections",
+  ]);
+  for (let i = path.length - 1; i >= 0; i--) {
+    const raw = String(path[i] ?? "").trim();
+    if (!raw || /^\d+$/.test(raw)) continue;
+    const normalized = normalizeConfigKey(raw);
+    if (!normalized || ignored.has(normalized)) continue;
+    return normalized;
+  }
+  return "";
+}
+
 function extractDynamicFieldsFromConfig(config: ApplicationConfigDefinition | null): DynamicField[] {
   if (!config?.config || typeof config.config !== "object") return [];
   const fields: DynamicField[] = [];
@@ -162,15 +244,24 @@ function extractDynamicFieldsFromConfig(config: ApplicationConfigDefinition | nu
     if (looksLikeQuestionNode(node)) {
       const question = String(node.question ?? node.label ?? node.title ?? node.name).trim();
       const type = normalizeFieldType(node.type ?? node.inputType ?? node.fieldType);
-      const idBase = String(node.name ?? node.key ?? question).trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
-      const id = `${sectionTitle.toLowerCase().replace(/[^a-z0-9]+/g, "_")}__${idBase || path.join("_")}`;
+      const configKey =
+        normalizeConfigKey(node.name) ||
+        normalizeConfigKey(node.key) ||
+        resolveConfigKeyFromPath(path) ||
+        normalizeConfigKey(question) ||
+        normalizeConfigKey(path.join("_"));
+      const sectionKey = normalizeConfigKey(sectionTitle || "general") || "general";
+      const id = `${sectionKey}__${configKey || "field"}`;
+      const rawConfigType = String(node.type ?? node.inputType ?? node.fieldType ?? "text").toLowerCase();
       if (!seen.has(id)) {
         seen.add(id);
         fields.push({
           id,
+          configKey,
           sectionTitle: sectionTitle || "General",
           question,
           type,
+          configType: rawConfigType,
           options: extractOptions(node),
           required: Boolean(node.required),
         });
@@ -226,6 +317,23 @@ function buildSectionsPayload(fields: DynamicField[], values: Record<string, str
   return Array.from(grouped.values());
 }
 
+function extractCreatorEmail(row: ApplicationRecord): string {
+  const createdBy = String(row.createdBy || "").trim().toLowerCase();
+  if (createdBy) return createdBy;
+  const extract = (text: string): string => {
+    if (!text) return "";
+    const explicit = text.match(/created\s*by\s*:\s*([^\s]+@[^\s]+)/i);
+    if (explicit?.[1]) return String(explicit[1]).trim().toLowerCase();
+    const plain = text.match(/^[^\s]+@[^\s]+$/i);
+    if (plain?.[0]) return String(plain[0]).trim().toLowerCase();
+    const any = text.match(/([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
+    return any?.[1] ? String(any[1]).trim().toLowerCase() : "";
+  };
+  const description = String((row as any).description || "").trim();
+  const comment = String((row as any).comment || "").trim();
+  return extract(description) || extract(comment);
+}
+
 export default function TicketsPage() {
   const location = useLocation();
   const currentUser = getCurrentUser();
@@ -247,7 +355,15 @@ export default function TicketsPage() {
   const [dynamicValues, setDynamicValues] = useState<Record<string, string | string[]>>({});
   const [lookupLoadingByField, setLookupLoadingByField] = useState<Record<string, boolean>>({});
   const [lookupRowsByField, setLookupRowsByField] = useState<Record<string, LookupSuggestion[]>>({});
+  const [mapRow, setMapRow] = useState<ApplicationRecord | null>(null);
+  const [mapFirstApproverId, setMapFirstApproverId] = useState<number>(0);
+  const [mapFinalApproverId, setMapFinalApproverId] = useState<number>(0);
+  const [mapFirstApproverEmail, setMapFirstApproverEmail] = useState("");
+  const [mapFinalApproverEmail, setMapFinalApproverEmail] = useState("");
+  const [mapReason, setMapReason] = useState("");
+  const [mapBusy, setMapBusy] = useState(false);
   const lookupTimersRef = useRef<Record<string, ReturnType<typeof setTimeout> | undefined>>({});
+  const rowActionInFlightRef = useRef<Set<number>>(new Set());
   const canSeeAll = hasAccess("Applications:All");
   const highlightedAppId = useMemo(() => {
     const params = new URLSearchParams(location.search || "");
@@ -262,16 +378,231 @@ export default function TicketsPage() {
     } catch {
       return null;
     }
-  }, []);
-  const actorEmail = useMemo(() => getCurrentActorEmail(), []);
+  }, [currentUser?.email]);
+  const actorEmail = useMemo(() => getCurrentActorEmail(), [currentUser?.email]);
   const approverManagerId = useMemo(
     () => APPROVER_EMAIL_TO_MANAGER_ID[String(currentUser?.email || "").trim().toLowerCase()] ?? null,
     [currentUser?.email]
   );
+  const currentEmail = useMemo(() => String(currentUser?.email || "").trim().toLowerCase(), [currentUser?.email]);
+  const isSuperAdmin = useMemo(() => String(currentUser?.role || "") === "Super Admin", [currentUser?.role]);
+  const isActionApprover = useMemo(
+    () => ACTION_APPROVER_EMAILS.has(currentEmail),
+    [currentEmail]
+  );
+  const isBackoffice = useMemo(() => Number(approverManagerId) === BACKOFFICE_MANAGER_ID, [approverManagerId]);
+  const canSeeApprovalSection = isSuperAdmin || isActionApprover || isBackoffice;
+  const actorManagerIdForActions = useMemo(() => {
+    const fromApprover = Number(approverManagerId);
+    if (Number.isFinite(fromApprover) && fromApprover > 0) return fromApprover;
+    const fromManager = Number(managerId);
+    if (Number.isFinite(fromManager) && fromManager > 0) return fromManager;
+    return null;
+  }, [approverManagerId, managerId]);
   const currentUserId = useMemo(() => {
     const id = Number(currentUser?.id);
     return Number.isFinite(id) && id > 0 ? id : null;
   }, [currentUser?.id]);
+
+  const normalizeStatus = (status: string) => String(status || "").trim().toLowerCase();
+  const deriveWorkflowStatus = (row: ApplicationRecord): string => {
+    const status = normalizeStatus(row.status);
+    const routing = getApproverRoutingForRecord(row);
+    const owner = routing.firstApproverId;
+    const finalOwner = routing.finalApproverId;
+    let acceptedBy = Number(row.acceptedBy || 0);
+    if (!(Number.isFinite(acceptedBy) && acceptedBy > 0)) {
+      const processedByRaw = String(row.processedBy || "").trim().toLowerCase();
+      const processedByDigits = Number((processedByRaw.match(/\d+/)?.[0] || ""));
+      const processedByEmailMap: Record<string, number> = {
+        "dealing@skylinkscapital.com": 24,
+        "elias@skylinkscapital.com": 11,
+        "d.takieddine@gmail.com": 4,
+        "backoffice@skylinkscapital.com": 7,
+      };
+      acceptedBy = processedByEmailMap[processedByRaw] || (Number.isFinite(processedByDigits) ? processedByDigits : 0);
+    }
+    if (status === "approved") {
+      if (acceptedBy > 0 && finalOwner > 0 && acceptedBy === finalOwner) return "Approved";
+      if (acceptedBy > 0 && owner > 0 && acceptedBy === owner) return "Approved by manager";
+      if (acceptedBy > 0) return "Approved";
+    }
+    return row.status || "-";
+  };
+
+  const canActOnRow = (row: ApplicationRecord): boolean => {
+    const creatorEmail = extractCreatorEmail(row);
+    if (!isSuperAdmin && creatorEmail && creatorEmail === actorEmail) return false;
+    const status = normalizeStatus(deriveWorkflowStatus(row));
+    const routing = getApproverRoutingForRecord(row);
+    const owner = routing.firstApproverId;
+    const finalOwner = routing.finalApproverId;
+    if (isSuperAdmin) return status === "pending" || status === "approved by manager";
+    if (isActionApprover) return status === "pending" && owner === Number(approverManagerId);
+    if (isBackoffice) return status === "approved by manager" && finalOwner === Number(approverManagerId);
+    return false;
+  };
+
+  const approveLabelForRow = (row: ApplicationRecord) => {
+    const status = normalizeStatus(deriveWorkflowStatus(row));
+    if (isSuperAdmin) return status === "approved by manager" ? "Final Approve" : "Approve";
+    if (isBackoffice) return "Final Approve";
+    return "Approve";
+  };
+
+  const runApprovalAction = async (row: ApplicationRecord) => {
+    if (!canActOnRow(row)) {
+      throw new Error("You are not allowed to approve this application.");
+    }
+    if (!actorManagerIdForActions) {
+      throw new Error("No CRM manager mapping found for this user.");
+    }
+    const routing = getApproverRoutingForRecord(row);
+    const isFinalApprover = Number(actorManagerIdForActions) === routing.finalApproverId;
+    // Send the actual status based on approval stage
+    const nextStatus = isFinalApprover ? "approved" : "Approved by manager";
+    await updateCrmApplicationStatus(row.id, nextStatus, actorManagerIdForActions);
+    const message = isFinalApprover 
+      ? `Application #${row.id} finally approved.` 
+      : `Application #${row.id} approved by manager.`;
+    setSuccess(message);
+  };
+
+  const runDeclineAction = async (row: ApplicationRecord) => {
+    if (!canActOnRow(row)) {
+      throw new Error("You are not allowed to decline this application.");
+    }
+    if (!actorManagerIdForActions) {
+      throw new Error("No CRM manager mapping found for this user.");
+    }
+    await declineCrmApplication(row.id, actorManagerIdForActions);
+    setSuccess(`Application #${row.id} rejected.`);
+  };
+
+  const parseAuditLine = (line: string): Record<string, string> => {
+    const tokens = String(line || "").trim().split("|").slice(1);
+    const bag: Record<string, string> = {};
+    for (const token of tokens) {
+      const idx = token.indexOf("=");
+      if (idx <= 0) continue;
+      const key = token.slice(0, idx).trim();
+      const value = token.slice(idx + 1).trim();
+      if (!key) continue;
+      bag[key] = value;
+    }
+    return bag;
+  };
+
+  const buildApprovalMap = (row: ApplicationRecord) => {
+    const comment = String((row as any).comment || "").trim();
+    const lines = comment.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+    const auditLines = lines.filter((line) => line.startsWith("APPROVAL_AUDIT|"));
+    const routeLines = lines.filter((line) => line.startsWith("APPROVAL_ROUTE|"));
+    const created = auditLines.map(parseAuditLine).find((x) => String(x.stage || "") === "created");
+    const managerApproved = [...auditLines].reverse().map(parseAuditLine).find((x) => String(x.stage || "") === "manager" && String(x.status || "") === "approved");
+    const finalApproved = [...auditLines].reverse().map(parseAuditLine).find((x) => String(x.stage || "") === "final" && String(x.status || "") === "approved");
+    const executed = [...auditLines].reverse().map(parseAuditLine).find((x) => String(x.stage || "") === "executed");
+    const reported = [...auditLines].reverse().map(parseAuditLine).find((x) => String(x.stage || "") === "reported");
+    const latestRoute = routeLines.length > 0 ? parseAuditLine(routeLines[routeLines.length - 1]) : null;
+    const routing = getApproverRoutingForRecord(row);
+    const stage = normalizeStatus(deriveWorkflowStatus(row));
+    const nextApprover = stage === "pending"
+      ? APPROVER_ID_TO_EMAIL[routing.firstApproverId] || `manager-${routing.firstApproverId}@skylinkscapital.com`
+      : stage === "approved by manager"
+        ? APPROVER_ID_TO_EMAIL[routing.finalApproverId] || `manager-${routing.finalApproverId}@skylinkscapital.com`
+        : "-";
+    return {
+      createdBy: extractCreatorEmail(row) || created?.email || "-",
+      decidedBy: managerApproved?.email || "-",
+      executedBy: executed?.email || finalApproved?.email || "-",
+      reportedBy: reported?.email || "-",
+      finalApprovedBy: finalApproved?.email || "-",
+      rerouteFrom: latestRoute ? `${latestRoute.firstApproverId || "-"}/${latestRoute.finalApproverId || "-"}` : "-",
+      rerouteTo: `${routing.firstApproverId || "-"}/${routing.finalApproverId || "-"}`,
+      overrideBy: latestRoute?.updatedByEmail || "-",
+      overrideReason: latestRoute?.reason || "-",
+      createdAt: created?.at || row.createdAt || "-",
+      decidedAt: managerApproved?.at || "-",
+      finalApprovedAt: finalApproved?.at || "-",
+      executedAt: executed?.at || "-",
+      reportedAt: reported?.at || "-",
+      stage,
+      nextApprover,
+      routing,
+    };
+  };
+
+  const openApprovalMap = (row: ApplicationRecord) => {
+    const routing = getApproverRoutingForRecord(row);
+    setMapRow(row);
+    setMapFirstApproverId(routing.firstApproverId || 0);
+    setMapFinalApproverId(routing.finalApproverId || 0);
+    setMapFirstApproverEmail("");
+    setMapFinalApproverEmail("");
+    setMapReason("");
+  };
+
+  const saveApprovalRouting = async () => {
+    if (!mapRow || !isSuperAdmin) return;
+    const resolveId = (fallbackId: number, emailInput: string): number => {
+      const email = String(emailInput || "").trim().toLowerCase();
+      if (!email) return Number(fallbackId);
+      const match = APPROVER_OPTIONS.find((opt) => String(opt.email).trim().toLowerCase() === email);
+      return match?.id || 0;
+    };
+    const nextFirstId = resolveId(mapFirstApproverId, mapFirstApproverEmail);
+    const nextFinalId = resolveId(mapFinalApproverId, mapFinalApproverEmail);
+    if (!(nextFirstId > 0) || !(nextFinalId > 0)) {
+      setError("Invalid approver email. Use one of the mapped approver emails.");
+      return;
+    }
+    const creator = extractCreatorEmail(mapRow);
+    const nextFirstEmail = APPROVER_ID_TO_EMAIL[Number(nextFirstId)] || "";
+    const nextFinalEmail = APPROVER_ID_TO_EMAIL[Number(nextFinalId)] || "";
+    if (creator && (creator === nextFirstEmail || creator === nextFinalEmail)) {
+      setError("Creator cannot be set as first/final approver for the same application.");
+      return;
+    }
+    setMapBusy(true);
+    setError(null);
+    try {
+      await updateCrmApplicationRouting({
+        applicationId: mapRow.id,
+        firstApproverId: Number(nextFirstId),
+        finalApproverId: Number(nextFinalId),
+        reason: String(mapReason || "").trim() || "Routing update by super admin",
+      });
+      setSuccess(`Approval routing updated for #${mapRow.id}.`);
+      setMapRow(null);
+      await Promise.all([loadApprovalQueue(), loadApplications()]);
+    } catch (e: any) {
+      setError(e?.message || "Failed to update approval routing.");
+    } finally {
+      setMapBusy(false);
+    }
+  };
+
+  const executeRowAction = async (row: ApplicationRecord, action: "approve" | "decline") => {
+    const id = Number(row.id);
+    if (rowActionInFlightRef.current.has(id)) return;
+    rowActionInFlightRef.current.add(id);
+    setError(null);
+    setSuccess(null);
+    setApproveBusyId(id);
+    try {
+      if (action === "approve") {
+        await runApprovalAction(row);
+      } else {
+        await runDeclineAction(row);
+      }
+      await Promise.all([loadApprovalQueue(), loadApplications()]);
+    } catch (e: any) {
+      setError(e?.message || `Failed to ${action} application.`);
+    } finally {
+      setApproveBusyId(null);
+      rowActionInFlightRef.current.delete(id);
+    }
+  };
 
   const loadApplications = async () => {
     if (!managerId && !currentUserId) return;
@@ -298,18 +629,25 @@ export default function TicketsPage() {
   };
 
   const loadApprovalQueue = async () => {
-    if (!approverManagerId) {
+    if (!canSeeApprovalSection) {
       setApprovalQueue([]);
       return;
     }
     try {
-      const rows = await listCrmApplicationsPage({ limit: 200, offset: 0 });
-      const pendingRows = rows.filter((row) => {
-        const status = String(row.status || "").trim().toLowerCase();
-        if (status !== "pending") return false;
-        const owner = APPROVER_RULES[Number(row.configId)];
-        return owner === approverManagerId;
-      });
+      const batchSize = 200;
+      const maxPages = 6;
+      const rows: ApplicationRecord[] = [];
+      for (let page = 0; page < maxPages; page += 1) {
+        const pageRows = await listCrmApplicationsPage({
+          limit: batchSize,
+          offset: page * batchSize,
+        });
+        if (!Array.isArray(pageRows) || pageRows.length === 0) break;
+        rows.push(...pageRows);
+        if (pageRows.length < batchSize) break;
+      }
+      const deduped = Array.from(new Map(rows.map((row) => [Number(row.id), row])).values());
+      const pendingRows = deduped.filter((row) => canActOnRow(row));
       setApprovalQueue(pendingRows);
     } catch {
       setApprovalQueue([]);
@@ -322,7 +660,7 @@ export default function TicketsPage() {
 
   useEffect(() => {
     void loadApprovalQueue();
-  }, [approverManagerId]);
+  }, [approverManagerId, isSuperAdmin, isActionApprover, isBackoffice, actorEmail]);
 
   useEffect(() => {
     const iv = setInterval(() => void loadApplications(), 30000);
@@ -332,7 +670,7 @@ export default function TicketsPage() {
   useEffect(() => {
     const iv = setInterval(() => void loadApprovalQueue(), 30000);
     return () => clearInterval(iv);
-  }, [approverManagerId]);
+  }, [approverManagerId, isSuperAdmin, isActionApprover, isBackoffice, actorEmail]);
 
   useEffect(() => {
     let alive = true;
@@ -402,7 +740,7 @@ export default function TicketsPage() {
         setDynamicValues({});
         setLookupLoadingByField({});
         setLookupRowsByField({});
-        setError(e?.message || "Failed to load application config.");
+        setError(e?.message || "Failed to load document config.");
       } finally {
         if (alive) setConfigLoading(false);
       }
@@ -497,6 +835,9 @@ export default function TicketsPage() {
       if (resolved) return resolved;
       throw new Error(`No CRM client found for account number ${account}.`);
     }
+    if (selectedType.key === "create-account-type") {
+      return 10001;
+    }
     throw new Error("Provide Client ID or Account Number.");
   };
 
@@ -511,10 +852,29 @@ export default function TicketsPage() {
     try {
       const user = await resolveApplicationUser();
       const sections = buildSectionsPayload(dynamicFields, dynamicValues);
+      const data: Record<string, unknown> = {};
+      for (const field of dynamicFields) {
+        const rawValue = dynamicValues[field.id];
+        const hasValue = Array.isArray(rawValue) ? rawValue.length > 0 : String(rawValue || "").trim().length > 0;
+        if (!hasValue) continue;
+        const fieldKey = String(field.configKey || "").trim() || (field.id.includes("__") ? field.id.split("__").slice(1).join("__") : field.id);
+        // Cast to integer for integer/number config types or fields ending in _id
+        const isIntType = field.configType === "integer" || field.configType === "number";
+        const isIdField = fieldKey.endsWith("_id");
+        if ((isIntType || isIdField) && !Array.isArray(rawValue)) {
+          const parsed = parseInt(String(rawValue).trim(), 10);
+          data[fieldKey] = Number.isFinite(parsed) ? parsed : String(rawValue).trim();
+        } else if (Array.isArray(rawValue)) {
+          data[fieldKey] = rawValue;
+        } else {
+          data[fieldKey] = String(rawValue).trim();
+        }
+      }
       const created = await createCrmApplication({
         user,
         configId: selectedType.configId,
         sections,
+        data,
         createdBy: currentUser?.email || `manager-${managerId}@skylinkscapital.com`,
         uploadedByClient: false,
       });
@@ -527,6 +887,8 @@ export default function TicketsPage() {
       setIsSubmitting(false);
     }
   };
+
+  const mapDetails = mapRow ? buildApprovalMap(mapRow) : null;
 
   return (
     <div className="min-h-screen bg-background">
@@ -542,18 +904,24 @@ export default function TicketsPage() {
             <div className="flex items-center gap-2 rounded-xl border border-border/50 bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
               <UserRound className="h-4 w-4 text-primary" />
               <span>{currentUser?.email || "Unknown user"}</span>
-              <span className="text-foreground">{managerLabel(managerId)}</span>
+              <span className="text-foreground">
+                {Number.isFinite(Number(managerId)) && Number(managerId) > 0
+                  ? `CRM manager #${Number(managerId)}`
+                  : "No CRM manager mapping"}
+              </span>
             </div>
           </div>
         </section>
 
-        {approverManagerId ? (
+        {canSeeApprovalSection ? (
           <section className="rounded-2xl border border-border/50 bg-card p-4 shadow-sm sm:p-5">
             <div className="mb-3 flex items-center justify-between">
               <div>
-                <h2 className="text-base font-semibold text-foreground">Pending Your Approval</h2>
+                <h2 className="text-base font-semibold text-foreground">
+                  {isSuperAdmin ? "All Approval Actions" : isBackoffice ? "Final Approval Queue" : "Pending Your Approval"}
+                </h2>
                 <p className="text-xs text-muted-foreground">
-                  {approvalQueue.length} pending application{approvalQueue.length === 1 ? "" : "s"} assigned to you.
+                  {approvalQueue.length} application{approvalQueue.length === 1 ? "" : "s"} assigned to you.
                 </p>
               </div>
               <button
@@ -579,7 +947,7 @@ export default function TicketsPage() {
                   {approvalQueue.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-3 py-5 text-center text-xs text-muted-foreground">
-                        No pending approvals assigned to you.
+                        No applications assigned to you.
                       </td>
                     </tr>
                   ) : (
@@ -596,27 +964,33 @@ export default function TicketsPage() {
                         </td>
                         <td className="px-3 py-2 text-xs">{toDubaiDisplayDate(row.createdAt)}</td>
                         <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            disabled={approveBusyId === row.id}
-                            onClick={async () => {
-                              setError(null);
-                              setSuccess(null);
-                              setApproveBusyId(row.id);
-                              try {
-                                await approveCrmApplication(row.id, approverManagerId);
-                                setSuccess(`Application #${row.id} approved successfully.`);
-                                await Promise.all([loadApprovalQueue(), loadApplications()]);
-                              } catch (e: any) {
-                                setError(e?.message || "Failed to approve application.");
-                              } finally {
-                                setApproveBusyId(null);
-                              }
-                            }}
-                            className="rounded-full border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 disabled:opacity-60 dark:text-emerald-300"
-                          >
-                            {approveBusyId === row.id ? "Approving..." : "Approve"}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            {isSuperAdmin ? (
+                              <button
+                                type="button"
+                                onClick={() => openApprovalMap(row)}
+                                className="rounded-full border border-border/60 bg-background px-3 py-1 text-xs font-semibold text-foreground"
+                              >
+                                Map
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              disabled={approveBusyId === row.id}
+                              onClick={() => void executeRowAction(row, "approve")}
+                              className="rounded-full border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-700 disabled:opacity-60 dark:text-emerald-300"
+                            >
+                              {approveBusyId === row.id ? "Approving..." : approveLabelForRow(row)}
+                            </button>
+                            <button
+                              type="button"
+                              disabled={approveBusyId === row.id}
+                              onClick={() => void executeRowAction(row, "decline")}
+                              className="rounded-full border border-rose-500/35 bg-rose-500/10 px-3 py-1 text-xs font-semibold text-rose-700 disabled:opacity-60 dark:text-rose-300"
+                            >
+                              {approveBusyId === row.id ? "Processing..." : "Decline"}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))
@@ -627,7 +1001,7 @@ export default function TicketsPage() {
             <div className="md:hidden space-y-2">
               {approvalQueue.length === 0 ? (
                 <div className="rounded-xl border border-border/50 bg-background/60 p-3 text-center text-xs text-muted-foreground">
-                  No pending approvals assigned to you.
+                  No applications assigned to you.
                 </div>
               ) : (
                 approvalQueue.map((row) => (
@@ -638,8 +1012,8 @@ export default function TicketsPage() {
                   >
                     <div className="flex items-center justify-between">
                       <div className="font-mono text-xs">#{row.id}</div>
-                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusBadgeClass(row.status)}`}>
-                        {row.status || "-"}
+                      <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusBadgeClass(deriveWorkflowStatus(row))}`}>
+                        {deriveWorkflowStatus(row)}
                       </span>
                     </div>
                     <div className="mt-1 text-sm font-medium text-foreground">{REQUEST_TYPE_BY_CONFIG_ID[Number(row.configId)] || row.type || "-"}</div>
@@ -647,27 +1021,31 @@ export default function TicketsPage() {
                       Client: {Number(row.userId) > 0 ? (clientNameById[Number(row.userId)] || `Client ${row.userId}`) : "-"}
                     </div>
                     <div className="text-xs text-muted-foreground">Created: {toDubaiDisplayDate(row.createdAt)}</div>
-                    <div className="mt-2">
+                    <div className="mt-2 space-y-2">
+                      {isSuperAdmin ? (
+                        <button
+                          type="button"
+                          onClick={() => openApprovalMap(row)}
+                          className="w-full rounded-full border border-border/60 bg-background px-3 py-1.5 text-xs font-semibold text-foreground"
+                        >
+                          View Map
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         disabled={approveBusyId === row.id}
-                        onClick={async () => {
-                          setError(null);
-                          setSuccess(null);
-                          setApproveBusyId(row.id);
-                          try {
-                            await approveCrmApplication(row.id, approverManagerId);
-                            setSuccess(`Application #${row.id} approved successfully.`);
-                            await Promise.all([loadApprovalQueue(), loadApplications()]);
-                          } catch (e: any) {
-                            setError(e?.message || "Failed to approve application.");
-                          } finally {
-                            setApproveBusyId(null);
-                          }
-                        }}
+                        onClick={() => void executeRowAction(row, "approve")}
                         className="w-full rounded-full border border-emerald-500/35 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-700 disabled:opacity-60 dark:text-emerald-300"
                       >
-                        {approveBusyId === row.id ? "Approving..." : "Approve"}
+                        {approveBusyId === row.id ? "Approving..." : approveLabelForRow(row)}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={approveBusyId === row.id}
+                        onClick={() => void executeRowAction(row, "decline")}
+                        className="w-full rounded-full border border-rose-500/35 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-700 disabled:opacity-60 dark:text-rose-300"
+                      >
+                        {approveBusyId === row.id ? "Processing..." : "Decline"}
                       </button>
                     </div>
                   </div>
@@ -808,11 +1186,12 @@ export default function TicketsPage() {
                       <th className="px-3 py-2 text-left">Client Name</th>
                       <th className="px-3 py-2 text-left">Created</th>
                       <th className="px-3 py-2 text-left">Processed</th>
+                      <th className="px-3 py-2 text-left">Map</th>
                     </tr>
                   </thead>
                   <tbody>
                     {records.length === 0 && !isLoading ? (
-                      <tr><td colSpan={6} className="px-3 py-5 text-center text-xs text-muted-foreground">No application records found.</td></tr>
+                      <tr><td colSpan={7} className="px-3 py-5 text-center text-xs text-muted-foreground">No application records found.</td></tr>
                     ) : (
                       records.map((row) => (
                         <tr
@@ -821,10 +1200,10 @@ export default function TicketsPage() {
                           className={`border-t border-border/40 hover:bg-secondary/20 ${highlightedAppId === row.id ? "bg-blue-500/10 ring-1 ring-blue-400/40" : ""}`}
                         >
                           <td className="px-3 py-2 font-mono text-xs">{row.id}</td>
-                          <td className="px-3 py-2 text-xs">{row.type || "-"}</td>
+                          <td className="px-3 py-2 text-xs">{REQUEST_TYPE_BY_CONFIG_ID[Number(row.configId)] || row.type || "-"}</td>
                           <td className="px-3 py-2">
-                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${statusBadgeClass(row.status)}`}>
-                              {row.status || "-"}
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${statusBadgeClass(deriveWorkflowStatus(row))}`}>
+                              {deriveWorkflowStatus(row)}
                             </span>
                           </td>
                           <td className="px-3 py-2 text-xs">
@@ -834,6 +1213,17 @@ export default function TicketsPage() {
                           </td>
                           <td className="px-3 py-2 text-xs">{toDubaiDisplayDate(row.createdAt)}</td>
                           <td className="px-3 py-2 text-xs">{toDubaiDisplayDate(row.processedAt)}</td>
+                          <td className="px-3 py-2 text-xs">
+                            {isSuperAdmin ? (
+                              <button
+                                type="button"
+                                onClick={() => openApprovalMap(row)}
+                                className="rounded-full border border-border/60 bg-background px-2.5 py-1 text-[11px] text-foreground"
+                              >
+                                View Map
+                              </button>
+                            ) : "-"}
+                          </td>
                         </tr>
                       ))
                     )}
@@ -854,16 +1244,27 @@ export default function TicketsPage() {
                     >
                       <div className="flex items-center justify-between">
                         <div className="font-mono text-xs">#{row.id}</div>
-                        <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusBadgeClass(row.status)}`}>
-                          {row.status || "-"}
+                        <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${statusBadgeClass(deriveWorkflowStatus(row))}`}>
+                          {deriveWorkflowStatus(row)}
                         </span>
                       </div>
-                      <div className="mt-1 text-sm font-medium text-foreground">{row.type || "-"}</div>
+                      <div className="mt-1 text-sm font-medium text-foreground">{REQUEST_TYPE_BY_CONFIG_ID[Number(row.configId)] || row.type || "-"}</div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         Client: {Number(row.userId) > 0 ? (clientNameById[Number(row.userId)] || `Client ${row.userId}`) : "-"}
                       </div>
                       <div className="text-xs text-muted-foreground">Created: {toDubaiDisplayDate(row.createdAt)}</div>
                       <div className="text-xs text-muted-foreground">Processed: {toDubaiDisplayDate(row.processedAt)}</div>
+                      {isSuperAdmin ? (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            onClick={() => openApprovalMap(row)}
+                            className="rounded-full border border-border/60 bg-background px-2.5 py-1 text-[11px] text-foreground"
+                          >
+                            View Approval Map
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 )}
@@ -892,6 +1293,106 @@ export default function TicketsPage() {
             </div>
           </div>
         </section>
+
+        {isSuperAdmin && mapRow && mapDetails ? (
+          <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/30 p-3 sm:p-5" onClick={() => setMapRow(null)}>
+            <section
+              className="h-full w-full max-w-2xl overflow-auto rounded-2xl border border-primary/30 bg-card p-4 shadow-2xl sm:p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-foreground">Approval Map #{mapRow.id}</h3>
+              <button
+                type="button"
+                onClick={() => setMapRow(null)}
+                className="rounded-full border border-border/60 bg-background px-3 py-1 text-xs text-muted-foreground"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-3">
+              <div>Created By: <span className="text-foreground">{mapDetails.createdBy}</span></div>
+              <div>Decided By: <span className="text-foreground">{mapDetails.decidedBy}</span></div>
+              <div>Final Approved By: <span className="text-foreground">{mapDetails.finalApprovedBy}</span></div>
+              <div>Executed By: <span className="text-foreground">{mapDetails.executedBy}</span></div>
+              <div>Reported By: <span className="text-foreground">{mapDetails.reportedBy}</span></div>
+              <div>Current Stage: <span className="text-foreground">{mapDetails.stage}</span></div>
+              <div>Next Approver: <span className="text-foreground">{mapDetails.nextApprover}</span></div>
+              <div>Created At: <span className="text-foreground">{toDubaiDisplayDate(mapDetails.createdAt)}</span></div>
+              <div>Decided At: <span className="text-foreground">{toDubaiDisplayDate(mapDetails.decidedAt)}</span></div>
+              <div>Final Approved At: <span className="text-foreground">{toDubaiDisplayDate(mapDetails.finalApprovedAt)}</span></div>
+              <div>Executed At: <span className="text-foreground">{toDubaiDisplayDate(mapDetails.executedAt)}</span></div>
+              <div>Reported At: <span className="text-foreground">{toDubaiDisplayDate(mapDetails.reportedAt)}</span></div>
+              <div>Reroute From: <span className="text-foreground">{mapDetails.rerouteFrom}</span></div>
+              <div>Reroute To: <span className="text-foreground">{mapDetails.rerouteTo}</span></div>
+              <div>Override By: <span className="text-foreground">{mapDetails.overrideBy}</span></div>
+              <div className="sm:col-span-2 lg:col-span-3">Override Reason: <span className="text-foreground">{mapDetails.overrideReason}</span></div>
+            </div>
+
+            <div className="mt-4 grid gap-3 rounded-xl border border-border/50 bg-background/60 p-3 sm:grid-cols-2">
+              <label className="text-xs text-muted-foreground">
+                First Approver
+                <select
+                  value={mapFirstApproverId}
+                  onChange={(e) => setMapFirstApproverId(Number(e.target.value || 0))}
+                  className="mt-1 w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                >
+                  {APPROVER_OPTIONS.map((opt) => (
+                    <option key={`first-${opt.id}`} value={opt.id}>{opt.label} ({opt.email})</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={mapFirstApproverEmail}
+                  onChange={(e) => setMapFirstApproverEmail(e.target.value)}
+                  placeholder="or type approver email"
+                  className="mt-1 w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                />
+              </label>
+              <label className="text-xs text-muted-foreground">
+                Final Approver
+                <select
+                  value={mapFinalApproverId}
+                  onChange={(e) => setMapFinalApproverId(Number(e.target.value || 0))}
+                  className="mt-1 w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                >
+                  {APPROVER_OPTIONS.map((opt) => (
+                    <option key={`final-${opt.id}`} value={opt.id}>{opt.label} ({opt.email})</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={mapFinalApproverEmail}
+                  onChange={(e) => setMapFinalApproverEmail(e.target.value)}
+                  placeholder="or type approver email"
+                  className="mt-1 w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                />
+              </label>
+              <label className="text-xs text-muted-foreground sm:col-span-2">
+                Override Reason
+                <input
+                  type="text"
+                  value={mapReason}
+                  onChange={(e) => setMapReason(e.target.value)}
+                  placeholder="Why are you changing approvers?"
+                  className="mt-1 w-full rounded-lg border border-border/60 bg-background px-3 py-2 text-xs"
+                />
+              </label>
+              <div className="sm:col-span-2">
+                <button
+                  type="button"
+                  onClick={() => void saveApprovalRouting()}
+                  disabled={mapBusy}
+                  className="rounded-full border border-primary/40 bg-primary/10 px-4 py-1.5 text-xs font-semibold text-primary disabled:opacity-60"
+                >
+                  {mapBusy ? "Saving..." : "Save Approver Routing"}
+                </button>
+              </div>
+            </div>
+            </section>
+          </div>
+        ) : null}
       </main>
     </div>
   );

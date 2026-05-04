@@ -4,7 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --force",
+    "dev:backend": "node server.js",
+    "local:start": "powershell -ExecutionPolicy Bypass -File scripts/local-dev.ps1 start",
+    "local:stop": "powershell -ExecutionPolicy Bypass -File scripts/local-dev.ps1 stop",
+    "local:restart": "powershell -ExecutionPolicy Bypass -File scripts/local-dev.ps1 restart",
+    "local:status": "powershell -ExecutionPolicy Bypass -File scripts/local-dev.ps1 status",
     "build": "node scripts/build.mjs",
     "build:dev": "vite build --mode development",
     "lint": "eslint .",

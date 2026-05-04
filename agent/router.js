@@ -3,6 +3,18 @@ import jwt from "jsonwebtoken";
 import mysql from "mysql2/promise";
 import { agentCapabilities, runAgentChat } from "./llmAgent.js";
 import { dateUtils, getLiveSnapshot } from "./metricsService.js";
+import {
+  analyzeClientByAccountLogin,
+  closeLatestRunningClientProfileRun,
+  createClientProfileActionAuditLog,
+  getClientProfileRunErrors,
+  getClientProfileDashboardSummary,
+  listClientProfileActionAuditLogs,
+  listClientProfileRuns,
+  listClientProfileRunStepLogs,
+  listCurrentClientProfiles,
+  runClientProfilingJob,
+} from "./clientProfilingService.js";
 
 const router = express.Router();
 const AUTH_JWT_SECRET = process.env.AUTH_JWT_SECRET || "";
@@ -54,6 +66,10 @@ function canUseLiveAgent(payload) {
   if (String(payload.role || "").trim().toLowerCase() === "super admin") return true;
   const access = Array.isArray(payload.access) ? payload.access : [];
   return access.includes("LiveAgent") || access.includes("Backoffice");
+}
+
+function isSuperAdmin(payload) {
+  return String(payload?.role || "").trim().toLowerCase() === "super admin";
 }
 
 async function requireLiveAgentAccess(req, res, next) {
@@ -124,6 +140,182 @@ router.get("/capabilities", requireLiveAgentAccess, (req, res) => {
       model: "rule-based-fallback",
       tools: [],
       warning: error?.message || "capabilities_unavailable",
+    });
+  }
+});
+
+router.post("/client-profiles/run", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const body = req.body || {};
+    const clientIds = Array.isArray(body.clientIds)
+      ? body.clientIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+      : [];
+    const result = await runClientProfilingJob({
+      runType: String(body.runType || "manual"),
+      snapshotDate: body.snapshotDate,
+      maxClients: Number(body.maxClients) || undefined,
+      clientIds,
+      dryRun: Boolean(body.dryRun),
+    });
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_run_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/current", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const clientId = Number(req.query.clientId);
+    const rows = await listCurrentClientProfiles({
+      clientId: Number.isFinite(clientId) && clientId > 0 ? clientId : undefined,
+      limit: Number(req.query.limit) || 100,
+    });
+    return res.json({ ok: true, rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_current_fetch_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/dashboard", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const data = await getClientProfileDashboardSummary();
+    return res.json({ ok: true, ...data });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_dashboard_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/analyze-account/:login", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const login = Number(req.params.login);
+    if (!Number.isFinite(login) || login <= 0) return res.status(400).json({ ok: false, error: "invalid_login" });
+    const data = await analyzeClientByAccountLogin(login);
+    return res.json({ ok: true, ...data });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_analysis_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/runs", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const rows = await listClientProfileRuns(Number(req.query.limit) || 50);
+    return res.json({ ok: true, rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_runs_fetch_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/runs/:runId/errors", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId) || runId <= 0) return res.status(400).json({ ok: false, error: "invalid_run_id" });
+    const rows = await getClientProfileRunErrors(runId, Number(req.query.limit) || 200);
+    return res.json({ ok: true, rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_run_errors_fetch_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/runs/:runId/steps", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const runId = Number(req.params.runId);
+    if (!Number.isFinite(runId) || runId <= 0) return res.status(400).json({ ok: false, error: "invalid_run_id" });
+    const rows = await listClientProfileRunStepLogs(runId, Number(req.query.limit) || 100);
+    return res.json({ ok: true, rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_run_steps_fetch_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.post("/client-profiles/runs/close-stuck", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const body = req.body || {};
+    const result = await closeLatestRunningClientProfileRun(String(body.reason || "Manually closed stuck run from CP UI"));
+    return res.json(result);
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_close_stuck_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.post("/client-profiles/actions", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const body = req.body || {};
+    if (body.confirm !== true) {
+      return res.status(400).json({ ok: false, error: "confirmation_required" });
+    }
+    const row = await createClientProfileActionAuditLog({
+      actionKey: body.actionKey,
+      clientId: body.clientId,
+      login: body.login,
+      recommendedBook: body.recommendedBook,
+      confidencePct: body.confidencePct,
+      confirmationNote: body.confirmationNote,
+      payload: body.payload || {},
+      actorUserId: req.auth?.sub || "",
+      actorEmail: req.auth?.email || null,
+      actorRole: req.auth?.role || null,
+    });
+    return res.json({ ok: true, auditId: row.id });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_action_log_failed",
+      message: error?.message || String(error),
+    });
+  }
+});
+
+router.get("/client-profiles/actions/audit", requireLiveAgentAccess, async (req, res) => {
+  if (!isSuperAdmin(req.auth)) return res.status(403).json({ ok: false, error: "forbidden_super_admin_only" });
+  try {
+    const rows = await listClientProfileActionAuditLogs(Number(req.query.limit) || 100);
+    return res.json({ ok: true, rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: "client_profile_action_audit_fetch_failed",
+      message: error?.message || String(error),
     });
   }
 });

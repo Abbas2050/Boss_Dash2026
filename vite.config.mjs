@@ -13,9 +13,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default defineConfig(({ mode }) => ({
+  cacheDir: ".vite-cache",
   server: {
-    host: "::",
+    host: "127.0.0.1",
     port: 8080,
+    strictPort: true,
     hmr: {
       overlay: false,
     },
@@ -91,6 +93,9 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  optimizeDeps: {
+    force: true,
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

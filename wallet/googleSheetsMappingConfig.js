@@ -21,6 +21,8 @@ export const DEFAULT_GOOGLE_SHEETS_FIELDS = [
   { key: 'netAllCurrentBalance', label: 'Net all Current Balance', cell: 'J25', required: true },
   { key: 'netBalanceAfterExpectedFunds', label: 'Net Balance after expected funds', cell: 'J27', required: true },
   { key: 'differenceBetweenActualAndExpected', label: 'Difference between actual and expected', cell: 'J29', required: true },
+  { key: 'creditByLPs', label: 'Credit by LPs', cell: 'J30', required: true },
+  { key: 'goldSouqDeductionJ31', label: 'Gold Souq Deduction (J31)', cell: 'J31', required: true },
 ];
 
 const LEGACY_GOOGLE_SHEETS_FIELDS = [
@@ -38,6 +40,8 @@ const LEGACY_GOOGLE_SHEETS_FIELDS = [
   { key: 'netAllCurrentBalance', cell: 'J24' },
   { key: 'netBalanceAfterExpectedFunds', cell: 'J26' },
   { key: 'differenceBetweenActualAndExpected', cell: 'J28' },
+  { key: 'creditByLPs', cell: 'J29' },
+  { key: 'goldSouqDeductionJ31', cell: 'J30' },
 ];
 
 const LEGACY_REQUIRED_CELL_BY_KEY = Object.fromEntries(

@@ -485,6 +485,8 @@ export class GoogleSheetsClient {
       'netAllCurrentBalance',
       'netBalanceAfterExpectedFunds',
       'differenceBetweenActualAndExpected',
+      'creditByLPs',
+      'goldSouqDeductionJ31',
     ]);
 
     const customValues = {};
@@ -509,6 +511,8 @@ export class GoogleSheetsClient {
       netAllCurrentBalance: wallet.values.netAllCurrentBalance ?? 0,
       netBalanceAfterExpectedFunds: wallet.values.netBalanceAfterExpectedFunds ?? 0,
       differenceBetweenActualAndExpected: wallet.values.differenceBetweenActualAndExpected ?? 0,
+      creditByLPs: wallet.values.creditByLPs ?? 0,
+      goldSouqDeductionJ31: wallet.values.goldSouqDeductionJ31 ?? 0,
       customValues,
     };
   }
