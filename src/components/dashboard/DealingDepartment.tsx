@@ -3,7 +3,7 @@ import { TrendingUp, Users, DollarSign, Activity } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { ForexTicker } from './ForexTicker';
-import { MiniChart } from './MiniChart';
+import { ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from '@/lib/dealingApi';
 
 interface DepartmentProps {
@@ -30,6 +30,13 @@ interface SymbolActivity {
   positions: number;
   netExposureLots: number;
   subSymbols: Array<{ symbol: string; netExposureLots: number }>;
+}
+
+interface LiveLotsPoint {
+  snapshotTime: string;
+  label: string;
+  totalLots: number;
+  totalVolume: number;
 }
 
 const defaultMetrics: DealingMetrics = {
@@ -103,9 +110,80 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasData, setHasData] = useState(false);
+  const [liveLotsSeries, setLiveLotsSeries] = useState<LiveLotsPoint[]>([]);
+
+  const formatSnapshotTime = (value: string) => {
+    const dt = new Date(value.includes('T') ? value : value.replace(' ', 'T') + 'Z');
+    if (!Number.isFinite(dt.getTime())) return value;
+    const h = String(dt.getHours()).padStart(2, '0');
+    const m = String(dt.getMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+  };
+
+  const buildSnapshotTimeKey = () => {
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const mo = String(now.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(now.getUTCDate()).padStart(2, '0');
+    const h = String(now.getUTCHours()).padStart(2, '0');
+    const mi = String(now.getUTCMinutes()).padStart(2, '0');
+    return `${y}-${mo}-${d} ${h}:${mi}:00`;
+  };
 
   useEffect(() => {
     let cancelled = false;
+
+    const loadLiveLotsSeries = async () => {
+      try {
+        const response = await fetch('/api/dealing-client-lots-snapshots?hours=72');
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (payload?.warning) {
+          console.warn('[Dealing Client Lots] history warning:', payload.warning, payload?.message || '');
+        } else {
+          console.info('[Dealing Client Lots] history DB connected, rows:', Array.isArray(payload?.rows) ? payload.rows.length : 0);
+        }
+        const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+        const mapped = rows
+          .map((row: any) => {
+            const snapshotTime = String(row?.snapshotTime || '').trim();
+            if (!snapshotTime) return null;
+            return {
+              snapshotTime,
+              label: formatSnapshotTime(snapshotTime),
+              totalLots: Number(row?.totalLots ?? 0) || 0,
+              totalVolume: Number(row?.totalVolume ?? 0) || 0,
+            } satisfies LiveLotsPoint;
+          })
+          .filter((row: LiveLotsPoint | null): row is LiveLotsPoint => Boolean(row));
+        if (!cancelled) setLiveLotsSeries(mapped.slice(-120));
+      } catch {
+        // ignore
+      }
+    };
+
+    const upsertLiveLotsPoint = async (point: LiveLotsPoint) => {
+      try {
+        const response = await fetch('/api/dealing-client-lots-snapshots', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            snapshotTime: point.snapshotTime,
+            totalLots: point.totalLots,
+            totalVolume: point.totalVolume,
+            source: 'dashboard',
+          }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (payload?.ok) {
+          console.info('[Dealing Client Lots] snapshot saved:', point.snapshotTime);
+        } else if (payload?.warning || payload?.error) {
+          console.warn('[Dealing Client Lots] snapshot warning:', payload?.warning || payload?.error, payload?.message || '');
+        }
+      } catch {
+        // ignore
+      }
+    };
 
     const fetchLiveData = async () => {
       if (cancelled) return;
@@ -193,6 +271,22 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
           summary.currentCredit > 0 ||
           (isToday ? positions.length > 0 : false)
         );
+        if (isToday) {
+          const snapshotTime = buildSnapshotTimeKey();
+          const point = {
+            snapshotTime,
+            label: formatSnapshotTime(snapshotTime),
+            totalLots,
+            totalVolume,
+          } satisfies LiveLotsPoint;
+          await upsertLiveLotsPoint(point);
+          if (!cancelled) {
+            setLiveLotsSeries((prev) => {
+              const withoutCurrent = prev.filter((p) => p.snapshotTime !== point.snapshotTime);
+              return [...withoutCurrent, point].slice(-120);
+            });
+          }
+        }
       } catch {
         if (!cancelled) {
           setMetrics(defaultMetrics);
@@ -204,6 +298,7 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
       }
     };
 
+    loadLiveLotsSeries();
     fetchLiveData();
     const interval = setInterval(fetchLiveData, 60000);
     return () => {
@@ -235,12 +330,66 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
           <span className="text-xs text-muted-foreground">Total Lots</span>
           <span className="text-[10px] text-muted-foreground font-mono">{modeLabel}</span>
         </div>
-        <MiniChart
-          color="hsl(186 100% 50%)"
-            value={metrics.totalLots}
-            variant="area"
-            height={48}
-          />
+        <div style={{ height: 56 }} className="w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={liveLotsSeries.length ? liveLotsSeries : [{ snapshotTime: '', label: '', totalLots: metrics.totalLots, totalVolume: metrics.totalVolume }]}>
+              <defs>
+                <linearGradient id="totalLotsGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="hsl(186 100% 50%)" stopOpacity={0.42} />
+                  <stop offset="100%" stopColor="hsl(186 100% 50%)" stopOpacity={0.03} />
+                </linearGradient>
+                <linearGradient id="totalVolumeGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.22} />
+                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.01} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.14} />
+              <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#64748b' }} minTickGap={26} />
+              <YAxis yAxisId="lots" hide domain={['auto', 'auto']} />
+              <YAxis yAxisId="volume" hide domain={['auto', 'auto']} />
+              <Tooltip
+                contentStyle={{
+                  background: 'rgba(15,23,42,0.92)',
+                  border: '1px solid rgba(148,163,184,0.35)',
+                  borderRadius: 8,
+                  color: '#e2e8f0',
+                  fontSize: 11,
+                }}
+                labelStyle={{ color: '#cbd5e1' }}
+                formatter={(value: number, name: string) => {
+                  if (name === 'totalVolume') return [`$${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`, 'Total Volume'];
+                  return [Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 }), 'Total Lots'];
+                }}
+                labelFormatter={(label) => `Time: ${label}`}
+              />
+              <Area
+                type="monotone"
+                dataKey="totalLots"
+                yAxisId="lots"
+                stroke="hsl(186 100% 50%)"
+                strokeWidth={2.2}
+                fill="url(#totalLotsGradient)"
+                dot={false}
+                isAnimationActive
+              />
+              <Area
+                type="monotone"
+                yAxisId="volume"
+                dataKey="totalVolume"
+                stroke="#22c55e"
+                strokeWidth={1.6}
+                fill="url(#totalVolumeGradient)"
+                dot={false}
+                isAnimationActive
+              />
+              <Line type="monotone" yAxisId="volume" dataKey="totalVolume" stroke="#22c55e" strokeWidth={2.1} dot={false} />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-cyan-400" />Total Lots</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-green-500" />Total Volume</span>
+        </div>
       </div>
 
       {!hasData && !isLoading && (

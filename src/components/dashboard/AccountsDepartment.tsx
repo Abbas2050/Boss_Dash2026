@@ -7,7 +7,7 @@ import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } 
 import { StatusBadge } from './StatusBadge';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 interface PSPBalance {
   name: string;
@@ -28,7 +28,7 @@ interface LpOverview {
 
 interface LpEquityPoint {
   ts: number;
-  snapshotDate: string;
+  snapshotKey: string;
   time: string;
   lpWithdrawableEquity: number;
   clientWithdrawableEquity: number;
@@ -38,19 +38,26 @@ interface LpEquityPoint {
 type LpBucket = 'Bank' | 'Both' | 'Crypto';
 const LP_EQUITY_HISTORY_DAYS = 120;
 
-const formatSnapshotLabel = (snapshotDate: string) =>
-  new Date(`${snapshotDate}T00:00:00`).toLocaleDateString('en-US', {
-    year: 'numeric',
+const formatSnapshotLabel = (snapshotDateTime: string) => {
+  const dt = new Date(snapshotDateTime.includes('T') ? snapshotDateTime : snapshotDateTime.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(dt.getTime())) return snapshotDateTime;
+  return dt.toLocaleString('en-US', {
     month: 'short',
     day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
   });
+};
 
-const buildDubaiDateKey = () => {
-  const dubaiNow = getDubaiDate();
-  const year = dubaiNow.getFullYear();
-  const month = String(dubaiNow.getMonth() + 1).padStart(2, '0');
-  const day = String(dubaiNow.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+const buildUtcMinuteKey = () => {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mm = String(now.getUTCMinutes()).padStart(2, '0');
+  return `${y}-${m}-${d} ${hh}:${mm}:00`;
 };
 
 const normalizeLpName = (value: unknown) =>
@@ -330,19 +337,19 @@ export function AccountsDepartment({
 
     const loadLpEquitySeries = async () => {
       try {
-        const response = await fetch(`/api/lp-equity-snapshots?days=${LP_EQUITY_HISTORY_DAYS}`);
+        const response = await fetch('/api/lp-equity-live-snapshots?hours=168');
         if (!response.ok) return;
         const payload = await response.json();
         const rows = Array.isArray(payload?.rows) ? payload.rows : [];
         const mapped: LpEquityPoint[] = rows
           .map((row: any) => {
-            const snapshotDateRaw = String(row?.snapshotDate || row?.snapshot_date || '').slice(0, 10);
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(snapshotDateRaw)) return null;
-            const ts = new Date(`${snapshotDateRaw}T00:00:00`).getTime();
+            const snapshotKey = String(row?.snapshotTime || row?.snapshot_time || '').trim();
+            if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(snapshotKey)) return null;
+            const ts = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
             return {
               ts: Number.isFinite(ts) ? ts : Date.now(),
-              snapshotDate: snapshotDateRaw,
-              time: formatSnapshotLabel(snapshotDateRaw),
+              snapshotKey,
+              time: formatSnapshotLabel(snapshotKey),
               lpWithdrawableEquity: Number(row?.lpWithdrawableEquity ?? row?.lp_withdrawable_equity ?? 0) || 0,
               clientWithdrawableEquity: Number(row?.clientWithdrawableEquity ?? row?.client_withdrawable_equity ?? 0) || 0,
               difference: Number(row?.difference ?? row?.equity_difference ?? 0) || 0,
@@ -350,7 +357,7 @@ export function AccountsDepartment({
           })
           .filter((point: LpEquityPoint | null): point is LpEquityPoint => Boolean(point));
 
-        setLpEquitySeries(mapped.slice(-LP_EQUITY_HISTORY_DAYS));
+        setLpEquitySeries(mapped.slice(-240));
       } catch (_err) {
         // silently ignore
       }
@@ -358,11 +365,11 @@ export function AccountsDepartment({
 
     const upsertLpEquitySnapshot = async (point: LpEquityPoint) => {
       try {
-        await fetch('/api/lp-equity-snapshots', {
+        await fetch('/api/lp-equity-live-snapshots', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            snapshotDate: point.snapshotDate,
+            snapshotTime: point.snapshotKey,
             lpWithdrawableEquity: point.lpWithdrawableEquity,
             clientWithdrawableEquity: point.clientWithdrawableEquity,
             difference: point.difference,
@@ -385,21 +392,21 @@ export function AccountsDepartment({
           clientWithdrawableEquity,
           difference,
         });
-        const snapshotDate = buildDubaiDateKey();
-        const pointTs = new Date(`${snapshotDate}T00:00:00`).getTime();
+        const snapshotKey = buildUtcMinuteKey();
+        const pointTs = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
         const nextPoint: LpEquityPoint = {
           ts: Number.isFinite(pointTs) ? pointTs : Date.now(),
-          snapshotDate,
-          time: formatSnapshotLabel(snapshotDate),
+          snapshotKey,
+          time: formatSnapshotLabel(snapshotKey),
           lpWithdrawableEquity,
           clientWithdrawableEquity,
           difference,
         };
         await upsertLpEquitySnapshot(nextPoint);
         setLpEquitySeries((prev) => {
-          const withoutCurrentDate = prev.filter((item) => item.snapshotDate !== nextPoint.snapshotDate);
-          const next = [...withoutCurrentDate, nextPoint].sort((a, b) => a.ts - b.ts);
-          return next.slice(-LP_EQUITY_HISTORY_DAYS);
+          const withoutCurrentMinute = prev.filter((item) => item.snapshotKey !== nextPoint.snapshotKey);
+          const next = [...withoutCurrentMinute, nextPoint].sort((a, b) => a.ts - b.ts);
+          return next.slice(-240);
         });
       } catch (err) {
         // silently ignore
@@ -533,6 +540,26 @@ export function AccountsDepartment({
     lpDepositsTotal -
     creditByLps;
   const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT) - Credit by LPs (J30)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} - ${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+  const lpEquityChartSeries = lpEquitySeries.length >= 2
+    ? lpEquitySeries
+    : [
+        {
+          ts: Date.now() - 60_000,
+          snapshotKey: 'seed-prev',
+          time: 'Prev',
+          lpWithdrawableEquity: lpEquitySummary.lpWithdrawableEquity,
+          clientWithdrawableEquity: lpEquitySummary.clientWithdrawableEquity,
+          difference: lpEquitySummary.difference,
+        },
+        {
+          ts: Date.now(),
+          snapshotKey: 'seed-now',
+          time: 'Now',
+          lpWithdrawableEquity: lpEquitySummary.lpWithdrawableEquity,
+          clientWithdrawableEquity: lpEquitySummary.clientWithdrawableEquity,
+          difference: lpEquitySummary.difference,
+        },
+      ];
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -617,16 +644,31 @@ export function AccountsDepartment({
             <div className="mb-2 text-xs text-muted-foreground">Live Equity Trend (date)</div>
             <div className="h-32">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={lpEquitySeries}>
+                <AreaChart data={lpEquityChartSeries}>
+                  <defs>
+                    <linearGradient id="lpWdGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#22c55e" stopOpacity={0.36} />
+                      <stop offset="100%" stopColor="#22c55e" stopOpacity={0.03} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.16} />
                   <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={24} />
                   <YAxis hide domain={['auto', 'auto']} />
                   <Tooltip
+                    contentStyle={{
+                      background: 'rgba(15,23,42,0.92)',
+                      border: '1px solid rgba(148,163,184,0.35)',
+                      borderRadius: 8,
+                      color: '#e2e8f0',
+                      fontSize: 11,
+                    }}
+                    labelStyle={{ color: '#cbd5e1' }}
                     formatter={(value: number) => `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
                     labelFormatter={(label) => `Date: ${label}`}
                   />
-                  <Area type="monotone" dataKey="lpWithdrawableEquity" stroke="#22c55e" fill="#22c55e22" strokeWidth={2} />
-                  <Area type="monotone" dataKey="clientWithdrawableEquity" stroke="#38bdf8" fill="#38bdf822" strokeWidth={2} />
-                  <Area type="monotone" dataKey="difference" stroke="#f43f5e" fill="#f43f5e22" strokeWidth={2} />
+                  <Area type="monotone" dataKey="lpWithdrawableEquity" stroke="#22c55e" fill="url(#lpWdGradient)" strokeWidth={2.4} />
+                  <Area type="monotone" dataKey="clientWithdrawableEquity" stroke="#38bdf8" fill="none" strokeWidth={2.1} />
+                  <Area type="monotone" dataKey="difference" stroke="#f43f5e" fill="none" strokeWidth={2.1} />
                 </AreaChart>
               </ResponsiveContainer>
             </div>

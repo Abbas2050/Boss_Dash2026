@@ -1,0 +1,21 @@
+{
+  "generatedAt": "2026-05-08T11:56:13.972Z",
+  "period": {
+    "from": "2026-04-27",
+    "to": "2026-05-03"
+  },
+  "requestedClients": 100,
+  "usedClients": 53,
+  "totalAvailable": 53,
+  "outputDir": "D:\\Boss_Dash2026\\storage\\reports\\dealmatch-email-charts",
+  "files": [
+    "01_top10_net_revenue.png",
+    "02_top10_total_revenue.png",
+    "03_lots_vs_net_revenue.png",
+    "04_revenue_breakdown.png",
+    "05_gross_vs_net_revenue.png",
+    "06_profitability_segmentation.png",
+    "07_ib_commission_impact.png",
+    "08_summary_banner.png"
+  ]
+}

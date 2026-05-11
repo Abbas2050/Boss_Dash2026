@@ -10,6 +10,7 @@ export const DEALING_TABS = [
   "Equity Overview",
   "Contract Sizes",
   "Deal Matching",
+  "Deal Performance",
   "Clients NOP",
   "Rebate Calculator",
   "Client Profiling",

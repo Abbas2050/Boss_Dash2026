@@ -11,6 +11,7 @@ import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
 import { ClientProfilingTab } from "@/pages/departments/dealing/ClientProfilingTab";
 import { DealMatchingTab } from "@/pages/departments/dealing/DealMatchingTab";
+import { DealPerformanceTab } from "@/pages/departments/dealing/DealPerformanceTab";
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
@@ -80,6 +81,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "contract-sizes": "Contract Sizes",
   deal: "Deal Matching",
   "deal-matching": "Deal Matching",
+  performance: "Deal Performance",
+  "deal-performance": "Deal Performance",
   swap: "Swap Tracker",
   "swap-tracker": "Swap Tracker",
   history: "History",
@@ -673,12 +676,32 @@ const alertTypeForEvent = (eventName: AlertEventKey): LiveNotification["type"] =
   return "info";
 };
 
+const getPreviousWeekMondaySunday = () => {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun,1=Mon,...6=Sat
+  const daysSinceMonday = (day + 6) % 7;
+  const currentMonday = new Date(now);
+  currentMonday.setHours(0, 0, 0, 0);
+  currentMonday.setDate(now.getDate() - daysSinceMonday);
+
+  const prevMonday = new Date(currentMonday);
+  prevMonday.setDate(currentMonday.getDate() - 7);
+  prevMonday.setHours(0, 0, 0, 0);
+
+  const prevSunday = new Date(prevMonday);
+  prevSunday.setDate(prevMonday.getDate() + 6);
+  prevSunday.setHours(23, 59, 59, 999);
+
+  return { from: prevMonday, to: prevSunday };
+};
+
 export function DealingDepartmentPage() {
+  const defaultWeek = useMemo(() => getPreviousWeekMondaySunday(), []);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [fromDate, setFromDate] = useState<Date>(() => new Date());
-  const [toDate, setToDate] = useState<Date>(() => new Date());
-  const [selectedFromDate, setSelectedFromDate] = useState<Date>(() => new Date());
-  const [selectedToDate, setSelectedToDate] = useState<Date>(() => new Date());
+  const [fromDate, setFromDate] = useState<Date>(() => new Date(defaultWeek.from));
+  const [toDate, setToDate] = useState<Date>(() => new Date(defaultWeek.to));
+  const [selectedFromDate, setSelectedFromDate] = useState<Date>(() => new Date(defaultWeek.from));
+  const [selectedToDate, setSelectedToDate] = useState<Date>(() => new Date(defaultWeek.to));
   const [isLoading, setIsLoading] = useState(false);
   const [metrics, setMetrics] = useState<DealingMetrics>(DEFAULT_METRICS);
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
@@ -801,6 +824,9 @@ export function DealingDepartmentPage() {
   const [nopLastUpdated, setNopLastUpdated] = useState<Date | null>(null);
   const [nopRefreshKey, setNopRefreshKey] = useState(0);
   const [equityOverviewRefreshKey, setEquityOverviewRefreshKey] = useState(0);
+  const [dealPerformanceRefreshKey, setDealPerformanceRefreshKey] = useState(0);
+  const [dealPerformanceLoading, setDealPerformanceLoading] = useState(false);
+  const [dealPerformanceStatus, setDealPerformanceStatus] = useState("");
   const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
@@ -997,6 +1023,12 @@ export function DealingDepartmentPage() {
   }, [activeMenu, allowedBonusSubTabs, bonusSubTab]);
 
   useEffect(() => {
+    if (activeMenu === "Deal Performance") return;
+    setDealPerformanceLoading(false);
+    setDealPerformanceStatus("");
+  }, [activeMenu]);
+
+  useEffect(() => {
     if (activeMenu !== "Bonus") return;
     if (bonusSubTab !== "Bonus PNL") {
       setBonusPnlExpanded({
@@ -1036,6 +1068,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Contract Sizes") {
       setContractSizesRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Deal Performance") {
+      setDealPerformanceRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Swap Tracker") {
@@ -2669,6 +2705,9 @@ export function DealingDepartmentPage() {
     if (activeMenu === "Deal Matching") {
       return [];
     }
+    if (activeMenu === "Deal Performance") {
+      return [];
+    }
 
     return [
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
@@ -3474,10 +3513,16 @@ export function DealingDepartmentPage() {
           ) : activeMenu !== "Bonus" && activeMenu !== "Client Profiling" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs text-slate-600 dark:text-slate-400">
-                  {toReadable(fromDate)} - {toReadable(toDate)} <span className="mx-2 text-slate-500 dark:text-slate-400">|</span> Focus:{" "}
-                  <span className="font-mono text-cyan-700 dark:text-cyan-300">{activeMenu}</span>
-                </div>
+                  <div className="text-xs text-slate-600 dark:text-slate-400">
+                    {toReadable(fromDate)} - {toReadable(toDate)} <span className="mx-2 text-slate-500 dark:text-slate-400">|</span> Focus:{" "}
+                    <span className="font-mono text-cyan-700 dark:text-cyan-300">{activeMenu}</span>
+                    {activeMenu === "Deal Performance" && dealPerformanceStatus && (
+                      <>
+                        <span className="mx-2 text-slate-500 dark:text-slate-400">|</span>
+                        <span>{dealPerformanceStatus}</span>
+                      </>
+                    )}
+                  </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <label className="text-xs text-slate-700 dark:text-slate-300">
                     From
@@ -3501,7 +3546,7 @@ export function DealingDepartmentPage() {
                     onClick={handlePageRefresh}
                     className="inline-flex items-center gap-2 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-200"
                   >
-                    <RefreshCw className={`h-3.5 w-3.5 ${menuLoading ? "animate-spin" : ""}`} />
+                    <RefreshCw className={`h-3.5 w-3.5 ${(menuLoading || (activeMenu === "Deal Performance" && dealPerformanceLoading)) ? "animate-spin" : ""}`} />
                     Refresh
                   </button>
                 </div>
@@ -4987,6 +5032,15 @@ export function DealingDepartmentPage() {
             </section>
           ) : activeMenu === "Deal Matching" ? (
             <DealMatchingTab baseUrl={BACKEND_BASE_URL} />
+          ) : activeMenu === "Deal Performance" ? (
+            <DealPerformanceTab
+              baseUrl={BACKEND_BASE_URL}
+              fromDate={fromDate}
+              toDate={toDate}
+              refreshKey={dealPerformanceRefreshKey}
+              onLoadingChange={setDealPerformanceLoading}
+              onStatusChange={setDealPerformanceStatus}
+            />
           ) : activeMenu === "Swap Tracker" ? (
             <section
               className={`rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70 ${

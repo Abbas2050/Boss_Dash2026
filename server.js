@@ -24,6 +24,7 @@ import {
   saveGoogleSheetsMappingConfig,
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
+import { startWeeklyDealMatchScheduler } from './reports/dealMatchWeeklyReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -101,6 +102,55 @@ async function ensureLpEquityStore() {
         UNIQUE KEY uq_lp_equity_snapshot_date (snapshot_date)
       )
     `);
+
+    await lpEquityPool.query(`
+      CREATE TABLE IF NOT EXISTS lp_equity_live_snapshots (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        snapshot_time DATETIME NOT NULL,
+        lp_withdrawable_equity DECIMAL(20,2) NOT NULL DEFAULT 0,
+        client_withdrawable_equity DECIMAL(20,2) NOT NULL DEFAULT 0,
+        equity_difference DECIMAL(20,2) NOT NULL DEFAULT 0,
+        source VARCHAR(50) NOT NULL DEFAULT 'dashboard',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_lp_equity_live_snapshot_time (snapshot_time)
+      )
+    `);
+
+    await lpEquityPool.query(`
+      CREATE TABLE IF NOT EXISTS dealing_client_lots_snapshots (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        snapshot_time DATETIME NOT NULL,
+        total_lots DECIMAL(20,4) NOT NULL DEFAULT 0,
+        total_volume DECIMAL(20,2) NOT NULL DEFAULT 0,
+        source VARCHAR(50) NOT NULL DEFAULT 'dashboard',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_dealing_client_lots_snapshot_time (snapshot_time)
+      )
+    `);
+
+    // Backward-compatible migration for older tables created before metadata columns existed.
+    const ensureColumn = async (columnName, ddl) => {
+      const [rows] = await lpEquityPool.query(
+        `
+          SELECT COUNT(*) AS cnt
+          FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'lp_equity_snapshots'
+            AND COLUMN_NAME = ?
+        `,
+        [columnName]
+      );
+      const exists = Number(rows?.[0]?.cnt || 0) > 0;
+      if (!exists) {
+        await lpEquityPool.query(`ALTER TABLE lp_equity_snapshots ADD COLUMN ${ddl}`);
+      }
+    };
+
+    await ensureColumn('source', "source VARCHAR(50) NOT NULL DEFAULT 'dashboard'");
+    await ensureColumn('created_at', 'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP');
+    await ensureColumn('updated_at', 'updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
 
     return lpEquityPool;
   })();
@@ -224,6 +274,214 @@ app.post('/api/lp-equity-snapshots', async (req, res) => {
     return res.json({
       ok: false,
       error: 'lp_equity_store_unavailable',
+      warning: true,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/lp-equity-live-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'lp_equity_live_store_not_configured',
+    });
+  }
+  try {
+    const pool = await ensureLpEquityStore();
+    const hoursRaw = Number.parseInt(String(req.query.hours ?? '168'), 10);
+    const hours = Number.isFinite(hoursRaw) ? Math.max(1, Math.min(24 * 30, hoursRaw)) : 168;
+    const [rows] = await pool.query(
+      `
+        SELECT
+          DATE_FORMAT(snapshot_time, '%Y-%m-%d %H:%i:%s') AS snapshotTime,
+          lp_withdrawable_equity AS lpWithdrawableEquity,
+          client_withdrawable_equity AS clientWithdrawableEquity,
+          equity_difference AS difference,
+          source,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM lp_equity_live_snapshots
+        WHERE snapshot_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR)
+        ORDER BY snapshot_time ASC
+      `,
+      [hours]
+    );
+    return res.json({
+      ok: true,
+      rows: rows.map((row) => ({
+        snapshotTime: row.snapshotTime,
+        lpWithdrawableEquity: toFixedNumber(row.lpWithdrawableEquity),
+        clientWithdrawableEquity: toFixedNumber(row.clientWithdrawableEquity),
+        difference: toFixedNumber(row.difference),
+        source: row.source || 'dashboard',
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+    });
+  } catch (error) {
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'lp_equity_live_store_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/lp-equity-live-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: false,
+      error: 'lp_equity_live_store_not_configured',
+      warning: true,
+    });
+  }
+  try {
+    const pool = await ensureLpEquityStore();
+    const body = req.body || {};
+    const snapshotTimeRaw = String(body.snapshotTime || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(snapshotTimeRaw)) {
+      return res.status(400).json({ ok: false, error: 'invalid_snapshot_time' });
+    }
+    const lpWithdrawableEquity = toFixedNumber(body.lpWithdrawableEquity);
+    const clientWithdrawableEquity = toFixedNumber(body.clientWithdrawableEquity);
+    const difference = toFixedNumber(body.difference);
+    const source = String(body.source || 'dashboard').slice(0, 50);
+
+    await pool.query(
+      `
+        INSERT INTO lp_equity_live_snapshots
+          (snapshot_time, lp_withdrawable_equity, client_withdrawable_equity, equity_difference, source)
+        VALUES (?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          lp_withdrawable_equity = VALUES(lp_withdrawable_equity),
+          client_withdrawable_equity = VALUES(client_withdrawable_equity),
+          equity_difference = VALUES(equity_difference),
+          source = VALUES(source)
+      `,
+      [snapshotTimeRaw, lpWithdrawableEquity, clientWithdrawableEquity, difference, source]
+    );
+    return res.json({
+      ok: true,
+      snapshot: {
+        snapshotTime: snapshotTimeRaw,
+        lpWithdrawableEquity,
+        clientWithdrawableEquity,
+        difference,
+        source,
+      },
+    });
+  } catch (error) {
+    return res.json({
+      ok: false,
+      error: 'lp_equity_live_store_unavailable',
+      warning: true,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.get('/api/dealing-client-lots-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'dealing_client_lots_store_not_configured',
+    });
+  }
+  try {
+    const pool = await ensureLpEquityStore();
+    const hoursRaw = Number.parseInt(String(req.query.hours ?? '72'), 10);
+    const hours = Number.isFinite(hoursRaw) ? Math.max(1, Math.min(24 * 30, hoursRaw)) : 72;
+    const [rows] = await pool.query(
+      `
+        SELECT
+          DATE_FORMAT(snapshot_time, '%Y-%m-%d %H:%i:%s') AS snapshotTime,
+          total_lots AS totalLots,
+          total_volume AS totalVolume,
+          source,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM dealing_client_lots_snapshots
+        WHERE snapshot_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? HOUR)
+        ORDER BY snapshot_time ASC
+      `,
+      [hours]
+    );
+    console.info('[Dealing Client Lots] history query ok, rows:', Array.isArray(rows) ? rows.length : 0, '| hours:', hours);
+
+    return res.json({
+      ok: true,
+      rows: rows.map((row) => ({
+        snapshotTime: row.snapshotTime,
+        totalLots: toFixedNumber(row.totalLots),
+        totalVolume: toFixedNumber(row.totalVolume),
+        source: row.source || 'dashboard',
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      })),
+    });
+  } catch (error) {
+    console.warn('[Dealing Client Lots] GET failed:', error instanceof Error ? error.message : String(error));
+    return res.json({
+      ok: true,
+      rows: [],
+      warning: 'dealing_client_lots_store_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
+
+app.post('/api/dealing-client-lots-snapshots', async (req, res) => {
+  if (!hasLpEquityDbConfig()) {
+    return res.json({
+      ok: false,
+      error: 'dealing_client_lots_store_not_configured',
+      warning: true,
+    });
+  }
+  try {
+    const pool = await ensureLpEquityStore();
+    const body = req.body || {};
+    const snapshotTimeRaw = String(body.snapshotTime || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(snapshotTimeRaw)) {
+      return res.status(400).json({ ok: false, error: 'invalid_snapshot_time' });
+    }
+    const totalLots = toFixedNumber(body.totalLots);
+    const totalVolume = toFixedNumber(body.totalVolume);
+    const source = String(body.source || 'dashboard').slice(0, 50);
+
+    await pool.query(
+      `
+        INSERT INTO dealing_client_lots_snapshots
+          (snapshot_time, total_lots, total_volume, source)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          total_lots = VALUES(total_lots),
+          total_volume = VALUES(total_volume),
+          source = VALUES(source)
+      `,
+      [snapshotTimeRaw, totalLots, totalVolume, source]
+    );
+
+    console.info('[Dealing Client Lots] snapshot upsert ok:', snapshotTimeRaw, '| lots:', totalLots, '| volume:', totalVolume);
+
+    return res.json({
+      ok: true,
+      snapshot: {
+        snapshotTime: snapshotTimeRaw,
+        totalLots,
+        totalVolume,
+        source,
+      },
+    });
+  } catch (error) {
+    console.warn('[Dealing Client Lots] POST failed:', error instanceof Error ? error.message : String(error));
+    return res.json({
+      ok: false,
+      error: 'dealing_client_lots_store_unavailable',
       warning: true,
       message: error instanceof Error ? error.message : String(error),
     });
@@ -602,4 +860,6 @@ server.listen(PORT, () => {
   } else {
     console.log("[ClientProfileCron] disabled by CLIENT_PROFILE_CRON_ENABLED=false");
   }
+
+  startWeeklyDealMatchScheduler();
 });
