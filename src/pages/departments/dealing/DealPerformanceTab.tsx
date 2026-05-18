@@ -329,7 +329,7 @@ export function DealPerformanceTab({
           if (!row.login) return row;
           if (ibCache.has(row.login)) {
             const ibCommission = ibCache.get(row.login) || 0;
-            return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (ibCommission - row.lpComm) };
+            return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
           }
           const crmId = await fetchCrmUserIdByLogin(row.login);
           if (!crmId) return row;
@@ -338,7 +338,7 @@ export function DealPerformanceTab({
           const [wallet, tx] = await Promise.all([fetchIbWalletBalance(crmId), fetchIbPeriodTransactions(crmId, fromDateYmd, toDateYmd)]);
           const ibCommission = wallet + tx;
           ibCache.set(row.login, ibCommission);
-          return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (ibCommission - row.lpComm) };
+          return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
         },
         6,
       );
