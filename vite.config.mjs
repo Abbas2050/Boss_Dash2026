@@ -90,6 +90,11 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         rewrite: (reqPath) => reqPath,
       },
+      "/Transactions": {
+        target: BACKEND_API_TARGET,
+        changeOrigin: true,
+        rewrite: (reqPath) => reqPath,
+      },
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),

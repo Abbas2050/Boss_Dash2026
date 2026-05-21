@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Risk Scenario Analysis</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+body { padding: 0; }
+.header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+        .header h1 { color: var(--fg); font-weight: 600; }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .controls label { font-size: 12px; color: #888; }
+        .controls select, .controls input {
+            background: var(--bg3);
+            border: 1px solid #414868;
+            color: var(--fg);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .controls select { min-width: 140px; }
+        .controls input { width: 90px; }
+        button.calc {
+            background: var(--blue);
+            color: var(--surface);
+            border: none;
+            padding: 7px 18px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        button.calc:hover { background: #89b4fa; }
+        #status { font-size: 12px; color: var(--fg-muted); margin-left: 8px; }
+
+        .loading { text-align: center; padding: 40px; color: var(--fg-muted); font-size: 14px; }
+        .section-title { color: var(--neon); font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+        .grid-host { height: 58vh; width: 100%; }
+
+        .leg-lines {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            line-height: 1.2;
+            padding-top: 1px;
+            padding-bottom: 1px;
+        }
+        .leg-line {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .leg-symbol {
+            color: #7c89b0;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .leg-value {
+            color: var(--fg);
+        }
+        .leg-muted { color: var(--fg-muted); }
+        .leg-pos { color: var(--pos); }
+        .leg-neg { color: var(--neg); }
+        .source-live { color: var(--blue); font-size: 10px; font-weight: 600; }
+        .source-bonus { color: var(--amber); font-size: 10px; font-weight: 600; }
+    </style>
+</head>
+<body>
+<div class="page">
+    <div class="header">
+        <h1>Risk Scenario Analysis</h1>
+    </div>
+
+    <div class="controls">
+        <div>
+            <label>Symbol 1</label><br>
+            <select id="symbolSelect1"><option value="">Loading...</option></select>
+        </div>
+        <div>
+            <label>Symbol 2</label><br>
+            <select id="symbolSelect2"><option value="">Optional</option></select>
+        </div>
+        <div>
+            <label>Direction</label><br>
+            <select id="dirSelect">
+                <option value="Up">Up</option>
+                <option value="Down">Down</option>
+            </select>
+        </div>
+        <div>
+            <label>Move (price)</label><br>
+            <input id="moveInput" type="number" value="10" step="0.01">
+        </div>
+        <div>
+            <label>Target ML %</label><br>
+            <input id="targetMlInput" type="number" value="150" step="10">
+        </div>
+        <button class="calc" onclick="calculate()">Calculate</button>
+        <span id="status"></span>
+    </div>
+
+    <div id="resultSection" class="glass rounded-lg p-2 flex flex-col" style="display:none;">
+        <div class="section-title">Scenario Results</div>
+        <div id="grid-risk-scenario" class="ag-theme-alpine-dark grid-host"></div>
+    </div>
+</div>
+
+<script>
+    const { fmtUSD, fmtNum, fmtNum5 } = SLC;
+
+    let riskGrid;
+
+    function uniqueSymbols(values) {
+        return [...new Set(values.filter(Boolean))];
+    }
+
+    function fmtUsdText(v) {
+        const n = Number(v || 0);
+        if (!n) return '$0.00';
+        const abs = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        return `${n < 0 ? '-' : ''}$${abs}`;
+    }
+
+    function fmtMlHtml(v) {
+        const n = Number(v || 0);
+        if (!n) return '<span class="leg-muted">-</span>';
+        const cls = n >= 200 ? 'leg-pos' : n >= 100 ? 'leg-muted' : 'leg-neg';
+        return `<span class="${cls}">${n.toFixed(2)}%</span>`;
+    }
+
+    function fmtFundingHtml(v) {
+        const n = Number(v || 0);
+        if (!n) return '<span class="leg-pos">$0.00</span>';
+        return `<span class="leg-neg">$${n.toFixed(2)}</span>`;
+    }
+
+    function sourceRenderer(p) {
+        const cls = p.value === 'Bonus' ? 'source-bonus' : 'source-live';
+        return `<span class="${cls}">${p.value || ''}</span>`;
+    }
+
+    function multiLineLegRenderer(field, formatter, valueClassFn) {
+        return p => {
+            const legs = p.data?.legs || [];
+            if (!legs.length) return '<span class="leg-muted">-</span>';
+            return `<div class="leg-lines">${legs.map(leg => {
+                const raw = leg[field];
+                const cls = valueClassFn ? valueClassFn(raw) : 'leg-value';
+                return `<div class="leg-line"><span class="leg-symbol">${leg.symbol}</span><span class="${cls}">${formatter(raw)}</span></div>`;
+            }).join('')}</div>`;
+        };
+    }
+
+    function amountClass(v) {
+        const n = Number(v || 0);
+        if (!n) return 'leg-muted';
+        return n >= 0 ? 'leg-pos' : 'leg-neg';
+    }
+
+    function initGrid() {
+        const columnDefs = [
+            { field: 'lp', headerName: 'LP', pinned: 'left', minWidth: 140 },
+            { field: 'source', headerName: 'Source', minWidth: 80, cellRenderer: sourceRenderer },
+            { field: 'symbolsLabel', headerName: 'Symbols', minWidth: 120 },
+            { field: 'netVolume', headerName: 'Net Vol', minWidth: 110, cellRenderer: multiLineLegRenderer('netVolume', v => Number(v || 0).toFixed(3)) },
+            { field: 'vwapOpen', headerName: 'VWAP Open', minWidth: 120, cellRenderer: multiLineLegRenderer('vwapOpen', v => Number(v || 0).toFixed(5)) },
+            { field: 'priceCurrent', headerName: 'Price Current', minWidth: 120, cellRenderer: multiLineLegRenderer('priceCurrent', v => Number(v || 0).toFixed(5)) },
+            { field: 'adversePrice', headerName: 'Adverse Price', minWidth: 120, cellRenderer: multiLineLegRenderer('adversePrice', v => Number(v || 0).toFixed(5)) },
+            { field: 'plNow', headerName: 'P/L Now', minWidth: 110, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)' }) },
+            { field: 'deltaPl', headerName: 'P&L Change', minWidth: 120, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)', background: 'rgba(122,162,247,0.06)' }) },
+            { field: 'plAfter', headerName: 'P/L After', minWidth: 110, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)', background: 'rgba(122,162,247,0.06)' }) },
+            { field: 'revSharePct', headerName: 'Rev Share %', minWidth: 95, valueFormatter: p => p.value ? `${Number(p.value).toFixed(2)}%` : '' },
+            { field: 'plShareUsd', headerName: 'PL Share $', minWidth: 110, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)' }) },
+            { field: 'equityNow', headerName: 'Equity Now', minWidth: 110, valueFormatter: fmtUSD },
+            { field: 'equityAfter', headerName: 'Equity After', minWidth: 110, valueFormatter: fmtUSD, cellStyle: { background: 'rgba(122,162,247,0.06)' } },
+            { field: 'mlNow', headerName: 'ML Now %', minWidth: 95, cellRenderer: p => fmtMlHtml(p.value) },
+            { field: 'mlAfter', headerName: 'ML After %', minWidth: 95, cellRenderer: p => fmtMlHtml(p.value), cellStyle: { background: 'rgba(122,162,247,0.06)' } },
+            { field: 'margin', headerName: 'Margin', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'freeMarginNow', headerName: 'FM Now', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'freeMarginAfter', headerName: 'FM After', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'fundingToTarget', headerName: 'Funding To Target', minWidth: 130, cellRenderer: p => fmtFundingHtml(p.value) },
+            { field: 'comment', headerName: 'Comment', minWidth: 180, flex: 2, cellStyle: { color: '#7c89b0', fontSize: '11px' } },
+        ];
+
+        riskGrid = SLC.createGrid(document.getElementById('grid-risk-scenario'), {
+            columnDefs,
+            rowData: [],
+            pinnedBottomRowData: [],
+            getRowHeight: p => {
+                if (p.node.rowPinned) return 28;
+                const legs = p.data?.legs?.length || 1;
+                return Math.max(28, 20 + (legs - 1) * 16);
+            },
+            getRowStyle: p => p.node.rowPinned ? { fontWeight: 'bold', background: 'rgba(255,255,255,0.04)' } : null
+        });
+    }
+
+    async function loadSymbols() {
+        try {
+            const resp = await fetch('/RiskScenario/symbols');
+            if (!resp.ok) return;
+            const symbols = await resp.json();
+            const options = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+            document.getElementById('symbolSelect1').innerHTML = options;
+            document.getElementById('symbolSelect2').innerHTML = `<option value="">Optional</option>${options}`;
+        } catch (e) {
+            console.error('Failed to load symbols', e);
+        }
+    }
+
+    async function calculate() {
+        const symbols = uniqueSymbols([
+            document.getElementById('symbolSelect1').value,
+            document.getElementById('symbolSelect2').value
+        ]);
+        const direction = document.getElementById('dirSelect').value;
+        const moveAmount = parseFloat(document.getElementById('moveInput').value) || 0;
+        const targetMl = parseFloat(document.getElementById('targetMlInput').value) || 150;
+
+        if (symbols.length === 0 || moveAmount === 0) {
+            document.getElementById('status').textContent = 'Select at least one symbol and move amount';
+            return;
+        }
+
+        document.getElementById('status').textContent = 'Calculating...';
+        document.getElementById('resultSection').style.display = 'flex';
+        riskGrid.setGridOption('rowData', []);
+        riskGrid.setGridOption('pinnedBottomRowData', []);
+
+        try {
+            const resp = await fetch('/RiskScenario/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol: symbols[0], symbols, direction, moveAmount, targetMl })
+            });
+
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderResults(data, symbols);
+        } catch (e) {
+            document.getElementById('status').textContent = 'Error: ' + e.message;
+            riskGrid.setGridOption('rowData', []);
+            riskGrid.setGridOption('pinnedBottomRowData', []);
+        }
+    }
+
+    function renderResults(data, requestedSymbols) {
+        const symbols = data.symbols && data.symbols.length ? data.symbols : requestedSymbols;
+        const label = symbols.join(' + ');
+        const rows = data.rows || [];
+
+        if (!rows.length) {
+            document.getElementById('status').textContent = `No LP positions found for ${label || 'the selected symbol'}`;
+            riskGrid.setGridOption('rowData', []);
+            riskGrid.setGridOption('pinnedBottomRowData', []);
+            return;
+        }
+
+        riskGrid.setGridOption('rowData', rows);
+        riskGrid.setGridOption('pinnedBottomRowData', data.totals ? [{
+            ...data.totals,
+            lp: 'TOTAL',
+            source: '',
+            symbolsLabel: label,
+            comment: data.totals.comment || ''
+        }] : []);
+
+        document.getElementById('status').textContent = `${rows.length} LP(s) with ${label} positions`;
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && ['moveInput', 'targetMlInput'].includes(e.target.id)) calculate();
+    });
+
+    initGrid();
+    loadSymbols();
+</script>
+</body>
+</html>

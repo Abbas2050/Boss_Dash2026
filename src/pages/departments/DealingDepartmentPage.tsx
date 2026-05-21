@@ -379,6 +379,45 @@ type HistoryVolumeData = {
   };
 };
 
+type TransactionsHistorySummary = {
+  deposits: number;
+  withdrawals: number;
+  creditIn: number;
+  creditOut: number;
+  net: number;
+};
+
+type TransactionsHistoryClientRow = {
+  timeString: string;
+  type: string;
+  login: number | string;
+  name?: string;
+  amount: number;
+  comment?: string;
+};
+
+type TransactionsHistoryLpRow = {
+  timeString: string;
+  type: string;
+  lpName: string;
+  source?: string;
+  login: number | string;
+  amount: number;
+  comment?: string;
+};
+
+type TransactionsHistoryData = {
+  date?: string;
+  clients: {
+    summary: TransactionsHistorySummary;
+    transactions: TransactionsHistoryClientRow[];
+  };
+  lps: {
+    summary: TransactionsHistorySummary;
+    transactions: TransactionsHistoryLpRow[];
+  };
+};
+
 type RebateComparisonRow = {
   login: string;
   symbol: string;
@@ -590,6 +629,110 @@ const signedValueClass = (value: number) => {
 const signedValueText = (value: number, digits = 2) => {
   if (!Number.isFinite(value)) return "-";
   return value.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+};
+
+const EMPTY_TRANSACTIONS_HISTORY_SUMMARY: TransactionsHistorySummary = {
+  deposits: 0,
+  withdrawals: 0,
+  creditIn: 0,
+  creditOut: 0,
+  net: 0,
+};
+
+const formatSignedAmount = (value: number, digits = 2) => {
+  if (!Number.isFinite(value)) return "-";
+  const abs = Math.abs(value).toLocaleString(undefined, {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+  if (value > 0.005) return `+${abs}`;
+  if (value < -0.005) return `-${abs}`;
+  return abs;
+};
+
+const getTransactionTypeBadgeClass = (type?: string) => {
+  const value = String(type || "").trim().toLowerCase();
+  if (value === "deposit") return "border-emerald-300/60 bg-emerald-500/10 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200";
+  if (value === "withdrawal") return "border-rose-300/60 bg-rose-500/10 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-200";
+  if (value === "credit") return "border-cyan-300/60 bg-cyan-500/10 text-cyan-700 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-200";
+  if (value === "credit out") return "border-rose-300/60 bg-rose-500/10 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-200";
+  if (value === "bonus") return "border-amber-300/60 bg-amber-500/10 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-200";
+  if (value === "transfer in") return "border-sky-300/60 bg-sky-500/10 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-200";
+  if (value === "transfer out") return "border-orange-300/60 bg-orange-500/10 text-orange-700 dark:border-orange-500/30 dark:bg-orange-500/15 dark:text-orange-200";
+  if (value.includes("commission") || value.includes("agent")) return "border-violet-300/60 bg-violet-500/10 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-200";
+  if (value === "charge" || value === "tax") return "border-rose-300/60 bg-rose-500/10 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-200";
+  return "border-slate-300/60 bg-slate-500/10 text-slate-700 dark:border-slate-600 dark:bg-slate-500/10 dark:text-slate-200";
+};
+
+const classifyHistoryTransactionType = (action: number, amount: number, reason: number) => {
+  switch (action) {
+    case 2:
+      if (reason === 12) return amount >= 0 ? "Transfer In" : "Transfer Out";
+      return amount >= 0 ? "Deposit" : "Withdrawal";
+    case 3:
+      return amount >= 0 ? "Credit In" : "Credit Out";
+    case 4:
+      return "Charge";
+    case 5:
+      return "Correction";
+    case 6:
+      return "Bonus";
+    case 7:
+    case 8:
+    case 9:
+    case 10:
+    case 11:
+    case 18:
+      return "Commission";
+    case 12:
+      return "Interest";
+    case 17:
+      return "Tax";
+    default:
+      return "Other";
+  }
+};
+
+const formatHistoryTransactionTime = (row: any) => {
+  const fromString = String(row?.timeString || "").trim();
+  if (fromString) return fromString;
+  const raw = Number(row?.time);
+  if (!Number.isFinite(raw) || raw <= 0) return "-";
+  const ms = raw > 1_000_000_000_000 ? raw : raw * 1000;
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString();
+};
+
+const buildDealTransactionsQuery = (from: string, to: string, login?: string) => {
+  const params = new URLSearchParams({ from, to });
+  const loginValue = String(login || "").trim();
+  if (loginValue) {
+    params.set("login", loginValue);
+  }
+  return params.toString();
+};
+
+const summarizeTransactions = (
+  rows: Array<{ type?: string; amount?: number }> | undefined
+): TransactionsHistorySummary => {
+  const summary: TransactionsHistorySummary = {
+    deposits: 0,
+    withdrawals: 0,
+    creditIn: 0,
+    creditOut: 0,
+    net: 0,
+  };
+  for (const row of rows || []) {
+    const amount = Number(row?.amount) || 0;
+    const type = String(row?.type || "").trim().toLowerCase();
+    if (type === "deposit") summary.deposits += amount;
+    if (type === "withdrawal") summary.withdrawals += amount;
+    if (type === "credit in" || type === "credit") summary.creditIn += amount;
+    if (type === "credit out") summary.creditOut += amount;
+    summary.net += amount;
+  }
+  return summary;
 };
 
 const getPositionLots = (position: { lots?: number; volume?: number; volumeExt?: number }) => {
@@ -817,6 +960,9 @@ export function DealingDepartmentPage() {
   const [historyShowLowNtpRows, setHistoryShowLowNtpRows] = useState(false);
   const [historySavingLp, setHistorySavingLp] = useState<string | null>(null);
   const [historyStartPeriodEdits, setHistoryStartPeriodEdits] = useState<Record<string, string>>({});
+  const [historyLoginInput, setHistoryLoginInput] = useState("");
+  const [historyAppliedLogins, setHistoryAppliedLogins] = useState("");
+  const [historyTransactionsData, setHistoryTransactionsData] = useState<TransactionsHistoryData | null>(null);
   const historyRequestRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
   const [nopData, setNopData] = useState<NopReportData | null>(null);
   const [nopLoading, setNopLoading] = useState(false);
@@ -1446,60 +1592,33 @@ export function DealingDepartmentPage() {
 
   const handleHistorySnapshot = () =>
     runSnapshot("history", () => {
-      if (historyTab === "aggregate") {
-        const items = historyAggregateVisibleItems;
-        if (!items.length) return;
-        const headers = ["LP Name", "Login", "Source", "Start Period", "Start Equity", "End Equity", "Credit", "Deposit", "Withdrawal", "Net Deposits", "Gross P/L", "Commission", "Swap", "Net P/L", "Real LP P/L", "NTP %", "LP P/L (Rev Share)"];
-        const rows: Array<Array<string | number>> = items.map((item) =>
-          item.isError
-            ? [item.lpName, String(item.login), item.source || "-", "", `ERROR: ${item.errorMessage || "Error"}`, "", "", "", "", "", "", "", "", "", "", "", ""]
-            : [
-                item.lpName,
-                String(item.login),
-                item.source || "-",
-                epochSecondsToInputDate(item.effectiveFrom ?? historyTimestamps.from),
-                item.startEquity,
-                item.endEquity,
-                item.credit,
-                item.deposit,
-                item.withdrawal,
-                item.netDeposits,
-                item.grossProfit,
-                item.totalCommission,
-                item.totalSwap,
-                item.netPL,
-                item.realLpPL,
-                `${item.ntpPercent.toFixed(1)}%`,
-                item.lpPL,
-              ],
-        );
-        if (historyAggregateVisibleTotals) {
-          const t = historyAggregateVisibleTotals;
-          rows.push(["TOTAL", "", "", "", t.startEquity, t.endEquity, t.credit, t.deposit, t.withdrawal, t.netDeposits, t.grossProfit, t.totalCommission, t.totalSwap, t.netPL, t.realLpPL, "", t.lpPL]);
-        }
-        downloadTableSnapshot({ filePrefix: "history-aggregate-snapshot", title: "History Snapshot - Revenue Share", updatedAt: historyLastUpdated, headers, rows });
-        return;
-      }
-      if (historyTab === "deals") {
-        const deals = historyDealsData?.deals || [];
-        if (!deals.length) return;
-        const headers = ["Ticket", "Symbol", "Time", "Direction", "Entry", "Volume", "Price", "Contract Size", "Market Value", "Profit", "Commission", "Fee", "Swap", "LP Comm", "LP Comm/Lot"];
-        const rows: Array<Array<string | number>> = deals.map((d) => [String(d.dealTicket), d.symbol, d.timeString, d.direction, d.entry, d.volume, d.price, d.contractSize, d.marketValue, d.profit, d.commission, d.fee, d.swap, d.lpCommission, d.lpCommPerLot]);
-        downloadTableSnapshot({ filePrefix: "history-deals-snapshot", title: "History Snapshot - Trade Deals", updatedAt: historyLastUpdated, headers, rows });
-        return;
-      }
-      const items = historyVolumeData?.items || [];
-      if (!items.length) return;
-      const headers = ["LP Name", "Login", "Source", "Trade Count", "Total Lots", "Notional (USD)", "Volume (Yards)"];
-      const rows: Array<Array<string | number>> = items.map((item) =>
-        item.isError
-          ? [item.lpName, String(item.login), item.source || "-", `ERROR: ${item.errorMessage || "Error"}`, "", "", ""]
-          : [item.lpName, String(item.login), item.source || "-", item.tradeCount, item.totalLots, item.notionalUsd, item.volumeYards],
-      );
-      if (historyVolumeData?.totals) {
-        rows.push(["TOTAL", "", "", historyVolumeData.totals.tradeCount, historyVolumeData.totals.totalLots, historyVolumeData.totals.notionalUsd, historyVolumeData.totals.volumeYards]);
-      }
-      downloadTableSnapshot({ filePrefix: "history-volume-snapshot", title: "History Snapshot - Volume (Yards)", updatedAt: historyLastUpdated, headers, rows });
+      const clientRows = historyTransactionsData?.clients?.transactions || [];
+      const lpRows = historyTransactionsData?.lps?.transactions || [];
+      if (!clientRows.length && !lpRows.length) return;
+      const headers = ["Section", "Time", "Type", "Login", "Name / LP", "Source", "Amount", "Comment"];
+      const rows: Array<Array<string | number>> = [
+        ...clientRows.map((row) => [
+          "Client",
+          row.timeString || "-",
+          row.type || "-",
+          String(row.login ?? "-"),
+          row.name || "-",
+          "-",
+          row.amount,
+          row.comment || "",
+        ]),
+        ...lpRows.map((row) => [
+          "LP",
+          row.timeString || "-",
+          row.type || "-",
+          String(row.login ?? "-"),
+          row.lpName || "-",
+          row.source || "-",
+          row.amount,
+          row.comment || "",
+        ]),
+      ];
+      downloadTableSnapshot({ filePrefix: "history-transactions-snapshot", title: "History Snapshot - Transactions", updatedAt: historyLastUpdated, headers, rows });
     });
 
   useEffect(() => {
@@ -2235,9 +2354,6 @@ export function DealingDepartmentPage() {
         if (cancelled) return;
         const list = Array.isArray(data) ? data : [];
         setHistoryLpAccounts(list);
-        if (!historySelectedLogin && list.length > 0) {
-          setHistorySelectedLogin(String(list[0].mt5Login));
-        }
       } catch {
         // optional data
       }
@@ -2247,13 +2363,18 @@ export function DealingDepartmentPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeMenu, historySelectedLogin]);
+  }, [activeMenu]);
 
   useEffect(() => {
-    if (activeMenu !== "History") return;
+    if (activeMenu !== "History") {
+      setHistoryError(null);
+      return;
+    }
 
     let cancelled = false;
-    const requestKey = `${historyTab}|${historySelectedLogin}|${historyTimestamps.from}|${historyTimestamps.to}|${historyRefreshKey}`;
+    const from = toYmd(fromDate);
+    const to = toYmd(toDate);
+    const requestKey = `${historyAppliedLogins}|${from}|${to}|${historyRefreshKey}|${historyLpAccounts.length}`;
     const now = Date.now();
     if (historyRequestRef.current.key === requestKey && now - historyRequestRef.current.at < 1200) {
       return;
@@ -2272,41 +2393,106 @@ export function DealingDepartmentPage() {
       setHistoryLoading(true);
       setHistoryError(null);
       try {
-        if (historyTab === "aggregate") {
-          const endpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
-          const resp = await fetch(endpoint);
-          if (!resp.ok) throw new Error(describeRateLimit(resp, "History aggregate"));
-          const data = (await resp.json()) as HistoryAggregateData;
-          if (cancelled) return;
-          setHistoryAggregateData(data);
-          setHistoryLastUpdated(new Date());
-          return;
+        const historyBase = BACKEND_BASE_URL;
+        const loginParts = String(historyAppliedLogins || "")
+          .split(",")
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0);
+
+        const endpoints = loginParts.length
+          ? loginParts.map((login) => `${historyBase}/Deal/GetTransactions?${buildDealTransactionsQuery(from, to, login)}`)
+          : [`${historyBase}/Deal/GetTransactions?${buildDealTransactionsQuery(from, to)}`];
+
+        const responses = await Promise.all(endpoints.map((endpoint) => fetch(endpoint)));
+        for (const resp of responses) {
+          if (!resp.ok) throw new Error(describeRateLimit(resp, "Deal/GetTransactions"));
         }
 
-        if (historyTab === "deals") {
-          if (!historySelectedLogin) {
-            setHistoryDealsData(null);
-            return;
+        const payloads = await Promise.all(responses.map((resp) => resp.json()));
+        const usersByLogin: Record<string, any> = {};
+        const mergedTransactions: any[] = [];
+
+        for (const payload of payloads) {
+          const users = payload?.users && typeof payload.users === "object" ? payload.users : {};
+          Object.assign(usersByLogin, users);
+          const list = Array.isArray(payload?.transactions)
+            ? payload.transactions
+            : Array.isArray(payload)
+              ? payload
+              : [];
+          mergedTransactions.push(...list);
+        }
+
+        const seen = new Set<string>();
+        const deduped = mergedTransactions.filter((row) => {
+          const key = `${row?.deal ?? ""}|${row?.order ?? ""}|${row?.login ?? ""}|${row?.time ?? ""}|${row?.profit ?? ""}|${row?.action ?? ""}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        deduped.sort((a, b) => {
+          const ta = Number(a?.time) || Date.parse(String(a?.timeString || "")) || 0;
+          const tb = Number(b?.time) || Date.parse(String(b?.timeString || "")) || 0;
+          return tb - ta;
+        });
+
+        const lpAccountMap = new Map<string, LpAccount>();
+        for (const item of historyLpAccounts) {
+          const key = String(item?.mt5Login ?? "").trim();
+          if (key) lpAccountMap.set(key, item);
+        }
+
+        const clientRows: TransactionsHistoryClientRow[] = [];
+        const lpRows: TransactionsHistoryLpRow[] = [];
+
+        for (const row of deduped) {
+          const loginKey = String(row?.login ?? "").trim();
+          const amount = Number(row?.profit) || 0;
+          const type = classifyHistoryTransactionType(Number(row?.action), amount, Number(row?.reason));
+          const timeString = formatHistoryTransactionTime(row);
+          const comment = String(row?.comment || row?.reasonString || "").trim();
+          const userInfo = usersByLogin?.[loginKey] || {};
+          const lpInfo = lpAccountMap.get(loginKey);
+          if (lpInfo) {
+            lpRows.push({
+              timeString,
+              type,
+              lpName: String(lpInfo.lpName || userInfo?.name || "-").trim(),
+              source: lpInfo.source || "-",
+              login: loginKey || "-",
+              amount,
+              comment,
+            });
+          } else {
+            clientRows.push({
+              timeString,
+              type,
+              login: loginKey || "-",
+              name: String(userInfo?.name || "").trim() || "-",
+              amount,
+              comment,
+            });
           }
-          const endpoint = `${BACKEND_BASE_URL}/History/deals?login=${historySelectedLogin}&from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
-          const resp = await fetch(endpoint);
-          if (!resp.ok) throw new Error(describeRateLimit(resp, "History deals"));
-          const data = (await resp.json()) as HistoryDealsData;
-          if (cancelled) return;
-          setHistoryDealsData(data);
-          setHistoryLastUpdated(new Date());
-          return;
         }
 
-        const endpoint = `${BACKEND_BASE_URL}/History/volume?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
-        const resp = await fetch(endpoint);
-        if (!resp.ok) throw new Error(describeRateLimit(resp, "History volume"));
-        const data = (await resp.json()) as HistoryVolumeData;
+        const data: TransactionsHistoryData = {
+          date: `${from} to ${to}`,
+          clients: {
+            summary: summarizeTransactions(clientRows),
+            transactions: clientRows,
+          },
+          lps: {
+            summary: summarizeTransactions(lpRows),
+            transactions: lpRows,
+          },
+        };
+
         if (cancelled) return;
-        setHistoryVolumeData(data);
+        setHistoryTransactionsData(data);
         setHistoryLastUpdated(new Date());
       } catch (e: any) {
-        if (!cancelled) setHistoryError(e?.message || "Failed to load history.");
+        if (!cancelled) setHistoryError(e?.message || "Failed to load transactions history.");
       } finally {
         if (!cancelled) setHistoryLoading(false);
       }
@@ -2316,7 +2502,7 @@ export function DealingDepartmentPage() {
     return () => {
       cancelled = true;
     };
-  }, [activeMenu, historyTab, historySelectedLogin, historyTimestamps.from, historyTimestamps.to, historyRefreshKey]);
+  }, [activeMenu, fromDate, toDate, historyAppliedLogins, historyRefreshKey, historyLpAccounts]);
 
   useEffect(() => {
     if (activeMenu !== "Clients NOP") return;
@@ -2670,32 +2856,7 @@ export function DealingDepartmentPage() {
     }
 
     if (activeMenu === "History") {
-      if (historyTab === "aggregate") {
-        const totals = historyAggregateVisibleTotals;
-        return [
-          { label: "LP Rows", value: historyAggregateVisibleItems.length.toLocaleString() },
-          { label: "Net P/L", value: totals ? totals.netPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
-          { label: "Real LP P/L", value: totals ? totals.realLpPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
-          { label: "Rev Share P/L", value: totals ? totals.lpPL.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "-" },
-        ];
-      }
-      if (historyTab === "deals") {
-        const deals = historyDealsData?.deals || [];
-        const volume = deals.reduce((sum, d) => sum + (Number.isFinite(d.volume) ? d.volume : 0), 0);
-        const pnl = deals.reduce((sum, d) => sum + (Number.isFinite(d.profit) ? d.profit : 0), 0);
-        return [
-          { label: "LP", value: historyDealsData?.lpName || "-" },
-          { label: "Deals", value: (historyDealsData?.totalDeals || 0).toLocaleString() },
-          { label: "Total Volume", value: volume.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-          { label: "Total Profit", value: pnl.toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-        ];
-      }
-      return [
-        { label: "LP Rows", value: (historyVolumeData?.items?.length || 0).toLocaleString() },
-        { label: "Trade Count", value: (historyVolumeData?.totals?.tradeCount || 0).toLocaleString() },
-        { label: "Total Lots", value: (historyVolumeData?.totals?.totalLots || 0).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
-        { label: "Volume (Yards)", value: (historyVolumeData?.totals?.volumeYards || 0).toLocaleString(undefined, { maximumFractionDigits: 4 }) },
-      ];
+      return [];
     }
 
     if (activeMenu === "Clients NOP") {
@@ -3275,6 +3436,67 @@ export function DealingDepartmentPage() {
       },
     ],
     [fromDate, historySavingLp, historyStartPeriodEdits, historyTimestamps.from]
+  );
+
+  const historyClientColumns = useMemo<SortableTableColumn<TransactionsHistoryClientRow>[]>(
+    () => [
+      { key: "timeString", label: "Time", hideable: false, sortValue: (row) => row.timeString || "", searchValue: (row) => row.timeString || "", cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.timeString || "-" },
+      {
+        key: "type",
+        label: "Type",
+        sortValue: (row) => row.type || "",
+        searchValue: (row) => row.type || "",
+        render: (row) => (
+          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${getTransactionTypeBadgeClass(row.type)}`}>
+            {row.type || "Other"}
+          </span>
+        ),
+      },
+      { key: "login", label: "Login", sortValue: (row) => String(row.login || ""), searchValue: (row) => String(row.login || ""), cellClassName: "font-mono", render: (row) => row.login || "-" },
+      { key: "name", label: "Name", sortValue: (row) => row.name || "", searchValue: (row) => row.name || "", render: (row) => row.name || "-" },
+      {
+        key: "amount",
+        label: "Amount",
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        sortValue: (row) => Number(row.amount) || 0,
+        searchValue: (row) => String(row.amount ?? ""),
+        render: (row) => <span className={signedValueClass(Number(row.amount) || 0)}>{formatSignedAmount(Number(row.amount) || 0)}</span>,
+      },
+      { key: "comment", label: "Comment", sortValue: (row) => row.comment || "", searchValue: (row) => row.comment || "", render: (row) => row.comment || "-" },
+    ],
+    []
+  );
+
+  const historyLpColumns = useMemo<SortableTableColumn<TransactionsHistoryLpRow>[]>(
+    () => [
+      { key: "timeString", label: "Time", hideable: false, sortValue: (row) => row.timeString || "", searchValue: (row) => row.timeString || "", cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.timeString || "-" },
+      {
+        key: "type",
+        label: "Type",
+        sortValue: (row) => row.type || "",
+        searchValue: (row) => row.type || "",
+        render: (row) => (
+          <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${getTransactionTypeBadgeClass(row.type)}`}>
+            {row.type || "Other"}
+          </span>
+        ),
+      },
+      { key: "lpName", label: "LP", sortValue: (row) => row.lpName || "", searchValue: (row) => row.lpName || "", cellClassName: "font-mono", render: (row) => row.lpName || "-" },
+      { key: "source", label: "Source", sortValue: (row) => row.source || "", searchValue: (row) => row.source || "", cellClassName: "text-slate-500 dark:text-slate-400", render: (row) => row.source || "-" },
+      { key: "login", label: "Login", sortValue: (row) => String(row.login || ""), searchValue: (row) => String(row.login || ""), cellClassName: "font-mono", render: (row) => row.login || "-" },
+      {
+        key: "amount",
+        label: "Amount",
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        sortValue: (row) => Number(row.amount) || 0,
+        searchValue: (row) => String(row.amount ?? ""),
+        render: (row) => <span className={signedValueClass(Number(row.amount) || 0)}>{formatSignedAmount(Number(row.amount) || 0)}</span>,
+      },
+      { key: "comment", label: "Comment", sortValue: (row) => row.comment || "", searchValue: (row) => row.comment || "", render: (row) => row.comment || "-" },
+    ],
+    []
   );
 
   useEffect(() => {
@@ -5136,8 +5358,16 @@ export function DealingDepartmentPage() {
               }`}
             >
               <div className="mb-3 flex items-center justify-between gap-3">
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">History & Revenue Share</h2>
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Transactions History</h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Client and LP cashflow activity for the selected date range.</p>
+                </div>
                 <div className="flex items-center gap-2">
+                  {historyTransactionsData?.date && (
+                    <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-[11px] font-medium text-cyan-700 dark:text-cyan-200">
+                      Report {historyTransactionsData.date}
+                    </span>
+                  )}
                   {historyLastUpdated && <span className="text-xs text-slate-500 dark:text-slate-400">Updated {historyLastUpdated.toLocaleTimeString()}</span>}
                   <button
                     type="button"
@@ -5145,9 +5375,7 @@ export function DealingDepartmentPage() {
                     disabled={
                       snapshottingTable === "history" ||
                       historyLoading ||
-                      (historyTab === "aggregate" && !historyAggregateVisibleItems.length) ||
-                      (historyTab === "deals" && !(historyDealsData?.deals || []).length) ||
-                      (historyTab === "volume" && !(historyVolumeData?.items || []).length)
+                      !((historyTransactionsData?.clients?.transactions?.length || 0) + (historyTransactionsData?.lps?.transactions?.length || 0))
                     }
                     className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-500/20 disabled:cursor-not-allowed disabled:opacity-60"
                   >
@@ -5165,150 +5393,133 @@ export function DealingDepartmentPage() {
                 </div>
               </div>
 
-              <div className="mb-3 flex flex-wrap items-center gap-2">
-                {[
-                  { id: "aggregate", label: "Revenue Share" },
-                  { id: "deals", label: "Trade Deals" },
-                  { id: "volume", label: "Volume (Yards)" },
-                ].map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setHistoryTab(tab.id as "aggregate" | "deals" | "volume")}
-                    className={`rounded-md border px-3 py-1.5 text-xs ${
-                      historyTab === tab.id
-                        ? "border-cyan-400/50 bg-cyan-500/15 text-cyan-100"
-                        : "border-slate-300 bg-white text-slate-600 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300 dark:hover:border-slate-600"
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => void handleHistoryLoad()}
-                  className="rounded-md border border-cyan-500/50 bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
-                >
-                  Load
-                </button>
-
-                {historyTab === "aggregate" && historyAggregateHiddenRowsCount > 0 && (
+              <div className="mb-4 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="text-xs text-slate-700 dark:text-slate-300">
+                    Login(s)
+                    <input
+                      type="text"
+                      value={historyLoginInput}
+                      onChange={(e) => setHistoryLoginInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          setHistoryAppliedLogins(historyLoginInput);
+                          setHistoryRefreshKey((value) => value + 1);
+                        }
+                      }}
+                      placeholder="Optional: 100547, 100548"
+                      className="ml-2 w-64 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                    />
+                  </label>
                   <button
                     type="button"
-                    onClick={() => setHistoryShowLowNtpRows((value) => !value)}
-                    className="inline-flex items-center gap-2 rounded-md border border-slate-400/40 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-500/20 dark:text-slate-200"
+                    onClick={() => {
+                      setHistoryAppliedLogins(historyLoginInput);
+                      setHistoryRefreshKey((value) => value + 1);
+                    }}
+                    className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-200"
                   >
-                    {historyShowLowNtpRows ? "Hide 0% NTP Rows" : `Show 0% NTP Rows (${historyAggregateHiddenRowsCount})`}
+                    Search
                   </button>
-                )}
-
-                {historyTab === "deals" && (
-                  <>
-                    <select
-                      value={historySelectedLogin}
-                      onChange={(e) => setHistorySelectedLogin(e.target.value)}
-                      className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
-                    >
-                      <option value="">Select LP</option>
-                      {historyLpAccounts.map((lp) => (
-                        <option key={`${lp.lpName}-${lp.mt5Login}`} value={String(lp.mt5Login)}>
-                          {lp.lpName} ({lp.mt5Login})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => void handleHistoryLoad()}
-                      className="rounded-md border border-cyan-500/50 bg-cyan-500/15 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-500/20"
-                    >
-                      Load Deals
-                    </button>
-                    <button
-                      type="button"
-                      onClick={exportHistoryDealsCsv}
-                      disabled={!historyDealsData?.deals?.length}
-                      className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Export CSV
-                    </button>
-                  </>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => setHistoryRefreshKey((value) => value + 1)}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-slate-600"
+                  >
+                    Refresh
+                  </button>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Range {toYmd(selectedFromDate)} to {toYmd(selectedToDate)}
+                    {historyAppliedLogins.trim() ? ` | Filter ${historyAppliedLogins.trim()}` : " | All logins"}
+                  </div>
+                </div>
               </div>
 
               {historyError && (
                 <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{historyError}</div>
               )}
 
-              {historyTab === "aggregate" && !historyShowLowNtpRows && historyAggregateHiddenRowsCount > 0 && (
-                <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-                  {historyAggregateHiddenRowsCount} row{historyAggregateHiddenRowsCount === 1 ? " is" : "s are"} hidden (NTP % = 0).
-                </div>
-              )}
-
-              {historyTab === "aggregate" && (
-                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
-                  <SortableTable
-                    tableId="dealing-history-aggregate-table"
-                    enableColumnVisibility
-                    rows={historyAggregateVisibleItems}
-                    columns={historyAggregateColumns}
-                    exportFilePrefix="history-revenue-share"
-                    emptyText="No revenue-share rows available for this range."
-                    rowClassName={(row) => (row.isError ? "bg-slate-50 opacity-50 dark:bg-slate-950/30" : "bg-slate-50 dark:bg-slate-950/30")}
-                  />
-                  {historyAggregateVisibleTotals && (
-                    <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
-                      <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
-                      <span className="text-slate-500 dark:text-slate-400">
-                        StartEq {historyAggregateVisibleTotals.startEquity.toLocaleString()} | EndEq {historyAggregateVisibleTotals.endEquity.toLocaleString()} | Credit {historyAggregateVisibleTotals.credit.toLocaleString()} | Deposit {historyAggregateVisibleTotals.deposit.toLocaleString()} | Withdrawal {historyAggregateVisibleTotals.withdrawal.toLocaleString()} | NetDep {historyAggregateVisibleTotals.netDeposits.toLocaleString()} | Gross {historyAggregateVisibleTotals.grossProfit.toLocaleString()} | Commission {historyAggregateVisibleTotals.totalCommission.toLocaleString()} | Swap {historyAggregateVisibleTotals.totalSwap.toLocaleString()} | NetPL {historyAggregateVisibleTotals.netPL.toLocaleString()} | RealLP {historyAggregateVisibleTotals.realLpPL.toLocaleString()} | LPPL {historyAggregateVisibleTotals.lpPL.toLocaleString()}
-                      </span>
+              <div className={`space-y-5 ${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto pr-1" : ""}`}>
+                <section className="rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Client Transactions</h3>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Deposits, withdrawals, credits, bonuses, and other client-side cashflow events.</p>
                     </div>
-                  )}
-                </div>
-              )}
-
-              {historyTab === "deals" && (
-                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
-                  <SortableTable
-                    tableId="dealing-history-deals-table"
-                    enableColumnVisibility
-                    rows={historyDealsData?.deals || []}
-                    columns={historyDealsColumns}
-                    exportFilePrefix="history-deals"
-                    emptyText="No history deals available for this range."
-                  />
-                </div>
-              )}
-
-              {historyTab === "volume" && (
-                <div className={`${fullscreenTable === "history" ? "min-h-0 flex-1 overflow-auto" : ""}`}>
-                  <SortableTable
-                    tableId="dealing-history-volume-table"
-                    enableColumnVisibility
-                    rows={(historyVolumeData?.items || []).filter((item) => !item.isError)}
-                    columns={historyVolumeColumns}
-                    exportFilePrefix="history-volume"
-                    emptyText="No history volume available for this range."
-                  />
-                  {historyVolumeData?.totals && (
-                    <div className="mt-2 rounded-lg border border-slate-800 bg-slate-50 px-3 py-2 text-xs dark:bg-slate-900/40">
-                      <span className="font-semibold text-slate-600 dark:text-slate-300">Totals:</span>{" "}
-                      <span className="text-slate-500 dark:text-slate-400">
-                        Trades {historyVolumeData.totals.tradeCount.toLocaleString()} | Lots {historyVolumeData.totals.totalLots.toLocaleString(undefined, { maximumFractionDigits: 2 })} | Notional {historyVolumeData.totals.notionalUsd.toLocaleString(undefined, { maximumFractionDigits: 0 })} | Yards {historyVolumeData.totals.volumeYards.toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {!historyLoading &&
-                ((historyTab === "aggregate" && !historyAggregateVisibleItems.length) ||
-                  (historyTab === "deals" && !(historyDealsData?.deals || []).length) ||
-                  (historyTab === "volume" && !(historyVolumeData?.items || []).length)) && (
-                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
-                    No history data available for this range.
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      {(historyTransactionsData?.clients?.transactions?.length || 0).toLocaleString()} transaction(s)
+                    </span>
                   </div>
-                )}
+                  <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                    {[
+                      { label: "Deposits", value: historyTransactionsData?.clients?.summary?.deposits ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.deposits },
+                      { label: "Withdrawals", value: historyTransactionsData?.clients?.summary?.withdrawals ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.withdrawals },
+                      { label: "Credit In", value: historyTransactionsData?.clients?.summary?.creditIn ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditIn },
+                      { label: "Credit Out", value: historyTransactionsData?.clients?.summary?.creditOut ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditOut },
+                      { label: "Net", value: historyTransactionsData?.clients?.summary?.net ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.net },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                        <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{item.label}</div>
+                        <div className={`mt-2 text-lg font-semibold tabular-nums ${signedValueClass(Number(item.value) || 0)}`}>
+                          {formatSignedAmount(Number(item.value) || 0)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <SortableTable
+                    tableId="dealing-history-client-transactions-table"
+                    enableColumnVisibility
+                    rows={historyTransactionsData?.clients?.transactions || []}
+                    columns={historyClientColumns}
+                    exportFilePrefix="history-client-transactions"
+                    emptyText="No client transactions available for this range."
+                  />
+                </section>
+
+                <section className="rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">LP Transactions</h3>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Liquidity-provider cash movements with source and account attribution.</p>
+                    </div>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      {(historyTransactionsData?.lps?.transactions?.length || 0).toLocaleString()} transaction(s)
+                    </span>
+                  </div>
+                  <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                    {[
+                      { label: "Deposits", value: historyTransactionsData?.lps?.summary?.deposits ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.deposits },
+                      { label: "Withdrawals", value: historyTransactionsData?.lps?.summary?.withdrawals ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.withdrawals },
+                      { label: "Credit In", value: historyTransactionsData?.lps?.summary?.creditIn ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditIn },
+                      { label: "Credit Out", value: historyTransactionsData?.lps?.summary?.creditOut ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditOut },
+                      { label: "Net", value: historyTransactionsData?.lps?.summary?.net ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.net },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                        <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{item.label}</div>
+                        <div className={`mt-2 text-lg font-semibold tabular-nums ${signedValueClass(Number(item.value) || 0)}`}>
+                          {formatSignedAmount(Number(item.value) || 0)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <SortableTable
+                    tableId="dealing-history-lp-transactions-table"
+                    enableColumnVisibility
+                    rows={historyTransactionsData?.lps?.transactions || []}
+                    columns={historyLpColumns}
+                    exportFilePrefix="history-lp-transactions"
+                    emptyText="No LP transactions available for this range."
+                  />
+                </section>
+
+                {!historyLoading &&
+                  !historyError &&
+                  !((historyTransactionsData?.clients?.transactions?.length || 0) + (historyTransactionsData?.lps?.transactions?.length || 0)) && (
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-400">
+                      No transactions history data available for this range.
+                    </div>
+                  )}
+              </div>
             </section>
           ) : activeMenu === "Clients NOP" ? (
             <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">

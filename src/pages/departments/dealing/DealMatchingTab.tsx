@@ -295,6 +295,32 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   }, [derivedClientRevenue, derivedCoverageLps, report]);
 
   const unmatchedByClientRows = useMemo(() => aggregateUnmatchedMt5(unmatchedClientDeals), [unmatchedClientDeals]);
+  const partialCentroidLegs = useMemo(() => {
+    const legs = Array.isArray(selectedPartial?.centroidLegs) ? selectedPartial.centroidLegs : [];
+    return legs.map((leg) => ({
+      cenOrdId: safe(leg.cenOrdId || leg.cen_ord_id),
+      cenClientOrdId: safe(leg.cenClientOrdId || leg.cen_client_ord_id),
+      clientOrdId: safe(leg.clientOrdId || leg.client_ord_id),
+      extOrder: safe(leg.extOrder || leg.ext_order),
+      extLogin: safe(leg.extLogin || leg.ext_login),
+      lpsid: safe(leg.lpsid),
+      symbol: safe(leg.symbol),
+      partySymbol: safe(leg.partySymbol || leg.party_symbol),
+      side: safe(leg.side),
+      state: safe(leg.state),
+      avgPrice: fmtNum(leg.avgPrice ?? leg.avg_price, 5),
+      rawAvgPrice: fmtNum(leg.rawAvgPrice ?? leg.raw_avg_price, 5),
+      volume: fmtNum(leg.volume, 4),
+      fillVolume: fmtNum(leg.fillVolume ?? leg.fill_volume, 4),
+      volumeValue: safe(leg.volumeValue ?? leg.volume_value),
+      fillVolumeValue: safe(leg.fillVolumeValue ?? leg.fill_volume_value),
+      contractSize: safe(leg.contractSize ?? leg.contract_size),
+      totalMarkup: fmtNum(leg.totalMarkup ?? leg.total_markup, 5),
+      createTime: safe(leg.createTime || leg.create_time),
+      node: safe(leg.node),
+      nodeAccount: safe(leg.nodeAccount || leg.node_account),
+    }));
+  }, [selectedPartial]);
 
   const summaryRows = useMemo(() => {
     if (!detailsLoaded || !report) return [];
@@ -519,10 +545,12 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
           </div>
 
           <div className="space-y-2">
-            <button type="button" onClick={() => setSummaryOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(summaryOpen)}`}>
-              {summaryOpen ? "-" : "+"} Overall Summary - MT5 / Client / Bonus / Centroid
-            </button>
-            {summaryOpen && (
+            {detailsLoaded && (
+              <>
+                <button type="button" onClick={() => setSummaryOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(summaryOpen)}`}>
+                  {summaryOpen ? "-" : "+"} Overall Summary - MT5 / Client / Bonus / Centroid
+                </button>
+                {summaryOpen && (
               <div className="max-h-[30vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
                 <table className="min-w-full text-[11px]">
                   <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
@@ -550,6 +578,8 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                   </tbody>
                 </table>
               </div>
+                )}
+              </>
             )}
 
             <button type="button" onClick={() => setSystemsOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(systemsOpen)}`}>
@@ -815,6 +845,8 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                             <th className="px-2 py-1.5 text-right">Buy Lots</th>
                             <th className="px-2 py-1.5 text-right">Sell Lots</th>
                             <th className="px-2 py-1.5 text-left">Symbols</th>
+                            <th className="px-2 py-1.5 text-left">Latest Time</th>
+                            <th className="px-2 py-1.5 text-left">Sample Ext IDs</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -829,9 +861,11 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                               <td className="px-2 py-1.5 text-right">{fmtNum(r.buyLots)}</td>
                               <td className="px-2 py-1.5 text-right">{fmtNum(r.sellLots)}</td>
                               <td className="px-2 py-1.5">{safe(r.symbols)}</td>
+                              <td className="px-2 py-1.5">{safe(r.latestTime)}</td>
+                              <td className="px-2 py-1.5">{safe((r as any).sampleExternalIds)}</td>
                             </tr>
                           ))}
-                          {!unmatchedByClientRows.length && <tr><td colSpan={9} className="px-2 py-8 text-center text-slate-500">No unmatched MT5 deals.</td></tr>}
+                          {!unmatchedByClientRows.length && <tr><td colSpan={11} className="px-2 py-8 text-center text-slate-500">No unmatched MT5 deals.</td></tr>}
                         </tbody>
                       </table>
                     </div>
@@ -848,6 +882,9 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                             <th className="px-2 py-1.5 text-right">LP Exec Price</th>
                             <th className="px-2 py-1.5 text-right">Volume</th>
                             <th className="px-2 py-1.5 text-right">Fill Vol</th>
+                            <th className="px-2 py-1.5 text-right">Raw Avg Price</th>
+                            <th className="px-2 py-1.5 text-right">Total Markup</th>
+                            <th className="px-2 py-1.5 text-left">LP SID</th>
                             <th className="px-2 py-1.5 text-left">Maker</th>
                             <th className="px-2 py-1.5 text-left">Node Account</th>
                             <th className="px-2 py-1.5 text-left">Login</th>
@@ -867,6 +904,9 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                                 <td className="px-2 py-1.5 text-right">{fmtNum(execPrice, 5)}</td>
                                 <td className="px-2 py-1.5 text-right">{fmtNum(o.volume, 4)}</td>
                                 <td className="px-2 py-1.5 text-right">{fmtNum(o.fill_volume, 4)}</td>
+                                <td className="px-2 py-1.5 text-right">{fmtNum(o.raw_avg_price, 5)}</td>
+                                <td className="px-2 py-1.5 text-right">{fmtNum(o.total_markup, 5)}</td>
+                                <td className="px-2 py-1.5">{safe(o.lpsid)}</td>
                                 <td className="px-2 py-1.5">{safe(o.maker)}</td>
                                 <td className="px-2 py-1.5">{safe(o.node_account)}</td>
                                 <td className="px-2 py-1.5">{safe(o.ext_login)}</td>
@@ -877,7 +917,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                               </tr>
                             );
                           })}
-                          {!unmatchedCentroidOrders.length && <tr><td colSpan={12} className="px-2 py-8 text-center text-slate-500">No unmatched centroid orders.</td></tr>}
+                          {!unmatchedCentroidOrders.length && <tr><td colSpan={15} className="px-2 py-8 text-center text-slate-500">No unmatched centroid orders.</td></tr>}
                         </tbody>
                       </table>
                     </div>
@@ -896,6 +936,8 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                               <th className="px-2 py-1.5 text-left">Side</th>
                               <th className="px-2 py-1.5 text-right">Client Lots</th>
                               <th className="px-2 py-1.5 text-right">LP Lots</th>
+                              <th className="px-2 py-1.5 text-right">Vol Diff</th>
+                              <th className="px-2 py-1.5 text-right">Fill %</th>
                               <th className="px-2 py-1.5 text-left">Status</th>
                             </tr>
                           </thead>
@@ -908,10 +950,12 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                                 <td className="px-2 py-1.5">{safe(p.side)}</td>
                                 <td className="px-2 py-1.5 text-right">{fmtNum(p.clientVolume, 4)}</td>
                                 <td className="px-2 py-1.5 text-right">{fmtNum(p.lpVolume, 4)}</td>
+                                <td className="px-2 py-1.5 text-right text-rose-700 dark:text-rose-300">{fmtNum(Math.abs(num(p.clientVolume) - num(p.lpVolume)), 4)}</td>
+                                <td className="px-2 py-1.5 text-right">{num(p.clientVolume) > 0 ? `${fmtNum((num(p.lpVolume) / num(p.clientVolume)) * 100)}%` : "-"}</td>
                                 <td className="px-2 py-1.5">{safe(p.matchStatus)}</td>
                               </tr>
                             ))}
-                            {!partialRows.length && <tr><td colSpan={7} className="px-2 py-8 text-center text-slate-500">No partial fills.</td></tr>}
+                            {!partialRows.length && <tr><td colSpan={9} className="px-2 py-8 text-center text-slate-500">No partial fills.</td></tr>}
                           </tbody>
                         </table>
                       </div>
@@ -941,24 +985,46 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                             </div>
                           </div>
                           <div className="rounded border border-slate-300 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
-                            <h4 className="mb-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">Centroid Legs</h4>
-                            <div className="space-y-1 text-xs">
-                              {[
-                                ["LP Name", selectedPartial.lpName],
-                                ["LP SID", selectedPartial.lpsid],
-                                ["Cen Ord ID", selectedPartial.centroidOrderId],
-                                ["Cen Ext Order", selectedPartial.centroidExtOrder],
-                                ["LP Price", fmtNum(selectedPartial.lpPrice, 5)],
-                                ["LP Lots", fmtNum(selectedPartial.lpVolume, 4)],
-                                ["Fill Count", selectedPartial.centroidFillCount],
-                                ["Spread", fmtNum(selectedPartial.spread, 6)],
-                                ["Spread Revenue", money(selectedPartial.spreadRevenueUsd)],
-                                ["LP Commission", money(Math.abs(num(selectedPartial.lpCommission)))],
-                                ["Status", selectedPartial.matchStatus],
-                                ["Method", selectedPartial.matchMethod],
-                              ].map(([k, v]) => (
-                                <div key={String(k)} className="flex justify-between border-b border-slate-200 py-0.5 dark:border-slate-800"><span className="text-slate-500">{String(k)}</span><span>{safe(v)}</span></div>
-                              ))}
+                            <div className="mb-2 flex items-center justify-between">
+                              <h4 className="text-xs font-semibold text-cyan-700 dark:text-cyan-200">Centroid Legs</h4>
+                              <span className="text-xs text-slate-500 dark:text-slate-400">{partialCentroidLegs.length} leg(s)</span>
+                            </div>
+                            <div className="max-h-[30vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
+                              <table className="min-w-full text-[11px]">
+                                <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
+                                  <tr>
+                                    <th className="px-2 py-1.5 text-left">Cen Ord ID</th>
+                                    <th className="px-2 py-1.5 text-left">Ext Order</th>
+                                    <th className="px-2 py-1.5 text-left">Symbol</th>
+                                    <th className="px-2 py-1.5 text-left">Side</th>
+                                    <th className="px-2 py-1.5 text-right">Avg Price</th>
+                                    <th className="px-2 py-1.5 text-right">Raw Avg</th>
+                                    <th className="px-2 py-1.5 text-right">Volume</th>
+                                    <th className="px-2 py-1.5 text-right">Fill Vol</th>
+                                    <th className="px-2 py-1.5 text-right">Markup</th>
+                                    <th className="px-2 py-1.5 text-left">State</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {partialCentroidLegs.map((leg, idx) => (
+                                    <tr key={`pcl-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
+                                      <td className="px-2 py-1.5 font-mono">{leg.cenOrdId}</td>
+                                      <td className="px-2 py-1.5">{leg.extOrder}</td>
+                                      <td className="px-2 py-1.5 font-semibold">{leg.symbol}</td>
+                                      <td className="px-2 py-1.5">{leg.side}</td>
+                                      <td className="px-2 py-1.5 text-right">{leg.avgPrice}</td>
+                                      <td className="px-2 py-1.5 text-right">{leg.rawAvgPrice}</td>
+                                      <td className="px-2 py-1.5 text-right">{leg.volume}</td>
+                                      <td className="px-2 py-1.5 text-right">{leg.fillVolume}</td>
+                                      <td className="px-2 py-1.5 text-right">{leg.totalMarkup}</td>
+                                      <td className="px-2 py-1.5">{leg.state}</td>
+                                    </tr>
+                                  ))}
+                                  {!partialCentroidLegs.length && (
+                                    <tr><td colSpan={10} className="px-2 py-6 text-center text-slate-500">No centroid legs on this match row.</td></tr>
+                                  )}
+                                </tbody>
+                              </table>
                             </div>
                           </div>
                         </div>

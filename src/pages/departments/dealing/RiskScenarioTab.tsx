@@ -5,6 +5,14 @@ import { SortableTable, type SortableTableColumn } from "@/components/ui/Sortabl
 type RiskScenarioRow = {
   lp?: string;
   source?: string;
+  symbolsLabel?: string;
+  legs?: Array<{
+    symbol?: string;
+    netVolume?: number;
+    vwapOpen?: number;
+    priceCurrent?: number;
+    adversePrice?: number;
+  }>;
   netVolume?: number;
   vwapOpen?: number;
   priceCurrent?: number;
@@ -149,7 +157,8 @@ const takeSnapshot = (headers: string[], rows: Array<Array<string | number>>, fi
 
 export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
   const [symbols, setSymbols] = useState<string[]>([]);
-  const [selectedSymbol, setSelectedSymbol] = useState("");
+  const [selectedSymbol1, setSelectedSymbol1] = useState("");
+  const [selectedSymbol2, setSelectedSymbol2] = useState("");
   const [direction, setDirection] = useState<"Up" | "Down">("Up");
   const [moveAmount, setMoveAmount] = useState("10");
   const [targetMl, setTargetMl] = useState("150");
@@ -168,7 +177,8 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
       const payload = (await resp.json()) as string[];
       const sorted = (Array.isArray(payload) ? payload : []).filter(Boolean).sort((a, b) => a.localeCompare(b));
       setSymbols(sorted);
-      setSelectedSymbol((current) => (current && sorted.includes(current) ? current : sorted[0] || ""));
+      setSelectedSymbol1((current) => (current && sorted.includes(current) ? current : sorted[0] || ""));
+      setSelectedSymbol2((current) => (current && sorted.includes(current) ? current : ""));
     } catch (e: any) {
       setError(e?.message || "Failed to load risk scenario symbols.");
     }
@@ -196,9 +206,10 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
   const calculateScenario = async () => {
     const numericMove = Number(moveAmount);
     const numericTargetMl = Number(targetMl);
+    const selectedSymbols = Array.from(new Set([selectedSymbol1, selectedSymbol2].map((v) => String(v || "").trim()).filter(Boolean)));
 
-    if (!selectedSymbol || !Number.isFinite(numericMove) || numericMove === 0) {
-      setError("Select a symbol and enter a non-zero move amount.");
+    if (!selectedSymbols.length || !Number.isFinite(numericMove) || numericMove === 0) {
+      setError("Select at least one symbol and enter a non-zero move amount.");
       return;
     }
 
@@ -210,7 +221,8 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          symbol: selectedSymbol,
+          symbol: selectedSymbols[0],
+          symbols: selectedSymbols,
           direction,
           moveAmount: numericMove,
           targetMl: Number.isFinite(numericTargetMl) ? numericTargetMl : 150,
@@ -219,7 +231,9 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
       if (!resp.ok) throw new Error(`RiskScenario analyze ${resp.status}`);
       const payload = (await resp.json()) as RiskScenarioResponse;
       setResult(payload);
-      setStatusText(`${Array.isArray(payload?.rows) ? payload.rows.length : 0} LP(s) with ${selectedSymbol} positions`);
+      const payloadSymbols = Array.isArray((payload as any)?.symbols) ? (payload as any).symbols : selectedSymbols;
+      const label = payloadSymbols.filter(Boolean).join(" + ");
+      setStatusText(`${Array.isArray(payload?.rows) ? payload.rows.length : 0} LP(s) with ${label || "selected"} positions`);
     } catch (e: any) {
       setError(e?.message || "Failed to calculate risk scenario.");
       setStatusText("Error");
@@ -230,6 +244,25 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
   };
 
   const rows = useMemo(() => (Array.isArray(result?.rows) ? result.rows : []), [result]);
+
+  const legCell = (
+    row: RiskScenarioRow,
+    getter: (leg: NonNullable<RiskScenarioRow["legs"]>[number]) => number | undefined,
+    digits: number,
+  ) => {
+    const legs = Array.isArray(row?.legs) ? row.legs : [];
+    if (!legs.length) return "-";
+    return (
+      <div className="flex flex-col gap-0.5">
+        {legs.map((leg, idx) => (
+          <div key={`${leg.symbol || "leg"}-${idx}`} className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{leg.symbol || "-"}</span>
+            <span className="tabular-nums text-slate-800 dark:text-slate-100">{formatNumber(getter(leg), digits)}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   const columns = useMemo<SortableTableColumn<RiskScenarioRow>[]>(
     () => [
@@ -250,10 +283,36 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
           </span>
         ),
       },
-      { key: "netVolume", label: "Net Vol", sortValue: (row) => Number(row.netVolume) || 0, headerClassName: "text-right", cellClassName: "text-right", render: (row) => formatNumber(row.netVolume, 3) },
-      { key: "vwapOpen", label: "VWAP Open", sortValue: (row) => Number(row.vwapOpen) || 0, headerClassName: "text-right", cellClassName: "text-right", render: (row) => formatNumber(row.vwapOpen, 5) },
-      { key: "priceCurrent", label: "Price Current", sortValue: (row) => Number(row.priceCurrent) || 0, headerClassName: "text-right", cellClassName: "text-right", render: (row) => formatNumber(row.priceCurrent, 5) },
-      { key: "adversePrice", label: "Adverse Price", sortValue: (row) => Number(row.adversePrice) || 0, headerClassName: "text-right", cellClassName: "text-right", render: (row) => formatNumber(row.adversePrice, 5) },
+      {
+        key: "symbolsLabel",
+        label: "Symbols",
+        sortValue: (row) => String(row.symbolsLabel || ""),
+        render: (row) => <span className="font-mono text-slate-700 dark:text-slate-200">{row.symbolsLabel || "-"}</span>,
+      },
+      {
+        key: "netVolume",
+        label: "Net Vol",
+        sortValue: (row) => Number(row.netVolume) || 0,
+        render: (row) => (Array.isArray(row.legs) && row.legs.length ? legCell(row, (leg) => leg.netVolume, 3) : formatNumber(row.netVolume, 3)),
+      },
+      {
+        key: "vwapOpen",
+        label: "VWAP Open",
+        sortValue: (row) => Number(row.vwapOpen) || 0,
+        render: (row) => (Array.isArray(row.legs) && row.legs.length ? legCell(row, (leg) => leg.vwapOpen, 5) : formatNumber(row.vwapOpen, 5)),
+      },
+      {
+        key: "priceCurrent",
+        label: "Price Current",
+        sortValue: (row) => Number(row.priceCurrent) || 0,
+        render: (row) => (Array.isArray(row.legs) && row.legs.length ? legCell(row, (leg) => leg.priceCurrent, 5) : formatNumber(row.priceCurrent, 5)),
+      },
+      {
+        key: "adversePrice",
+        label: "Adverse Price",
+        sortValue: (row) => Number(row.adversePrice) || 0,
+        render: (row) => (Array.isArray(row.legs) && row.legs.length ? legCell(row, (leg) => leg.adversePrice, 5) : formatNumber(row.adversePrice, 5)),
+      },
       {
         key: "plNow",
         label: "P/L Now",
@@ -413,10 +472,10 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
 
       <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-6">
         <label className="text-xs text-slate-600 dark:text-slate-300">
-          Symbol
+          Symbol 1
           <select
-            value={selectedSymbol}
-            onChange={(e) => setSelectedSymbol(e.target.value)}
+            value={selectedSymbol1}
+            onChange={(e) => setSelectedSymbol1(e.target.value)}
             className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
           >
             {symbols.map((symbol) => (
@@ -425,6 +484,22 @@ export function RiskScenarioTab({ refreshKey }: { refreshKey: number }) {
               </option>
             ))}
             {!symbols.length && <option value="">Loading...</option>}
+          </select>
+        </label>
+
+        <label className="text-xs text-slate-600 dark:text-slate-300">
+          Symbol 2
+          <select
+            value={selectedSymbol2}
+            onChange={(e) => setSelectedSymbol2(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+          >
+            <option value="">Optional</option>
+            {symbols.map((symbol) => (
+              <option key={`secondary-${symbol}`} value={symbol}>
+                {symbol}
+              </option>
+            ))}
           </select>
         </label>
 

@@ -653,6 +653,7 @@ app.use('/api/wallet', (req, res) =>
   '/EquityOverview',
   '/Swap',
   '/History',
+  '/Transactions',
   '/Report',
   '/Deal',
   '/Position',
