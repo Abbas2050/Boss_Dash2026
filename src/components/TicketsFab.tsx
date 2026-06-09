@@ -1,7 +1,6 @@
 import { Plus, Ticket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getCurrentUser } from "@/lib/auth";
 
 const FAB_WIDTH = 180;
 const FAB_HEIGHT = 56;
@@ -11,7 +10,6 @@ const STORAGE_KEY = "tickets_fab_position_v1";
 
 export function TicketsFab() {
   const navigate = useNavigate();
-  const currentUser = getCurrentUser();
   const suppressClickRef = useRef(false);
   const pointerHandledRef = useRef(false);
   const dragRef = useRef<{
@@ -36,8 +34,6 @@ export function TicketsFab() {
       return { ...fallback, y: defaultY };
     }
   });
-
-  if (currentUser?.role !== "Super Admin") return null;
 
   const clampPosition = (x: number, y: number) => {
     const maxX = Math.max(FAB_MARGIN, window.innerWidth - FAB_WIDTH - FAB_MARGIN);
