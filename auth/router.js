@@ -32,6 +32,8 @@ const ALLOWED_ACCESS_ROOTS = new Set([
   "LiveAgent",
   "Notifications",
   "Auth",
+  "Tickets",
+  "CP",
 ]);
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;

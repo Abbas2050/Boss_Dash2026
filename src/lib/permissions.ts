@@ -259,6 +259,13 @@ export function hasUserAccess(user: AuthUser | null | undefined, permission: str
   return false;
 }
 
+export function hasApplicationsAccess(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === "Super Admin") return true;
+  const owned = Array.isArray(user.access) ? user.access : [];
+  return owned.includes("Tickets:Own") || owned.includes("Tickets:All");
+}
+
 function hasAnyScopedAccess(user: AuthUser | null | undefined, prefix: string): boolean {
   if (!user) return false;
   if (user.role === "Super Admin") return true;

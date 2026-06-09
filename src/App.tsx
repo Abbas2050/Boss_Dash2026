@@ -9,7 +9,7 @@ import { Layout } from "./components/Layout";
 import { LiveAlertsNotifier } from "./components/LiveAlertsNotifier";
 import { getCurrentUser } from "./lib/auth";
 import { UnauthorizedPage } from "./components/UnauthorizedPage";
-import { canAccessAll, LEGACY_ROUTE_ALIASES, SETTINGS_MENU_ITEMS } from "./lib/permissions";
+import { canAccessAll, hasApplicationsAccess, LEGACY_ROUTE_ALIASES, SETTINGS_MENU_ITEMS } from "./lib/permissions";
 
 const Index = lazy(() => import("./pages/Index"));
 const LeverageUpdate = lazy(() => import("./pages/LeverageUpdate"));
@@ -55,29 +55,9 @@ function SettingsRoute({
   return children;
 }
 
-function ProtectedRoute({
-  children,
-  requiredPermissions,
-  title,
-}: {
-  children: React.ReactNode;
-  requiredPermissions: readonly string[];
-  title: string;
-}) {
+function ApplicationsRoute({ children, title }: { children: React.ReactNode; title: string }) {
   const currentUser = getCurrentUser();
-  if (!canAccessAll(currentUser, requiredPermissions)) return <UnauthorizedPage title={title} />;
-  return children;
-}
-
-function SuperAdminRoute({
-  children,
-  title,
-}: {
-  children: React.ReactNode;
-  title: string;
-}) {
-  const currentUser = getCurrentUser();
-  if (currentUser?.role !== "Super Admin") return <UnauthorizedPage title={title} />;
+  if (!hasApplicationsAccess(currentUser)) return <UnauthorizedPage title={title} />;
   return children;
 }
 
@@ -103,9 +83,9 @@ const App = () => (
               <Route
                 path="applications"
                 element={
-                  <SuperAdminRoute title="Applications Access Required">
+                  <ApplicationsRoute title="Applications Access Required">
                     <TicketsPage />
-                  </SuperAdminRoute>
+                  </ApplicationsRoute>
                 }
               />
               <Route path="tickets" element={<Navigate to="/applications" replace />} />
