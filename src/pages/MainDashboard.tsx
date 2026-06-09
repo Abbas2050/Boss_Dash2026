@@ -15,7 +15,8 @@ export const MainDashboard: React.FC = () => {
   const visibleSections = new Set(getVisibleDashboardSectionItems(currentUser).map((item) => item.key));
   const canAccounts = visibleSections.has("Dashboard:Accounts");
   const canDealing = visibleSections.has("Dashboard:Dealing");
-  const canAlerts = visibleSections.has("Dashboard:Alerts");
+  // Alerts is a department-level permission (not a home-dashboard section).
+  const canAlerts = hasAccess("Alerts");
 
   return (
     <div className="bg-background min-h-screen">

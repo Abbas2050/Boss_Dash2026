@@ -7,10 +7,16 @@ import { BackOfficeDepartment } from '@/components/dashboard/BackOfficeDepartmen
 import { MarketingDepartment } from '@/components/dashboard/MarketingDepartment';
 import { AnalyticsSection } from '@/components/dashboard/AnalyticsSection';
 import { getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
+import { getCurrentUser } from '@/lib/auth';
+import { getVisibleDashboardSectionItems } from '@/lib/permissions';
 
 import { useState } from 'react';
 
 const Index = () => {
+  // Per-section visibility driven by the Dashboard Access permissions (user-management).
+  const visibleSections = new Set(getVisibleDashboardSectionItems(getCurrentUser()).map((item) => item.key));
+  const can = (key: string) => visibleSections.has(key);
+  const hasAnySection = visibleSections.size > 0;
   // Filter state lifted here with default values - use lazy initialization
   const [selectedEntity, setSelectedEntity] = useState('all');
   const [fromDate, setFromDate] = useState<Date>(() => getDubaiDayStart());
@@ -41,92 +47,115 @@ const Index = () => {
       <div className="relative z-10">
         <main className="p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-5">
           {/* Filter Section */}
-          <FilterSection
-            selectedEntity={selectedEntity}
-            setSelectedEntity={setSelectedEntity}
-            fromDate={fromDate}
-            setFromDate={setFromDate}
-            toDate={toDate}
-            setToDate={setToDate}
-            activeQuickFilter={activeQuickFilter}
-            setActiveQuickFilter={setActiveQuickFilter}
-            onSubmit={handleApplyFilters}
-          />
+          {can('Dashboard:Filters') && (
+            <FilterSection
+              selectedEntity={selectedEntity}
+              setSelectedEntity={setSelectedEntity}
+              fromDate={fromDate}
+              setFromDate={setFromDate}
+              toDate={toDate}
+              setToDate={setToDate}
+              activeQuickFilter={activeQuickFilter}
+              setActiveQuickFilter={setActiveQuickFilter}
+              onSubmit={handleApplyFilters}
+            />
+          )}
           {/* Quick Stats Row */}
-          <QuickStats
-            selectedEntity={appliedEntity}
-            fromDate={appliedFromDate}
-            toDate={appliedToDate}
-            refreshKey={refreshKey}
-          />
+          {can('Dashboard:QuickStats') && (
+            <QuickStats
+              selectedEntity={appliedEntity}
+              fromDate={appliedFromDate}
+              toDate={appliedToDate}
+              refreshKey={refreshKey}
+            />
+          )}
           {/* Main Dashboard Grid */}
           <div className="grid grid-cols-12 gap-5">
-            {/* Dealing Department */}
-            <div className="col-span-12 lg:col-span-4">
-              <DealingDepartment
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-              />
-            </div>
-            {/* LP Department (duplicate of Accounts) */}
-            <div className="col-span-12 lg:col-span-4">
-              <AccountsDepartment 
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-                title="Dealing (LP)"
-                mode="lp"
-              />
-            </div>
+            {/* Dealing (Client) Department */}
+            {can('Dashboard:Dealing') && (
+              <div className="col-span-12 lg:col-span-4">
+                <DealingDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                />
+              </div>
+            )}
+            {/* Dealing (LP) Department */}
+            {can('Dashboard:DealingLP') && (
+              <div className="col-span-12 lg:col-span-4">
+                <AccountsDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                  title="Dealing (LP)"
+                  mode="lp"
+                />
+              </div>
+            )}
             {/* Accounts Department */}
-            <div className="col-span-12 lg:col-span-4">
-              <AccountsDepartment 
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-              />
-            </div>
+            {can('Dashboard:Accounts') && (
+              <div className="col-span-12 lg:col-span-4">
+                <AccountsDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                />
+              </div>
+            )}
             {/* HR Department */}
-            <div className="col-span-12 lg:col-span-4">
-              <HRDepartment 
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-              />
-            </div>
+            {can('Dashboard:HR') && (
+              <div className="col-span-12 lg:col-span-4">
+                <HRDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                />
+              </div>
+            )}
             {/* Back Office Department */}
-            <div className="col-span-12 lg:col-span-4">
-              <BackOfficeDepartment 
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-                variant="compact"
-              />
-            </div>
+            {can('Dashboard:Backoffice') && (
+              <div className="col-span-12 lg:col-span-4">
+                <BackOfficeDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                  variant="compact"
+                />
+              </div>
+            )}
             {/* Marketing Department */}
-            <div className="col-span-12 lg:col-span-4">
-              <MarketingDepartment 
-                selectedEntity={appliedEntity}
-                fromDate={appliedFromDate}
-                toDate={appliedToDate}
-                refreshKey={refreshKey}
-                variant="compact"
-              />
-            </div>
+            {can('Dashboard:Marketing') && (
+              <div className="col-span-12 lg:col-span-4">
+                <MarketingDepartment
+                  selectedEntity={appliedEntity}
+                  fromDate={appliedFromDate}
+                  toDate={appliedToDate}
+                  refreshKey={refreshKey}
+                  variant="compact"
+                />
+              </div>
+            )}
           </div>
+          {!hasAnySection && (
+            <div className="rounded-xl border border-border/40 bg-card/70 p-4 text-sm text-muted-foreground">
+              No dashboard sections are assigned to your user.
+            </div>
+          )}
           {/* Analytics & Insights Section */}
-          <AnalyticsSection
-            selectedEntity={appliedEntity}
-            fromDate={appliedFromDate}
-            toDate={appliedToDate}
-            refreshKey={refreshKey}
-          />
+          {can('Dashboard:Analytics') && (
+            <AnalyticsSection
+              selectedEntity={appliedEntity}
+              fromDate={appliedFromDate}
+              toDate={appliedToDate}
+              refreshKey={refreshKey}
+            />
+          )}
           {/* Footer */}
           <footer className="flex flex-col gap-3 sm:gap-2 sm:flex-row sm:items-center sm:justify-between py-4 border-t border-border/20 text-xs text-muted-foreground">
             <div className="flex flex-wrap items-center gap-3 sm:gap-4">

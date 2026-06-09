@@ -24,33 +24,32 @@ export type DealingTab = (typeof DEALING_TABS)[number];
 
 export const DASHBOARD_ROOT_KEY = { key: "Dashboard", label: "Main Dashboard" } as const;
 
-export const DASHBOARD_SECTION_KEYS = [
-  { key: "Dashboard:Accounts", label: "Accounts Section" },
-  { key: "Dashboard:Dealing", label: "Dealing Section" },
-  { key: "Dashboard:Backoffice", label: "Back Office Section" },
-  { key: "Dashboard:Marketing", label: "Marketing Section" },
-  { key: "Dashboard:HR", label: "HR Section" },
-  { key: "Dashboard:CP", label: "Client Profile Section" },
-  { key: "Dashboard:Alerts", label: "Alerts Section" },
-] as const;
-
-export const DASHBOARD_ACCESS_KEYS = [DASHBOARD_ROOT_KEY, ...DASHBOARD_SECTION_KEYS] as const;
-
 export type DashboardSectionItem = {
   key: string;
   label: string;
   title: string;
 };
 
+// Single source of truth: one entry per section rendered on the home dashboard (/).
+// Keep this in sync with src/pages/Index.tsx.
 export const DASHBOARD_SECTION_ITEMS: readonly DashboardSectionItem[] = [
+  { key: "Dashboard:Filters", label: "Filters", title: "Filter Bar" },
+  { key: "Dashboard:QuickStats", label: "Quick Stats", title: "Quick Stats Row" },
+  { key: "Dashboard:Dealing", label: "Dealing (Client)", title: "Dealing (Client) Section" },
+  { key: "Dashboard:DealingLP", label: "Dealing (LP)", title: "Dealing (LP) Section" },
   { key: "Dashboard:Accounts", label: "Accounts", title: "Accounts Section" },
-  { key: "Dashboard:Dealing", label: "Dealing", title: "Dealing Section" },
-  { key: "Dashboard:Backoffice", label: "Backoffice", title: "Back Office Section" },
-  { key: "Dashboard:Marketing", label: "Marketing", title: "Marketing Section" },
   { key: "Dashboard:HR", label: "HR", title: "HR Section" },
-  { key: "Dashboard:CP", label: "CP", title: "Client Profile Section" },
-  { key: "Dashboard:Alerts", label: "Alerts", title: "Alerts Section" },
+  { key: "Dashboard:Backoffice", label: "Back Office", title: "Back Office Section" },
+  { key: "Dashboard:Marketing", label: "Marketing", title: "Marketing Section" },
+  { key: "Dashboard:Analytics", label: "Analytics", title: "Analytics Section" },
 ] as const;
+
+export const DASHBOARD_SECTION_KEYS = DASHBOARD_SECTION_ITEMS.map((item) => ({
+  key: item.key,
+  label: item.label,
+}));
+
+export const DASHBOARD_ACCESS_KEYS = [DASHBOARD_ROOT_KEY, ...DASHBOARD_SECTION_KEYS];
 
 export const DEPARTMENT_KEYS = [
   { key: "LiveAgent", label: "Live Agent" },
@@ -218,6 +217,7 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
   ]),
   Manager: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    ...DASHBOARD_SECTION_ITEMS.map((item) => item.key),
     "Tickets:Own",
     ...DEPARTMENT_KEYS
       .filter((item) => !["LiveAgent", "Tickets:All"].includes(item.key))
@@ -226,6 +226,7 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
   ]),
   Analyst: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    ...DASHBOARD_SECTION_ITEMS.map((item) => item.key),
     "Tickets:Own",
     ...DEPARTMENT_KEYS
       .filter((item) => ["Dealing", "Accounts", "Backoffice", "Alerts", "Tickets:Own"].includes(item.key))
@@ -233,6 +234,7 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
   ]),
   Support: uniqueKeys([
     DASHBOARD_ROOT_KEY.key,
+    ...DASHBOARD_SECTION_ITEMS.map((item) => item.key),
     "Tickets:Own",
     ...DEPARTMENT_KEYS
       .filter((item) => ["Accounts", "Alerts", "Tickets:Own"].includes(item.key))
@@ -307,6 +309,16 @@ export function getVisibleSettingsMenuItems(user: AuthUser | null | undefined) {
   return SETTINGS_MENU_ITEMS.filter((item) => canAccessAll(user, item.requiredPermissions));
 }
 
+// Dashboard sections are gated by EXACT key ownership, not the prefix-cascade used by
+// hasUserAccess. This prevents the "Main Dashboard" root key ("Dashboard") from implicitly
+// granting every "Dashboard:*" section.
+export function hasDashboardSectionAccess(user: AuthUser | null | undefined, key: string): boolean {
+  if (!user) return false;
+  if (user.role === "Super Admin") return true;
+  const owned = Array.isArray(user.access) ? user.access : [];
+  return owned.includes(key);
+}
+
 export function getVisibleDashboardSectionItems(user: AuthUser | null | undefined) {
-  return DASHBOARD_SECTION_ITEMS.filter((item) => hasUserAccess(user, item.key));
+  return DASHBOARD_SECTION_ITEMS.filter((item) => hasDashboardSectionAccess(user, item.key));
 }
