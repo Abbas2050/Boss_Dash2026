@@ -184,5 +184,16 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
     doc.text(`Warnings: ${data.warnings.join("; ")}`, margin, yW);
   }
 
+  // Footnote clarifying the IB Commission basis
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const footY = ((doc as any).lastAutoTable?.finalY || y) + (data.warnings.length ? 28 : 14);
+  doc.setFontSize(7);
+  doc.setTextColor(148, 163, 184);
+  doc.text(
+    "IB Commission = period IB transactions (transfers & withdrawals); excludes current IB wallet balance.",
+    margin,
+    footY,
+  );
+
   doc.save(`deal-performance-report-${data.meta.fromYmd}_${data.meta.toYmd}.pdf`);
 }

@@ -463,7 +463,7 @@ export function DealPerformanceTab({
           <button
             type="button"
             onClick={handleExportPdf}
-            disabled={exporting}
+            disabled={exporting || loading}
             className="rounded-md border border-cyan-600 bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {exporting ? (exportStatus || "Generating…") : "Download PDF Report"}
