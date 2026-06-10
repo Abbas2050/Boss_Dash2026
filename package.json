@@ -64,6 +64,8 @@
     "googleapis": "^171.4.0",
     "input-otp": "^1.4.2",
     "jsonwebtoken": "^9.0.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "lucide-react": "^0.462.0",
     "mysql2": "^3.14.3",
     "next-themes": "^0.3.0",
