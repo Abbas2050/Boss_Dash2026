@@ -18,41 +18,21 @@ import {
   YAxis,
 } from "recharts";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
+import {
+  CRM_API_TOKEN,
+  CRM_API_VERSION,
+  deriveBaseRows,
+  fetchCrmUserIdByLogin,
+  fetchDealMatch,
+  fetchIbPeriodTransactions,
+  isIb,
+  mapWithConcurrency,
+  money,
+  num,
+  toYmd,
+  type DealMatchRevenueRow,
+} from "@/lib/dealMatchApi";
 
-type DealMatchRevenueRow = {
-  login: string;
-  name: string;
-  lots: number;
-  markup: number;
-  clientComm: number;
-  lpComm: number;
-  totalRev: number;
-  ibCommission: number;
-  netRevenue: number;
-};
-
-type DealMatchResponse = {
-  clientRevenueSummaries?: Array<{
-    login?: string | number;
-    name?: string;
-    lots?: number;
-    markupRevenueUsd?: number;
-    clientCommissionUsd?: number;
-    lpCommissionUsd?: number;
-    totalRevenueUsd?: number;
-  }>;
-  matches?: Array<{
-    clientLogin?: string | number;
-    clientName?: string;
-    clientVolume?: number;
-    spreadRevenueUsd?: number;
-    clientCommission?: number;
-    lpCommission?: number;
-  }>;
-};
-
-const CRM_API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
-const CRM_API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
 const colors = {
   blue: "#1d4ed8",
   teal: "#0f766e",
@@ -137,69 +117,6 @@ const takeTableSnapshot = ({ filePrefix, title, headers, rows }: SnapshotInput) 
   a.click();
 };
 
-function toYmd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-function toUnixRange(fromDate: string, toDate: string) {
-  return {
-    from: Math.floor(new Date(`${fromDate}T00:00:00Z`).getTime() / 1000),
-    to: Math.floor(new Date(`${toDate}T23:59:59Z`).getTime() / 1000),
-  };
-}
-
-const num = (value: unknown) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
-const money = (value: number) =>
-  `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-async function mapWithConcurrency<T, R>(items: T[], worker: (item: T, idx: number) => Promise<R>, limit = 8): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let idx = 0;
-  const runners = Array.from({ length: Math.max(1, limit) }).map(async () => {
-    while (idx < items.length) {
-      const current = idx++;
-      results[current] = await worker(items[current], current);
-    }
-  });
-  await Promise.all(runners);
-  return results;
-}
-
-async function fetchCrmUserIdByLogin(login: string): Promise<number | null> {
-  const resp = await fetch(`/rest/accounts?version=${encodeURIComponent(CRM_API_VERSION)}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
-    },
-    body: JSON.stringify({ login, segment: { limit: 1, offset: 0 } }),
-  });
-  if (!resp.ok) return null;
-  const rows = (await resp.json()) as Array<{ userId?: number }>;
-  const id = num(rows?.[0]?.userId);
-  return id > 0 ? id : null;
-}
-
-async function isIb(crmId: number): Promise<boolean> {
-  const resp = await fetch(`/rest/ib/tree?version=${encodeURIComponent(CRM_API_VERSION)}&ibId=${encodeURIComponent(String(crmId))}`, {
-    headers: {
-      Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
-    },
-  });
-  if (!resp.ok) return false;
-  const rows = await resp.json();
-  return Array.isArray(rows) && rows.length > 0;
-}
-
 async function fetchIbWalletBalance(crmId: number): Promise<number> {
   const resp = await fetch(`/rest/accounts?version=${encodeURIComponent(CRM_API_VERSION)}`, {
     method: "POST",
@@ -215,77 +132,6 @@ async function fetchIbWalletBalance(crmId: number): Promise<number> {
   return (Array.isArray(rows) ? rows : [])
     .filter((r) => String(r.groupName || "").toUpperCase() === "IB-WALLET-USD")
     .reduce((sum, r) => sum + num(r.balance), 0);
-}
-
-async function fetchIbPeriodTransactions(crmId: number, fromDate: string, toDate: string): Promise<number> {
-  const resp = await fetch(`/rest/transactions?version=${encodeURIComponent(CRM_API_VERSION)}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
-    },
-    body: JSON.stringify({
-      fromUserId: crmId,
-      statuses: ["approved"],
-      transactionTypes: ["ib transfer to account", "ib withdrawal"],
-      processedAt: {
-        begin: `${fromDate} 00:00:00`,
-        end: `${toDate} 23:59:59`,
-      },
-      segment: { limit: 5000, offset: 0 },
-    }),
-  });
-  if (!resp.ok) return 0;
-  const rows = (await resp.json()) as Array<{ processedAmount?: number; requestedAmount?: number }>;
-  return (Array.isArray(rows) ? rows : []).reduce((sum, r) => sum + (Number.isFinite(num(r.processedAmount)) ? num(r.processedAmount) : num(r.requestedAmount)), 0);
-}
-
-function deriveBaseRows(report: DealMatchResponse): DealMatchRevenueRow[] {
-  if (Array.isArray(report.clientRevenueSummaries) && report.clientRevenueSummaries.length) {
-    return report.clientRevenueSummaries.map((row) => {
-      const markup = num(row.markupRevenueUsd);
-      const clientComm = num(row.clientCommissionUsd);
-      const lpComm = Math.abs(num(row.lpCommissionUsd));
-      const totalRev = Number.isFinite(num(row.totalRevenueUsd)) && num(row.totalRevenueUsd) !== 0 ? num(row.totalRevenueUsd) : markup + clientComm - lpComm;
-      return {
-        login: String(row.login ?? ""),
-        name: String(row.name ?? "-"),
-        lots: num(row.lots),
-        markup,
-        clientComm,
-        lpComm,
-        totalRev,
-        ibCommission: 0,
-        netRevenue: totalRev,
-      };
-    });
-  }
-
-  const byLogin = new Map<string, DealMatchRevenueRow>();
-  (report.matches || []).forEach((m) => {
-    const login = String(m.clientLogin ?? "").trim();
-    if (!login) return;
-    const current = byLogin.get(login) || {
-      login,
-      name: String(m.clientName || "-"),
-      lots: 0,
-      markup: 0,
-      clientComm: 0,
-      lpComm: 0,
-      totalRev: 0,
-      ibCommission: 0,
-      netRevenue: 0,
-    };
-    current.lots += num(m.clientVolume);
-    current.markup += num(m.spreadRevenueUsd);
-    current.clientComm += num(m.clientCommission);
-    current.lpComm += Math.abs(num(m.lpCommission));
-    current.totalRev = current.markup + current.clientComm - current.lpComm;
-    byLogin.set(login, current);
-  });
-
-  return Array.from(byLogin.values());
 }
 
 export function DealPerformanceTab({
@@ -316,11 +162,7 @@ export function DealPerformanceTab({
     setLoading(true);
     setError(null);
     try {
-      const { from, to } = toUnixRange(fromDateYmd, toDateYmd);
-      const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "false" });
-      const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
-      if (!resp.ok) throw new Error(`DealMatch API ${resp.status}`);
-      const report = (await resp.json()) as DealMatchResponse;
+      const report = await fetchDealMatch(baseUrl, fromDateYmd, toDateYmd);
       const baseRows = deriveBaseRows(report).filter((r) => r.lots > 0);
       const ibCache = new Map<string, number>();
       const enriched = await mapWithConcurrency(
