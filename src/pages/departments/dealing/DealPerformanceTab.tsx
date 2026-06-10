@@ -32,6 +32,8 @@ import {
   toYmd,
   type DealMatchRevenueRow,
 } from "@/lib/dealMatchApi";
+import { buildReport } from "./dealPerformanceReport";
+import { generatePerformancePdf } from "./performancePdf";
 
 const colors = {
   blue: "#1d4ed8",
@@ -156,6 +158,8 @@ export function DealPerformanceTab({
   const [error, setError] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ from?: string; to?: string; loadedAt?: string }>({});
   const [snapshotting, setSnapshotting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState("");
 
   const run = async () => {
     if (!fromDateYmd || !toDateYmd) return;
@@ -274,6 +278,24 @@ export function DealPerformanceTab({
     ],
     [],
   );
+
+  const handleExportPdf = async () => {
+    setExporting(true);
+    setExportStatus("Starting…");
+    setError(null);
+    try {
+      const data = await buildReport(baseUrl, fromDate, toDate, (msg) => setExportStatus(msg));
+      setExportStatus("Building PDF…");
+      await generatePerformancePdf(data);
+      setExportStatus("");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      setError(e?.message || "Failed to generate PDF report.");
+    } finally {
+      setExporting(false);
+      setExportStatus("");
+    }
+  };
 
   const handleSnapshot = () => {
     if (!rows.length) return;
@@ -437,7 +459,15 @@ export function DealPerformanceTab({
           <TrendingUp className="h-3.5 w-3.5" />
           Email Revenue Table (Interactive)
         </div>
-        <div className="mb-2 flex items-center justify-end">
+        <div className="mb-2 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={handleExportPdf}
+            disabled={exporting}
+            className="rounded-md border border-cyan-600 bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {exporting ? (exportStatus || "Generating…") : "Download PDF Report"}
+          </button>
           <button
             type="button"
             onClick={handleSnapshot}
