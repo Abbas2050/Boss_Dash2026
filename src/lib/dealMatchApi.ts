@@ -40,7 +40,7 @@ export function toYmd(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-export function toUnixRange(fromDate: string, toDate: string) {
+export function toUnixRange(fromDate: string, toDate: string): { from: number; to: number } {
   return {
     from: Math.floor(new Date(`${fromDate}T00:00:00Z`).getTime() / 1000),
     to: Math.floor(new Date(`${toDate}T23:59:59Z`).getTime() / 1000),
@@ -68,8 +68,8 @@ export async function mapWithConcurrency<T, R>(items: T[], worker: (item: T, idx
   return results;
 }
 
-export async function fetchDealMatch(baseUrl: string, fromYmd: string, toYmd: string): Promise<DealMatchResponse> {
-  const { from, to } = toUnixRange(fromYmd, toYmd);
+export async function fetchDealMatch(baseUrl: string, startYmd: string, endYmd: string): Promise<DealMatchResponse> {
+  const { from, to } = toUnixRange(startYmd, endYmd);
   const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "false" });
   const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
   if (!resp.ok) throw new Error(`DealMatch API ${resp.status}`);
@@ -117,6 +117,7 @@ export function deriveBaseRows(report: DealMatchResponse): DealMatchRevenueRow[]
     current.clientComm += num(m.clientCommission);
     current.lpComm += Math.abs(num(m.lpCommission));
     current.totalRev = current.markup + current.clientComm - current.lpComm;
+    current.netRevenue = current.totalRev;
     byLogin.set(login, current);
   });
 

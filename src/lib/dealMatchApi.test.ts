@@ -30,4 +30,18 @@ describe("dealMatchApi helpers", () => {
     expect(rows[0].lpComm).toBe(5);
     expect(rows[0].totalRev).toBe(115); // 100 + 20 - 5
   });
+
+  it("deriveBaseRows aggregates the matches fallback shape and sets netRevenue", () => {
+    const rows = deriveBaseRows({
+      matches: [
+        { clientLogin: 200, clientName: "C", clientVolume: 3, spreadRevenueUsd: 30, clientCommission: 6, lpCommission: -2 },
+        { clientLogin: 200, clientName: "C", clientVolume: 2, spreadRevenueUsd: 20, clientCommission: 4, lpCommission: -1 },
+      ],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lots).toBe(5);
+    expect(rows[0].lpComm).toBe(3); // abs(-2) + abs(-1)
+    expect(rows[0].totalRev).toBe(57); // (30+20) + (6+4) - 3
+    expect(rows[0].netRevenue).toBe(57);
+  });
 });
