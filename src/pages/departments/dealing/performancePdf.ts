@@ -24,8 +24,8 @@ export async function renderMonthlyBarChart(opts: {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const maxV = Math.max(...values, 0);
-  const minV = Math.min(...values, 0);
+  const maxV = values.length ? Math.max(...values) : 0;
+  const minV = values.length ? Math.min(...values) : 0;
   const barColors = values.map((v) =>
     maxV !== minV && v === maxV ? COLORS.green : maxV !== minV && v === minV ? COLORS.red : baseColor,
   );
