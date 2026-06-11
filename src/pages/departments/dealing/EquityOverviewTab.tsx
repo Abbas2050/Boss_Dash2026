@@ -186,7 +186,7 @@ export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
       { key: "freeMargin", label: "Free Margin", sortValue: (row) => Number(row.freeMargin) || 0, headerClassName: "text-right", cellClassName: "text-right", render: (row) => formatMoney(Number(row.freeMargin || 0)) },
       {
         key: "marginLevel",
-        label: "Margin Level",
+        label: "Margin Level %",
         sortValue: (row) => Number(row.marginLevel) || 0,
         headerClassName: "text-right",
         cellClassName: "text-right",
@@ -203,7 +203,7 @@ export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
     if (!rows.length) return;
     setSnapshottingTable(table);
     try {
-      const headers = ["Name", "Login", "Source", "Equity", "WD Equity", "Credit", "Balance", "Margin", "Free Margin", "Margin Level"];
+      const headers = ["Name", "Login", "Source", "Equity", "WD Equity", "Credit", "Balance", "Margin", "Free Margin", "Margin Level %"];
       const snapshotRows = rows.map((row) => {
         const login = String(row.login || "");
         const marginLevel = Number(row.marginLevel) || 0;
@@ -256,7 +256,7 @@ export function EquityOverviewTab({ refreshKey }: { refreshKey: number }) {
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900/50">
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">LP Withdrawable Equity</div>
           <div className="flex items-center justify-between py-1 text-sm"><span>Live LPs</span><span className={colorClass(Number(data?.lps?.liveWithdrawableEquity || 0))}>{formatMoney(Number(data?.lps?.liveWithdrawableEquity || 0))}</span></div>
-          <div className="flex items-center justify-between py-1 text-sm"><span>Bonus LP (XTB)</span><span className={colorClass(Number(data?.lps?.bonusWithdrawableEquity || 0))}>{formatMoney(Number(data?.lps?.bonusWithdrawableEquity || 0))}</span></div>
+          <div className="flex items-center justify-between py-1 text-sm"><span>Bonus LP</span><span className={colorClass(Number(data?.lps?.bonusWithdrawableEquity || 0))}>{formatMoney(Number(data?.lps?.bonusWithdrawableEquity || 0))}</span></div>
           <div className="mt-2 flex items-center justify-between border-t border-slate-300 pt-2 text-sm font-semibold dark:border-slate-700"><span>Net LP WD Equity</span><span className={colorClass(Number(data?.lps?.netWithdrawableEquity || 0))}>{formatMoney(Number(data?.lps?.netWithdrawableEquity || 0))}</span></div>
         </div>
       </div>

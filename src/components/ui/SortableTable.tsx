@@ -12,6 +12,8 @@ export type SortableTableColumn<T> = {
   render: (row: T) => React.ReactNode;
   hideable?: boolean;
   defaultVisible?: boolean;
+  /** Optional custom renderer for the header cell content (e.g. a select-all checkbox). When present, rendered instead of the column label. */
+  headerRender?: () => React.ReactNode;
 };
 
 type SortableTableProps<T> = {
@@ -405,8 +407,8 @@ export function SortableTable<T>({
                   }}
                   className={`px-3 py-2 font-semibold uppercase tracking-wide ${col.sortValue ? "cursor-pointer select-none" : ""} ${col.headerClassName || "text-left"}`}
                 >
-                  {col.label}
-                  {sortKey === col.key ? (sortDirection === "asc" ? " ▲" : " ▼") : ""}
+                  {col.headerRender ? col.headerRender() : col.label}
+                  {!col.headerRender && sortKey === col.key ? (sortDirection === "asc" ? " ▲" : " ▼") : ""}
                 </th>
               ))}
             </tr>

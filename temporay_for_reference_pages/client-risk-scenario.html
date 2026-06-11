@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - Client Risk Scenario Analysis</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+body { padding: 0; }
+.header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+        .header h1 { color: var(--fg); font-weight: 600; }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .controls label { font-size: 12px; color: #888; }
+        .controls select, .controls input {
+            background: var(--bg3);
+            border: 1px solid #414868;
+            color: var(--fg);
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        .controls select { min-width: 140px; }
+        .controls input { width: 90px; }
+        button.calc {
+            background: var(--blue);
+            color: var(--surface);
+            border: none;
+            padding: 7px 18px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        button.calc:hover { background: #89b4fa; }
+        #status { font-size: 12px; color: var(--fg-muted); margin-left: 8px; }
+
+        .loading { text-align: center; padding: 40px; color: var(--fg-muted); font-size: 14px; }
+        .section-title { color: var(--neon); font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+        .grid-host { height: 70vh; width: 100%; }
+
+        .leg-lines {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            line-height: 1.2;
+            padding-top: 1px;
+            padding-bottom: 1px;
+        }
+        .leg-line {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .leg-symbol {
+            color: #7c89b0;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+        }
+        .leg-value { color: var(--fg); }
+        .leg-muted { color: var(--fg-muted); }
+        .leg-pos { color: var(--pos); }
+        .leg-neg { color: var(--neg); }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .kpi-card {
+            background: var(--bg3);
+            border: 1px solid #2a2f47;
+            border-radius: 8px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 88px;
+            position: relative;
+            overflow: hidden;
+        }
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #2a2f47;
+        }
+        .kpi-card.severity-ok::before { background: var(--pos); }
+        .kpi-card.severity-warn::before { background: var(--amber); }
+        .kpi-card.severity-bad::before { background: var(--neg); }
+        .kpi-card.severity-info::before { background: var(--blue); }
+
+        .kpi-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+        .kpi-lbl {
+            color: var(--fg-muted);
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            font-weight: 600;
+        }
+        .kpi-status {
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+        }
+        .kpi-status.neutral { background: rgba(86,95,137,0.18); color: var(--fg-muted); }
+        .kpi-status.ok { background: rgba(158,206,106,0.15); color: var(--pos); }
+        .kpi-status.warn { background: rgba(224,175,104,0.18); color: var(--amber); }
+        .kpi-status.bad { background: rgba(247,118,142,0.15); color: var(--neg); }
+
+        .kpi-val {
+            color: var(--fg);
+            font-size: 22px;
+            font-weight: 700;
+            line-height: 1.1;
+            font-variant-numeric: tabular-nums;
+        }
+        .kpi-val.compact { font-size: 14px; line-height: 1.25; }
+        .kpi-val.pos { color: var(--pos); }
+        .kpi-val.neg { color: var(--neg); }
+        .kpi-val.warn { color: var(--amber); }
+
+        .kpi-sub {
+            color: var(--fg-muted);
+            font-size: 11px;
+            line-height: 1.3;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <div class="header">
+        <h1>Client Risk Scenario Analysis</h1>
+    </div>
+
+    <div class="controls">
+        <div>
+            <label>Symbol 1</label><br>
+            <select id="symbolSelect1"><option value="">Loading...</option></select>
+        </div>
+        <div>
+            <label>Symbol 2</label><br>
+            <select id="symbolSelect2"><option value="">Optional</option></select>
+        </div>
+        <div>
+            <label>Direction</label><br>
+            <select id="dirSelect">
+                <option value="Up">Up</option>
+                <option value="Down">Down</option>
+            </select>
+        </div>
+        <div>
+            <label>Move (price)</label><br>
+            <input id="moveInput" type="number" value="10" step="0.01">
+        </div>
+        <div>
+            <label>Target ML %</label><br>
+            <input id="targetMlInput" type="number" value="100" step="10">
+        </div>
+        <button class="calc" onclick="calculate()">Calculate</button>
+        <span id="status"></span>
+    </div>
+
+    <div id="summaryStrip" class="kpi-grid" style="display:none;">
+        <div class="kpi-card severity-info">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Clients Exposed</div>
+            </div>
+            <div class="kpi-val" id="sClients">0</div>
+            <div class="kpi-sub" id="sClientsSub">with open positions</div>
+        </div>
+        <div class="kpi-card" id="cardDanger">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Clients In Danger</div>
+                <div class="kpi-status neutral" id="sDangerStatus">SAFE</div>
+            </div>
+            <div class="kpi-val" id="sDanger">0</div>
+            <div class="kpi-sub" id="sDangerSub">below target ML</div>
+        </div>
+        <div class="kpi-card severity-warn" id="cardAggMl">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Aggregate ML After</div>
+            </div>
+            <div class="kpi-val" id="sAggMl">0%</div>
+            <div class="kpi-sub" id="sAggMlSub">book-weighted</div>
+        </div>
+        <div class="kpi-card" id="cardDelta">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Floating PnL Impact</div>
+                <div class="kpi-status neutral" id="sDeltaStatus">FLAT</div>
+            </div>
+            <div class="kpi-val" id="sDelta">$0</div>
+            <div class="kpi-sub">change from current</div>
+        </div>
+        <div class="kpi-card" id="cardFunding">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Funding Required</div>
+            </div>
+            <div class="kpi-val" id="sFunding">$0</div>
+            <div class="kpi-sub" id="sFundingSub">all clients above target</div>
+        </div>
+        <div class="kpi-card severity-bad" id="cardWorst" style="display:none;">
+            <div class="kpi-header">
+                <div class="kpi-lbl">Worst Account</div>
+                <div class="kpi-status bad">CRITICAL</div>
+            </div>
+            <div class="kpi-val compact" id="sWorstName">None</div>
+            <div class="kpi-sub" id="sWorstSub">no positions</div>
+        </div>
+    </div>
+
+    <div id="resultSection" class="glass rounded-lg p-2 flex flex-col" style="display:none;">
+        <div class="section-title">Scenario Results (sorted: most at risk first)</div>
+        <div id="grid-risk-scenario" class="ag-theme-alpine-dark grid-host"></div>
+    </div>
+</div>
+
+<script>
+    const { fmtUSD, fmtNum, fmtNum5 } = SLC;
+
+    let riskGrid;
+    let lastTargetMl = 100;
+
+    function uniqueSymbols(values) {
+        return [...new Set(values.filter(Boolean))];
+    }
+
+    function fmtMlHtml(v) {
+        const n = Number(v || 0);
+        if (!n) return '<span class="leg-muted">-</span>';
+        const cls = n >= 200 ? 'leg-pos' : n >= lastTargetMl ? 'leg-muted' : 'leg-neg';
+        return `<span class="${cls}">${n.toFixed(2)}%</span>`;
+    }
+
+    function fmtFundingHtml(v) {
+        const n = Number(v || 0);
+        if (!n) return '<span class="leg-pos">$0.00</span>';
+        return `<span class="leg-neg">$${n.toFixed(2)}</span>`;
+    }
+
+    function multiLineLegRenderer(field, formatter, valueClassFn) {
+        return p => {
+            const legs = p.data?.legs || [];
+            if (!legs.length) return '<span class="leg-muted">-</span>';
+            return `<div class="leg-lines">${legs.map(leg => {
+                const raw = leg[field];
+                const cls = valueClassFn ? valueClassFn(raw) : 'leg-value';
+                return `<div class="leg-line"><span class="leg-symbol">${leg.symbol}</span><span class="${cls}">${formatter(raw)}</span></div>`;
+            }).join('')}</div>`;
+        };
+    }
+
+    function initGrid() {
+        const columnDefs = [
+            { field: 'lp', headerName: 'Client', pinned: 'left', minWidth: 200 },
+            { field: 'symbolsLabel', headerName: 'Symbols', minWidth: 120 },
+            { field: 'netVolume', headerName: 'Net Vol', minWidth: 110, cellRenderer: multiLineLegRenderer('netVolume', v => Number(v || 0).toFixed(3)) },
+            { field: 'vwapOpen', headerName: 'VWAP Open', minWidth: 120, cellRenderer: multiLineLegRenderer('vwapOpen', v => Number(v || 0).toFixed(5)) },
+            { field: 'priceCurrent', headerName: 'Price Current', minWidth: 120, cellRenderer: multiLineLegRenderer('priceCurrent', v => Number(v || 0).toFixed(5)) },
+            { field: 'adversePrice', headerName: 'Adverse Price', minWidth: 120, cellRenderer: multiLineLegRenderer('adversePrice', v => Number(v || 0).toFixed(5)) },
+            { field: 'plNow', headerName: 'P/L Now', minWidth: 110, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)' }) },
+            { field: 'deltaPl', headerName: 'P&L Change', minWidth: 120, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)', background: 'rgba(122,162,247,0.06)' }) },
+            { field: 'plAfter', headerName: 'P/L After', minWidth: 110, valueFormatter: fmtUSD, cellStyle: p => ({ color: (p.value || 0) >= 0 ? 'var(--pos)' : 'var(--neg)', background: 'rgba(122,162,247,0.06)' }) },
+            { field: 'equityNow', headerName: 'Equity Now', minWidth: 110, valueFormatter: fmtUSD },
+            { field: 'equityAfter', headerName: 'Equity After', minWidth: 110, valueFormatter: fmtUSD, cellStyle: { background: 'rgba(122,162,247,0.06)' } },
+            { field: 'mlNow', headerName: 'ML Now %', minWidth: 95, cellRenderer: p => fmtMlHtml(p.value) },
+            { field: 'mlAfter', headerName: 'ML After %', minWidth: 95, cellRenderer: p => fmtMlHtml(p.value), cellStyle: { background: 'rgba(122,162,247,0.06)' } },
+            { field: 'margin', headerName: 'Margin', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'freeMarginNow', headerName: 'FM Now', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'freeMarginAfter', headerName: 'FM After', minWidth: 105, valueFormatter: fmtUSD },
+            { field: 'fundingToTarget', headerName: 'Funding To Target', minWidth: 140, cellRenderer: p => fmtFundingHtml(p.value) },
+            { field: 'comment', headerName: 'Comment', minWidth: 180, flex: 2, cellStyle: { color: '#7c89b0', fontSize: '11px' } },
+        ];
+
+        riskGrid = SLC.createGrid(document.getElementById('grid-risk-scenario'), {
+            columnDefs,
+            rowData: [],
+            pinnedBottomRowData: [],
+            getRowHeight: p => {
+                if (p.node.rowPinned) return 28;
+                const legs = p.data?.legs?.length || 1;
+                return Math.max(28, 20 + (legs - 1) * 16);
+            },
+            getRowStyle: p => {
+                if (p.node.rowPinned) return { fontWeight: 'bold', background: 'rgba(255,255,255,0.04)' };
+                const mlAfter = Number(p.data?.mlAfter || 0);
+                if (mlAfter > 0 && mlAfter < lastTargetMl) return { background: 'rgba(247,118,142,0.10)' };
+                return null;
+            }
+        });
+    }
+
+    async function loadSymbols() {
+        try {
+            const resp = await fetch('/RiskScenario/symbols');
+            if (!resp.ok) return;
+            const symbols = await resp.json();
+            const options = symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+            document.getElementById('symbolSelect1').innerHTML = options;
+            document.getElementById('symbolSelect2').innerHTML = `<option value="">Optional</option>${options}`;
+        } catch (e) {
+            console.error('Failed to load symbols', e);
+        }
+    }
+
+    async function calculate() {
+        const symbols = uniqueSymbols([
+            document.getElementById('symbolSelect1').value,
+            document.getElementById('symbolSelect2').value
+        ]);
+        const direction = document.getElementById('dirSelect').value;
+        const moveAmount = parseFloat(document.getElementById('moveInput').value) || 0;
+        const targetMl = parseFloat(document.getElementById('targetMlInput').value) || 100;
+        lastTargetMl = targetMl;
+
+        if (symbols.length === 0 || moveAmount === 0) {
+            document.getElementById('status').textContent = 'Select at least one symbol and move amount';
+            return;
+        }
+
+        document.getElementById('status').textContent = 'Calculating...';
+        document.getElementById('resultSection').style.display = 'flex';
+        document.getElementById('summaryStrip').style.display = 'none';
+        riskGrid.setGridOption('rowData', []);
+        riskGrid.setGridOption('pinnedBottomRowData', []);
+
+        try {
+            const resp = await fetch('/api/ClientRiskScenario/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ symbol: symbols[0], symbols, direction, moveAmount, targetMl })
+            });
+
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderResults(data, symbols);
+        } catch (e) {
+            document.getElementById('status').textContent = 'Error: ' + e.message;
+            riskGrid.setGridOption('rowData', []);
+            riskGrid.setGridOption('pinnedBottomRowData', []);
+        }
+    }
+
+    function renderResults(data, requestedSymbols) {
+        const symbols = data.symbols && data.symbols.length ? data.symbols : requestedSymbols;
+        const label = symbols.join(' + ');
+        const rows = data.rows || [];
+
+        if (!rows.length) {
+            document.getElementById('status').textContent = `No client positions found for ${label || 'the selected symbol'}`;
+            riskGrid.setGridOption('rowData', []);
+            riskGrid.setGridOption('pinnedBottomRowData', []);
+            return;
+        }
+
+        const inDanger = rows.filter(r => Number(r.mlAfter || 0) > 0 && Number(r.mlAfter) < lastTargetMl).length;
+        const totalDelta = rows.reduce((s, r) => s + Number(r.deltaPl || 0), 0);
+        const totalFunding = rows.reduce((s, r) => s + Number(r.fundingToTarget || 0), 0);
+        const sumEqAfter = rows.reduce((s, r) => s + Number(r.equityAfter || 0), 0);
+        const sumMargin = rows.reduce((s, r) => s + Number(r.margin || 0), 0);
+        const aggMl = sumMargin > 0 ? (sumEqAfter / sumMargin) * 100 : 0;
+        const worst = rows.length > 0 ? rows[0] : null;
+        const fmtUsd = v => (v >= 0 ? '$' : '-$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        document.getElementById('sClients').textContent = rows.length;
+        document.getElementById('sClientsSub').textContent = `on ${label}`;
+
+        document.getElementById('sDanger').textContent = inDanger;
+        document.getElementById('sDangerSub').textContent = `below ${lastTargetMl}% ML`;
+        const dangerSeverity = inDanger === 0 ? 'ok' : inDanger <= 2 ? 'warn' : 'bad';
+        const dangerStatus = inDanger === 0 ? 'SAFE' : inDanger <= 2 ? 'WARNING' : 'DANGER';
+        document.getElementById('cardDanger').className = 'kpi-card severity-' + dangerSeverity;
+        const dangerPill = document.getElementById('sDangerStatus');
+        dangerPill.textContent = dangerStatus;
+        dangerPill.className = 'kpi-status ' + dangerSeverity;
+
+        const aggEl = document.getElementById('sAggMl');
+        aggEl.textContent = aggMl > 0 ? aggMl.toFixed(2) + '%' : '0%';
+        aggEl.className = 'kpi-val ' + (aggMl >= 200 ? 'pos' : aggMl >= lastTargetMl ? 'warn' : 'neg');
+        const aggSeverity = aggMl >= 200 ? 'ok' : aggMl >= lastTargetMl ? 'warn' : 'bad';
+        document.getElementById('cardAggMl').className = 'kpi-card severity-' + aggSeverity;
+        document.getElementById('sAggMlSub').textContent = aggMl >= lastTargetMl
+            ? `book above ${lastTargetMl}% target`
+            : `book below ${lastTargetMl}% target`;
+
+        document.getElementById('sDelta').textContent = fmtUsd(totalDelta);
+        document.getElementById('sDelta').className = 'kpi-val ' + (totalDelta >= 0 ? 'pos' : 'neg');
+        const deltaSeverity = totalDelta >= 0 ? 'ok' : 'warn';
+        document.getElementById('cardDelta').className = 'kpi-card severity-' + deltaSeverity;
+        const deltaPill = document.getElementById('sDeltaStatus');
+        deltaPill.textContent = totalDelta > 0 ? 'GAIN' : totalDelta < 0 ? 'LOSS' : 'FLAT';
+        deltaPill.className = 'kpi-status ' + (totalDelta > 0 ? 'ok' : totalDelta < 0 ? 'bad' : 'neutral');
+
+        document.getElementById('sFunding').textContent = fmtUsd(totalFunding);
+        document.getElementById('sFunding').className = 'kpi-val ' + (totalFunding > 0 ? 'neg' : 'pos');
+        document.getElementById('cardFunding').className = 'kpi-card severity-' + (totalFunding > 0 ? 'bad' : 'ok');
+        const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+        document.getElementById('sFundingSub').textContent = totalFunding > 0
+            ? `across ${plural(inDanger, 'at-risk client')}`
+            : 'all clients above target';
+
+        const worstCard = document.getElementById('cardWorst');
+        if (worst && Number(worst.mlAfter) > 0 && Number(worst.mlAfter) < lastTargetMl * 1.5) {
+            document.getElementById('sWorstName').textContent = worst.lp;
+            document.getElementById('sWorstSub').textContent =
+                `ML ${Number(worst.mlAfter).toFixed(1)}%, needs ${fmtUsd(Number(worst.fundingToTarget || 0))}`;
+            worstCard.style.display = '';
+        } else {
+            worstCard.style.display = 'none';
+        }
+
+        document.getElementById('summaryStrip').style.display = 'grid';
+
+        riskGrid.setGridOption('rowData', rows);
+        riskGrid.setGridOption('pinnedBottomRowData', data.totals ? [{
+            ...data.totals,
+            lp: 'TOTAL',
+            symbolsLabel: label,
+            comment: data.totals.comment || ''
+        }] : []);
+
+        document.getElementById('status').textContent = `${plural(rows.length, 'client')} with ${label} positions, ${inDanger} below ${lastTargetMl}% ML`;
+    }
+
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && ['moveInput', 'targetMlInput'].includes(e.target.id)) calculate();
+    });
+
+    initGrid();
+    loadSymbols();
+</script>
+</body>
+</html>

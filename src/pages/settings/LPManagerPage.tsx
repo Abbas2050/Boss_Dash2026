@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, ChevronDown, ChevronRight, Layers3, PlusCircle, RefreshCw, Server, ShieldCheck, Sparkles } from "lucide-react";
+import { Activity, ChevronDown, ChevronRight, Layers3, PlusCircle, RefreshCw, Server, ShieldCheck, Wifi } from "lucide-react";
 import { SortableTable, type SortableTableColumn } from "../../components/ui/SortableTable";
 
-type LPSource = "Manager" | "Terminal" | "Bonus";
+type LPSource = "Manager" | "Terminal" | "Api";
 
 type LPAccount = {
   id: number;
@@ -17,6 +17,20 @@ type LPAccount = {
   coverageAccountLogin?: number | null;
   excludeFromEquity?: boolean;
   excludeFromPositions?: boolean;
+  isBonus?: boolean;
+  excludeFromHistory?: boolean;
+  excludeFromDealMatching?: boolean;
+  isConnected?: boolean | null;
+  lastDataReceived?: string | null;
+};
+
+type ManagerStatusItem = {
+  name: string;
+  login: number;
+  configured: boolean;
+  connected: boolean;
+  lastAttemptUtc?: string | null;
+  lastResult?: string | null;
 };
 
 type TerminalStatusItem = {
@@ -63,12 +77,12 @@ const sourceName = (val: unknown): LPSource => {
   if (typeof val === "string") {
     const normalized = val.trim().toLowerCase();
     if (normalized === "terminal") return "Terminal";
-    if (normalized === "bonus") return "Bonus";
+    if (normalized === "api") return "Api";
     return "Manager";
   }
   if (typeof val === "number") {
     if (val === 1) return "Terminal";
-    if (val === 2) return "Bonus";
+    if (val === 2) return "Api";
   }
   return "Manager";
 };
@@ -84,7 +98,7 @@ const fmtNum = (value: unknown, digits = 2) => {
 
 const sourceBadgeClass = (source: LPSource) => {
   if (source === "Terminal") return "bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-500/30";
-  if (source === "Bonus") return "bg-violet-500/10 text-violet-700 dark:text-violet-300 border-violet-500/30";
+  if (source === "Api") return "bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/30";
   return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30";
 };
 
@@ -101,10 +115,13 @@ export const LPManagerPage: React.FC = () => {
   const [coverageExpanded, setCoverageExpanded] = useState(false);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [terminalRows, setTerminalRows] = useState<TerminalStatusItem[]>([]);
+  const [managerStatus, setManagerStatus] = useState<ManagerStatusItem[]>([]);
 
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [editMsg, setEditMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
+  // Add form
+  const [addFormExpanded, setAddFormExpanded] = useState(false);
   const [lpName, setLpName] = useState("");
   const [mt5Login, setMt5Login] = useState("");
   const [source, setSource] = useState<LPSource>("Manager");
@@ -113,10 +130,14 @@ export const LPManagerPage: React.FC = () => {
   const [coverageAccountLogin, setCoverageAccountLogin] = useState("");
   const [excludeFromEquity, setExcludeFromEquity] = useState(false);
   const [excludeFromPositions, setExcludeFromPositions] = useState(false);
+  const [isBonus, setIsBonus] = useState(false);
+  const [excludeFromHistory, setExcludeFromHistory] = useState(false);
+  const [excludeFromDealMatching, setExcludeFromDealMatching] = useState(false);
   const [mt5TerminalPath, setMt5TerminalPath] = useState("");
   const [mt5Server, setMt5Server] = useState("");
   const [mt5Password, setMt5Password] = useState("");
 
+  // Edit modal
   const [editing, setEditing] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [editLpName, setEditLpName] = useState("");
@@ -131,8 +152,15 @@ export const LPManagerPage: React.FC = () => {
   const [editCoverageAccountLogin, setEditCoverageAccountLogin] = useState("");
   const [editExcludeFromEquity, setEditExcludeFromEquity] = useState(false);
   const [editExcludeFromPositions, setEditExcludeFromPositions] = useState(false);
+  const [editIsBonus, setEditIsBonus] = useState(false);
+  const [editExcludeFromHistory, setEditExcludeFromHistory] = useState(false);
+  const [editExcludeFromDealMatching, setEditExcludeFromDealMatching] = useState(false);
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
+
+  // Bulk selection
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+
   const lpNameInputRef = useRef<HTMLInputElement | null>(null);
   const [sourceFilter, setSourceFilter] = useState<"all" | LPSource>("all");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
@@ -186,13 +214,25 @@ export const LPManagerPage: React.FC = () => {
     }
   }
 
+  async function loadManagerStatus() {
+    try {
+      const resp = await fetch(apiUrl(`/api/ManagerStatus`), { headers: { Accept: "application/json" } });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = await readJsonOrThrow<any[]>(resp, "Load manager status");
+      setManagerStatus(Array.isArray(data) ? (data as ManagerStatusItem[]) : []);
+    } catch {
+      setManagerStatus([]);
+    }
+  }
+
   async function loadAll() {
-    await Promise.all([loadAccounts(), loadCoverage(), loadTerminalStatus()]);
+    await Promise.all([loadAccounts(), loadCoverage(), loadTerminalStatus(), loadManagerStatus()]);
   }
 
   useEffect(() => {
     loadAccounts();
     loadTerminalStatus();
+    loadManagerStatus();
   }, []);
 
   useEffect(() => {
@@ -203,7 +243,10 @@ export const LPManagerPage: React.FC = () => {
   }, [coverageExpanded]);
 
   useEffect(() => {
-    const termInterval = setInterval(loadTerminalStatus, 5000);
+    const termInterval = setInterval(() => {
+      loadTerminalStatus();
+      loadManagerStatus();
+    }, 5000);
     return () => {
       clearInterval(termInterval);
     };
@@ -233,18 +276,18 @@ export const LPManagerPage: React.FC = () => {
   const accountStats = useMemo(() => {
     let managerCount = 0;
     let terminalCount = 0;
-    let bonusCount = 0;
+    let apiCount = 0;
     for (const account of accounts) {
       const src = sourceName(account.source);
       if (src === "Terminal") terminalCount += 1;
-      else if (src === "Bonus") bonusCount += 1;
+      else if (src === "Api") apiCount += 1;
       else managerCount += 1;
     }
     return {
       total: accounts.length,
       managerCount,
       terminalCount,
-      bonusCount,
+      apiCount,
     };
   }, [accounts]);
 
@@ -275,6 +318,17 @@ export const LPManagerPage: React.FC = () => {
       return true;
     });
   }, [equityFilter, lpAccountRows, positionsFilter, sourceFilter, statusFilter]);
+
+  // Clear selections that are no longer in the filtered set
+  useEffect(() => {
+    if (selectedIds.size === 0) return;
+    const filteredIdSet = new Set(filteredAccountRows.map((r) => r.id));
+    setSelectedIds((prev) => {
+      const next = new Set<number>();
+      prev.forEach((id) => { if (filteredIdSet.has(id)) next.add(id); });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredAccountRows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const terminalFeedRows = useMemo<TerminalFeedRow[]>(() => {
     return terminalRows.map((row, idx) => {
@@ -309,6 +363,9 @@ export const LPManagerPage: React.FC = () => {
     setCoverageAccountLogin("");
     setExcludeFromEquity(false);
     setExcludeFromPositions(false);
+    setIsBonus(false);
+    setExcludeFromHistory(false);
+    setExcludeFromDealMatching(false);
     setMt5TerminalPath("");
     setMt5Server("");
     setMt5Password("");
@@ -335,6 +392,9 @@ export const LPManagerPage: React.FC = () => {
     );
     setEditExcludeFromEquity(!!a.excludeFromEquity);
     setEditExcludeFromPositions(!!a.excludeFromPositions);
+    setEditIsBonus(!!a.isBonus);
+    setEditExcludeFromHistory(!!a.excludeFromHistory);
+    setEditExcludeFromDealMatching(!!a.excludeFromDealMatching);
     setEditErrors({});
     setEditMsg(null);
     setEditing(true);
@@ -345,6 +405,9 @@ export const LPManagerPage: React.FC = () => {
     setEditId(null);
     setEditMsg(null);
     setEditErrors({});
+    setEditIsBonus(false);
+    setEditExcludeFromHistory(false);
+    setEditExcludeFromDealMatching(false);
   }
 
   async function saveEdit() {
@@ -355,6 +418,7 @@ export const LPManagerPage: React.FC = () => {
     if (Object.keys(errors).length > 0) return;
 
     const coverageVal = editCoverageAccountLogin.trim();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: any = {
       lpName: editLpName.trim() || null,
       groupPattern: editGroupPattern.trim() || null,
@@ -363,6 +427,9 @@ export const LPManagerPage: React.FC = () => {
       coverageAccountLogin: coverageVal ? Number(coverageVal) : null,
       excludeFromEquity: editExcludeFromEquity,
       excludeFromPositions: editExcludeFromPositions,
+      isBonus: editIsBonus,
+      excludeFromHistory: editExcludeFromHistory,
+      excludeFromDealMatching: editExcludeFromDealMatching,
     };
 
     const path = editTerminalPath.trim();
@@ -407,6 +474,7 @@ export const LPManagerPage: React.FC = () => {
     }
 
     const coverageVal = coverageAccountLogin.trim();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const body: any = {
       lpName: lpName.trim(),
       mt5Login: parsedLogin,
@@ -416,6 +484,9 @@ export const LPManagerPage: React.FC = () => {
       coverageAccountLogin: coverageVal ? parseInt(coverageVal, 10) : null,
       excludeFromEquity,
       excludeFromPositions,
+      isBonus,
+      excludeFromHistory,
+      excludeFromDealMatching,
     };
 
     if (source === "Terminal") {
@@ -503,7 +574,98 @@ export const LPManagerPage: React.FC = () => {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function bulkUpdate(patch: Record<string, any>) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      const resp = await fetch(apiUrl(`/api/lpaccount/bulk-update`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, patch }),
+      });
+      if (resp.ok) {
+        setSelectedIds(new Set());
+        await loadAccounts();
+        loadCoverage();
+        setMsg({ text: `Updated ${ids.length} LP account${ids.length !== 1 ? "s" : ""}`, ok: true });
+      } else {
+        const text = await resp.text().catch(() => "");
+        setMsg({ text: `Bulk update error: ${text || resp.statusText}`, ok: false });
+      }
+    } catch (e: any) {
+      setMsg({ text: `Bulk update failed: ${e.message}`, ok: false });
+    }
+  }
+
+  async function bulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Remove ${ids.length} LP account${ids.length !== 1 ? "s" : ""}? (soft delete)`)) return;
+    try {
+      const resp = await fetch(apiUrl(`/api/lpaccount/bulk-delete`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, permanent: false }),
+      });
+      if (resp.ok) {
+        setSelectedIds(new Set());
+        await loadAccounts();
+        loadCoverage();
+        setMsg({ text: `Removed ${ids.length} LP account${ids.length !== 1 ? "s" : ""}`, ok: true });
+      } else {
+        const text = await resp.text().catch(() => "");
+        setMsg({ text: `Bulk delete error: ${text || resp.statusText}`, ok: false });
+      }
+    } catch (e: any) {
+      setMsg({ text: `Bulk delete failed: ${e.message}`, ok: false });
+    }
+  }
+
+  const allFilteredIds = useMemo(() => filteredAccountRows.map((r) => r.id), [filteredAccountRows]);
+  const allFilteredSelected = allFilteredIds.length > 0 && allFilteredIds.every((id) => selectedIds.has(id));
+  const someFilteredSelected = !allFilteredSelected && allFilteredIds.some((id) => selectedIds.has(id));
+
+  function toggleSelectAll() {
+    if (allFilteredSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(allFilteredIds));
+    }
+  }
+
+  function toggleSelectRow(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
   const lpAccountColumns: SortableTableColumn<LPAccountTableRow>[] = [
+    {
+      key: "select",
+      label: "",
+      hideable: false,
+      headerRender: () => (
+        <input
+          type="checkbox"
+          checked={allFilteredSelected}
+          ref={(el) => { if (el) el.indeterminate = someFilteredSelected; }}
+          onChange={toggleSelectAll}
+          className="h-3.5 w-3.5 cursor-pointer rounded border-slate-500"
+          title="Select all visible"
+        />
+      ),
+      render: (row) => (
+        <input
+          type="checkbox"
+          checked={selectedIds.has(row.id)}
+          onChange={() => toggleSelectRow(row.id)}
+          className="h-3.5 w-3.5 cursor-pointer rounded border-slate-500"
+        />
+      ),
+    },
     {
       key: "id",
       label: "ID",
@@ -532,9 +694,20 @@ export const LPManagerPage: React.FC = () => {
       label: "Source",
       sortValue: (row) => row.sourceLabel,
       searchValue: (row) => row.sourceLabel,
-      render: (row) => (
-        <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${sourceBadgeClass(row.sourceLabel)}`}>{row.sourceLabel}</span>
-      ),
+      render: (row) => {
+        const lastTxt = row.lastDataReceived ? new Date(row.lastDataReceived).toLocaleTimeString() : "never";
+        return (
+          <span className="inline-flex items-center gap-1.5">
+            <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${sourceBadgeClass(row.sourceLabel)}`}>{row.sourceLabel}</span>
+            {row.sourceLabel === "Api" && row.isConnected !== null && row.isConnected !== undefined && (
+              <span
+                className={`inline-block h-2 w-2 rounded-full ${row.isConnected ? "bg-emerald-500" : "bg-rose-500"}`}
+                title={`Last data: ${lastTxt}`}
+              />
+            )}
+          </span>
+        );
+      },
     },
     {
       key: "coverage",
@@ -562,6 +735,42 @@ export const LPManagerPage: React.FC = () => {
       searchValue: (row) => (row.excludeFromPositions ? "Excluded" : "Included"),
       render: (row) =>
         row.excludeFromPositions ? (
+          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-700 dark:text-rose-300">Excluded</span>
+        ) : (
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Included</span>
+        ),
+    },
+    {
+      key: "routing",
+      label: "Routing",
+      sortValue: (row) => (row.isBonus ? 1 : 0),
+      searchValue: (row) => (row.isBonus ? "Bonus" : "Normal"),
+      render: (row) =>
+        row.isBonus ? (
+          <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-300">Bonus</span>
+        ) : (
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Normal</span>
+        ),
+    },
+    {
+      key: "history",
+      label: "History",
+      sortValue: (row) => (row.excludeFromHistory ? 0 : 1),
+      searchValue: (row) => (row.excludeFromHistory ? "Excluded" : "Included"),
+      render: (row) =>
+        row.excludeFromHistory ? (
+          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-700 dark:text-rose-300">Excluded</span>
+        ) : (
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Included</span>
+        ),
+    },
+    {
+      key: "dealMatching",
+      label: "Deal Matching",
+      sortValue: (row) => (row.excludeFromDealMatching ? 0 : 1),
+      searchValue: (row) => (row.excludeFromDealMatching ? "Excluded" : "Included"),
+      render: (row) =>
+        row.excludeFromDealMatching ? (
           <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-700 dark:text-rose-300">Excluded</span>
         ) : (
           <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Included</span>
@@ -676,11 +885,11 @@ export const LPManagerPage: React.FC = () => {
                 <div className="font-mono text-lg font-semibold text-cyan-700 dark:text-cyan-300">{accountStats.terminalCount.toLocaleString()}</div>
               </div>
             </div>
-            <div className={`${panelClass} bg-gradient-to-br from-violet-500/10 to-violet-500/5 p-3`}>
-              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Bonus</div>
+            <div className={`${panelClass} bg-gradient-to-br from-blue-500/10 to-blue-500/5 p-3`}>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">API</div>
               <div className="mt-1 flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-violet-700 dark:text-violet-300" />
-                <div className="font-mono text-lg font-semibold text-violet-700 dark:text-violet-300">{accountStats.bonusCount.toLocaleString()}</div>
+                <Wifi className="h-4 w-4 text-blue-700 dark:text-blue-300" />
+                <div className="font-mono text-lg font-semibold text-blue-700 dark:text-blue-300">{accountStats.apiCount.toLocaleString()}</div>
               </div>
             </div>
             <div className={`${panelClass} p-3 flex items-end`}>
@@ -694,9 +903,63 @@ export const LPManagerPage: React.FC = () => {
             </div>
           </div>
 
+          {/* MT5 Manager Status panel */}
+          <div className={`${panelClass} p-4`}>
+            <h2 className="mb-3 text-base font-semibold text-primary">MT5 Manager Status</h2>
+            {managerStatus.length === 0 ? (
+              <div className="text-xs text-muted-foreground">No manager status data available.</div>
+            ) : (
+              <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                {managerStatus.map((m, idx) => {
+                  const lastAttempt = m.lastAttemptUtc ? new Date(m.lastAttemptUtc).toLocaleString() : "—";
+                  const loginTxt = m.login > 0 ? `#${m.login}` : "—";
+                  const hasError = m.lastResult && m.lastResult !== "MT_RET_OK";
+                  return (
+                    <div key={`mgr-${m.login}-${idx}`} className="rounded-lg border border-border bg-background/60 p-3">
+                      <div className="font-semibold text-foreground">
+                        {m.name}{" "}
+                        <span className="text-xs font-normal text-muted-foreground">{loginTxt}</span>
+                      </div>
+                      <div className="mt-1.5">
+                        {!m.configured ? (
+                          <span className="rounded border border-slate-500/30 bg-slate-500/10 px-2 py-0.5 text-[11px] text-slate-500 dark:text-slate-400">Not Configured</span>
+                        ) : m.connected ? (
+                          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Connected</span>
+                        ) : (
+                          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-700 dark:text-rose-300">Disconnected</span>
+                        )}
+                      </div>
+                      <div className="mt-1.5 text-[11px] text-muted-foreground">Last attempt: {lastAttempt}</div>
+                      {hasError && (
+                        <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{m.lastResult}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-            <div className={`${panelClass} p-4 bg-gradient-to-br from-blue-500/10 via-card to-indigo-500/5`}>
+            <div className={`${panelClass} bg-gradient-to-br from-blue-500/10 via-card to-indigo-500/5`}>
+              {/* Collapsible header */}
+              <button
+                type="button"
+                onClick={() => setAddFormExpanded((v) => !v)}
+                className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-left"
+              >
+                <div>
+                  <h2 className="text-base font-semibold text-primary">Add LP Account</h2>
+                  <div className="mt-0.5 text-xs text-muted-foreground">Create and classify LP accounts with optional terminal and coverage controls.</div>
+                </div>
+                <span className="text-muted-foreground">
+                  {addFormExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                </span>
+              </button>
+
+              {addFormExpanded && (
               <form
+                className="px-4 pb-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   if (!canSubmitAccount) {
@@ -706,14 +969,7 @@ export const LPManagerPage: React.FC = () => {
                   addAccount();
                 }}
               >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-semibold text-primary">Add LP Account</h2>
-                  <div className="mt-1 text-xs text-muted-foreground">Create and classify LP accounts with optional terminal and coverage controls.</div>
-                  <div className="mt-1 text-[11px] text-cyan-700 dark:text-cyan-300">Submit button is at the bottom of this form.</div>
-                </div>
-              </div>
-              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                 <input
                   ref={lpNameInputRef}
                   value={lpName}
@@ -735,7 +991,7 @@ export const LPManagerPage: React.FC = () => {
                 >
                   <option value="Manager">Manager</option>
                   <option value="Terminal">Terminal</option>
-                  <option value="Bonus">Bonus</option>
+                  <option value="Api">API</option>
                 </select>
                 <input
                   value={groupPattern}
@@ -772,6 +1028,39 @@ export const LPManagerPage: React.FC = () => {
                   <select
                     value={String(excludeFromPositions)}
                     onChange={(e) => setExcludeFromPositions(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Bonus Routing</label>
+                  <select
+                    value={String(isBonus)}
+                    onChange={(e) => setIsBonus(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">Normal</option>
+                    <option value="true">Bonus</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Exclude From History</label>
+                  <select
+                    value={String(excludeFromHistory)}
+                    onChange={(e) => setExcludeFromHistory(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm md:col-span-2">
+                  <label className="text-muted-foreground">Exclude From Deal Matching</label>
+                  <select
+                    value={String(excludeFromDealMatching)}
+                    onChange={(e) => setExcludeFromDealMatching(e.target.value === "true")}
                     className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
                   >
                     <option value="false">No</option>
@@ -828,6 +1117,7 @@ export const LPManagerPage: React.FC = () => {
                 )}
               </div>
               </form>
+              )}
             </div>
 
             <div className={`${panelClass} p-4 bg-gradient-to-br from-cyan-500/10 via-card to-emerald-500/5`}>
@@ -910,7 +1200,7 @@ export const LPManagerPage: React.FC = () => {
                   <option value="all">All Sources</option>
                   <option value="Manager">Manager</option>
                   <option value="Terminal">Terminal</option>
-                  <option value="Bonus">Bonus</option>
+                  <option value="Api">API</option>
                 </select>
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "inactive")} className="rounded border border-border bg-background/70 px-2 py-1.5 text-xs">
                   <option value="all">All Status</option>
@@ -929,6 +1219,82 @@ export const LPManagerPage: React.FC = () => {
                 </select>
               </div>
             </div>
+
+            {selectedIds.size > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background/60 px-3 py-2 text-xs">
+                <span className="font-semibold text-foreground">{selectedIds.size} selected</span>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ isActive: true })}
+                  className="rounded bg-emerald-500 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-emerald-600"
+                >
+                  Activate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { if (confirm(`Deactivate ${selectedIds.size} account${selectedIds.size !== 1 ? "s" : ""}?`)) bulkUpdate({ isActive: false }); }}
+                  className="rounded border border-rose-500/40 px-2.5 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+                >
+                  Deactivate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ excludeFromEquity: true })}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Exclude Equity
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ excludeFromEquity: false })}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Include Equity
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ excludeFromPositions: true })}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Exclude Positions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ excludeFromPositions: false })}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Include Positions
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ isBonus: true })}
+                  className="rounded border border-violet-500/40 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-500/10 dark:text-violet-300"
+                >
+                  Route to Bonus
+                </button>
+                <button
+                  type="button"
+                  onClick={() => bulkUpdate({ isBonus: false })}
+                  className="rounded border border-emerald-500/40 px-2.5 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300"
+                >
+                  Route to Normal
+                </button>
+                <button
+                  type="button"
+                  onClick={bulkDelete}
+                  className="rounded bg-rose-500 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-rose-600"
+                >
+                  Remove
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
 
             <div className="mt-3">
               <SortableTable
@@ -1093,6 +1459,39 @@ export const LPManagerPage: React.FC = () => {
                   <select
                     value={String(editExcludeFromPositions)}
                     onChange={(e) => setEditExcludeFromPositions(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Bonus Routing</label>
+                  <select
+                    value={String(editIsBonus)}
+                    onChange={(e) => setEditIsBonus(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">Normal</option>
+                    <option value="true">Bonus</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Exclude History</label>
+                  <select
+                    value={String(editExcludeFromHistory)}
+                    onChange={(e) => setEditExcludeFromHistory(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Exclude Deal Matching</label>
+                  <select
+                    value={String(editExcludeFromDealMatching)}
+                    onChange={(e) => setEditExcludeFromDealMatching(e.target.value === "true")}
                     className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
                   >
                     <option value="false">No</option>

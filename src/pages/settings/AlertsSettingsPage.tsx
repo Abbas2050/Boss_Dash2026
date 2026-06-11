@@ -10,6 +10,7 @@ import {
   writeAlertPreferences,
 } from "@/lib/alertPreferences";
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
+import LpMarginAlerts from "@/components/dashboard/LpMarginAlerts";
 import { hasAccess } from "@/lib/auth";
 
 export const AlertsSettingsPage: React.FC = () => {
@@ -140,6 +141,16 @@ export const AlertsSettingsPage: React.FC = () => {
               </div>
             </div>
           ))}
+        </section>
+
+        <section>
+          <div className="mb-3">
+            <h2 className="text-lg font-semibold text-foreground">LP Margin Alerts</h2>
+            <p className="text-xs text-muted-foreground">
+              Real-time LP accounts at or below the configured margin level. Threshold and poll interval are configurable.
+            </p>
+          </div>
+          <LpMarginAlerts />
         </section>
 
         <section>

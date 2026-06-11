@@ -14,6 +14,7 @@ import { DealMatchingTab } from "@/pages/departments/dealing/DealMatchingTab";
 import { DealPerformanceTab } from "@/pages/departments/dealing/DealPerformanceTab";
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
+import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskScenarioTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -73,6 +74,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "risk-exposure": "Risk Exposure",
   scenario: "Risk Scenario",
   "risk-scenario": "Risk Scenario",
+  "client-risk": "Client Risk Scenario",
+  "client-risk-scenario": "Client Risk Scenario",
   metrics: "Metrics",
   equity: "Equity Overview",
   "equity-overview": "Equity Overview",
@@ -86,6 +89,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   swap: "Swap Tracker",
   "swap-tracker": "Swap Tracker",
   history: "History",
+  transactions: "Transactions",
+  "transactions-history": "Transactions",
   clients: "Clients NOP",
   "clients-nop": "Clients NOP",
   profiling: "Client Profiling",
@@ -964,6 +969,13 @@ export function DealingDepartmentPage() {
   const [historyAppliedLogins, setHistoryAppliedLogins] = useState("");
   const [historyTransactionsData, setHistoryTransactionsData] = useState<TransactionsHistoryData | null>(null);
   const historyRequestRef = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+  const [txData, setTxData] = useState<TransactionsHistoryData | null>(null);
+  const [txLoading, setTxLoading] = useState(false);
+  const [txError, setTxError] = useState<string | null>(null);
+  const [txLastUpdated, setTxLastUpdated] = useState<Date | null>(null);
+  const [txRefreshKey, setTxRefreshKey] = useState(0);
+  const [txLoginInput, setTxLoginInput] = useState("");
+  const [txAppliedLogins, setTxAppliedLogins] = useState("");
   const [nopData, setNopData] = useState<NopReportData | null>(null);
   const [nopLoading, setNopLoading] = useState(false);
   const [nopError, setNopError] = useState<string | null>(null);
@@ -974,6 +986,7 @@ export function DealingDepartmentPage() {
   const [dealPerformanceLoading, setDealPerformanceLoading] = useState(false);
   const [dealPerformanceStatus, setDealPerformanceStatus] = useState("");
   const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
+  const [clientRiskScenarioRefreshKey, setClientRiskScenarioRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -1028,6 +1041,8 @@ export function DealingDepartmentPage() {
         ? swapLoading
         : activeMenu === "History"
           ? historyLoading
+          : activeMenu === "Transactions"
+            ? txLoading
           : activeMenu === "Clients NOP"
             ? nopLoading
           : activeMenu === "Rebate Calculator"
@@ -1200,6 +1215,10 @@ export function DealingDepartmentPage() {
       setRiskScenarioRefreshKey((k) => k + 1);
       return;
     }
+    if (activeMenu === "Client Risk Scenario") {
+      setClientRiskScenarioRefreshKey((k) => k + 1);
+      return;
+    }
     if (activeMenu === "Metrics") {
       setMetricsRefreshKey((k) => k + 1);
       return;
@@ -1226,6 +1245,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "History") {
       setHistoryRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Transactions") {
+      setTxRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Clients NOP") {
@@ -2505,6 +2528,52 @@ export function DealingDepartmentPage() {
   }, [activeMenu, fromDate, toDate, historyAppliedLogins, historyRefreshKey, historyLpAccounts]);
 
   useEffect(() => {
+    if (activeMenu !== "Transactions") {
+      setTxError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadTxData = async () => {
+      setTxLoading(true);
+      setTxError(null);
+      try {
+        const from = toYmd(fromDate);
+        const to = toYmd(toDate);
+        const params = new URLSearchParams({ from, to });
+        const loginParts = String(txAppliedLogins || "")
+          .split(",")
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0);
+        if (loginParts.length === 1) {
+          params.set("login", loginParts[0]);
+        } else if (loginParts.length > 1) {
+          params.set("logins", loginParts.join(","));
+        }
+        const resp = await fetch(`${BACKEND_BASE_URL}/Transactions/history?${params.toString()}`, { cache: "no-store" });
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          throw new Error(`Error ${resp.status}${text ? `: ${text}` : ""}`);
+        }
+        const data = (await resp.json()) as TransactionsHistoryData;
+        if (cancelled) return;
+        setTxData(data);
+        setTxLastUpdated(new Date());
+      } catch (e: any) {
+        if (!cancelled) setTxError(e?.message || "Failed to load transactions.");
+      } finally {
+        if (!cancelled) setTxLoading(false);
+      }
+    };
+
+    loadTxData();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMenu, fromDate, toDate, txAppliedLogins, txRefreshKey]);
+
+  useEffect(() => {
     if (activeMenu !== "Clients NOP") return;
     let cancelled = false;
 
@@ -2859,6 +2928,10 @@ export function DealingDepartmentPage() {
       return [];
     }
 
+    if (activeMenu === "Transactions") {
+      return [];
+    }
+
     if (activeMenu === "Clients NOP") {
       return [];
     }
@@ -2867,6 +2940,10 @@ export function DealingDepartmentPage() {
       return [];
     }
     if (activeMenu === "Deal Performance") {
+      return [];
+    }
+
+    if (activeMenu === "Client Risk Scenario") {
       return [];
     }
 
@@ -3793,6 +3870,8 @@ export function DealingDepartmentPage() {
 
           {activeMenu === "Risk Scenario" ? (
             <RiskScenarioTab refreshKey={riskScenarioRefreshKey} />
+          ) : activeMenu === "Client Risk Scenario" ? (
+            <ClientRiskScenarioTab refreshKey={clientRiskScenarioRefreshKey} />
           ) : activeMenu === "Equity Overview" ? (
             <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
           ) : activeMenu === "Coverage" ? (
@@ -5519,6 +5598,139 @@ export function DealingDepartmentPage() {
                       No transactions history data available for this range.
                     </div>
                   )}
+              </div>
+            </section>
+          ) : activeMenu === "Transactions" ? (
+            <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800/80 dark:bg-slate-950/70">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Transactions</h2>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Server-classified client and LP cashflow transactions for the selected date range.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {txData?.date && (
+                    <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-[11px] font-medium text-cyan-700 dark:text-cyan-200">
+                      Report {txData.date}
+                    </span>
+                  )}
+                  {txLastUpdated && <span className="text-xs text-slate-500 dark:text-slate-400">Updated {txLastUpdated.toLocaleTimeString()}</span>}
+                  <span className="text-xs text-slate-500 dark:text-slate-400">
+                    {toYmd(selectedFromDate)} to {toYmd(selectedToDate)}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mb-4 rounded-xl border border-slate-200/80 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="text-xs text-slate-700 dark:text-slate-300">
+                    Login(s)
+                    <input
+                      type="text"
+                      value={txLoginInput}
+                      onChange={(e) => setTxLoginInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") setTxAppliedLogins(txLoginInput);
+                      }}
+                      placeholder="Login(s), comma-separated"
+                      className="ml-2 w-64 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-100"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setTxAppliedLogins(txLoginInput)}
+                    className="rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-200"
+                  >
+                    Search
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTxRefreshKey((k) => k + 1)}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:border-slate-600"
+                  >
+                    Refresh
+                  </button>
+                  {txAppliedLogins.trim() && (
+                    <div className="text-xs text-slate-500 dark:text-slate-400">Filter: {txAppliedLogins.trim()}</div>
+                  )}
+                </div>
+              </div>
+
+              {txError && (
+                <div className="mb-3 rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{txError}</div>
+              )}
+
+              <div className="space-y-5">
+                <section className="rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">Client Transactions</h3>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Deposits, withdrawals, credits, bonuses, and other client-side cashflow events.</p>
+                    </div>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      {(txData?.clients?.transactions?.length || 0).toLocaleString()} transaction(s)
+                    </span>
+                  </div>
+                  <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                    {[
+                      { label: "Deposits", value: txData?.clients?.summary?.deposits ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.deposits },
+                      { label: "Withdrawals", value: txData?.clients?.summary?.withdrawals ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.withdrawals },
+                      { label: "Credit In", value: txData?.clients?.summary?.creditIn ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditIn },
+                      { label: "Credit Out", value: txData?.clients?.summary?.creditOut ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditOut },
+                      { label: "Net", value: txData?.clients?.summary?.net ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.net },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                        <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{item.label}</div>
+                        <div className={`mt-2 text-lg font-semibold tabular-nums ${signedValueClass(Number(item.value) || 0)}`}>
+                          {formatSignedAmount(Number(item.value) || 0)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <SortableTable
+                    tableId="dealing-tx-client-transactions-table"
+                    enableColumnVisibility
+                    rows={txData?.clients?.transactions || []}
+                    columns={historyClientColumns}
+                    exportFilePrefix="tx-client-transactions"
+                    emptyText={txLoading ? "Loading…" : "No transactions for selected range."}
+                  />
+                </section>
+
+                <section className="rounded-xl border border-slate-200/80 bg-slate-50/40 p-4 dark:border-slate-800 dark:bg-slate-900/30">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-200">LP Transactions</h3>
+                      <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Liquidity-provider cash movements with source and account attribution.</p>
+                    </div>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">
+                      {(txData?.lps?.transactions?.length || 0).toLocaleString()} transaction(s)
+                    </span>
+                  </div>
+                  <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                    {[
+                      { label: "Deposits", value: txData?.lps?.summary?.deposits ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.deposits },
+                      { label: "Withdrawals", value: txData?.lps?.summary?.withdrawals ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.withdrawals },
+                      { label: "Credit In", value: txData?.lps?.summary?.creditIn ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditIn },
+                      { label: "Credit Out", value: txData?.lps?.summary?.creditOut ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.creditOut },
+                      { label: "Net", value: txData?.lps?.summary?.net ?? EMPTY_TRANSACTIONS_HISTORY_SUMMARY.net },
+                    ].map((item) => (
+                      <div key={item.label} className="rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950/60">
+                        <div className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{item.label}</div>
+                        <div className={`mt-2 text-lg font-semibold tabular-nums ${signedValueClass(Number(item.value) || 0)}`}>
+                          {formatSignedAmount(Number(item.value) || 0)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <SortableTable
+                    tableId="dealing-tx-lp-transactions-table"
+                    enableColumnVisibility
+                    rows={txData?.lps?.transactions || []}
+                    columns={historyLpColumns}
+                    exportFilePrefix="tx-lp-transactions"
+                    emptyText={txLoading ? "Loading…" : "No transactions for selected range."}
+                  />
+                </section>
               </div>
             </section>
           ) : activeMenu === "Clients NOP" ? (

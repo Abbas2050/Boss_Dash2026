@@ -23,6 +23,7 @@ const SymbolMappingPage = lazy(() => import("./pages/settings/SymbolMappingPage"
 const WSTestPage = lazy(() => import("./pages/settings/WSTestPage").then((m) => ({ default: m.WSTestPage })));
 const UserManagementPage = lazy(() => import("./pages/settings/UserManagementPage").then((m) => ({ default: m.UserManagementPage })));
 const AlertsSettingsPage = lazy(() => import("./pages/settings/AlertsSettingsPage").then((m) => ({ default: m.AlertsSettingsPage })));
+const LpInfoPage = lazy(() => import("./pages/settings/LpInfoPage").then((m) => ({ default: m.LpInfoPage })));
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
@@ -34,6 +35,7 @@ const settingsPageComponents = {
   coverage: CoveragePage,
   "google-sheet-mapping": GoogleSheetMappingPage,
   "lp-manager": LPManagerPage,
+  "lp-info": LpInfoPage,
   "internal-accounts": InternalAccountsSettingsPage,
   "symbol-mapping": SymbolMappingPage,
   alerts: AlertsSettingsPage,

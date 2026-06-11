@@ -4,6 +4,7 @@ export const DEALING_TABS = [
   "Dealing",
   "Risk Exposure",
   "Risk Scenario",
+  "Client Risk Scenario",
   "Coverage",
   "Bonus",
   "Metrics",
@@ -15,6 +16,7 @@ export const DEALING_TABS = [
   "Rebate Calculator",
   "Client Profiling",
   "History",
+  "Transactions",
   "Swap Tracker",
 ] as const;
 
@@ -160,6 +162,7 @@ export const SETTINGS_MENU_ITEMS = [
   { key: "coverage", name: "Coverage", path: "/settings/coverage", icon: "Workflow", group: "core", requiredPermissions: ["Settings"] },
   { key: "google-sheet-mapping", name: "Google Sheet Mapping", path: "/settings/google-sheet-mapping", icon: "Workflow", group: "core", requiredPermissions: ["Settings"] },
   { key: "lp-manager", name: "LP Manager", path: "/settings/lp-manager", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
+  { key: "lp-info", name: "LP Info", path: "/settings/lp-info", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
   { key: "internal-accounts", name: "Internal Accounts", path: "/settings/internal-accounts", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
   { key: "symbol-mapping", name: "Symbol Mapping", path: "/settings/symbol-mapping", icon: "Link2", group: "core", requiredPermissions: ["Settings"] },
   { key: "alerts", name: "Alerts", path: "/settings/alerts", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
