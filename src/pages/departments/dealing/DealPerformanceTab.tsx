@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { TrendingUp } from "lucide-react";
+import { RefreshCw, TrendingUp } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -32,7 +32,7 @@ import {
   toYmd,
   type DealMatchRevenueRow,
 } from "@/lib/dealMatchApi";
-import { buildReport } from "./dealPerformanceReport";
+import { enumerateMonths, type ReportData } from "./dealPerformanceReport";
 import { generatePerformancePdf } from "./performancePdf";
 
 const colors = {
@@ -156,7 +156,13 @@ export function DealPerformanceTab({
   const [rows, setRows] = useState<DealMatchRevenueRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [meta, setMeta] = useState<{ from?: string; to?: string; loadedAt?: string }>({});
+  const [monthlyRows, setMonthlyRows] = useState<
+    { key: string; label: string; totalRev: number; netRevenue: number; lots: number; ibComm: number; lpComm: number }[]
+  >([]);
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
   const [snapshotting, setSnapshotting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportStatus, setExportStatus] = useState("");
@@ -165,32 +171,132 @@ export function DealPerformanceTab({
     if (!fromDateYmd || !toDateYmd) return;
     setLoading(true);
     setError(null);
+    setWarning(null);
+    setProgress(0);
+    setProgressLabel("Preparing…");
     try {
-      const report = await fetchDealMatch(baseUrl, fromDateYmd, toDateYmd);
-      const baseRows = deriveBaseRows(report).filter((r) => r.lots > 0);
+      // The upstream DealMatch/Run API returns 500 for very large date ranges, so we split
+      // the range into calendar months, fetch each separately, and aggregate per client.
+      const months = enumerateMonths(fromDate, toDate);
+      if (!months.length) {
+        setRows([]);
+        setMonthlyRows([]);
+        setMeta({ from: fromDateYmd, to: toDateYmd, loadedAt: new Date().toLocaleString() });
+        return;
+      }
+
+      const warnings: string[] = [];
+      const byLogin = new Map<string, DealMatchRevenueRow>();
+      const monthTotalRev = new Map<string, number>();
+      const monthLots = new Map<string, number>();
+      const monthLpComm = new Map<string, number>();
+      let fetched = 0;
+      await mapWithConcurrency(
+        months,
+        async (mb) => {
+          try {
+            const report = await fetchDealMatch(baseUrl, mb.startYmd, mb.endYmd);
+            const monthRows = deriveBaseRows(report).filter((r) => r.lots > 0);
+            monthTotalRev.set(mb.key, monthRows.reduce((s, r) => s + r.totalRev, 0));
+            monthLots.set(mb.key, monthRows.reduce((s, r) => s + r.lots, 0));
+            monthLpComm.set(mb.key, monthRows.reduce((s, r) => s + r.lpComm, 0));
+            monthRows.forEach((r) => {
+                const cur =
+                  byLogin.get(r.login) ||
+                  { login: r.login, name: r.name, lots: 0, markup: 0, clientComm: 0, lpComm: 0, totalRev: 0, ibCommission: 0, netRevenue: 0 };
+                if ((!cur.name || cur.name === "-") && r.name) cur.name = r.name;
+                cur.lots += r.lots;
+                cur.markup += r.markup;
+                cur.clientComm += r.clientComm;
+                cur.lpComm += r.lpComm;
+                cur.totalRev = cur.markup + cur.clientComm - cur.lpComm;
+                cur.netRevenue = cur.totalRev; // default for non-IB clients; overridden below if IB
+                byLogin.set(r.login, cur);
+              });
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } catch (e: any) {
+            warnings.push(`${mb.label}: ${e?.message || "failed"}`);
+          } finally {
+            fetched++;
+            setProgress(Math.round((fetched / months.length) * 40));
+            setProgressLabel(`Loading deals ${fetched}/${months.length} months`);
+            onStatusChange?.(`Loading deals ${fetched}/${months.length} months…`);
+          }
+        },
+        4,
+      );
+
+      const baseRows = Array.from(byLogin.values());
+      setProgressLabel(`Resolving IB commissions 0/${baseRows.length}`);
+
+      // IB commission = current wallet balance + IB transactions over the range. The
+      // transactions are fetched per month too, so large ranges don't 500.
       const ibCache = new Map<string, number>();
+      const ibByMonth = new Map<string, number>();
+      let resolved = 0;
       const enriched = await mapWithConcurrency(
         baseRows,
         async (row) => {
-          if (!row.login) return row;
-          if (ibCache.has(row.login)) {
-            const ibCommission = ibCache.get(row.login) || 0;
+          try {
+            if (!row.login) return row;
+            if (ibCache.has(row.login)) {
+              const ibCommission = ibCache.get(row.login) || 0;
+              return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
+            }
+            const crmId = await fetchCrmUserIdByLogin(row.login);
+            if (!crmId) return row;
+            const ib = await isIb(crmId);
+            if (!ib) return row;
+            const wallet = await fetchIbWalletBalance(crmId);
+            let tx = 0;
+            for (const mb of months) {
+              try {
+                const m = await fetchIbPeriodTransactions(crmId, mb.startYmd, mb.endYmd);
+                tx += m;
+                ibByMonth.set(mb.key, (ibByMonth.get(mb.key) || 0) + m);
+              } catch {
+                /* ignore a single month's IB transaction failure */
+              }
+            }
+            const ibCommission = wallet + tx;
+            ibCache.set(row.login, ibCommission);
             return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
+          } finally {
+            resolved++;
+            setProgress(Math.min(99, 40 + Math.round((resolved / baseRows.length) * 60)));
+            setProgressLabel(`Resolving IB commissions ${resolved}/${baseRows.length}`);
           }
-          const crmId = await fetchCrmUserIdByLogin(row.login);
-          if (!crmId) return row;
-          const ib = await isIb(crmId);
-          if (!ib) return row;
-          const [wallet, tx] = await Promise.all([fetchIbWalletBalance(crmId), fetchIbPeriodTransactions(crmId, fromDateYmd, toDateYmd)]);
-          const ibCommission = wallet + tx;
-          ibCache.set(row.login, ibCommission);
-          return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
         },
         6,
       );
+
       const sorted = enriched.sort((a, b) => b.netRevenue - a.netRevenue);
+      setMonthlyRows(
+        months.map((mb) => {
+          const totalRev = monthTotalRev.get(mb.key) || 0;
+          const ibComm = ibByMonth.get(mb.key) || 0;
+          return {
+            key: mb.key,
+            label: mb.label,
+            totalRev,
+            netRevenue: totalRev - ibComm,
+            lots: monthLots.get(mb.key) || 0,
+            ibComm,
+            lpComm: monthLpComm.get(mb.key) || 0,
+          };
+        }),
+      );
       setRows(sorted);
+      setProgress(100);
       setMeta({ from: fromDateYmd, to: toDateYmd, loadedAt: new Date().toLocaleString() });
+
+      if (warnings.length) {
+        if (!sorted.length) {
+          setError(`All ${months.length} month(s) failed to load. ${warnings[0]}`);
+        } else {
+          setWarning(`${warnings.length} of ${months.length} month(s) could not be loaded and were skipped: ${warnings.join("; ")}`);
+        }
+      }
     } catch (e: any) {
       setError(e?.message || "Failed to load performance data.");
     } finally {
@@ -280,12 +386,41 @@ export function DealPerformanceTab({
   );
 
   const handleExportPdf = async () => {
+    if (!rows.length) return;
     setExporting(true);
-    setExportStatus("Starting…");
+    setExportStatus("Building PDF…");
     setError(null);
     try {
-      const data = await buildReport(baseUrl, fromDate, toDate, (msg) => setExportStatus(msg));
-      setExportStatus("Building PDF…");
+      // Reuse the data already loaded on screen — no second round of API calls.
+      const reportTotals = rows.reduce(
+        (acc, r) => {
+          acc.lots += r.lots;
+          acc.totalRev += r.totalRev;
+          acc.netRevenue += r.netRevenue;
+          acc.ibComm += r.ibCommission;
+          acc.lpComm += r.lpComm;
+          return acc;
+        },
+        { lots: 0, totalRev: 0, netRevenue: 0, ibComm: 0, lpComm: 0, clients: rows.length },
+      );
+      const data: ReportData = {
+        meta: { fromYmd: meta.from || fromDateYmd, toYmd: meta.to || toDateYmd, generatedAt: new Date().toLocaleString() },
+        months: monthlyRows.map((m) => ({
+          key: m.key,
+          label: m.label,
+          lots: m.lots,
+          totalRev: m.totalRev,
+          ibComm: m.ibComm,
+          lpComm: m.lpComm,
+          netRevenue: m.netRevenue,
+        })),
+        totals: reportTotals,
+        topClients: [...rows]
+          .sort((a, b) => b.netRevenue - a.netRevenue)
+          .slice(0, 20)
+          .map((r) => ({ login: r.login, name: r.name, lots: r.lots, totalRev: r.totalRev, ibComm: r.ibCommission, netRevenue: r.netRevenue })),
+        warnings: [],
+      };
       await generatePerformancePdf(data);
       setExportStatus("");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -327,7 +462,26 @@ export function DealPerformanceTab({
   return (
     <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/70">
       {error && <div className="rounded-lg border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error}</div>}
+      {warning && <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">{warning}</div>}
 
+      {loading && (
+        <div className="flex flex-col items-center justify-center gap-4 py-24">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300">
+            <RefreshCw className="h-4 w-4 animate-spin text-cyan-600" />
+            {progressLabel || "Loading…"}
+          </div>
+          <div className="h-2.5 w-full max-w-md overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-600 transition-all duration-300 ease-out"
+              style={{ width: `${Math.max(3, progress)}%` }}
+            />
+          </div>
+          <div className="font-mono text-xs text-slate-500">{progress}%</div>
+        </div>
+      )}
+
+      {!loading && (
+      <>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
         {[
           { label: "Clients", value: rows.length.toLocaleString(), tone: "text-slate-900 dark:text-slate-100" },
@@ -341,6 +495,47 @@ export function DealPerformanceTab({
           </div>
         ))}
       </div>
+
+      {monthlyRows.length > 1 && (
+        <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/40">
+          <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-cyan-700 dark:text-cyan-300">
+            <TrendingUp className="h-3.5 w-3.5" />
+            Monthly Revenue — Total vs Net (with Lots)
+          </div>
+          <div className="h-[380px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={monthlyRows} margin={{ left: 8, right: 16, top: 8, bottom: 30 }} barGap={2} barCategoryGap="20%">
+                <defs>
+                  <linearGradient id="gradTotalRev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#60a5fa" />
+                    <stop offset="100%" stopColor="#1d4ed8" />
+                  </linearGradient>
+                  <linearGradient id="gradNetRev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#4ade80" />
+                    <stop offset="100%" stopColor="#15803d" />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} angle={-30} textAnchor="end" interval={0} height={52} />
+                <YAxis yAxisId="left" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Math.round(Number(v) / 1000)}k`} />
+                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(Number(v)).toLocaleString()}`} />
+                <Tooltip
+                  formatter={(value: number, name: string) =>
+                    name === "Lots"
+                      ? [num(value).toLocaleString(undefined, { maximumFractionDigits: 2 }), name]
+                      : [money(num(value)), name]
+                  }
+                  cursor={{ fill: "rgba(148,163,184,0.12)" }}
+                />
+                <Legend />
+                <Bar yAxisId="left" dataKey="totalRev" name="Total Rev" fill="url(#gradTotalRev)" radius={[6, 6, 0, 0]} isAnimationActive animationDuration={900} maxBarSize={26} />
+                <Bar yAxisId="left" dataKey="netRevenue" name="Net Rev" fill="url(#gradNetRev)" radius={[6, 6, 0, 0]} isAnimationActive animationDuration={1100} maxBarSize={26} />
+                <Line yAxisId="right" type="monotone" dataKey="lots" name="Lots" stroke="#b45309" strokeWidth={2.2} dot={{ r: 3 }} isAnimationActive animationDuration={1200} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/40">
@@ -463,7 +658,7 @@ export function DealPerformanceTab({
           <button
             type="button"
             onClick={handleExportPdf}
-            disabled={exporting || loading}
+            disabled={exporting || loading || !rows.length}
             className="rounded-md border border-cyan-600 bg-cyan-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {exporting ? (exportStatus || "Generating…") : "Download PDF Report"}
@@ -488,6 +683,8 @@ export function DealPerformanceTab({
           rowClassName={(row) => (row.netRevenue >= 0 ? "bg-slate-50 dark:bg-slate-950/30" : "bg-rose-50/40 dark:bg-rose-950/10")}
         />
       </div>
+      </>
+      )}
     </section>
   );
 }

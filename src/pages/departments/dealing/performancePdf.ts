@@ -190,7 +190,7 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
   doc.setFontSize(7);
   doc.setTextColor(148, 163, 184);
   doc.text(
-    "IB Commission = period IB transactions (transfers & withdrawals); excludes current IB wallet balance.",
+    "Monthly IB Commission = period IB transactions (transfers & withdrawals). The IB Commission KPI/total also includes current IB wallet balance.",
     margin,
     footY,
   );

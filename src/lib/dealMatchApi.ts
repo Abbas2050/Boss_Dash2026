@@ -173,8 +173,11 @@ export async function fetchIbPeriodTransactions(crmId: number, fromDate: string,
   });
   if (!resp.ok) return 0;
   const rows = (await resp.json()) as Array<{ processedAmount?: number; requestedAmount?: number }>;
+  // IB transfers/withdrawals can be returned signed-negative (money leaving the IB wallet).
+  // IB commission is a cost (money paid to the IB), so sum the magnitudes. This is a no-op
+  // when the CRM already returns positive amounts.
   return (Array.isArray(rows) ? rows : []).reduce(
-    (sum, r) => sum + (Number.isFinite(num(r.processedAmount)) ? num(r.processedAmount) : num(r.requestedAmount)),
+    (sum, r) => sum + Math.abs(Number.isFinite(num(r.processedAmount)) ? num(r.processedAmount) : num(r.requestedAmount)),
     0,
   );
 }
