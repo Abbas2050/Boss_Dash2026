@@ -43,3 +43,6 @@ crm_mt5.db
 
 # Local wallet token cache
 storage/bitpace_token.json
+
+# Brainstorming visual companion artifacts
+.superpowers/
