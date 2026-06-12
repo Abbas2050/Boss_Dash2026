@@ -6,6 +6,24 @@ import { getCurrentUser, hasAccess, isAuthenticated, syncCurrentSession } from "
 import { getDefaultRouteForUser } from "@/lib/permissions";
 import { LiveChatAgent } from "./LiveChatAgent";
 import { TicketsFab } from "./TicketsFab";
+import { AlertsHubProvider, useAlertsHub } from "./AlertsHubProvider";
+
+const DisconnectBanner: React.FC = () => {
+  const { disconnected, silence } = useAlertsHub();
+  if (!disconnected) return null;
+  return (
+    <div className="fixed inset-x-0 top-0 z-[100] flex items-center justify-center gap-3 bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow">
+      <span>⚠ Disconnected from data backend — retrying…</span>
+      <button
+        type="button"
+        onClick={silence}
+        className="rounded border border-white/40 bg-white/10 px-2 py-0.5 text-xs hover:bg-white/20"
+      >
+        Silence
+      </button>
+    </div>
+  );
+};
 
 export const Layout: React.FC = () => {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -58,16 +76,19 @@ export const Layout: React.FC = () => {
   }
 
   return (
-    <div className={theme === "dark" ? "theme-dark" : "theme-light"}>
-      <DashboardHeader theme={theme} onThemeToggle={toggleTheme} />
-      <div className="flex min-w-0 flex-col lg:flex-row">
-        {isSettings && hasAccess("Settings") && <SettingsSidebar />}
-        <main className="min-w-0 flex-1 overflow-x-hidden">
-          <Outlet />
-        </main>
+    <AlertsHubProvider>
+      <DisconnectBanner />
+      <div className={theme === "dark" ? "theme-dark" : "theme-light"}>
+        <DashboardHeader theme={theme} onThemeToggle={toggleTheme} />
+        <div className="flex min-w-0 flex-col lg:flex-row">
+          {isSettings && hasAccess("Settings") && <SettingsSidebar />}
+          <main className="min-w-0 flex-1 overflow-x-hidden">
+            <Outlet />
+          </main>
+        </div>
+        <TicketsFab />
+        {hasAccess("LiveAgent") ? <LiveChatAgent /> : null}
       </div>
-      <TicketsFab />
-      {hasAccess("LiveAgent") ? <LiveChatAgent /> : null}
-    </div>
+    </AlertsHubProvider>
   );
 };
