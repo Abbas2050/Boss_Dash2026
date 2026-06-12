@@ -18,6 +18,7 @@ import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
+import { startHubWatcher } from './alerts/hubWatcher.js';
 import { GoogleSheetsClient } from './wallet/pspClients.js';
 import {
   loadGoogleSheetsMappingConfig,
@@ -863,4 +864,10 @@ server.listen(PORT, () => {
   }
 
   startWeeklyDealMatchScheduler();
+
+  try {
+    startHubWatcher();
+  } catch (e) {
+    console.error('[Alerts] failed to start hub watcher:', e?.message || e);
+  }
 });
