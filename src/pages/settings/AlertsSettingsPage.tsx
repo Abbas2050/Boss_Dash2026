@@ -12,6 +12,7 @@ import {
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
 import LpMarginAlerts from "@/components/dashboard/LpMarginAlerts";
 import { hasAccess } from "@/lib/auth";
+import { isSoundEnabled, setSoundEnabled, primeAudio, playAlarm } from "@/lib/alertSound";
 
 export const AlertsSettingsPage: React.FC = () => {
   const allowedEventKeys = useMemo(
@@ -20,6 +21,7 @@ export const AlertsSettingsPage: React.FC = () => {
   );
   const [prefs, setPrefs] = useState<AlertPreferences>(() => readAlertPreferences());
   const [saved, setSaved] = useState<string>("");
+  const [soundOn, setSoundOn] = useState<boolean>(() => isSoundEnabled());
 
   const enabledCount = useMemo(
     () => allowedEventKeys.filter((k) => prefs[k]).length,
@@ -141,6 +143,45 @@ export const AlertsSettingsPage: React.FC = () => {
               </div>
             </div>
           ))}
+        </section>
+
+        <section className="rounded-2xl border border-border/40 bg-card/70 p-5">
+          <div className="mb-3">
+            <h2 className="text-lg font-semibold text-foreground">Sound Alerts</h2>
+            <p className="text-xs text-muted-foreground">
+              Play a loud alarm in this browser when an LP margin alert fires or the data backend disconnects.
+              Browsers stay silent until you interact once — use "Test sound" to enable.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={soundOn}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  setSoundOn(on);
+                  setSoundEnabled(on);
+                  if (on) primeAudio();
+                }}
+              />
+              <span className={`relative h-7 w-12 rounded-full transition ${soundOn ? "bg-primary" : "bg-muted"}`}>
+                <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition ${soundOn ? "left-6" : "left-1"}`} />
+              </span>
+              <span className="text-sm text-foreground">{soundOn ? "Enabled" : "Disabled"}</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => {
+                primeAudio();
+                playAlarm("lp-margin");
+              }}
+              className="rounded-lg border border-border/60 bg-secondary px-3 py-2 text-sm hover:bg-secondary/80"
+            >
+              Test sound
+            </button>
+          </div>
         </section>
 
         <section>
