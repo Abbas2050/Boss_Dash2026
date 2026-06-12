@@ -2,9 +2,10 @@ const PREF_KEY = "alert_sound_enabled_v1";
 
 export function isSoundEnabled(): boolean {
   try {
-    return localStorage.getItem(PREF_KEY) === "1";
+    const v = localStorage.getItem(PREF_KEY);
+    return v === null ? true : v === "1"; // default ON; only an explicit "0" disables
   } catch {
-    return false;
+    return true;
   }
 }
 

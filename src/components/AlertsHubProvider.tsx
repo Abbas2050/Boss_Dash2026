@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
 import { newBreaches } from "@/lib/alertBreaches";
-import { isSoundEnabled, playAlarm, stopAlarm } from "@/lib/alertSound";
+import { isSoundEnabled, playAlarm, primeAudio, stopAlarm } from "@/lib/alertSound";
 
 export type LpMarginAlertRow = {
   source?: string;
@@ -41,6 +41,20 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [lpAlerts, setLpAlerts] = useState<LpMarginAlertRow[]>([]);
   const prevLoginsRef = useRef<Set<string>>(new Set());
   const prevStatusRef = useRef<SignalRStatus>("disconnected");
+
+  // Unlock audio on the first user interaction anywhere (browsers block sound until then).
+  useEffect(() => {
+    const unlock = () => primeAudio();
+    const opts: AddEventListenerOptions = { once: true, capture: true };
+    window.addEventListener("pointerdown", unlock, opts);
+    window.addEventListener("keydown", unlock, opts);
+    window.addEventListener("touchstart", unlock, opts);
+    return () => {
+      window.removeEventListener("pointerdown", unlock, opts);
+      window.removeEventListener("keydown", unlock, opts);
+      window.removeEventListener("touchstart", unlock, opts);
+    };
+  }, []);
 
   useEffect(() => {
     const manager = new SignalRConnectionManager({

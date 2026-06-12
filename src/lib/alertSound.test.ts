@@ -4,7 +4,12 @@ import { isSoundEnabled, setSoundEnabled } from "./alertSound";
 describe("sound preference", () => {
   beforeEach(() => localStorage.clear());
 
-  it("defaults to disabled", () => {
+  it("defaults to enabled when no preference is stored", () => {
+    expect(isSoundEnabled()).toBe(true);
+  });
+
+  it("respects an explicit disable", () => {
+    setSoundEnabled(false);
     expect(isSoundEnabled()).toBe(false);
   });
 
