@@ -19,6 +19,8 @@ export function startHubWatcher() {
   ).replace(/\/+$/, "");
   const token = process.env.SIGNALR_TOKEN || "";
   const cooldownMs = Number(process.env.LP_ALERT_COOLDOWN_MS) || 600000;
+  const retries = Math.max(1, Number(process.env.BACKEND_DOWN_RETRIES) || 3);
+  const reconnectDelays = Array.from({ length: retries }, (_, i) => (i === 0 ? 0 : i * 2500));
 
   let active = new Map();
   let connState = "up"; // optimistic; first successful start keeps it up
@@ -26,7 +28,7 @@ export function startHubWatcher() {
 
   const conn = new signalR.HubConnectionBuilder()
     .withUrl(`${base}/ws/dashboard`, token ? { accessTokenFactory: () => token } : {})
-    .withAutomaticReconnect([0, 2000, 5000])
+    .withAutomaticReconnect(reconnectDelays)
     .configureLogging(signalR.LogLevel.None)
     .build();
 

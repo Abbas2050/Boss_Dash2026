@@ -2,8 +2,6 @@
 // that prevents vitest's jsdom environment from injecting localStorage.
 // We create a simple in-memory Storage polyfill when localStorage is unavailable.
 
-import { vi } from "vitest";
-
 function makeStorage(): Storage {
   let store: Record<string, string> = {};
   return {
@@ -44,6 +42,3 @@ if (typeof globalThis.sessionStorage === "undefined") {
     enumerable: true,
   });
 }
-
-// Suppress the unused vi import lint warning — vi may be used in downstream tests
-void vi;
