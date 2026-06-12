@@ -1,18 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
-
-type LpMarginAlertRow = {
-  source?: string;
-  lpName?: string;
-  login?: string | number;
-  marginLevel?: number;
-  equity?: number;
-  balance?: number;
-  credit?: number;
-  margin?: number;
-  freeMargin?: number;
-  timestampUtc?: string;
-};
+import React, { useEffect, useMemo, useState } from "react";
+import { useAlertsHub, type LpMarginAlertRow } from "@/components/AlertsHubProvider";
+import { SignalRStatus } from "@/lib/signalRConnectionManager";
 
 type AlertSettings = {
   marginAlertThreshold: number;
@@ -49,9 +37,9 @@ const wsStatusMeta: Record<SignalRStatus, { label: string; cls: string }> = {
 };
 
 export const LpMarginAlerts: React.FC = () => {
-  const managerRef = useRef<SignalRConnectionManager | null>(null);
-  const [status, setStatus] = useState<SignalRStatus>("disconnected");
-  const [rows, setRows] = useState<LpMarginAlertRow[]>([]);
+  const { status, lpAlerts } = useAlertsHub();
+  const rows = lpAlerts;
+
   const [threshold, setThreshold] = useState<number | null>(null);
   const [intervalSec, setIntervalSec] = useState<number>(30);
   const [thresholdInput, setThresholdInput] = useState<string>("");
@@ -87,42 +75,10 @@ export const LpMarginAlerts: React.FC = () => {
     };
   }, []);
 
-  // Connect to the SignalR hub and subscribe to LpMarginAlerts.
+  // Update lastTickAt whenever lpAlerts changes.
   useEffect(() => {
-    const hubUrl = apiUrl("/ws/dashboard");
-    const manager = new SignalRConnectionManager({
-      hubUrl,
-      trackedEvents: ["LpMarginAlerts"],
-      accessTokenFactory: async () => {
-        try {
-          const res = await fetch(apiUrl("/api/signalr/token"));
-          if (!res.ok) return null;
-          const json = await res.json();
-          return json.token || null;
-        } catch {
-          return null;
-        }
-      },
-    });
-    managerRef.current = manager;
-
-    const unsubStatus = manager.onStatusChange(setStatus);
-    const unsubEvent = manager.onEvent((payload, eventName) => {
-      if (eventName !== "LpMarginAlerts") return;
-      setRows(Array.isArray(payload) ? (payload as LpMarginAlertRow[]) : []);
-      setLastTickAt(Date.now());
-    });
-    const unsubError = manager.onError((message) => setError(message));
-
-    manager.connect().catch(() => undefined);
-
-    return () => {
-      unsubStatus();
-      unsubEvent();
-      unsubError();
-      manager.disconnect().catch(() => undefined);
-    };
-  }, []);
+    setLastTickAt(Date.now());
+  }, [lpAlerts]);
 
   // 1s ticker so the "last tick" staleness label stays current.
   useEffect(() => {
