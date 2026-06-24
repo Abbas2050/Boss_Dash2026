@@ -19,6 +19,8 @@ import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
 import { startHubWatcher } from './alerts/hubWatcher.js';
+import { authRequired, canManageUsers } from './auth/router.js';
+import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient } from './wallet/pspClients.js';
 import {
   loadGoogleSheetsMappingConfig,
@@ -749,6 +751,19 @@ app.get('/api/signalr/token', (req, res) => {
   const token = process.env.SIGNALR_TOKEN || null;
   if (!token) return res.status(404).json({ error: 'no-signalr-token-configured' });
   res.json({ token });
+});
+
+// Central alarm config (served by our Node server). GET is open to the app; PUT is admin-only.
+app.get('/api/alarm-config', (req, res) => {
+  res.json(readAlarmConfig());
+});
+app.put('/api/alarm-config', authRequired, (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  try {
+    res.json(writeAlarmConfig(req.body || {}));
+  } catch (e) {
+    res.status(500).json({ error: 'save_failed', message: e?.message || String(e) });
+  }
 });
 
 // Minimal SignalR-like negotiate + WebSocket mock for local dev

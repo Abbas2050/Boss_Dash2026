@@ -517,4 +517,5 @@ router.get("/audit-events", authRequired, async (req, res) => {
   }
 });
 
+export { authRequired, canManageUsers };
 export default router;
