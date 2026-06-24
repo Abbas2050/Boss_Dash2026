@@ -12,6 +12,7 @@ export const DEALING_TABS = [
   "Contract Sizes",
   "Deal Matching",
   "Deal Performance",
+  "Client Volume",
   "Clients NOP",
   "Rebate Calculator",
   "Client Profiling",

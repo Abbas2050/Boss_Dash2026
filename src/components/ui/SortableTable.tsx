@@ -26,6 +26,7 @@ type SortableTableProps<T> = {
   exportFilePrefix?: string;
   exportFooterRows?: string[][];
   rowClassName?: (row: T, index: number) => string;
+  onRowClick?: (row: T, index: number) => void;
 };
 
 const COLUMN_VISIBILITY_STORAGE_PREFIX = "bossdash:table-columns:";
@@ -92,6 +93,7 @@ export function SortableTable<T>({
   exportFilePrefix = "table",
   exportFooterRows = [],
   rowClassName,
+  onRowClick,
 }: SortableTableProps<T>) {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<string>("");
@@ -415,7 +417,11 @@ export function SortableTable<T>({
           </thead>
           <tbody>
             {sortedRows.map((row, index) => (
-              <tr key={index} className={rowClassName ? rowClassName(row, index) : "bg-slate-50 dark:bg-slate-950/30"}>
+              <tr
+                key={index}
+                className={`${rowClassName ? rowClassName(row, index) : "bg-slate-50 dark:bg-slate-950/30"}${onRowClick ? " cursor-pointer" : ""}`}
+                onClick={onRowClick ? () => onRowClick(row, index) : undefined}
+              >
                 {visibleColumns.map((col) => (
                   <td key={col.key} className={`border-t border-slate-800 px-3 py-2 ${col.cellClassName || "text-left"}`}>
                     {col.render(row)}

@@ -15,6 +15,7 @@ import { DealPerformanceTab } from "@/pages/departments/dealing/DealPerformanceT
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
 import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskScenarioTab";
+import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -86,6 +87,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "deal-matching": "Deal Matching",
   performance: "Deal Performance",
   "deal-performance": "Deal Performance",
+  "client-volume": "Client Volume",
+  clientvolume: "Client Volume",
   swap: "Swap Tracker",
   "swap-tracker": "Swap Tracker",
   history: "History",
@@ -987,6 +990,7 @@ export function DealingDepartmentPage() {
   const [dealPerformanceStatus, setDealPerformanceStatus] = useState("");
   const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
   const [clientRiskScenarioRefreshKey, setClientRiskScenarioRefreshKey] = useState(0);
+  const [clientVolumeRefreshKey, setClientVolumeRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -1217,6 +1221,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Client Risk Scenario") {
       setClientRiskScenarioRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Client Volume") {
+      setClientVolumeRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Metrics") {
@@ -2947,6 +2955,10 @@ export function DealingDepartmentPage() {
       return [];
     }
 
+    if (activeMenu === "Client Volume") {
+      return [];
+    }
+
     return [
       { label: "Swap Due Tonight", value: overviewData.swaps.filter((row) => row.willChargeTonight).length.toLocaleString() },
       { label: "LP Withdrawable Equity", value: formatDollar(overviewData.equitySummary?.lpWithdrawableEquity || 0) },
@@ -3872,6 +3884,8 @@ export function DealingDepartmentPage() {
             <RiskScenarioTab refreshKey={riskScenarioRefreshKey} />
           ) : activeMenu === "Client Risk Scenario" ? (
             <ClientRiskScenarioTab refreshKey={clientRiskScenarioRefreshKey} />
+          ) : activeMenu === "Client Volume" ? (
+            <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
           ) : activeMenu === "Equity Overview" ? (
             <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
           ) : activeMenu === "Coverage" ? (
