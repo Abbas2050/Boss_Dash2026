@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { RefreshCw, TrendingUp, FileText, Users, MoonStar, Sun, X } from 'lucide-react';
+import { RefreshCw, TrendingUp, FileText, Users, MoonStar, Sun, X, Bell, BellOff } from 'lucide-react';
 import { NavLink } from '../../components/NavLink';
 import { Button } from '../../components/ui/button';
 import { FiSettings } from 'react-icons/fi';
@@ -11,6 +11,7 @@ import { getCurrentUser, hasAccess, logout } from '@/lib/auth';
 import { useNavigate } from 'react-router-dom';
 import { getVisibleDepartmentItems, getVisibleSettingsMenuItems } from '@/lib/permissions';
 import { MarketSessionsPopover } from './MarketSessionsPopover';
+import { useAlertsHub } from '@/components/AlertsHubProvider';
 
 interface DashboardHeaderProps {
   theme: 'dark' | 'light';
@@ -20,6 +21,7 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) {
   const navigate = useNavigate();
   const currentUser = getCurrentUser();
+  const { muted, toggleMute } = useAlertsHub();
   const [currentTime, setCurrentTime] = useState(new Date());
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -146,6 +148,17 @@ export function DashboardHeader({ theme, onThemeToggle }: DashboardHeaderProps) 
           </div>
         </div>
 
+        <button
+          type="button"
+          onClick={toggleMute}
+          aria-label={muted ? "Unmute alarm" : "Mute alarm"}
+          title={muted ? "Alarm muted on this device — click to unmute" : "Mute alarm on this device"}
+          className={`inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/50 ${
+            muted ? "bg-rose-500/15 text-rose-500" : "bg-secondary/40 text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {muted ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+        </button>
         <div className="hidden sm:inline-flex items-center gap-2 rounded-lg border border-border/50 bg-secondary/40 px-2 py-1 text-xs text-muted-foreground hover:text-foreground">
           <MoonStar className={`h-4 w-4 ${theme === 'dark' ? 'text-primary' : ''}`} />
           <Switch checked={theme === 'light'} onCheckedChange={() => onThemeToggle()} />
