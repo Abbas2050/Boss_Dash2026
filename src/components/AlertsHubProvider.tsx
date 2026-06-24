@@ -1,7 +1,16 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
 import { newBreaches } from "@/lib/alertBreaches";
-import { isSoundEnabled, playAlarm, primeAudio, stopAlarm } from "@/lib/alertSound";
+import { playAlarm, primeAudio, stopAlarm } from "@/lib/alertSound";
+import { getCurrentUser } from "@/lib/auth";
+import {
+  AlarmConfig,
+  DEFAULT_ALARM_CONFIG,
+  getAlarmConfig,
+  isMutedOnThisDevice,
+  setMutedOnThisDevice,
+  shouldRing,
+} from "@/lib/alarmConfig";
 
 export type LpMarginAlertRow = {
   source?: string;
@@ -21,6 +30,8 @@ type AlertsHubValue = {
   lpAlerts: LpMarginAlertRow[];
   disconnected: boolean;
   silence: () => void;
+  muted: boolean;
+  toggleMute: () => void;
 };
 
 const AlertsHubContext = createContext<AlertsHubValue>({
@@ -28,6 +39,8 @@ const AlertsHubContext = createContext<AlertsHubValue>({
   lpAlerts: [],
   disconnected: false,
   silence: () => undefined,
+  muted: false,
+  toggleMute: () => undefined,
 });
 
 export const useAlertsHub = () => useContext(AlertsHubContext);
@@ -41,6 +54,42 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [lpAlerts, setLpAlerts] = useState<LpMarginAlertRow[]>([]);
   const prevLoginsRef = useRef<Set<string>>(new Set());
   const prevStatusRef = useRef<SignalRStatus>("disconnected");
+  const [muted, setMuted] = useState<boolean>(() => isMutedOnThisDevice());
+  const configRef = useRef<AlarmConfig>(DEFAULT_ALARM_CONFIG);
+  const userIdRef = useRef<string | null>(getCurrentUser()?.id ?? null);
+
+  // Load central alarm config and re-poll so admin changes propagate without a reload.
+  useEffect(() => {
+    let active = true;
+    const load = () =>
+      getAlarmConfig()
+        .then((c) => {
+          if (active) configRef.current = c;
+        })
+        .catch(() => {
+          // On failure, do not ring on this browser (banner + email still cover the alert).
+          if (active) configRef.current = { ...DEFAULT_ALARM_CONFIG, enabled: false };
+        });
+    load();
+    const id = setInterval(load, 60000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  const ringIfAllowed = (kind: "disconnect" | "lp-margin") => {
+    if (shouldRing(configRef.current, userIdRef.current, isMutedOnThisDevice())) {
+      playAlarm(kind, configRef.current.durationSec * 1000);
+    }
+  };
+
+  const toggleMute = () => {
+    const next = !isMutedOnThisDevice();
+    setMutedOnThisDevice(next);
+    setMuted(next);
+    if (next) stopAlarm();
+  };
 
   // Unlock audio on the first user interaction anywhere (browsers block sound until then).
   useEffect(() => {
@@ -77,7 +126,7 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setStatus(next);
       // Edge: entering "disconnected" → alarm once.
       if (next === "disconnected" && prevStatusRef.current !== "disconnected") {
-        if (isSoundEnabled()) playAlarm("disconnect");
+        ringIfAllowed("disconnect");
       }
       prevStatusRef.current = next;
     });
@@ -88,7 +137,7 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setLpAlerts(rows);
       const { newLogins, nextLogins } = newBreaches(prevLoginsRef.current, rows);
       prevLoginsRef.current = nextLogins;
-      if (newLogins.length && isSoundEnabled()) playAlarm("lp-margin");
+      if (newLogins.length) ringIfAllowed("lp-margin");
     });
 
     manager.connect().catch(() => undefined);
@@ -106,6 +155,8 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     lpAlerts,
     disconnected: status === "disconnected",
     silence: stopAlarm,
+    muted,
+    toggleMute,
   };
 
   return <AlertsHubContext.Provider value={value}>{children}</AlertsHubContext.Provider>;
