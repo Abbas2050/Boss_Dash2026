@@ -1,22 +1,3 @@
-const PREF_KEY = "alert_sound_enabled_v1";
-
-export function isSoundEnabled(): boolean {
-  try {
-    const v = localStorage.getItem(PREF_KEY);
-    return v === null ? true : v === "1"; // default ON; only an explicit "0" disables
-  } catch {
-    return true;
-  }
-}
-
-export function setSoundEnabled(on: boolean): void {
-  try {
-    localStorage.setItem(PREF_KEY, on ? "1" : "0");
-  } catch {
-    /* ignore */
-  }
-}
-
 let audioCtx: AudioContext | null = null;
 let activeStop: (() => void) | null = null;
 
