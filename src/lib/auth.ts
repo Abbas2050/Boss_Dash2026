@@ -74,7 +74,7 @@ function setSession(session: SessionPayload | null) {
   write(SESSION_KEY, session);
 }
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   const token = getSession()?.token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
