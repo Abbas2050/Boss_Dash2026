@@ -23,17 +23,21 @@ function aggregateByLp(rows) {
     const key = String(raw || "").trim() || "Unattributed";
     let agg = map.get(key);
     if (!agg) {
-      agg = { key, count: 0, lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0 };
+      agg = { key, count: 0, lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0 };
       map.set(key, agg);
     }
     const lots = Number(r?.fillVolume) || 0;
     const usd = Number(r?.lpPlImpact) || 0;
     const pts = Number(r?.lpSlipPoints) || 0;
     const hasLpFill = Number(r?.lpPrice) > 0;
+    const clientUsd = Number(r?.clientPlImpact) || 0;
+    const clientPts = Number(r?.clientSlipPoints) || 0;
 
     agg.count += 1;
     agg.lots += lots;
     agg.netSlipUsd += usd;
+    agg.clientSumUsd += clientUsd;
+    agg.clientSumPts += clientPts;
     if (usd > 0) agg.netPosUsd += usd;
     else if (usd < 0) agg.netNegUsd += usd;
     if (hasLpFill) {
@@ -52,8 +56,14 @@ function aggregateByLp(rows) {
       netPosUsd: a.netPosUsd,
       netNegUsd: a.netNegUsd,
       avgSlipPts: a.slipPtsCount > 0 ? a.sumSlipPts / a.slipPtsCount : 0,
+      lpAvgSlipUsd: a.slipPtsCount > 0 ? a.netSlipUsd / a.slipPtsCount : 0,
+      clientAvgSlipPts: a.count > 0 ? a.clientSumPts / a.count : 0,
+      clientAvgSlipUsd: a.count > 0 ? a.clientSumUsd / a.count : 0,
+      clientTotalSlipUsd: a.clientSumUsd,
       sumSlipPts: a.sumSlipPts,
       slipPtsCount: a.slipPtsCount,
+      clientSumUsd: a.clientSumUsd,
+      clientSumPts: a.clientSumPts,
     });
   }
   // Worst net slippage first (most negative), mirroring the tab.
@@ -123,8 +133,12 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       return `<tr>
         <td data-label="LP" class="${isUnattributed ? "muted-key" : ""}">${escapeHtml(b.key)}</td>
         <td data-label="Lots" style="text-align:right;">${fmtNum(b.lots, 2)}</td>
-        <td data-label="Net Slippage USD" style="text-align:right;" class="${slipCls(b.netSlipUsd)}">${money(b.netSlipUsd)}</td>
-        <td data-label="Avg Slip pts" style="text-align:right;" class="${slipCls(b.avgSlipPts)}">${fmtNum(b.avgSlipPts, 2)}</td>
+        <td data-label="LP Avg Slip (pts)" style="text-align:right;" class="${slipCls(b.avgSlipPts)}">${fmtNum(b.avgSlipPts, 2)}</td>
+        <td data-label="LP Avg Slip (USD)" style="text-align:right;" class="${slipCls(b.lpAvgSlipUsd)}">${money(b.lpAvgSlipUsd)}</td>
+        <td data-label="LP Total Slip (USD)" style="text-align:right;" class="${slipCls(b.netSlipUsd)}">${money(b.netSlipUsd)}</td>
+        <td data-label="Client Avg Slip (pts)" style="text-align:right;" class="${slipCls(b.clientAvgSlipPts)}">${fmtNum(b.clientAvgSlipPts, 2)}</td>
+        <td data-label="Client Avg Slip (USD)" style="text-align:right;" class="${slipCls(b.clientAvgSlipUsd)}">${money(b.clientAvgSlipUsd)}</td>
+        <td data-label="Client Total Slip (USD)" style="text-align:right;" class="${slipCls(b.clientTotalSlipUsd)}">${money(b.clientTotalSlipUsd)}</td>
         <td data-label="Net Positive USD" style="text-align:right;" class="pos">${money(b.netPosUsd)}</td>
         <td data-label="Net Negative USD" style="text-align:right;" class="neg">${money(b.netNegUsd)}</td>
       </tr>`;
@@ -137,10 +151,19 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       acc.netSlipUsd += b.netSlipUsd;
       acc.netPosUsd += b.netPosUsd;
       acc.netNegUsd += b.netNegUsd;
+      acc.sumSlipPts += b.sumSlipPts;
+      acc.slipPtsCount += b.slipPtsCount;
+      acc.clientSumUsd += b.clientSumUsd;
+      acc.clientSumPts += b.clientSumPts;
+      acc.count += b.count;
       return acc;
     },
-    { lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0 },
+    { lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0, count: 0 },
   );
+  const totalLpAvgPts = rollupTotals.slipPtsCount > 0 ? rollupTotals.sumSlipPts / rollupTotals.slipPtsCount : 0;
+  const totalLpAvgUsd = rollupTotals.slipPtsCount > 0 ? rollupTotals.netSlipUsd / rollupTotals.slipPtsCount : 0;
+  const totalClientAvgPts = rollupTotals.count > 0 ? rollupTotals.clientSumPts / rollupTotals.count : 0;
+  const totalClientAvgUsd = rollupTotals.count > 0 ? rollupTotals.clientSumUsd / rollupTotals.count : 0;
 
   return `<!doctype html>
 <html>
@@ -150,7 +173,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
     <style>
       body { margin:0; padding:0; background:#0b1220; color:#e2e8f0; font-family: Arial, Helvetica, sans-serif; }
       .outer { width:100%; background:#0b1220; padding:20px 10px; }
-      .wrap { max-width: 980px; margin: 0 auto; background:#111a2c; border:1px solid #1f2a44; border-radius:14px; overflow:hidden; }
+      .wrap { max-width: 1120px; margin: 0 auto; background:#111a2c; border:1px solid #1f2a44; border-radius:14px; overflow:hidden; }
       .header { padding:18px 20px; background:linear-gradient(135deg,#0b1a33,#132a4f); color:#eaf4ff; }
       .header-grid { width:100%; border-collapse:collapse; }
       .header-left { vertical-align:top; text-align:left; }
@@ -251,21 +274,29 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
               <tr>
                 <th>LP</th>
                 <th>Lots</th>
-                <th>Net Slippage USD</th>
-                <th>Avg Slip pts</th>
+                <th>LP Avg Slip (pts)</th>
+                <th>LP Avg Slip (USD)</th>
+                <th>LP Total Slip (USD)</th>
+                <th>Client Avg Slip (pts)</th>
+                <th>Client Avg Slip (USD)</th>
+                <th>Client Total Slip (USD)</th>
                 <th>Net Positive USD</th>
                 <th>Net Negative USD</th>
               </tr>
             </thead>
             <tbody>
-              ${bodyRows || `<tr><td data-label="Notice" colspan="6" style="text-align:center;color:#8ea4c6;">No slippage rows for this week.</td></tr>`}
+              ${bodyRows || `<tr><td data-label="Notice" colspan="10" style="text-align:center;color:#8ea4c6;">No slippage rows for this week.</td></tr>`}
             </tbody>
             <tfoot>
               <tr>
                 <td data-label="LP">TOTAL</td>
                 <td data-label="Lots" style="text-align:right;">${fmtNum(rollupTotals.lots, 2)}</td>
-                <td data-label="Net Slippage USD" style="text-align:right;" class="${slipCls(rollupTotals.netSlipUsd)}">${money(rollupTotals.netSlipUsd)}</td>
-                <td data-label="Avg Slip pts" style="text-align:right;">-</td>
+                <td data-label="LP Avg Slip (pts)" style="text-align:right;" class="${slipCls(totalLpAvgPts)}">${fmtNum(totalLpAvgPts, 2)}</td>
+                <td data-label="LP Avg Slip (USD)" style="text-align:right;" class="${slipCls(totalLpAvgUsd)}">${money(totalLpAvgUsd)}</td>
+                <td data-label="LP Total Slip (USD)" style="text-align:right;" class="${slipCls(rollupTotals.netSlipUsd)}">${money(rollupTotals.netSlipUsd)}</td>
+                <td data-label="Client Avg Slip (pts)" style="text-align:right;" class="${slipCls(totalClientAvgPts)}">${fmtNum(totalClientAvgPts, 2)}</td>
+                <td data-label="Client Avg Slip (USD)" style="text-align:right;" class="${slipCls(totalClientAvgUsd)}">${money(totalClientAvgUsd)}</td>
+                <td data-label="Client Total Slip (USD)" style="text-align:right;" class="${slipCls(rollupTotals.clientSumUsd)}">${money(rollupTotals.clientSumUsd)}</td>
                 <td data-label="Net Positive USD" style="text-align:right;" class="pos">${money(rollupTotals.netPosUsd)}</td>
                 <td data-label="Net Negative USD" style="text-align:right;" class="neg">${money(rollupTotals.netNegUsd)}</td>
               </tr>
