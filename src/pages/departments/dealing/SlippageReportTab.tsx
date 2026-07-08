@@ -105,6 +105,8 @@ type Bucket = {
   netPosUsd: number;
   netNegUsd: number;
   avgSlipPts: number;
+  sumSlipPts: number;
+  slipPtsCount: number;
 };
 
 type PerLegTotals = {
@@ -138,7 +140,7 @@ function markupSavingsUsd(r: SlippageRow): number {
 // Groups rows by keyField (lpsid for by-LP, symbol for the drilldown). Empty
 // key => emptyLabel. Each bucket reports lots + LP-slippage USD totals.
 function aggregateBy(rows: SlippageRow[], keyField: "lpsid" | "symbol", emptyLabel: string): Bucket[] {
-  const map = new Map<string, Bucket & { sumSlipPts: number; slipPtsCount: number }>();
+  const map = new Map<string, Bucket>();
   for (const r of rows) {
     const raw = keyField === "lpsid" ? r.lpsid : r.symbol;
     const key = String(raw || "").trim() || emptyLabel;
@@ -172,6 +174,8 @@ function aggregateBy(rows: SlippageRow[], keyField: "lpsid" | "symbol", emptyLab
       netPosUsd: a.netPosUsd,
       netNegUsd: a.netNegUsd,
       avgSlipPts: a.slipPtsCount > 0 ? a.sumSlipPts / a.slipPtsCount : 0,
+      sumSlipPts: a.sumSlipPts,
+      slipPtsCount: a.slipPtsCount,
     });
   }
   // Worst net slippage first (most negative).
@@ -179,18 +183,22 @@ function aggregateBy(rows: SlippageRow[], keyField: "lpsid" | "symbol", emptyLab
   return out;
 }
 
-// Weighted-average TOTAL row for a rollup grid. Weighted by per-bucket
-// contribution counts so the grand average stays honest.
+// Weighted-average TOTAL row for a rollup grid. avgSlipPts is weighted by
+// the count of rows that actually had an LP fill (slipPtsCount), matching
+// how each bucket's own avgSlipPts is derived — not by all-rows count.
 function rollupTotals(buckets: Bucket[]): Bucket {
+  const sumSlipPts = buckets.reduce((s, b) => s + b.sumSlipPts, 0);
+  const slipPtsCount = buckets.reduce((s, b) => s + b.slipPtsCount, 0);
   return {
     key: "TOTAL",
     count: buckets.reduce((s, b) => s + b.count, 0),
     lots: buckets.reduce((s, b) => s + b.lots, 0),
     netSlipUsd: buckets.reduce((s, b) => s + b.netSlipUsd, 0),
-    avgSlipPts:
-      buckets.reduce((s, b) => s + b.avgSlipPts * b.count, 0) / Math.max(1, buckets.reduce((s, b) => s + b.count, 0)),
+    avgSlipPts: slipPtsCount > 0 ? sumSlipPts / slipPtsCount : 0,
     netPosUsd: buckets.reduce((s, b) => s + b.netPosUsd, 0),
     netNegUsd: buckets.reduce((s, b) => s + b.netNegUsd, 0),
+    sumSlipPts,
+    slipPtsCount,
   };
 }
 

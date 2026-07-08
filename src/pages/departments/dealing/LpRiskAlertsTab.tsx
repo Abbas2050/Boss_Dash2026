@@ -226,13 +226,20 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   const [liveEvents, setLiveEvents] = useState<FiringEvent[]>([]);
   const [wsStatus, setWsStatus] = useState<SignalRStatus>("disconnected");
   const [lastTickAt, setLastTickAt] = useState<number | null>(null);
-  const [, setHeartbeatTick] = useState(0);
+  const [heartbeatTick, setHeartbeatTick] = useState(0);
 
   const showMsg = (text: string, ok: boolean) => {
     setMsg({ text, ok });
     if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
     msgTimerRef.current = setTimeout(() => setMsg(null), 4000);
   };
+
+  // Clear any pending toast-dismiss timer on unmount to avoid setState-after-unmount.
+  useEffect(() => {
+    return () => {
+      if (msgTimerRef.current) clearTimeout(msgTimerRef.current);
+    };
+  }, []);
 
   // ── load alerts ────────────────────────────────────────────────────────────
   const loadAlerts = async () => {
@@ -316,7 +323,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
     const stale = ageMs > STALE_MS;
     return { text: stale ? `Stale — no tick for ${ageSec}s` : `Last tick: ${ageSec}s ago`, stale };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastTickAt, setHeartbeatTick]);
+  }, [lastTickAt, heartbeatTick]);
 
   const wsPill = useMemo(() => {
     if (wsStatus === "connected") return { label: "Connected", cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" };
