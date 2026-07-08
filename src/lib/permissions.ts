@@ -5,6 +5,7 @@ export const DEALING_TABS = [
   "Risk Exposure",
   "Risk Scenario",
   "Client Risk Scenario",
+  "LP Risk Alerts",
   "Coverage",
   "Bonus",
   "Metrics",

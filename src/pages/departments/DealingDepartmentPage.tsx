@@ -15,6 +15,7 @@ import { DealPerformanceTab } from "@/pages/departments/dealing/DealPerformanceT
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
 import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskScenarioTab";
+import { LpRiskAlertsTab } from "@/pages/departments/dealing/LpRiskAlertsTab";
 import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
 import { SlippageReportTab } from "@/pages/departments/dealing/SlippageReportTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
@@ -78,6 +79,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "risk-scenario": "Risk Scenario",
   "client-risk": "Client Risk Scenario",
   "client-risk-scenario": "Client Risk Scenario",
+  "lp-risk": "LP Risk Alerts",
+  "lp-risk-alerts": "LP Risk Alerts",
   metrics: "Metrics",
   equity: "Equity Overview",
   "equity-overview": "Equity Overview",
@@ -1025,6 +1028,7 @@ export function DealingDepartmentPage() {
   const [clientRiskScenarioRefreshKey, setClientRiskScenarioRefreshKey] = useState(0);
   const [clientVolumeRefreshKey, setClientVolumeRefreshKey] = useState(0);
   const [slippageRefreshKey, setSlippageRefreshKey] = useState(0);
+  const [lpRiskAlertsRefreshKey, setLpRiskAlertsRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -1263,6 +1267,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Slippage Report") {
       setSlippageRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "LP Risk Alerts") {
+      setLpRiskAlertsRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Metrics") {
@@ -2993,6 +3001,10 @@ export function DealingDepartmentPage() {
       return [];
     }
 
+    if (activeMenu === "LP Risk Alerts") {
+      return [];
+    }
+
     if (activeMenu === "Client Volume") {
       return [];
     }
@@ -3930,6 +3942,8 @@ export function DealingDepartmentPage() {
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
           ) : activeMenu === "Slippage Report" ? (
             <SlippageReportTab refreshKey={slippageRefreshKey} />
+          ) : activeMenu === "LP Risk Alerts" ? (
+            <LpRiskAlertsTab refreshKey={lpRiskAlertsRefreshKey} />
           ) : activeMenu === "Equity Overview" ? (
             <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
           ) : activeMenu === "Coverage" ? (
