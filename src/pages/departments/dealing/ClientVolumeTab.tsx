@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
   LabelList,
+  Legend,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -36,6 +37,8 @@ function toLocalYmd(date: Date): string {
 type ByDateRow = {
   date: string;
   lots: number;
+  stocksLots?: number;
+  cfdLots?: number;
 };
 
 type ByClientRow = {
@@ -44,6 +47,8 @@ type ByClientRow = {
   group: string;
   system: string;
   lots: number;
+  stocksLots?: number;
+  cfdLots?: number;
   activeDays: number;
   dailyAverage: number;
   symbolCount: number;
@@ -54,10 +59,14 @@ type ByClientSymbolRow = {
   name: string;
   symbol: string;
   lots: number;
+  stocksLots?: number;
+  cfdLots?: number;
 };
 
 type RunResponse = {
   totalLots: number;
+  totalStocksLots?: number;
+  totalCfdLots?: number;
   avgLotsPerDay: number;
   fromDate: string;
   toDate: string;
@@ -65,11 +74,14 @@ type RunResponse = {
   byDate: ByDateRow[];
   byClient: ByClientRow[];
   byClientSymbol: ByClientSymbolRow[];
+  byInternalAccount?: ByClientRow[];
 };
 
 type MonthlyRow = {
   month: string;
   lots: number;
+  stocksLots?: number;
+  cfdLots?: number;
 };
 
 type RoutingRow = {
@@ -117,6 +129,7 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
     loading: false,
     label: "",
   });
+  const routingAbortRef = useRef<AbortController | null>(null);
 
   // set default dates once on mount
   useEffect(() => {
@@ -124,6 +137,13 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
     const from = new Date(today.getTime() - 30 * 86400 * 1000);
     setToYmd(toLocalYmd(today));
     setFromYmd(toLocalYmd(from));
+  }, []);
+
+  // abort any in-flight routing fetch on unmount
+  useEffect(() => {
+    return () => {
+      routingAbortRef.current?.abort();
+    };
   }, []);
 
   // load monthly chart on mount and whenever refreshKey changes
@@ -149,11 +169,15 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
         return;
       }
       const rows = (await resp.json()) as MonthlyRow[];
-      setMonthly(Array.isArray(rows) ? rows : []);
-      const total = (Array.isArray(rows) ? rows : []).reduce((s, r) => s + (r.lots || 0), 0);
+      const list = Array.isArray(rows) ? rows : [];
+      setMonthly(list);
+      const total = list.reduce((s, r) => s + (r.lots || 0), 0);
+      const totalStocks = list.reduce((s, r) => s + (r.stocksLots || 0), 0);
+      const totalCfd = list.reduce((s, r) => s + (r.cfdLots || 0), 0);
+      const fmtTotal = (v: number) => v.toLocaleString(undefined, { maximumFractionDigits: 0 });
       setMonthlyMeta(
         total > 0
-          ? `${from} → ${to} · ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })} lots total`
+          ? `${from} → ${to} · ${fmtTotal(total)} total · ${fmtTotal(totalStocks)} stocks · ${fmtTotal(totalCfd)} CFD`
           : `${from} → ${to} · 0 lots`,
       );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -182,6 +206,7 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
       const payload = (await resp.json()) as RunResponse;
       setData(payload);
       setSelectedLogin(null);
+      routingAbortRef.current?.abort();
       setRouting({ rows: [], meta: null, loading: false, label: "" });
       setStatsText(`${payload.fromDate} → ${payload.toDate} · ${payload.activeDays} days`);
       void loadMonthly(fromYmd, toYmd, group || "*");
@@ -196,10 +221,19 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
 
   const loadRouting = async (clientLogin: string | number, clientName: string) => {
     if (!fromYmd || !toYmd) return;
+
+    // Cancel any in-flight routing fetch — keeps the UI in sync with the most
+    // recently clicked client when a user clicks rapidly.
+    routingAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    routingAbortRef.current = ctrl;
+
     setRouting({ rows: [], meta: null, loading: true, label: `login ${clientLogin}${clientName ? ` · ${clientName}` : ""}` });
     try {
       const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: group || "*", login: String(clientLogin) });
-      const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/ClientRouting?${params.toString()}`);
+      const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/ClientRouting?${params.toString()}`, {
+        signal: ctrl.signal,
+      });
       if (!resp.ok) {
         setRouting((prev) => ({ ...prev, loading: false, meta: null }));
         return;
@@ -213,6 +247,7 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
       });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
+      if (e?.name === "AbortError") return;
       setRouting((prev) => ({ ...prev, loading: false }));
     }
   };
@@ -220,7 +255,17 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
   // ── chart data ───────────────────────────────────────────────────────────────
 
   const monthlyChartData = useMemo(
-    () => monthly.map((r) => ({ month: fmtMonthLabel(r.month), lots: r.lots })),
+    () =>
+      monthly.map((r) => {
+        const stocksLots = Number(r.stocksLots || 0);
+        const cfdLots = Number(r.cfdLots || 0);
+        return {
+          month: fmtMonthLabel(r.month),
+          lots: Number(r.lots ?? stocksLots + cfdLots),
+          stocksLots,
+          cfdLots,
+        };
+      }),
     [monthly],
   );
   const monthlyTotalLots = useMemo(() => monthly.reduce((s, r) => s + (r.lots || 0), 0), [monthly]);
@@ -230,6 +275,11 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
   const byClientSorted = useMemo(() => {
     if (!data?.byClient) return [];
     return [...data.byClient].sort((a, b) => (b.lots ?? 0) - (a.lots ?? 0));
+  }, [data]);
+
+  const byInternalAccountSorted = useMemo(() => {
+    if (!data?.byInternalAccount) return [];
+    return [...data.byInternalAccount].sort((a, b) => (b.lots ?? 0) - (a.lots ?? 0));
   }, [data]);
 
   // ── filtered byClientSymbol rows ─────────────────────────────────────────────
@@ -263,6 +313,22 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
         headerClassName: "text-right",
         cellClassName: "text-right tabular-nums",
         render: (r) => fmtLots(r.lots),
+      },
+      {
+        key: "stocksLots",
+        label: "Stocks Lots",
+        sortValue: (r) => Number(r.stocksLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#60a5fa]">{fmtLots(r.stocksLots)}</span>,
+      },
+      {
+        key: "cfdLots",
+        label: "CFD Lots",
+        sortValue: (r) => Number(r.cfdLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#c084fc]">{fmtLots(r.cfdLots)}</span>,
       },
     ],
     [],
@@ -301,6 +367,22 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
         headerClassName: "text-right",
         cellClassName: "text-right tabular-nums",
         render: (r) => <span className="text-emerald-700 dark:text-emerald-300">{fmtLots(r.lots)}</span>,
+      },
+      {
+        key: "stocksLots",
+        label: "Stocks Lots",
+        sortValue: (r) => Number(r.stocksLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#60a5fa]">{fmtLots(r.stocksLots)}</span>,
+      },
+      {
+        key: "cfdLots",
+        label: "CFD Lots",
+        sortValue: (r) => Number(r.cfdLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#c084fc]">{fmtLots(r.cfdLots)}</span>,
       },
       {
         key: "activeDays",
@@ -357,6 +439,22 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
         headerClassName: "text-right",
         cellClassName: "text-right tabular-nums",
         render: (r) => fmtLots(r.lots),
+      },
+      {
+        key: "stocksLots",
+        label: "Stocks Lots",
+        sortValue: (r) => Number(r.stocksLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#60a5fa]">{fmtLots(r.stocksLots)}</span>,
+      },
+      {
+        key: "cfdLots",
+        label: "CFD Lots",
+        sortValue: (r) => Number(r.cfdLots) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className="text-[#c084fc]">{fmtLots(r.cfdLots)}</span>,
       },
     ],
     [],
@@ -501,7 +599,7 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
           <span className="text-xs text-slate-500 dark:text-slate-400">{monthlyMeta}</span>
         </div>
         {monthlyTotalLots > 0 ? (
-          <div className="px-2 py-2" style={{ height: 220 }}>
+          <div className="px-2 py-2" style={{ height: 240 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={monthlyChartData} margin={{ top: 18, right: 12, left: 0, bottom: 0 }}>
                 <XAxis
@@ -520,9 +618,14 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
                 <Tooltip
                   contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 11 }}
                   labelStyle={{ color: "#e2e8f0" }}
-                  formatter={(value: number) => [fmtLots(value), "Lots"]}
+                  formatter={(value: number, name: string) => [fmtLots(value), name]}
                 />
-                <Bar dataKey="lots" fill="#14f195" radius={[3, 3, 0, 0]}>
+                <Legend
+                  verticalAlign="bottom"
+                  wrapperStyle={{ fontSize: 10, color: "#94a3b8" }}
+                />
+                <Bar dataKey="cfdLots" name="CFD" stackId="lots" fill="#c084fc" />
+                <Bar dataKey="stocksLots" name="Stocks" stackId="lots" fill="#60a5fa" radius={[3, 3, 0, 0]}>
                   <LabelList
                     dataKey="lots"
                     position="top"
@@ -544,11 +647,23 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
 
       {/* ── KPI cards (after Run) ── */}
       {data && (
-        <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
             <div className="text-xs text-slate-500 dark:text-slate-400">Total Lots (closed)</div>
             <div className="mt-1 font-mono text-xl font-semibold text-emerald-600 dark:text-emerald-300">
               {fmtLots(data.totalLots)}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
+            <div className="text-xs text-slate-500 dark:text-slate-400">Stocks Lots</div>
+            <div className="mt-1 font-mono text-xl font-semibold text-[#60a5fa]">
+              {fmtLots(data.totalStocksLots)}
+            </div>
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
+            <div className="text-xs text-slate-500 dark:text-slate-400">CFD Lots</div>
+            <div className="mt-1 font-mono text-xl font-semibold text-[#c084fc]">
+              {fmtLots(data.totalCfdLots)}
             </div>
           </div>
           <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800/80 dark:bg-slate-900/50">
@@ -597,6 +712,27 @@ export function ClientVolumeTab({ refreshKey }: { refreshKey: number }) {
               setSelectedLogin(row.login);
               void loadRouting(row.login, row.name ?? "");
             }}
+          />
+        </div>
+      )}
+
+      {/* ── Internal Accounts (excluded from totals/KPIs/chart) ── */}
+      {data && byInternalAccountSorted.length > 0 && (
+        <div className="mb-4 space-y-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-300">
+              Internal Accounts
+            </h3>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Not included in headline totals / KPIs / monthly chart.
+            </span>
+          </div>
+          <SortableTable
+            tableId="dealing-client-volume-internals"
+            rows={byInternalAccountSorted}
+            columns={byClientColumns}
+            tableClassName="min-w-full text-xs"
+            emptyText="No internal account data."
           />
         </div>
       )}
