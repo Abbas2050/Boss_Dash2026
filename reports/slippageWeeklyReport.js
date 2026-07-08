@@ -273,8 +273,8 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
           </table>
 
           <p class="section-title" style="margin-top:16px;">Net Slippage by LP</p>
-          <div class="chart-wrap">
-            <img src="cid:slippage-by-lp" alt="Net Slippage by LP" width="900" />
+          <div class="chart-wrap" style="color:#8ea4c6;font-size:12px;">
+            See the attached chart <strong>slippage-by-lp.png</strong> for Net Slippage by LP.
           </div>
 
           <div class="foot">
@@ -341,11 +341,12 @@ async function buildSlippageChartAttachments(buckets, fromYmd, toYmd) {
   };
 
   const buffer = await renderChartBuffer(config, 1200, 700);
+  // Delivered as a plain downloadable attachment (matches the Deal Match report;
+  // Brevo's transactional API does not reliably support cid: inline images).
   return [
     {
       name: "slippage-by-lp.png",
       content: buffer.toString("base64"),
-      cid: "slippage-by-lp",
     },
   ];
 }
