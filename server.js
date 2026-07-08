@@ -28,6 +28,7 @@ import {
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
 import { startWeeklyDealMatchScheduler } from './reports/dealMatchWeeklyReport.js';
+import { startWeeklySlippageScheduler } from './reports/slippageWeeklyReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -879,6 +880,7 @@ server.listen(PORT, () => {
   }
 
   startWeeklyDealMatchScheduler();
+  startWeeklySlippageScheduler();
 
   try {
     startHubWatcher();
