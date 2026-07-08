@@ -383,7 +383,7 @@ export async function runWeeklySlippageEmailReport({ fromDate, toDate } = {}) {
   const subject = `Weekly Slippage Report (${fromYmd} to ${toYmd})`;
   const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis });
   const attachments = await buildSlippageChartAttachments(buckets, fromYmd, toYmd);
-  await sendBrevoEmail({ subject, html, recipients, attachments });
+  await sendBrevoEmail({ subject, html, recipients, attachments, senderName: "Slippage Reporter" });
 
   console.log(`[SlippageWeekly] Sent to ${recipients.join(", ")} | lps=${buckets.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, lps: buckets.length, fromYmd, toYmd };

@@ -86,7 +86,7 @@ export function toUnixRange(fromDate, toDate) {
   return { from, to };
 }
 
-export async function sendBrevoEmail({ subject, html, recipients, attachments = [] }) {
+export async function sendBrevoEmail({ subject, html, recipients, attachments = [], senderName = "Deal Match Reporter" }) {
   const apiKey = process.env.BREVO_API_KEY || "";
   const from = process.env.EMAIL_FROM || "noreply@skylinkscapital.com";
   if (!apiKey) throw new Error("BREVO_API_KEY not set");
@@ -101,7 +101,7 @@ export async function sendBrevoEmail({ subject, html, recipients, attachments = 
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      sender: { email: from, name: "Deal Match Reporter" },
+      sender: { email: from, name: senderName },
       to,
       subject,
       htmlContent: html,
