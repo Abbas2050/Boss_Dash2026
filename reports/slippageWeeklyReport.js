@@ -396,7 +396,7 @@ async function fetchSlippageRows(fromYmd, toYmd) {
   return Array.isArray(report?.rows) ? report.rows : [];
 }
 
-export async function runWeeklySlippageEmailReport({ fromDate, toDate } = {}) {
+export async function runWeeklySlippageEmailReport({ fromDate, toDate, recipients: recipientsOverride } = {}) {
   const week = fromDate && toDate ? { start: fromDate, end: toDate } : previousFullWeekUtc();
   const fromYmd = toYmdUtc(week.start);
   const toYmd = toYmdUtc(week.end);
@@ -405,7 +405,10 @@ export async function runWeeklySlippageEmailReport({ fromDate, toDate } = {}) {
   const { buckets } = aggregateByLp(rows);
   const kpis = computeKpis(buckets, rows);
 
-  const recipients = parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "");
+  // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
+  const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
+    ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
+    : parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "");
   if (!recipients.length) {
     console.warn("[SlippageWeekly] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", lps: buckets.length, fromYmd, toYmd };

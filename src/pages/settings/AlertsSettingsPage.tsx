@@ -11,7 +11,7 @@ import {
 } from "@/lib/alertPreferences";
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
 import LpMarginAlerts from "@/components/dashboard/LpMarginAlerts";
-import { hasAccess, getUsers, refreshUsers, type AuthUser } from "@/lib/auth";
+import { hasAccess, getUsers, refreshUsers, getCurrentUser, authHeaders, type AuthUser } from "@/lib/auth";
 import { primeAudio, playAlarm } from "@/lib/alertSound";
 import { AlarmConfig, getAlarmConfig, saveAlarmConfig } from "@/lib/alarmConfig";
 
@@ -26,6 +26,9 @@ export const AlertsSettingsPage: React.FC = () => {
   const [alarmUsers, setAlarmUsers] = useState<AuthUser[]>(() => getUsers());
   const [alarmSaving, setAlarmSaving] = useState(false);
   const [alarmMsg, setAlarmMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [reportTestEmail, setReportTestEmail] = useState<string>(() => getCurrentUser()?.email || "");
+  const [reportTestSending, setReportTestSending] = useState(false);
+  const [reportTestMsg, setReportTestMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
   useEffect(() => {
     getAlarmConfig().then(setAlarmCfg).catch(() => undefined);
@@ -54,6 +57,30 @@ export const AlertsSettingsPage: React.FC = () => {
       setAlarmMsg({ text: `Failed: ${e?.message || "error"}`, ok: false });
     } finally {
       setAlarmSaving(false);
+    }
+  };
+
+  const sendSlippageTest = async () => {
+    setReportTestSending(true);
+    setReportTestMsg(null);
+    try {
+      const recipients = reportTestEmail.split(",").map((s) => s.trim()).filter(Boolean);
+      const res = await fetch("/api/reports/slippage-weekly/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ recipients }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        setReportTestMsg({ text: data?.message || data?.error || `Failed (${res.status})`, ok: false });
+      } else {
+        setReportTestMsg({ text: `Sent to ${recipients.join(", ")} · ${data.lps} LPs · ${data.fromYmd}→${data.toYmd}`, ok: true });
+      }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      setReportTestMsg({ text: e?.message || "error", ok: false });
+    } finally {
+      setReportTestSending(false);
     }
   };
 
@@ -263,6 +290,38 @@ export const AlertsSettingsPage: React.FC = () => {
                 <div className="px-2 py-4 text-center text-xs text-muted-foreground">No users found.</div>
               )}
             </div>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-border/40 bg-card/70 p-5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Weekly Reports</h2>
+              <p className="text-xs text-muted-foreground">
+                Send an on-demand test of the weekly <strong>Slippage Report</strong> email (last full week's data) so you
+                don't have to wait for the Friday schedule. Uses the same Brevo pipeline as the live report.
+              </p>
+            </div>
+            {reportTestMsg && (
+              <span className={`text-xs ${reportTestMsg.ok ? "text-success" : "text-destructive"}`}>{reportTestMsg.text}</span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              type="text"
+              value={reportTestEmail}
+              onChange={(e) => setReportTestEmail(e.target.value)}
+              placeholder="recipient@example.com (comma-separated for several)"
+              className="min-w-[280px] flex-1 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-foreground"
+            />
+            <button
+              type="button"
+              onClick={sendSlippageTest}
+              disabled={reportTestSending || !reportTestEmail.trim()}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {reportTestSending ? "Sending…" : "Send Slippage test"}
+            </button>
           </div>
         </section>
 
