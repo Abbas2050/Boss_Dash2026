@@ -28,6 +28,7 @@ import {
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
 import { startWeeklyDealMatchScheduler } from './reports/dealMatchWeeklyReport.js';
+import { startWeeklySlippageScheduler, runWeeklySlippageEmailReport } from './reports/slippageWeeklyReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -766,6 +767,23 @@ app.put('/api/alarm-config', authRequired, (req, res) => {
   }
 });
 
+// On-demand test send of the weekly Slippage email (admin-only). Sends to the
+// recipients in the body (falls back to the configured SLIPPAGE_ALERT_RECIPIENTS).
+app.post('/api/reports/slippage-weekly/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const rawList = Array.isArray(req.body?.recipients)
+    ? req.body.recipients
+    : String(req.body?.recipients || '').split(',');
+  const recipients = rawList.map((e) => String(e).trim()).filter(Boolean);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  try {
+    const result = await runWeeklySlippageEmailReport({ recipients });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
 // Minimal SignalR-like negotiate + WebSocket mock for local dev
 // - negotiate: GET/POST /ws/dashboard/negotiate
 // - websocket endpoint: /ws/dashboard (expects SignalR JSON protocol with RS delimiters)
@@ -879,6 +897,7 @@ server.listen(PORT, () => {
   }
 
   startWeeklyDealMatchScheduler();
+  startWeeklySlippageScheduler();
 
   try {
     startHubWatcher();

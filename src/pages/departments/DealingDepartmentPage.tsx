@@ -15,7 +15,9 @@ import { DealPerformanceTab } from "@/pages/departments/dealing/DealPerformanceT
 import { EquityOverviewTab } from "@/pages/departments/dealing/EquityOverviewTab";
 import { RiskScenarioTab } from "@/pages/departments/dealing/RiskScenarioTab";
 import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskScenarioTab";
+import { LpRiskAlertsTab } from "@/pages/departments/dealing/LpRiskAlertsTab";
 import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
+import { SlippageReportTab } from "@/pages/departments/dealing/SlippageReportTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -77,6 +79,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "risk-scenario": "Risk Scenario",
   "client-risk": "Client Risk Scenario",
   "client-risk-scenario": "Client Risk Scenario",
+  "lp-risk": "LP Risk Alerts",
+  "lp-risk-alerts": "LP Risk Alerts",
   metrics: "Metrics",
   equity: "Equity Overview",
   "equity-overview": "Equity Overview",
@@ -87,6 +91,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "deal-matching": "Deal Matching",
   performance: "Deal Performance",
   "deal-performance": "Deal Performance",
+  slippage: "Slippage Report",
+  "slippage-report": "Slippage Report",
   "client-volume": "Client Volume",
   clientvolume: "Client Volume",
   swap: "Swap Tracker",
@@ -846,13 +852,29 @@ const getPreviousWeekMondaySunday = () => {
   return { from: prevMonday, to: prevSunday };
 };
 
+const startOfToday = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+const endOfToday = () => {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d;
+};
+
 export function DealingDepartmentPage() {
   const defaultWeek = useMemo(() => getPreviousWeekMondaySunday(), []);
   const [searchParams, setSearchParams] = useSearchParams();
-  const [fromDate, setFromDate] = useState<Date>(() => new Date(defaultWeek.from));
-  const [toDate, setToDate] = useState<Date>(() => new Date(defaultWeek.to));
-  const [selectedFromDate, setSelectedFromDate] = useState<Date>(() => new Date(defaultWeek.from));
-  const [selectedToDate, setSelectedToDate] = useState<Date>(() => new Date(defaultWeek.to));
+  // The History tab defaults to today's range; all other tabs default to the previous week.
+  const initialDealingTab =
+    DEALING_MENU_QUERY_MAP[String(searchParams.get("tab") || "").trim().toLowerCase()] || "Dealing";
+  const initialFrom = () => (initialDealingTab === "History" ? startOfToday() : new Date(defaultWeek.from));
+  const initialTo = () => (initialDealingTab === "History" ? endOfToday() : new Date(defaultWeek.to));
+  const [fromDate, setFromDate] = useState<Date>(initialFrom);
+  const [toDate, setToDate] = useState<Date>(initialTo);
+  const [selectedFromDate, setSelectedFromDate] = useState<Date>(initialFrom);
+  const [selectedToDate, setSelectedToDate] = useState<Date>(initialTo);
   const [isLoading, setIsLoading] = useState(false);
   const [metrics, setMetrics] = useState<DealingMetrics>(DEFAULT_METRICS);
   const [topSymbols, setTopSymbols] = useState<SymbolActivity[]>([]);
@@ -876,6 +898,20 @@ export function DealingDepartmentPage() {
     },
     [setSearchParams],
   );
+
+  // Snap the date range to "today" whenever the History tab is opened (from another tab).
+  // Direct loads of ?tab=history are already handled by the initial state above.
+  const historyTabPrevRef = useRef<string | null>(initialDealingTab);
+  useEffect(() => {
+    if (activeMenu === "History" && historyTabPrevRef.current !== "History") {
+      setFromDate(startOfToday());
+      setToDate(endOfToday());
+      setSelectedFromDate(startOfToday());
+      setSelectedToDate(endOfToday());
+    }
+    historyTabPrevRef.current = activeMenu;
+  }, [activeMenu]);
+
   const [coverageData, setCoverageData] = useState<CoverageData | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(false);
   const [coverageError, setCoverageError] = useState<string | null>(null);
@@ -991,6 +1027,8 @@ export function DealingDepartmentPage() {
   const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
   const [clientRiskScenarioRefreshKey, setClientRiskScenarioRefreshKey] = useState(0);
   const [clientVolumeRefreshKey, setClientVolumeRefreshKey] = useState(0);
+  const [slippageRefreshKey, setSlippageRefreshKey] = useState(0);
+  const [lpRiskAlertsRefreshKey, setLpRiskAlertsRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -1225,6 +1263,14 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Client Volume") {
       setClientVolumeRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Slippage Report") {
+      setSlippageRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "LP Risk Alerts") {
+      setLpRiskAlertsRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Metrics") {
@@ -2955,7 +3001,15 @@ export function DealingDepartmentPage() {
       return [];
     }
 
+    if (activeMenu === "LP Risk Alerts") {
+      return [];
+    }
+
     if (activeMenu === "Client Volume") {
+      return [];
+    }
+
+    if (activeMenu === "Slippage Report") {
       return [];
     }
 
@@ -3663,7 +3717,7 @@ export function DealingDepartmentPage() {
     ) : (
     <div ref={dealingRootRef} className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 p-3 sm:p-4 md:p-6 lg:p-8">
       <div className="mx-auto grid max-w-[1400px] grid-cols-1 gap-5 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <aside className="h-fit rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-slate-50 to-slate-100 p-4 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 lg:sticky lg:top-6">
+        <aside className="h-fit rounded-2xl border border-slate-200 bg-gradient-to-b from-white via-slate-50 to-slate-100 p-4 dark:border-cyan-500/20 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
           <div className="text-[11px] font-mono uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300/80">Dealing Menu</div>
           <div className="mt-3 space-y-1.5">
             {allowedMenuItems.map((item) => {
@@ -3886,6 +3940,10 @@ export function DealingDepartmentPage() {
             <ClientRiskScenarioTab refreshKey={clientRiskScenarioRefreshKey} />
           ) : activeMenu === "Client Volume" ? (
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
+          ) : activeMenu === "Slippage Report" ? (
+            <SlippageReportTab refreshKey={slippageRefreshKey} />
+          ) : activeMenu === "LP Risk Alerts" ? (
+            <LpRiskAlertsTab refreshKey={lpRiskAlertsRefreshKey} />
           ) : activeMenu === "Equity Overview" ? (
             <EquityOverviewTab refreshKey={equityOverviewRefreshKey} />
           ) : activeMenu === "Coverage" ? (

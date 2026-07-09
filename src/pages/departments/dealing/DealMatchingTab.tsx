@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 
 type Row = Record<string, any>;
 
@@ -10,23 +11,21 @@ type DealMatchResponse = {
   matchedCount?: number;
   totalBonusClientDeals?: number;
   totalSpreadRevenueUsd?: number;
-  totalCentroidOnlyRevenueUsd?: number;
-  totalFixApiRevenueUsd?: number;
+  totalMt5MarkupUsd?: number;
   totalClientCommission?: number;
-  totalLpCommission?: number;
-  totalLpEffectiveCommission?: number;
+  totalGrossRevenueUsd?: number;
+  totalLpCommissionAllocated?: number;
   fixApiOrderCount?: number;
   matches?: Row[];
   unmatchedClientDeals?: Row[];
   unmatchedCentroidOrders?: Row[];
   fixApiOrders?: Row[];
-  partialFills?: Row[];
-  centroidOnlyRevenues?: Row[];
-  fixApiRevenues?: Row[];
   coverageLps?: Row[];
   clientRevenueSummaries?: Row[];
   clientSystems?: Row[];
 };
+
+type RunParams = { group: string; from: number; to: number; symbol: string; login: string };
 
 type UnmatchedAggregateRow = {
   login: string | number;
@@ -39,6 +38,7 @@ type UnmatchedAggregateRow = {
   sellLots: number;
   symbols: string;
   latestTime: string;
+  sampleExternalIds: string;
 };
 
 type RevenueRow = {
@@ -48,7 +48,10 @@ type RevenueRow = {
   system: string;
   lots: number;
   markupRevenueUsd: number;
+  mt5MarkupUsd: number;
+  centroidMarkupUsd: number;
   clientCommissionUsd: number;
+  grossRevenueUsd: number;
   lpCommissionUsd: number;
   totalRevenueUsd: number;
 };
@@ -71,9 +74,13 @@ type CoverageLpRow = {
 type SystemRow = {
   system: string;
   lots: number | null;
-  markupRevenueUsd: number;
+  markupRevenueUsd: number | null;
+  mt5MarkupUsd: number | null;
+  grossRevenueUsd: number | null;
   commission: number;
 };
+
+// ── formatting helpers ──────────────────────────────────────────────────────
 
 function toYmd(date: Date): string {
   const y = date.getFullYear();
@@ -96,8 +103,14 @@ function fmtNum(value: any, digits = 2): string {
   return num(value).toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+const fmtNum5 = (value: any) => fmtNum(value, 5);
+
 function fmtInt(value: any): string {
   return Math.round(num(value)).toLocaleString();
+}
+
+function fmtPct(value: any): string {
+  return `${fmtNum(value)}%`;
 }
 
 function money(value: any): string {
@@ -112,6 +125,28 @@ function signedClass(value: any): string {
   return "text-slate-500 dark:text-slate-400";
 }
 
+function sideClass(value: any): string {
+  const v = String(value || "").toLowerCase();
+  if (v === "buy") return "font-semibold text-emerald-700 dark:text-emerald-300";
+  if (v === "sell") return "font-semibold text-rose-700 dark:text-rose-300";
+  return "text-slate-600 dark:text-slate-300";
+}
+
+function systemClass(value: any): string {
+  const v = String(value || "");
+  if (v === "Bonus") return "font-semibold text-amber-600 dark:text-amber-300";
+  if (v === "LP Charged") return "font-semibold text-rose-600 dark:text-rose-300";
+  if (v === "Net (Client - LP)") return "font-semibold text-cyan-600 dark:text-cyan-300";
+  return "font-semibold text-sky-700 dark:text-sky-300";
+}
+
+function systemCommissionClass(system: any, value: any): string {
+  const s = String(system || "");
+  if (s === "LP Charged") return "font-semibold text-rose-600 dark:text-rose-300";
+  if (s === "Net (Client - LP)") return `font-semibold ${signedClass(value)}`;
+  return "font-semibold text-amber-600 dark:text-amber-300";
+}
+
 function ymdToUnixRange(fromDate: string, toDate: string) {
   const from = Math.floor(new Date(`${fromDate}T00:00:00Z`).getTime() / 1000);
   const to = Math.floor(new Date(`${toDate}T23:59:59Z`).getTime() / 1000);
@@ -124,8 +159,13 @@ function collapseTitleClass(open: boolean) {
     : "border-slate-300 bg-white text-slate-700 shadow-sm transition-colors duration-200 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-200 dark:hover:bg-slate-900/70";
 }
 
+// Client-aggregate the unmatched MT5 deals: sum lots, split buy/sell, unique symbols,
+// latest deal time, and up to 3 sample external IDs per login (mirrors the reference page).
 function aggregateUnmatchedMt5(unmatchedDeals: Row[]): UnmatchedAggregateRow[] {
-  const rows = new Map<string, Omit<UnmatchedAggregateRow, "symbols"> & { symbols: Set<string> }>();
+  const rows = new Map<
+    string,
+    Omit<UnmatchedAggregateRow, "symbols" | "sampleExternalIds"> & { symbols: Set<string>; externalIds: string[] }
+  >();
   for (const u of unmatchedDeals) {
     const key = String(u.login || "");
     if (!rows.has(key)) {
@@ -140,6 +180,7 @@ function aggregateUnmatchedMt5(unmatchedDeals: Row[]): UnmatchedAggregateRow[] {
         sellLots: 0,
         symbols: new Set<string>(),
         latestTime: "",
+        externalIds: [],
       });
     }
 
@@ -151,12 +192,533 @@ function aggregateUnmatchedMt5(unmatchedDeals: Row[]): UnmatchedAggregateRow[] {
     if (String(u.side || "").toLowerCase() === "sell") row.sellLots += lots;
     if (u.symbol) row.symbols.add(String(u.symbol));
     if (u.time && (!row.latestTime || String(u.time) > row.latestTime)) row.latestTime = String(u.time);
+    const extId = u.externalId != null && u.externalId !== "" ? String(u.externalId) : "";
+    if (extId && row.externalIds.length < 3 && !row.externalIds.includes(extId)) row.externalIds.push(extId);
   }
 
   return Array.from(rows.values())
-    .map((r) => ({ ...r, symbols: Array.from(r.symbols).sort().join(", ") }))
+    .map((r) => ({ ...r, symbols: Array.from(r.symbols).sort().join(", "), sampleExternalIds: r.externalIds.join(", ") }))
     .sort((a, b) => num(b.lots) - num(a.lots));
 }
+
+// ── totals footer (pinned-TOTAL substitute; SortableTable has no native pinned-row support) ──
+
+function TotalsBar({ items }: { items: Array<{ label: string; value: React.ReactNode }> }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-b-md border border-t-0 border-slate-300 bg-slate-100 px-3 py-1.5 text-[11px] dark:border-slate-700 dark:bg-slate-900/70">
+      <span className="rounded bg-cyan-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">Total</span>
+      {items.map((it, idx) => (
+        <span key={idx} className="whitespace-nowrap text-slate-700 dark:text-slate-200">
+          <span className="mr-1 font-normal text-slate-500 dark:text-slate-400">{it.label}:</span>
+          <span className="font-semibold">{it.value}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ── column definitions (module scope — static, do not depend on component state) ──
+
+const summaryColumns: SortableTableColumn<Row>[] = [
+  { key: "source", label: "Source", sortValue: (r) => String(r.source || ""), render: (r) => <span className="font-semibold">{safe(r.source)}</span> },
+  { key: "deals", label: "Deals", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.deals), render: (r) => fmtInt(r.deals) },
+  { key: "lots", label: "Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lots), render: (r) => fmtNum(r.lots) },
+  {
+    key: "unmatchedDeals",
+    label: "Unmatched",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.unmatchedDeals),
+    render: (r) => <span className={num(r.unmatchedDeals) > 0 ? "text-rose-700 dark:text-rose-300" : ""}>{fmtInt(r.unmatchedDeals)}</span>,
+  },
+  { key: "matchPct", label: "Match %", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.matchPct), render: (r) => fmtPct(r.matchPct) },
+];
+
+const systemColumns: SortableTableColumn<SystemRow>[] = [
+  { key: "system", label: "System", sortValue: (r) => String(r.system || ""), render: (r) => <span className={systemClass(r.system)}>{safe(r.system)}</span> },
+  {
+    key: "lots",
+    label: "Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => (r.lots == null ? -1 : num(r.lots)),
+    render: (r) => (r.lots == null ? "-" : fmtNum(r.lots)),
+  },
+  {
+    key: "markupRevenueUsd",
+    label: "Markup Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => (r.markupRevenueUsd == null ? 0 : num(r.markupRevenueUsd)),
+    render: (r) => (r.markupRevenueUsd == null ? "-" : <span className={`font-semibold ${signedClass(r.markupRevenueUsd)}`}>{money(r.markupRevenueUsd)}</span>),
+  },
+  {
+    key: "mt5MarkupUsd",
+    label: "MT5 Markup",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => (r.mt5MarkupUsd == null ? 0 : num(r.mt5MarkupUsd)),
+    render: (r) => (r.mt5MarkupUsd == null ? "-" : <span className={signedClass(r.mt5MarkupUsd)}>{money(r.mt5MarkupUsd)}</span>),
+  },
+  {
+    key: "grossRevenueUsd",
+    label: "Gross Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => (r.grossRevenueUsd == null ? 0 : num(r.grossRevenueUsd)),
+    render: (r) => (r.grossRevenueUsd == null ? "-" : <span className={`font-semibold ${signedClass(r.grossRevenueUsd)}`}>{money(r.grossRevenueUsd)}</span>),
+  },
+  {
+    key: "commission",
+    label: "Commission Charged",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.commission),
+    render: (r) => <span className={systemCommissionClass(r.system, r.commission)}>{money(r.commission)}</span>,
+  },
+];
+
+const clientRevenueColumns: SortableTableColumn<RevenueRow>[] = [
+  { key: "login", label: "Login", sortValue: (r) => String(r.login || ""), render: (r) => <span className="font-mono">{safe(r.login)}</span> },
+  { key: "name", label: "Name", sortValue: (r) => String(r.name || ""), render: (r) => safe(r.name) },
+  { key: "group", label: "Group", sortValue: (r) => String(r.group || ""), render: (r) => safe(r.group) },
+  { key: "system", label: "System", sortValue: (r) => String(r.system || ""), render: (r) => <span className={systemClass(r.system)}>{safe(r.system)}</span> },
+  { key: "lots", label: "Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lots), render: (r) => fmtNum(r.lots) },
+  {
+    key: "markupRevenueUsd",
+    label: "Markup Rev",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.markupRevenueUsd),
+    render: (r) => <span className={signedClass(r.markupRevenueUsd)}>{money(r.markupRevenueUsd)}</span>,
+  },
+  {
+    key: "mt5MarkupUsd",
+    label: "MT5 Markup",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.mt5MarkupUsd),
+    render: (r) => <span className={signedClass(r.mt5MarkupUsd)}>{money(r.mt5MarkupUsd)}</span>,
+  },
+  {
+    key: "centroidMarkupUsd",
+    label: "Centroid Markup",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.centroidMarkupUsd),
+    render: (r) => <span className={signedClass(r.centroidMarkupUsd)}>{money(r.centroidMarkupUsd)}</span>,
+  },
+  {
+    key: "clientCommissionUsd",
+    label: "MT5 Commission",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.clientCommissionUsd),
+    render: (r) => <span className="text-amber-700 dark:text-amber-300">{money(r.clientCommissionUsd)}</span>,
+  },
+  {
+    key: "grossRevenueUsd",
+    label: "Gross Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.grossRevenueUsd),
+    render: (r) => <span className={`font-semibold ${signedClass(r.grossRevenueUsd)}`}>{money(r.grossRevenueUsd)}</span>,
+  },
+  {
+    key: "lpCommissionUsd",
+    label: "LP Commission",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpCommissionUsd),
+    render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</span>,
+  },
+  {
+    key: "totalRevenueUsd",
+    label: "Net Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.totalRevenueUsd),
+    render: (r) => <span className={`font-semibold ${signedClass(r.totalRevenueUsd)}`}>{money(r.totalRevenueUsd)}</span>,
+  },
+];
+
+const clientRevenueDetailColumns: SortableTableColumn<Row>[] = [
+  { key: "lpsid", label: "LP", sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
+  { key: "lpName", label: "TEM", sortValue: (r) => String(r.lpName || ""), render: (r) => safe(r.lpName) },
+  { key: "tradeCount", label: "Trades", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.tradeCount), render: (r) => fmtInt(r.tradeCount) },
+  { key: "symbols", label: "Symbols", sortValue: (r) => String(r.symbols || ""), render: (r) => safe(r.symbols) },
+  {
+    key: "clientLotsPlaced",
+    label: "Client Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.clientLotsPlaced),
+    render: (r) => <span className="text-cyan-700 dark:text-cyan-300">{fmtNum(r.clientLotsPlaced)}</span>,
+  },
+  {
+    key: "lpLotsSent",
+    label: "LP Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpLotsSent),
+    render: (r) => <span className="text-purple-700 dark:text-purple-300">{fmtNum(r.lpLotsSent)}</span>,
+  },
+  { key: "allocationPct", label: "Alloc %", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.allocationPct), render: (r) => fmtPct(r.allocationPct) },
+  {
+    key: "markupRevenueUsd",
+    label: "Markup Rev",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.markupRevenueUsd),
+    render: (r) => <span className={signedClass(r.markupRevenueUsd)}>{money(r.markupRevenueUsd)}</span>,
+  },
+  {
+    key: "mt5MarkupUsd",
+    label: "MT5 Markup",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.mt5MarkupUsd),
+    render: (r) => <span className={signedClass(r.mt5MarkupUsd)}>{money(r.mt5MarkupUsd)}</span>,
+  },
+  {
+    key: "centroidMarkupUsd",
+    label: "Centroid Markup",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.centroidMarkupUsd),
+    render: (r) => <span className={signedClass(r.centroidMarkupUsd)}>{money(r.centroidMarkupUsd)}</span>,
+  },
+  {
+    key: "clientCommissionUsd",
+    label: "MT5 Commission",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.clientCommissionUsd),
+    render: (r) => <span className="text-amber-700 dark:text-amber-300">{money(r.clientCommissionUsd)}</span>,
+  },
+  {
+    key: "grossRevenueUsd",
+    label: "Gross Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.grossRevenueUsd),
+    render: (r) => <span className={`font-semibold ${signedClass(r.grossRevenueUsd)}`}>{money(r.grossRevenueUsd)}</span>,
+  },
+  {
+    key: "lpCommissionUsd",
+    label: "LP Commission",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpCommissionUsd),
+    render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</span>,
+  },
+  {
+    // Net Revenue = Gross - LP Commission — always computed client-side (ignores any server field).
+    key: "netRevenueUsd",
+    label: "Net Revenue",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.grossRevenueUsd) - num(r.lpCommissionUsd),
+    render: (r) => {
+      const net = num(r.grossRevenueUsd) - num(r.lpCommissionUsd);
+      return <span className={`font-semibold ${signedClass(net)}`}>{money(net)}</span>;
+    },
+  },
+];
+
+const coverageLpColumns: SortableTableColumn<CoverageLpRow>[] = [
+  { key: "lpName", label: "LP", sortValue: (r) => String(r.lpName || ""), render: (r) => <span className="font-semibold">{safe(r.lpName)}</span> },
+  { key: "lpLogin", label: "Login", sortValue: (r) => String(r.lpLogin || ""), render: (r) => safe(r.lpLogin) },
+  { key: "lots", label: "Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lots), render: (r) => fmtNum(r.lots) },
+  {
+    key: "millionsUsd",
+    label: "$M",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.millionsUsd),
+    render: (r) => <span className="text-emerald-700 dark:text-emerald-300">{fmtNum(r.millionsUsd)}</span>,
+  },
+  {
+    key: "effectiveCommission",
+    label: "LP Commission",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.effectiveCommission),
+    render: (r) => <span className="font-semibold text-cyan-700 dark:text-cyan-300">{money(r.effectiveCommission)}</span>,
+  },
+];
+
+const matchedColumns: SortableTableColumn<Row>[] = [
+  { key: "clientLogin", label: "Login", sortValue: (r) => String(r.clientLogin || ""), render: (r) => <span className="font-mono">{safe(r.clientLogin)}</span> },
+  { key: "clientName", label: "Name", sortValue: (r) => String(r.clientName || ""), render: (r) => safe(r.clientName) },
+  { key: "symbol", label: "Symbol", hideable: false, sortValue: (r) => String(r.symbol || ""), render: (r) => <span className="font-semibold">{safe(r.symbol)}</span> },
+  { key: "side", label: "Side", sortValue: (r) => String(r.side || ""), render: (r) => <span className={sideClass(r.side)}>{safe(r.side)}</span> },
+  { key: "entry", label: "Entry", sortValue: (r) => String(r.entry || ""), render: (r) => safe(r.entry) },
+  { key: "clientVolume", label: "Client Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.clientVolume), render: (r) => fmtNum(r.clientVolume, 4) },
+  { key: "clientPrice", label: "Client Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.clientPrice), render: (r) => fmtNum5(r.clientPrice) },
+  { key: "lpVolume", label: "LP Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lpVolume), render: (r) => fmtNum(r.lpVolume, 4) },
+  { key: "lpPrice", label: "LP Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lpPrice), render: (r) => fmtNum5(r.lpPrice) },
+  {
+    key: "spreadRevenueUsd",
+    label: "Markup Rev",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.spreadRevenueUsd),
+    render: (r) => <span className={signedClass(r.spreadRevenueUsd)}>{money(r.spreadRevenueUsd)}</span>,
+  },
+  {
+    key: "clientCommission",
+    label: "Client Comm",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.clientCommission),
+    render: (r) => money(r.clientCommission),
+  },
+  {
+    key: "lpCommission",
+    label: "LP Comm",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpCommission),
+    render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.lpCommission)}</span>,
+  },
+  {
+    // Total Rev = Markup Rev + Client Comm - |LP Comm| — always computed client-side.
+    key: "_totalRevenue",
+    label: "Total Rev",
+    hideable: false,
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.spreadRevenueUsd) + num(r.clientCommission) - Math.abs(num(r.lpCommission)),
+    render: (r) => {
+      const total = num(r.spreadRevenueUsd) + num(r.clientCommission) - Math.abs(num(r.lpCommission));
+      return <span className={`font-semibold ${signedClass(total)}`}>{money(total)}</span>;
+    },
+  },
+  { key: "dealTime", label: "Time", sortValue: (r) => String(r.dealTime || ""), render: (r) => safe(r.dealTime) },
+  {
+    key: "rawLpPrice",
+    label: "Raw LP Price",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.rawLpPrice),
+    render: (r) => <span className="text-slate-500 dark:text-slate-400">{fmtNum5(r.rawLpPrice)}</span>,
+  },
+  {
+    key: "rawFillVolume",
+    label: "Raw Fill Vol",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.rawFillVolume),
+    render: (r) => <span className="text-slate-500 dark:text-slate-400">{fmtNum(r.rawFillVolume)}</span>,
+  },
+  {
+    key: "spread",
+    label: "Markup (pts)",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.spread),
+    render: (r) => <span className={signedClass(r.spread)}>{fmtNum5(r.spread)}</span>,
+  },
+  { key: "lpsid", label: "LP SID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
+  { key: "lpName", label: "LP", hideable: true, defaultVisible: false, sortValue: (r) => String(r.lpName || ""), render: (r) => safe(r.lpName) },
+  { key: "dealCategory", label: "Category", hideable: true, defaultVisible: false, sortValue: (r) => String(r.dealCategory || ""), render: (r) => safe(r.dealCategory) },
+  {
+    key: "aggregatedDealCount",
+    label: "Agg",
+    hideable: true,
+    defaultVisible: false,
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.aggregatedDealCount),
+    render: (r) => (num(r.aggregatedDealCount) > 1 ? <span className="font-semibold text-amber-600 dark:text-amber-300">{fmtInt(r.aggregatedDealCount)}</span> : "-"),
+  },
+  { key: "matchMethod", label: "Method", hideable: true, defaultVisible: false, sortValue: (r) => String(r.matchMethod || ""), render: (r) => safe(r.matchMethod) },
+  { key: "matchStatus", label: "Status", hideable: true, defaultVisible: false, sortValue: (r) => String(r.matchStatus || ""), render: (r) => safe(r.matchStatus) },
+  { key: "dealTicket", label: "Deal", hideable: true, defaultVisible: false, sortValue: (r) => String(r.dealTicket || ""), render: (r) => safe(r.dealTicket) },
+  { key: "orderTicket", label: "Order", hideable: true, defaultVisible: false, sortValue: (r) => String(r.orderTicket || ""), render: (r) => safe(r.orderTicket) },
+  { key: "centroidOrderId", label: "Cen Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.centroidOrderId || ""), render: (r) => safe(r.centroidOrderId) },
+  { key: "centroidExtOrder", label: "Cen Ext Order", hideable: true, defaultVisible: false, sortValue: (r) => String(r.centroidExtOrder || ""), render: (r) => safe(r.centroidExtOrder) },
+  { key: "externalDealId", label: "Ext Deal ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.externalDealId || ""), render: (r) => safe(r.externalDealId) },
+  { key: "centroidTime", label: "LP Time", hideable: true, defaultVisible: false, sortValue: (r) => String(r.centroidTime || ""), render: (r) => safe(r.centroidTime) },
+];
+
+const unmatchedMt5Columns: SortableTableColumn<UnmatchedAggregateRow>[] = [
+  { key: "login", label: "Login", sortValue: (r) => String(r.login || ""), render: (r) => <span className="font-mono">{safe(r.login)}</span> },
+  { key: "clientName", label: "Name", sortValue: (r) => String(r.clientName || ""), render: (r) => safe(r.clientName) },
+  { key: "group", label: "Group", sortValue: (r) => String(r.group || ""), render: (r) => safe(r.group) },
+  { key: "system", label: "System", sortValue: (r) => String(r.system || ""), render: (r) => <span className={systemClass(r.system)}>{safe(r.system)}</span> },
+  { key: "dealCount", label: "Deals", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.dealCount), render: (r) => fmtInt(r.dealCount) },
+  { key: "lots", label: "Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lots), render: (r) => fmtNum(r.lots) },
+  {
+    key: "buyLots",
+    label: "Buy Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.buyLots),
+    render: (r) => <span className="text-emerald-700 dark:text-emerald-300">{fmtNum(r.buyLots)}</span>,
+  },
+  {
+    key: "sellLots",
+    label: "Sell Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.sellLots),
+    render: (r) => <span className="text-rose-700 dark:text-rose-300">{fmtNum(r.sellLots)}</span>,
+  },
+  { key: "symbols", label: "Symbols", sortValue: (r) => String(r.symbols || ""), render: (r) => safe(r.symbols) },
+  { key: "latestTime", label: "Latest Time", sortValue: (r) => String(r.latestTime || ""), render: (r) => safe(r.latestTime) },
+  { key: "sampleExternalIds", label: "Sample Ext IDs", sortValue: (r) => String(r.sampleExternalIds || ""), render: (r) => safe(r.sampleExternalIds) },
+];
+
+const unmatchedCenColumns: SortableTableColumn<Row>[] = [
+  { key: "ext_login", label: "Ext Login", sortValue: (r) => String(r.ext_login || ""), render: (r) => safe(r.ext_login) },
+  { key: "symbol", label: "Symbol", hideable: false, sortValue: (r) => String(r.symbol || ""), render: (r) => <span className="font-semibold">{safe(r.symbol)}</span> },
+  { key: "side", label: "Side", sortValue: (r) => String(r.side || ""), render: (r) => <span className={sideClass(r.side)}>{safe(r.side)}</span> },
+  { key: "volume", label: "Volume", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.volume), render: (r) => fmtNum(r.volume, 4) },
+  { key: "fill_volume", label: "Fill Vol", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.fill_volume), render: (r) => fmtNum(r.fill_volume, 4) },
+  { key: "avg_price", label: "Avg Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.avg_price), render: (r) => fmtNum5(r.avg_price) },
+  { key: "raw_avg_price", label: "Raw Avg Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.raw_avg_price), render: (r) => fmtNum5(r.raw_avg_price) },
+  { key: "total_markup", label: "Total Markup", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.total_markup), render: (r) => fmtNum5(r.total_markup) },
+  { key: "lpsid", label: "LP SID", sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
+  { key: "maker", label: "Maker", sortValue: (r) => String(r.maker || ""), render: (r) => safe(r.maker) },
+  { key: "create_time", label: "Time", sortValue: (r) => String(r.create_time || ""), render: (r) => safe(r.create_time) },
+  { key: "account_name", label: "Account Name", hideable: true, defaultVisible: false, sortValue: (r) => String(r.account_name || ""), render: (r) => safe(r.account_name) },
+  { key: "manager_source", label: "Manager Source", hideable: true, defaultVisible: false, sortValue: (r) => String(r.manager_source || ""), render: (r) => safe(r.manager_source) },
+  { key: "cen_ord_id", label: "Cen Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.cen_ord_id || ""), render: (r) => safe(r.cen_ord_id) },
+  { key: "client_ord_id", label: "Client Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.client_ord_id || ""), render: (r) => safe(r.client_ord_id) },
+  { key: "ext_order", label: "Ext Order", hideable: true, defaultVisible: false, sortValue: (r) => String(r.ext_order || ""), render: (r) => safe(r.ext_order) },
+  { key: "ext_posid", label: "Ext Posid", hideable: true, defaultVisible: false, sortValue: (r) => String(r.ext_posid || ""), render: (r) => safe(r.ext_posid) },
+  { key: "party_symbol", label: "Party Symbol", hideable: true, defaultVisible: false, sortValue: (r) => String(r.party_symbol || ""), render: (r) => safe(r.party_symbol) },
+  { key: "node", label: "Node", hideable: true, defaultVisible: false, sortValue: (r) => String(r.node || ""), render: (r) => safe(r.node) },
+  { key: "node_account", label: "Node Account", hideable: true, defaultVisible: false, sortValue: (r) => String(r.node_account || ""), render: (r) => safe(r.node_account) },
+  { key: "state", label: "State", hideable: true, defaultVisible: false, sortValue: (r) => String(r.state || ""), render: (r) => safe(r.state) },
+];
+
+const partialColumns: SortableTableColumn<Row>[] = [
+  { key: "clientLogin", label: "Login", sortValue: (r) => String(r.clientLogin || ""), render: (r) => <span className="font-mono">{safe(r.clientLogin)}</span> },
+  { key: "clientName", label: "Name", sortValue: (r) => String(r.clientName || ""), render: (r) => safe(r.clientName) },
+  { key: "symbol", label: "Symbol", hideable: false, sortValue: (r) => String(r.symbol || ""), render: (r) => <span className="font-semibold">{safe(r.symbol)}</span> },
+  { key: "side", label: "Side", sortValue: (r) => String(r.side || ""), render: (r) => <span className={sideClass(r.side)}>{safe(r.side)}</span> },
+  { key: "entry", label: "Entry", sortValue: (r) => String(r.entry || ""), render: (r) => safe(r.entry) },
+  {
+    key: "clientVolume",
+    label: "MT5 Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.clientVolume),
+    render: (r) => <span className="text-cyan-700 dark:text-cyan-300">{fmtNum(r.clientVolume, 4)}</span>,
+  },
+  { key: "clientPrice", label: "MT5 Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.clientPrice), render: (r) => fmtNum5(r.clientPrice) },
+  {
+    key: "lpVolume",
+    label: "Cen Lots",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpVolume),
+    render: (r) => <span className="text-purple-700 dark:text-purple-300">{fmtNum(r.lpVolume, 4)}</span>,
+  },
+  { key: "lpPrice", label: "Cen Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lpPrice), render: (r) => fmtNum5(r.lpPrice) },
+  {
+    // Vol Diff = |clientVolume - lpVolume| — always computed client-side.
+    key: "_volDiff",
+    label: "Vol Diff",
+    hideable: false,
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => Math.abs(num(r.clientVolume) - num(r.lpVolume)),
+    render: (r) => <span className="font-semibold text-rose-700 dark:text-rose-300">{fmtNum(Math.abs(num(r.clientVolume) - num(r.lpVolume)), 4)}</span>,
+  },
+  {
+    // Fill % = lpVolume / clientVolume * 100 — always computed client-side.
+    key: "_volPct",
+    label: "Fill %",
+    hideable: false,
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => (num(r.clientVolume) > 0 ? (num(r.lpVolume) / num(r.clientVolume)) * 100 : 0),
+    render: (r) => (num(r.clientVolume) > 0 ? fmtPct((num(r.lpVolume) / num(r.clientVolume)) * 100) : "-"),
+  },
+  { key: "matchStatus", label: "Status", sortValue: (r) => String(r.matchStatus || ""), render: (r) => <span className="text-amber-700 dark:text-amber-300">{safe(r.matchStatus)}</span> },
+  { key: "lpsid", label: "LP SID", sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
+  { key: "lpName", label: "LP", sortValue: (r) => String(r.lpName || ""), render: (r) => safe(r.lpName) },
+  { key: "dealTime", label: "Time", sortValue: (r) => String(r.dealTime || ""), render: (r) => safe(r.dealTime) },
+  {
+    key: "rawLpPrice",
+    label: "Raw LP Price",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.rawLpPrice),
+    render: (r) => <span className="text-slate-500 dark:text-slate-400">{fmtNum5(r.rawLpPrice)}</span>,
+  },
+  {
+    key: "rawFillVolume",
+    label: "Raw Fill Vol",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    hideable: true,
+    defaultVisible: false,
+    sortValue: (r) => num(r.rawFillVolume),
+    render: (r) => <span className="text-slate-500 dark:text-slate-400">{fmtNum(r.rawFillVolume)}</span>,
+  },
+  { key: "matchMethod", label: "Method", hideable: true, defaultVisible: false, sortValue: (r) => String(r.matchMethod || ""), render: (r) => safe(r.matchMethod) },
+  { key: "contractSize", label: "CS", hideable: true, defaultVisible: false, sortValue: (r) => String(r.contractSize || ""), render: (r) => safe(r.contractSize) },
+  { key: "centroidFillCount", label: "Legs", hideable: true, defaultVisible: false, sortValue: (r) => num(r.centroidFillCount), render: (r) => safe(r.centroidFillCount) },
+  { key: "dealTicket", label: "MT5 Deal", hideable: true, defaultVisible: false, sortValue: (r) => String(r.dealTicket || ""), render: (r) => safe(r.dealTicket) },
+  { key: "orderTicket", label: "MT5 Order", hideable: true, defaultVisible: false, sortValue: (r) => String(r.orderTicket || ""), render: (r) => safe(r.orderTicket) },
+  { key: "externalDealId", label: "MT5 Ext ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.externalDealId || ""), render: (r) => safe(r.externalDealId) },
+  { key: "centroidOrderId", label: "Cen Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.centroidOrderId || ""), render: (r) => safe(r.centroidOrderId) },
+  { key: "centroidExtOrder", label: "Cen Ext Order", hideable: true, defaultVisible: false, sortValue: (r) => String(r.centroidExtOrder || ""), render: (r) => safe(r.centroidExtOrder) },
+];
+
+const partialMt5DetailColumns: SortableTableColumn<Row>[] = [
+  { key: "field", label: "Field", hideable: false, sortValue: (r) => String(r.field || ""), render: (r) => <span className="font-semibold text-cyan-700 dark:text-cyan-300">{safe(r.field)}</span> },
+  { key: "value", label: "Value", sortValue: (r) => String(r.value ?? ""), render: (r) => (r.value != null && r.value !== "" ? String(r.value) : "-") },
+];
+
+const partialCenColumns: SortableTableColumn<Row>[] = [
+  { key: "cenOrdId", label: "Cen Ord ID", sortValue: (r) => String(r.cenOrdId || ""), render: (r) => <span className="font-mono">{safe(r.cenOrdId)}</span> },
+  { key: "extOrder", label: "Ext Order", sortValue: (r) => String(r.extOrder || ""), render: (r) => safe(r.extOrder) },
+  { key: "symbol", label: "Symbol", sortValue: (r) => String(r.symbol || ""), render: (r) => <span className="font-semibold">{safe(r.symbol)}</span> },
+  { key: "side", label: "Side", sortValue: (r) => String(r.side || ""), render: (r) => <span className={sideClass(r.side)}>{safe(r.side)}</span> },
+  { key: "avgPrice", label: "Avg Price", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => String(r.avgPrice || ""), render: (r) => safe(r.avgPrice) },
+  { key: "rawAvgPrice", label: "Raw Avg", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => String(r.rawAvgPrice || ""), render: (r) => safe(r.rawAvgPrice) },
+  { key: "volume", label: "Volume", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => String(r.volume || ""), render: (r) => safe(r.volume) },
+  { key: "fillVolume", label: "Fill Vol", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => String(r.fillVolume || ""), render: (r) => safe(r.fillVolume) },
+  { key: "totalMarkup", label: "Markup", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => String(r.totalMarkup || ""), render: (r) => safe(r.totalMarkup) },
+  { key: "state", label: "State", sortValue: (r) => String(r.state || ""), render: (r) => safe(r.state) },
+  { key: "cenClientOrdId", label: "Cen Client Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.cenClientOrdId || ""), render: (r) => safe(r.cenClientOrdId) },
+  { key: "clientOrdId", label: "Client Ord ID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.clientOrdId || ""), render: (r) => safe(r.clientOrdId) },
+  { key: "extLogin", label: "Ext Login", hideable: true, defaultVisible: false, sortValue: (r) => String(r.extLogin || ""), render: (r) => safe(r.extLogin) },
+  { key: "lpsid", label: "LP SID", hideable: true, defaultVisible: false, sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
+  { key: "partySymbol", label: "Party Symbol", hideable: true, defaultVisible: false, sortValue: (r) => String(r.partySymbol || ""), render: (r) => safe(r.partySymbol) },
+  { key: "volumeValue", label: "Vol Value", hideable: true, defaultVisible: false, sortValue: (r) => String(r.volumeValue || ""), render: (r) => safe(r.volumeValue) },
+  { key: "fillVolumeValue", label: "Fill Vol Value", hideable: true, defaultVisible: false, sortValue: (r) => String(r.fillVolumeValue || ""), render: (r) => safe(r.fillVolumeValue) },
+  { key: "contractSize", label: "Contract Size", hideable: true, defaultVisible: false, sortValue: (r) => String(r.contractSize || ""), render: (r) => safe(r.contractSize) },
+  { key: "createTime", label: "Time", hideable: true, defaultVisible: false, sortValue: (r) => String(r.createTime || ""), render: (r) => safe(r.createTime) },
+  { key: "node", label: "Node", hideable: true, defaultVisible: false, sortValue: (r) => String(r.node || ""), render: (r) => safe(r.node) },
+  { key: "nodeAccount", label: "Node Account", hideable: true, defaultVisible: false, sortValue: (r) => String(r.nodeAccount || ""), render: (r) => safe(r.nodeAccount) },
+];
+
+// ── component ─────────────────────────────────────────────────────────────
 
 export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   const today = useMemo(() => toYmd(new Date()), []);
@@ -173,131 +735,62 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   const [statusLine, setStatusLine] = useState("");
   const [report, setReport] = useState<DealMatchResponse | null>(null);
   const [detailsLoaded, setDetailsLoaded] = useState(false);
+  const [lastRunParams, setLastRunParams] = useState<RunParams | null>(null);
 
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [systemsOpen, setSystemsOpen] = useState(false);
   const [clientRevenueOpen, setClientRevenueOpen] = useState(true);
   const [coverageLpOpen, setCoverageLpOpen] = useState(true);
-  const [matchedOpen, setMatchedOpen] = useState(true);
-  const [unmatchedMt5Open, setUnmatchedMt5Open] = useState(true);
-  const [unmatchedCenOpen, setUnmatchedCenOpen] = useState(true);
-  const [partialOpen, setPartialOpen] = useState(true);
+  const [matchedOpen, setMatchedOpen] = useState(false);
+  const [unmatchedMt5Open, setUnmatchedMt5Open] = useState(false);
+  const [unmatchedCenOpen, setUnmatchedCenOpen] = useState(false);
+  const [partialOpen, setPartialOpen] = useState(false);
 
   const [clientRevenueDetailRows, setClientRevenueDetailRows] = useState<Row[]>([]);
   const [clientRevenueDetailLabel, setClientRevenueDetailLabel] = useState("");
   const [clientRevenueDetailLoading, setClientRevenueDetailLoading] = useState(false);
 
-  const [selectedLpDetail, setSelectedLpDetail] = useState<Row | null>(null);
+  const [selectedLpDetail, setSelectedLpDetail] = useState<CoverageLpRow | null>(null);
   const [selectedPartial, setSelectedPartial] = useState<Row | null>(null);
 
   const matches = report?.matches || [];
   const unmatchedClientDeals = report?.unmatchedClientDeals || [];
   const unmatchedCentroidOrders = (report?.unmatchedCentroidOrders || []).concat(report?.fixApiOrders || []);
-  const partialRows = report?.partialFills || matches.filter((m) => String(m.matchStatus || "").toLowerCase() === "partial");
 
-  const derivedClientRevenue = useMemo<RevenueRow[]>(() => {
-    if (Array.isArray(report?.clientRevenueSummaries) && report!.clientRevenueSummaries!.length) {
-      return report!.clientRevenueSummaries! as RevenueRow[];
-    }
-
-    const byLogin: Record<string, RevenueRow> = {};
-    for (const m of matches) {
-      const key = String(m.clientLogin || "-");
-      if (!byLogin[key]) {
-        byLogin[key] = {
-          login: key,
-          name: safe(m.clientName),
-          group: safe(m.clientGroup),
-          system: m.isBonus ? "Bonus" : "Client",
-          lots: 0,
-          markupRevenueUsd: 0,
-          clientCommissionUsd: 0,
-          lpCommissionUsd: 0,
-          totalRevenueUsd: 0,
-        };
-      }
-      byLogin[key].lots += num(m.clientVolume);
-      byLogin[key].markupRevenueUsd += num(m.spreadRevenueUsd);
-      byLogin[key].clientCommissionUsd += num(m.clientCommission);
-      byLogin[key].lpCommissionUsd += Math.abs(num(m.lpCommission));
-    }
-
-    return Object.values(byLogin)
-      .map((r) => ({ ...r, totalRevenueUsd: num(r.markupRevenueUsd) + num(r.clientCommissionUsd) - num(r.lpCommissionUsd) }))
-      .sort((a, b) => num(b.totalRevenueUsd) - num(a.totalRevenueUsd));
-  }, [matches, report]);
-
-  const derivedCoverageLps = useMemo<CoverageLpRow[]>(() => {
-    if (Array.isArray(report?.coverageLps) && report!.coverageLps!.length) {
-      return report!.coverageLps! as CoverageLpRow[];
-    }
-
-    const byLp: Record<string, CoverageLpRow> = {};
-    for (const m of matches) {
-      const key = `${safe(m.lpName)}|${safe(m.lpsid)}`;
-      if (!byLp[key]) {
-        byLp[key] = {
-          lpName: safe(m.lpName),
-          lpLogin: safe(m.lpsid),
-          source: safe(m.lpSource),
-          dealCount: 0,
-          lots: 0,
-          millionsUsd: 0,
-          effectiveCommission: 0,
-          actualCommission: 0,
-          calculatedCommission: 0,
-          configuredRatePerMillion: m.configuredRatePerMillion,
-          effectiveRatePerMillion: m.effectiveRatePerMillion,
-          commissionSource: safe(m.commissionSource),
-        };
-      }
-      byLp[key].dealCount += 1;
-      byLp[key].lots += num(m.lpVolume);
-      byLp[key].millionsUsd += num(m.lpVolume) * num(m.lpPrice) * num(m.contractSize) / 1_000_000;
-      const lpCommission = Math.abs(num(m.lpCommission));
-      byLp[key].effectiveCommission += lpCommission;
-      byLp[key].actualCommission += lpCommission;
-      byLp[key].calculatedCommission += lpCommission;
-    }
-
-    return Object.values(byLp).sort((a, b) => num(b.effectiveCommission) - num(a.effectiveCommission));
-  }, [matches, report]);
+  const clientRevenueRows = (report?.clientRevenueSummaries || []) as RevenueRow[];
+  const coverageLps = (report?.coverageLps || []) as CoverageLpRow[];
 
   const derivedSystems = useMemo<SystemRow[]>(() => {
-    if (Array.isArray(report?.clientSystems) && report!.clientSystems!.length) {
-      const systems = [...(report!.clientSystems! as SystemRow[])];
-      const lpEffective = derivedCoverageLps.reduce<number>((sum, x) => sum + num(x.effectiveCommission), 0);
-      const clientComm = systems.reduce<number>((sum, x) => sum + num(x.commission), 0);
-      const markup = systems.reduce<number>((sum, x) => sum + num(x.markupRevenueUsd), 0);
-      systems.push({ system: "LP Charged", lots: null, markupRevenueUsd: 0, commission: lpEffective });
-      systems.push({ system: "Net (Client - LP)", lots: null, markupRevenueUsd: markup, commission: clientComm + markup - lpEffective });
-      return systems;
-    }
-
-    const live = derivedClientRevenue.filter((r) => String(r.system).toLowerCase() !== "bonus");
-    const bonus = derivedClientRevenue.filter((r) => String(r.system).toLowerCase() === "bonus");
-    const lpEffective = derivedCoverageLps.reduce<number>((sum, x) => sum + num(x.effectiveCommission), 0);
-
-    const clientMarkup = live.reduce<number>((sum, r) => sum + num(r.markupRevenueUsd), 0);
-    const clientComm = live.reduce<number>((sum, r) => sum + num(r.clientCommissionUsd), 0);
-    const clientLots = live.reduce<number>((sum, r) => sum + num(r.lots), 0);
-
-    const bonusMarkup = bonus.reduce<number>((sum, r) => sum + num(r.markupRevenueUsd), 0);
-    const bonusComm = bonus.reduce<number>((sum, r) => sum + num(r.clientCommissionUsd), 0);
-    const bonusLots = bonus.reduce<number>((sum, r) => sum + num(r.lots), 0);
-
-    return [
-      { system: "Client", lots: clientLots, markupRevenueUsd: clientMarkup, commission: clientComm },
-      { system: "Bonus", lots: bonusLots, markupRevenueUsd: bonusMarkup, commission: bonusComm },
-      { system: "LP Charged", lots: null, markupRevenueUsd: 0, commission: lpEffective },
-      { system: "Net (Client - LP)", lots: null, markupRevenueUsd: clientMarkup + bonusMarkup, commission: clientComm + bonusComm + clientMarkup + bonusMarkup - lpEffective },
-    ];
-  }, [derivedClientRevenue, derivedCoverageLps, report]);
+    if (!report) return [];
+    const systems = [...((report.clientSystems || []) as SystemRow[])];
+    const lpLotsTotal = coverageLps.reduce((s, x) => s + num(x.lots), 0);
+    const totalLpComm = Math.abs(num(report.totalLpCommissionAllocated));
+    const clientMarkupTotal = systems.reduce((s, x) => s + num(x.markupRevenueUsd), 0);
+    const clientMt5MarkupTotal = systems.reduce((s, x) => s + num(x.mt5MarkupUsd), 0);
+    const clientGrossTotal = systems.reduce((s, x) => s + num(x.grossRevenueUsd), 0);
+    systems.push({ system: "LP Charged", lots: lpLotsTotal, markupRevenueUsd: null, mt5MarkupUsd: null, grossRevenueUsd: null, commission: totalLpComm });
+    systems.push({
+      system: "Net (Client - LP)",
+      lots: null,
+      markupRevenueUsd: clientMarkupTotal,
+      mt5MarkupUsd: clientMt5MarkupTotal,
+      grossRevenueUsd: clientGrossTotal,
+      commission: clientGrossTotal - totalLpComm,
+    });
+    return systems;
+  }, [report, coverageLps]);
 
   const unmatchedByClientRows = useMemo(() => aggregateUnmatchedMt5(unmatchedClientDeals), [unmatchedClientDeals]);
+
+  // Partial fills are always derived client-side from the matches array (never from a server field).
+  const partialRows = useMemo(
+    () => matches.filter((m) => String(m.matchStatus) === "Partial" || (num(m.lpVolume) > 0 && Math.abs(num(m.clientVolume) - num(m.lpVolume)) > 0.005)),
+    [matches],
+  );
+
   const partialCentroidLegs = useMemo(() => {
-    const legs = Array.isArray(selectedPartial?.centroidLegs) ? selectedPartial.centroidLegs : [];
-    return legs.map((leg) => ({
+    const legs = Array.isArray(selectedPartial?.centroidLegs) ? selectedPartial!.centroidLegs : [];
+    return legs.map((leg: Row) => ({
       cenOrdId: safe(leg.cenOrdId || leg.cen_ord_id),
       cenClientOrdId: safe(leg.cenClientOrdId || leg.cen_client_ord_id),
       clientOrdId: safe(leg.clientOrdId || leg.client_ord_id),
@@ -308,18 +801,72 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
       partySymbol: safe(leg.partySymbol || leg.party_symbol),
       side: safe(leg.side),
       state: safe(leg.state),
-      avgPrice: fmtNum(leg.avgPrice ?? leg.avg_price, 5),
-      rawAvgPrice: fmtNum(leg.rawAvgPrice ?? leg.raw_avg_price, 5),
+      avgPrice: fmtNum5(leg.avgPrice ?? leg.avg_price),
+      rawAvgPrice: fmtNum5(leg.rawAvgPrice ?? leg.raw_avg_price),
       volume: fmtNum(leg.volume, 4),
       fillVolume: fmtNum(leg.fillVolume ?? leg.fill_volume, 4),
       volumeValue: safe(leg.volumeValue ?? leg.volume_value),
       fillVolumeValue: safe(leg.fillVolumeValue ?? leg.fill_volume_value),
       contractSize: safe(leg.contractSize ?? leg.contract_size),
-      totalMarkup: fmtNum(leg.totalMarkup ?? leg.total_markup, 5),
+      totalMarkup: fmtNum5(leg.totalMarkup ?? leg.total_markup),
       createTime: safe(leg.createTime || leg.create_time),
       node: safe(leg.node),
       nodeAccount: safe(leg.nodeAccount || leg.node_account),
     }));
+  }, [selectedPartial]);
+
+  const partialMt5Rows = useMemo(() => {
+    const m = selectedPartial;
+    if (!m) return [];
+    const f = (v: any, d: number) => (v != null && v !== "" ? fmtNum(v, d) : "");
+    const rows: Array<{ field: string; value: string }> = [
+      { field: "Deal Ticket", value: safe(m.dealTicket) },
+      { field: "Order Ticket", value: safe(m.orderTicket) },
+      { field: "Position ID", value: safe(m.positionId) },
+      { field: "External ID", value: safe(m.externalDealId) },
+      { field: "Login", value: safe(m.clientLogin) },
+      { field: "Name", value: safe(m.clientName) },
+      { field: "Group", value: safe(m.clientGroup) },
+      { field: "Symbol", value: safe(m.symbol) },
+      { field: "Side", value: safe(m.side) },
+      { field: "Entry", value: safe(m.entry) },
+      { field: "Category", value: safe(m.dealCategory) },
+      { field: "Price", value: f(m.clientPrice, 5) },
+      { field: "Volume (lots)", value: f(m.clientVolume, 4) },
+      { field: "Contract Size", value: safe(m.contractSize) },
+      { field: "Client Units", value: f(m.clientUnits, 4) },
+      { field: "Commission", value: money(m.clientCommission) },
+      { field: "Time", value: safe(m.dealTime) },
+      { field: "Market Bid", value: f(m.marketBid, 5) },
+      { field: "Market Ask", value: f(m.marketAsk, 5) },
+      { field: "Match Method", value: safe(m.matchMethod) },
+      { field: "Match Status", value: safe(m.matchStatus) },
+      { field: "LP Price (agg)", value: f(m.lpPrice, 5) },
+      { field: "LP Volume (agg)", value: f(m.lpVolume, 4) },
+      { field: "LP SID", value: safe(m.lpsid) },
+      { field: "LP Name", value: safe(m.lpName) },
+      { field: "Cen Ord ID", value: safe(m.centroidOrderId) },
+      { field: "Cen Ext Order", value: safe(m.centroidExtOrder) },
+      { field: "Cen Ext Login", value: safe(m.centroidExtLogin) },
+      { field: "Cen Fill Count", value: safe(m.centroidFillCount) },
+      { field: "Spread", value: f(m.spread, 5) },
+      { field: "Spread Revenue", value: money(m.spreadRevenueUsd) },
+      { field: "LP Commission", value: money(m.lpCommission) },
+    ];
+    const subDeals: Row[] = Array.isArray(m.subDeals) ? m.subDeals : [];
+    if (subDeals.length > 1) {
+      rows.push({ field: "", value: "" });
+      rows.push({ field: "-- Sub-Deals --", value: `${subDeals.length} deals aggregated` });
+      subDeals.forEach((sd, i) => {
+        rows.push({ field: `  Deal #${i + 1} Ticket`, value: safe(sd.deal) });
+        rows.push({ field: `  Deal #${i + 1} Price`, value: f(sd.price, 5) });
+        rows.push({ field: `  Deal #${i + 1} Volume`, value: f(sd.volume, 4) });
+        rows.push({ field: `  Deal #${i + 1} Commission`, value: money(sd.commission) });
+        rows.push({ field: `  Deal #${i + 1} Time`, value: safe(sd.time) });
+        rows.push({ field: `  Deal #${i + 1} Entry`, value: safe(sd.entry) });
+      });
+    }
+    return rows;
   }, [selectedPartial]);
 
   const summaryRows = useMemo(() => {
@@ -334,14 +881,14 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     const liveUnmatched = unmatchedClientDeals.filter((u) => !u.isBonus);
 
     const matchedLpLots = matches.reduce((s, m) => s + num(m.lpVolume), 0);
-    const unmatchedCenLots = unmatchedCentroidOrders.reduce((s, o) => s + num(o.fill_volume || o.volume), 0);
+    const unmatchedCenLots = unmatchedCentroidOrders.reduce((s, o) => s + num(o.fill_volume ?? o.volume), 0);
     const unmatchedMt5Lots = unmatchedClientDeals.reduce((s, d) => s + num(d.volume), 0);
 
     const mt5Lots = unmatchedMt5Lots + matches.reduce((s, m) => s + num(m.clientVolume), 0);
     const liveLots = liveMatches.reduce((s, m) => s + num(m.clientVolume), 0) + liveUnmatched.reduce((s, u) => s + num(u.volume), 0);
     const bonusLots = bonusMatches.reduce((s, m) => s + num(m.clientVolume), 0) + bonusUnmatched.reduce((s, u) => s + num(u.volume), 0);
 
-    return [
+    const rows = [
       {
         source: "MT5 Deals",
         deals: num(report.totalClientDeals),
@@ -371,6 +918,8 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
         matchPct: num(report.totalCentroidOrders) > 0 ? (matches.length / num(report.totalCentroidOrders)) * 100 : 0,
       },
     ];
+
+    return rows.filter((r) => r.deals || r.unmatchedDeals || r.source === "MT5 Deals" || r.source === "Centroid Orders");
   }, [detailsLoaded, matches, report, unmatchedCentroidOrders, unmatchedClientDeals]);
 
   const runMatch = async () => {
@@ -396,14 +945,17 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     setSelectedPartial(null);
 
     const range = ymdToUnixRange(fromDate, toDate);
+    const runParams: RunParams = { group: group || "*", from: range.from, to: range.to, symbol: symbol.trim(), login: loginTrimmed };
+    setLastRunParams(runParams);
+
     const params = new URLSearchParams({
-      group: group || "*",
-      from: String(range.from),
-      to: String(range.to),
-      symbol: symbol.trim(),
+      group: runParams.group,
+      from: String(runParams.from),
+      to: String(runParams.to),
+      symbol: runParams.symbol,
       lite: "true",
     });
-    if (loginTrimmed) params.set("login", loginTrimmed);
+    if (runParams.login) params.set("login", runParams.login);
 
     try {
       const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
@@ -423,21 +975,19 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   };
 
   const loadMatchDetails = async () => {
-    if (!report || detailsLoaded) return;
+    if (!lastRunParams || detailsLoaded || loadDetailsLoading) return;
 
-    const loginTrimmed = login.trim();
     setLoadDetailsLoading(true);
     setError(null);
 
-    const range = ymdToUnixRange(fromDate, toDate);
     const params = new URLSearchParams({
-      group: group || "*",
-      from: String(range.from),
-      to: String(range.to),
-      symbol: symbol.trim(),
+      group: lastRunParams.group,
+      from: String(lastRunParams.from),
+      to: String(lastRunParams.to),
+      symbol: lastRunParams.symbol,
       lite: "false",
     });
-    if (loginTrimmed) params.set("login", loginTrimmed);
+    if (lastRunParams.login) params.set("login", lastRunParams.login);
 
     try {
       const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
@@ -449,7 +999,10 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
       setReport(data || {});
       setDetailsLoaded(true);
       setSummaryOpen(true);
-      setSystemsOpen(true);
+      setMatchedOpen(true);
+      setUnmatchedMt5Open(true);
+      setUnmatchedCenOpen(true);
+      setPartialOpen(true);
     } catch (e: any) {
       setError(e?.message || "Failed to load match details.");
     } finally {
@@ -457,7 +1010,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     }
   };
 
-  const onClientRevenueRowClick = async (row: Row) => {
+  const onClientRevenueRowClick = async (row: RevenueRow) => {
     const selectedLogin = String(row.login || "").trim();
     if (!selectedLogin || selectedLogin === "-") return;
 
@@ -484,10 +1037,59 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     }
   };
 
+  // ── KPIs (exactly as reference: gross/lpComm/net come straight from the server) ──
   const totalMarkup = num(report?.totalSpreadRevenueUsd);
   const totalClientCommission = num(report?.totalClientCommission);
-  const totalLpComm = Math.abs(num(report?.totalLpEffectiveCommission) || num(report?.totalLpCommission) || derivedCoverageLps.reduce((s, x) => s + num(x.effectiveCommission), 0));
-  const totalNetRevenue = totalMarkup + totalClientCommission - totalLpComm;
+  const totalGross = num(report?.totalGrossRevenueUsd);
+  const totalLpComm = Math.abs(num(report?.totalLpCommissionAllocated));
+  const totalNet = totalGross - totalLpComm;
+
+  // ── totals for pinned-TOTAL footers ──
+  const clientRevenueTotals = useMemo(
+    () => ({
+      lots: clientRevenueRows.reduce((s, r) => s + num(r.lots), 0),
+      markupRevenueUsd: clientRevenueRows.reduce((s, r) => s + num(r.markupRevenueUsd), 0),
+      clientCommissionUsd: clientRevenueRows.reduce((s, r) => s + num(r.clientCommissionUsd), 0),
+      grossRevenueUsd: clientRevenueRows.reduce((s, r) => s + num(r.grossRevenueUsd), 0),
+      lpCommissionUsd: clientRevenueRows.reduce((s, r) => s + num(r.lpCommissionUsd), 0),
+      totalRevenueUsd: clientRevenueRows.reduce((s, r) => s + num(r.totalRevenueUsd), 0),
+    }),
+    [clientRevenueRows],
+  );
+
+  const clientRevenueDetailTotals = useMemo(() => {
+    const gross = clientRevenueDetailRows.reduce((s, r) => s + num(r.grossRevenueUsd), 0);
+    const lpComm = clientRevenueDetailRows.reduce((s, r) => s + num(r.lpCommissionUsd), 0);
+    return {
+      tradeCount: clientRevenueDetailRows.reduce((s, r) => s + num(r.tradeCount), 0),
+      clientLotsPlaced: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientLotsPlaced), 0),
+      lpLotsSent: clientRevenueDetailRows.reduce((s, r) => s + num(r.lpLotsSent), 0),
+      markupRevenueUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.markupRevenueUsd), 0),
+      clientCommissionUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientCommissionUsd), 0),
+      grossRevenueUsd: gross,
+      lpCommissionUsd: lpComm,
+      netRevenueUsd: gross - lpComm,
+    };
+  }, [clientRevenueDetailRows]);
+
+  const coverageLpTotals = useMemo(
+    () => ({
+      lots: coverageLps.reduce((s, r) => s + num(r.lots), 0),
+      millionsUsd: coverageLps.reduce((s, r) => s + num(r.millionsUsd), 0),
+      effectiveCommission: coverageLps.reduce((s, r) => s + num(r.effectiveCommission), 0),
+    }),
+    [coverageLps],
+  );
+
+  const matchedTotals = useMemo(
+    () => ({
+      clientVolume: matches.reduce((s, m) => s + num(m.clientVolume), 0),
+      lpVolume: matches.reduce((s, m) => s + num(m.lpVolume), 0),
+      clientCommission: matches.reduce((s, m) => s + num(m.clientCommission), 0),
+      lpCommission: matches.reduce((s, m) => s + Math.abs(num(m.lpCommission)), 0),
+    }),
+    [matches],
+  );
 
   return (
     <section className="space-y-3 overflow-hidden rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/70">
@@ -525,7 +1127,8 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
 
       {report && (
         <>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {/* KPI tiles */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
             <div className="rounded-lg border border-emerald-300/40 bg-emerald-50 p-2 dark:bg-emerald-500/10">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Markup Revenue</div>
               <div className={`mt-1 text-sm font-semibold ${signedClass(totalMarkup)}`}>{money(totalMarkup)}</div>
@@ -534,121 +1137,80 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
               <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Commission Revenue</div>
               <div className={`mt-1 text-sm font-semibold ${signedClass(totalClientCommission)}`}>{money(totalClientCommission)}</div>
             </div>
+            <div className="rounded-lg border border-cyan-300/40 bg-cyan-50 p-2 dark:bg-cyan-500/10">
+              <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Gross Revenue</div>
+              <div className={`mt-1 text-sm font-semibold ${signedClass(totalGross)}`}>{money(totalGross)}</div>
+            </div>
             <div className="rounded-lg border border-rose-300/40 bg-rose-50 p-2 dark:bg-rose-500/10">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">LP Commission</div>
               <div className="mt-1 text-sm font-semibold text-rose-700 dark:text-rose-300">-{money(totalLpComm).replace("-", "")}</div>
             </div>
             <div className="rounded-lg border border-cyan-300/50 bg-gradient-to-r from-cyan-50 to-emerald-50 p-2 dark:from-cyan-500/10 dark:to-emerald-500/10">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Total Net Revenue</div>
-              <div className={`mt-1 text-sm font-semibold ${signedClass(totalNetRevenue)}`}>{money(totalNetRevenue)}</div>
+              <div className={`mt-1 text-sm font-semibold ${signedClass(totalNet)}`}>{money(totalNet)}</div>
             </div>
           </div>
 
           <div className="space-y-2">
+            {/* Overall Summary — only rendered once match details are loaded */}
             {detailsLoaded && (
               <>
                 <button type="button" onClick={() => setSummaryOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(summaryOpen)}`}>
                   {summaryOpen ? "-" : "+"} Overall Summary - MT5 / Client / Bonus / Centroid
                 </button>
                 {summaryOpen && (
-              <div className="max-h-[30vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                <table className="min-w-full text-[11px]">
-                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Source</th>
-                      <th className="px-3 py-2 text-right">Deals</th>
-                      <th className="px-3 py-2 text-right">Lots</th>
-                      <th className="px-3 py-2 text-right">Unmatched</th>
-                      <th className="px-3 py-2 text-right">Match %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {summaryRows.map((r) => (
-                      <tr key={String(r.source)} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                        <td className="px-3 py-2 font-semibold">{r.source}</td>
-                        <td className="px-3 py-2 text-right">{fmtInt(r.deals)}</td>
-                        <td className="px-3 py-2 text-right">{fmtNum(r.lots)}</td>
-                        <td className="px-3 py-2 text-right">{fmtInt(r.unmatchedDeals)}</td>
-                        <td className="px-3 py-2 text-right">{fmtNum(r.matchPct)}%</td>
-                      </tr>
-                    ))}
-                    {!summaryRows.length && (
-                      <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-500">Load match details to view summary grid.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                  <SortableTable
+                    tableId="deal-matching-summary"
+                    rows={summaryRows}
+                    columns={summaryColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No summary rows."
+                  />
                 )}
               </>
             )}
 
+            {/* Client Systems */}
             <button type="button" onClick={() => setSystemsOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(systemsOpen)}`}>
-              {systemsOpen ? "-" : "+"} Client Systems - Lots & Commission Charged
+              {systemsOpen ? "-" : "+"} Client Systems - Lots &amp; Commission Charged
             </button>
             {systemsOpen && (
-              <div className="max-h-[34vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                <table className="min-w-full text-[11px]">
-                  <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                    <tr>
-                      <th className="px-3 py-2 text-left">System</th>
-                      <th className="px-3 py-2 text-right">Lots</th>
-                      <th className="px-3 py-2 text-right">Markup Revenue</th>
-                      <th className="px-3 py-2 text-right">Commission Charged</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {derivedSystems.map((r, idx) => (
-                      <tr key={`sys-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                        <td className="px-3 py-2 font-semibold">{safe(r.system)}</td>
-                        <td className="px-3 py-2 text-right">{r.lots == null ? "-" : fmtNum(r.lots)}</td>
-                        <td className={`px-3 py-2 text-right ${signedClass(r.markupRevenueUsd)}`}>{money(r.markupRevenueUsd)}</td>
-                        <td className={`px-3 py-2 text-right ${signedClass(r.commission)}`}>{money(r.commission)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <SortableTable
+                tableId="deal-matching-systems"
+                rows={derivedSystems}
+                columns={systemColumns}
+                tableClassName="min-w-full text-[11px]"
+                emptyText="No client system rows."
+              />
             )}
 
+            {/* Revenue by Client */}
             <button type="button" onClick={() => setClientRevenueOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(clientRevenueOpen)}`}>
               {clientRevenueOpen ? "-" : "+"} Revenue by Client
             </button>
             {clientRevenueOpen && (
               <div className="space-y-2">
-                <div className="max-h-[38vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                  <table className="min-w-full text-[11px]">
-                    <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="px-3 py-2 text-left">Login</th>
-                        <th className="px-3 py-2 text-left">Name</th>
-                        <th className="px-3 py-2 text-left">Group</th>
-                        <th className="px-3 py-2 text-left">System</th>
-                        <th className="px-3 py-2 text-right">Lots</th>
-                        <th className="px-3 py-2 text-right">Markup</th>
-                        <th className="px-3 py-2 text-right">Client Comm</th>
-                        <th className="px-3 py-2 text-right">LP Comm</th>
-                        <th className="px-3 py-2 text-right">Total Rev</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {derivedClientRevenue.map((r, idx) => (
-                        <tr key={`cr-${idx}`} onClick={() => onClientRevenueRowClick(r)} className="cursor-pointer border-t border-slate-200 bg-white hover:bg-cyan-50 dark:border-slate-800 dark:bg-slate-950/30 dark:hover:bg-cyan-500/10">
-                          <td className="px-3 py-2 font-mono">{safe(r.login)}</td>
-                          <td className="px-3 py-2">{safe(r.name)}</td>
-                          <td className="px-3 py-2">{safe(r.group)}</td>
-                          <td className="px-3 py-2">{safe(r.system)}</td>
-                          <td className="px-3 py-2 text-right">{fmtNum(r.lots)}</td>
-                          <td className={`px-3 py-2 text-right ${signedClass(r.markupRevenueUsd)}`}>{money(r.markupRevenueUsd)}</td>
-                          <td className={`px-3 py-2 text-right ${signedClass(r.clientCommissionUsd)}`}>{money(r.clientCommissionUsd)}</td>
-                          <td className="px-3 py-2 text-right text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</td>
-                          <td className={`px-3 py-2 text-right font-semibold ${signedClass(r.totalRevenueUsd)}`}>{money(r.totalRevenueUsd)}</td>
-                        </tr>
-                      ))}
-                      {!derivedClientRevenue.length && (
-                        <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-500">No client revenue rows.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
+                <div>
+                  <SortableTable
+                    tableId="deal-matching-client-revenue"
+                    rows={clientRevenueRows}
+                    columns={clientRevenueColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No client revenue rows."
+                    onRowClick={(row) => onClientRevenueRowClick(row)}
+                  />
+                  {clientRevenueRows.length > 0 && (
+                    <TotalsBar
+                      items={[
+                        { label: "Lots", value: fmtNum(clientRevenueTotals.lots) },
+                        { label: "Markup", value: money(clientRevenueTotals.markupRevenueUsd) },
+                        { label: "Client Comm", value: money(clientRevenueTotals.clientCommissionUsd) },
+                        { label: "Gross", value: money(clientRevenueTotals.grossRevenueUsd) },
+                        { label: "LP Comm", value: money(clientRevenueTotals.lpCommissionUsd) },
+                        { label: "Net Revenue", value: money(clientRevenueTotals.totalRevenueUsd) },
+                      ]}
+                    />
+                  )}
                 </div>
 
                 {(clientRevenueDetailLoading || clientRevenueDetailRows.length > 0 || clientRevenueDetailLabel) && (
@@ -660,47 +1222,28 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                     {clientRevenueDetailLoading ? (
                       <div className="py-4 text-xs text-slate-500">Loading detail...</div>
                     ) : (
-                      <div className="max-h-[30vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                        <table className="min-w-full text-[11px]">
-                          <thead className="bg-slate-100 text-slate-700 dark:bg-slate-900/90 dark:text-slate-300">
-                            <tr>
-                              <th className="px-2 py-1.5 text-left">LP</th>
-                              <th className="px-2 py-1.5 text-left">TEM</th>
-                              <th className="px-2 py-1.5 text-right">Trades</th>
-                              <th className="px-2 py-1.5 text-left">Symbols</th>
-                              <th className="px-2 py-1.5 text-right">Client Lots</th>
-                              <th className="px-2 py-1.5 text-right">LP Lots</th>
-                              <th className="px-2 py-1.5 text-right">Alloc %</th>
-                              <th className="px-2 py-1.5 text-right">Markup</th>
-                              <th className="px-2 py-1.5 text-right">Client Comm</th>
-                              <th className="px-2 py-1.5 text-right">LP Comm</th>
-                              <th className="px-2 py-1.5 text-right">Net</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {clientRevenueDetailRows.map((r, idx) => {
-                              const net = num(r.netRevenueUsd) || (num(r.markupRevenueUsd) + num(r.clientCommissionUsd) - num(r.lpCommissionUsd));
-                              return (
-                                <tr key={`crd-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                                  <td className="px-2 py-1.5">{safe(r.lpsid)}</td>
-                                  <td className="px-2 py-1.5">{safe(r.lpName)}</td>
-                                  <td className="px-2 py-1.5 text-right">{fmtInt(r.tradeCount)}</td>
-                                  <td className="px-2 py-1.5">{safe(r.symbols)}</td>
-                                  <td className="px-2 py-1.5 text-right">{fmtNum(r.clientLotsPlaced)}</td>
-                                  <td className="px-2 py-1.5 text-right">{fmtNum(r.lpLotsSent)}</td>
-                                  <td className="px-2 py-1.5 text-right">{fmtNum(r.allocationPct)}%</td>
-                                  <td className={`px-2 py-1.5 text-right ${signedClass(r.markupRevenueUsd)}`}>{money(r.markupRevenueUsd)}</td>
-                                  <td className={`px-2 py-1.5 text-right ${signedClass(r.clientCommissionUsd)}`}>{money(r.clientCommissionUsd)}</td>
-                                  <td className="px-2 py-1.5 text-right text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</td>
-                                  <td className={`px-2 py-1.5 text-right font-semibold ${signedClass(net)}`}>{money(net)}</td>
-                                </tr>
-                              );
-                            })}
-                            {!clientRevenueDetailRows.length && (
-                              <tr><td colSpan={11} className="px-2 py-6 text-center text-slate-500">Select a client row to view LP allocation detail.</td></tr>
-                            )}
-                          </tbody>
-                        </table>
+                      <div>
+                        <SortableTable
+                          tableId="deal-matching-client-revenue-detail"
+                          rows={clientRevenueDetailRows}
+                          columns={clientRevenueDetailColumns}
+                          tableClassName="min-w-full text-[11px]"
+                          emptyText="Select a client row to view LP allocation detail."
+                        />
+                        {clientRevenueDetailRows.length > 0 && (
+                          <TotalsBar
+                            items={[
+                              { label: "Trades", value: fmtInt(clientRevenueDetailTotals.tradeCount) },
+                              { label: "Client Lots", value: fmtNum(clientRevenueDetailTotals.clientLotsPlaced) },
+                              { label: "LP Lots", value: fmtNum(clientRevenueDetailTotals.lpLotsSent) },
+                              { label: "Markup", value: money(clientRevenueDetailTotals.markupRevenueUsd) },
+                              { label: "Client Comm", value: money(clientRevenueDetailTotals.clientCommissionUsd) },
+                              { label: "Gross", value: money(clientRevenueDetailTotals.grossRevenueUsd) },
+                              { label: "LP Comm", value: money(clientRevenueDetailTotals.lpCommissionUsd) },
+                              { label: "Net", value: money(clientRevenueDetailTotals.netRevenueUsd) },
+                            ]}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -708,37 +1251,30 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
               </div>
             )}
 
+            {/* Commission by LP */}
             <button type="button" onClick={() => setCoverageLpOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(coverageLpOpen)}`}>
               {coverageLpOpen ? "-" : "+"} Commission Charged by LP
             </button>
             {coverageLpOpen && (
               <div className="space-y-2">
-                <div className="max-h-[38vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                  <table className="min-w-full text-[11px]">
-                    <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                      <tr>
-                        <th className="px-3 py-2 text-left">LP</th>
-                        <th className="px-3 py-2 text-left">Login</th>
-                        <th className="px-3 py-2 text-right">Lots</th>
-                        <th className="px-3 py-2 text-right">$M</th>
-                        <th className="px-3 py-2 text-right">LP Commission</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {derivedCoverageLps.map((r, idx) => (
-                        <tr key={`lp-${idx}`} onClick={() => setSelectedLpDetail(r)} className="cursor-pointer border-t border-slate-200 bg-white hover:bg-cyan-50 dark:border-slate-800 dark:bg-slate-950/30 dark:hover:bg-cyan-500/10">
-                          <td className="px-3 py-2 font-semibold">{safe(r.lpName)}</td>
-                          <td className="px-3 py-2">{safe(r.lpLogin)}</td>
-                          <td className="px-3 py-2 text-right">{fmtNum(r.lots)}</td>
-                          <td className="px-3 py-2 text-right">{fmtNum(r.millionsUsd)}</td>
-                          <td className="px-3 py-2 text-right font-semibold text-cyan-700 dark:text-cyan-300">{money(r.effectiveCommission)}</td>
-                        </tr>
-                      ))}
-                      {!derivedCoverageLps.length && (
-                        <tr><td colSpan={5} className="px-3 py-8 text-center text-slate-500">No LP coverage rows.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
+                <div>
+                  <SortableTable
+                    tableId="deal-matching-coverage-lps"
+                    rows={coverageLps}
+                    columns={coverageLpColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No LP coverage rows."
+                    onRowClick={(row) => setSelectedLpDetail(row)}
+                  />
+                  {coverageLps.length > 0 && (
+                    <TotalsBar
+                      items={[
+                        { label: "Lots", value: fmtNum(coverageLpTotals.lots) },
+                        { label: "$M", value: fmtNum(coverageLpTotals.millionsUsd) },
+                        { label: "LP Commission", value: money(coverageLpTotals.effectiveCommission) },
+                      ]}
+                    />
+                  )}
                 </div>
 
                 {selectedLpDetail && (
@@ -762,6 +1298,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
               </div>
             )}
 
+            {/* Load Match Details toolbar */}
             <div className="rounded-lg border border-slate-300 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div>
@@ -780,252 +1317,96 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
 
               {detailsLoaded && (
                 <div className="space-y-2">
+                  {/* Matched Trades */}
                   <button type="button" onClick={() => setMatchedOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(matchedOpen)}`}>{matchedOpen ? "-" : "+"} Matched Trades</button>
                   {matchedOpen && (
-                    <div className="max-h-[52vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                      <table className="min-w-full text-[11px]">
-                        <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                          <tr>
-                            <th className="px-2 py-1.5 text-left">Login</th>
-                            <th className="px-2 py-1.5 text-left">Name</th>
-                            <th className="px-2 py-1.5 text-left">Symbol</th>
-                            <th className="px-2 py-1.5 text-left">Side</th>
-                            <th className="px-2 py-1.5 text-left">Entry</th>
-                            <th className="px-2 py-1.5 text-right">Client Lots</th>
-                            <th className="px-2 py-1.5 text-right">Client Price</th>
-                            <th className="px-2 py-1.5 text-right">LP Lots</th>
-                            <th className="px-2 py-1.5 text-right">LP Price</th>
-                            <th className="px-2 py-1.5 text-right">Markup Rev</th>
-                            <th className="px-2 py-1.5 text-right">Client Comm</th>
-                            <th className="px-2 py-1.5 text-right">LP Comm</th>
-                            <th className="px-2 py-1.5 text-right">Total Rev</th>
-                            <th className="px-2 py-1.5 text-left">Time</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {matches.map((m, idx) => {
-                            const totalRev = num(m.spreadRevenueUsd) + num(m.clientCommission) - Math.abs(num(m.lpCommission));
-                            return (
-                              <tr key={`m-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                                <td className="px-2 py-1.5 font-mono">{safe(m.clientLogin)}</td>
-                                <td className="px-2 py-1.5">{safe(m.clientName)}</td>
-                                <td className="px-2 py-1.5 font-semibold">{safe(m.symbol)}</td>
-                                <td className="px-2 py-1.5">{safe(m.side)}</td>
-                                <td className="px-2 py-1.5">{safe(m.entry)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(m.clientVolume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(m.clientPrice, 5)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(m.lpVolume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(m.lpPrice, 5)}</td>
-                                <td className={`px-2 py-1.5 text-right ${signedClass(m.spreadRevenueUsd)}`}>{money(m.spreadRevenueUsd)}</td>
-                                <td className={`px-2 py-1.5 text-right ${signedClass(m.clientCommission)}`}>{money(m.clientCommission)}</td>
-                                <td className="px-2 py-1.5 text-right text-rose-700 dark:text-rose-300">{money(Math.abs(num(m.lpCommission)))}</td>
-                                <td className={`px-2 py-1.5 text-right font-semibold ${signedClass(totalRev)}`}>{money(totalRev)}</td>
-                                <td className="px-2 py-1.5">{safe(m.dealTime)}</td>
-                              </tr>
-                            );
-                          })}
-                          {!matches.length && <tr><td colSpan={14} className="px-2 py-8 text-center text-slate-500">No matched trades.</td></tr>}
-                        </tbody>
-                      </table>
+                    <div>
+                      <SortableTable
+                        tableId="deal-matching-matched"
+                        enableColumnVisibility
+                        rows={matches}
+                        columns={matchedColumns}
+                        tableClassName="min-w-full text-[11px]"
+                        emptyText="No matched trades."
+                      />
+                      {matches.length > 0 && (
+                        <TotalsBar
+                          items={[
+                            { label: "Client Lots", value: fmtNum(matchedTotals.clientVolume, 4) },
+                            { label: "LP Lots", value: fmtNum(matchedTotals.lpVolume, 4) },
+                            { label: "Markup Rev", value: money(totalMarkup) },
+                            { label: "Client Comm", value: money(matchedTotals.clientCommission) },
+                            { label: "LP Comm", value: money(matchedTotals.lpCommission) },
+                          ]}
+                        />
+                      )}
                     </div>
                   )}
 
+                  {/* Unmatched MT5 Deals by Client */}
                   <button type="button" onClick={() => setUnmatchedMt5Open((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(unmatchedMt5Open)}`}>{unmatchedMt5Open ? "-" : "+"} Unmatched MT5 Deals by Client</button>
                   {unmatchedMt5Open && (
-                    <div className="max-h-[36vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                      <table className="min-w-full text-[11px]">
-                        <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                          <tr>
-                            <th className="px-2 py-1.5 text-left">Login</th>
-                            <th className="px-2 py-1.5 text-left">Name</th>
-                            <th className="px-2 py-1.5 text-left">Group</th>
-                            <th className="px-2 py-1.5 text-left">System</th>
-                            <th className="px-2 py-1.5 text-right">Deals</th>
-                            <th className="px-2 py-1.5 text-right">Lots</th>
-                            <th className="px-2 py-1.5 text-right">Buy Lots</th>
-                            <th className="px-2 py-1.5 text-right">Sell Lots</th>
-                            <th className="px-2 py-1.5 text-left">Symbols</th>
-                            <th className="px-2 py-1.5 text-left">Latest Time</th>
-                            <th className="px-2 py-1.5 text-left">Sample Ext IDs</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {unmatchedByClientRows.map((r, idx) => (
-                            <tr key={`um-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                              <td className="px-2 py-1.5 font-mono">{safe(r.login)}</td>
-                              <td className="px-2 py-1.5">{safe(r.clientName)}</td>
-                              <td className="px-2 py-1.5">{safe(r.group)}</td>
-                              <td className="px-2 py-1.5">{safe(r.system)}</td>
-                              <td className="px-2 py-1.5 text-right">{fmtInt(r.dealCount)}</td>
-                              <td className="px-2 py-1.5 text-right">{fmtNum(r.lots)}</td>
-                              <td className="px-2 py-1.5 text-right">{fmtNum(r.buyLots)}</td>
-                              <td className="px-2 py-1.5 text-right">{fmtNum(r.sellLots)}</td>
-                              <td className="px-2 py-1.5">{safe(r.symbols)}</td>
-                              <td className="px-2 py-1.5">{safe(r.latestTime)}</td>
-                              <td className="px-2 py-1.5">{safe((r as any).sampleExternalIds)}</td>
-                            </tr>
-                          ))}
-                          {!unmatchedByClientRows.length && <tr><td colSpan={11} className="px-2 py-8 text-center text-slate-500">No unmatched MT5 deals.</td></tr>}
-                        </tbody>
-                      </table>
-                    </div>
+                    <SortableTable
+                      tableId="deal-matching-unmatched-mt5"
+                      rows={unmatchedByClientRows}
+                      columns={unmatchedMt5Columns}
+                      tableClassName="min-w-full text-[11px]"
+                      emptyText="No unmatched MT5 deals."
+                    />
                   )}
 
+                  {/* Unmatched Centroid Orders */}
                   <button type="button" onClick={() => setUnmatchedCenOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(unmatchedCenOpen)}`}>{unmatchedCenOpen ? "-" : "+"} Unmatched Centroid Orders</button>
                   {unmatchedCenOpen && (
-                    <div className="max-h-[36vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                      <table className="min-w-full text-[11px]">
-                        <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                          <tr>
-                            <th className="px-2 py-1.5 text-left">Symbol</th>
-                            <th className="px-2 py-1.5 text-left">Side</th>
-                            <th className="px-2 py-1.5 text-right">LP Exec Price</th>
-                            <th className="px-2 py-1.5 text-right">Volume</th>
-                            <th className="px-2 py-1.5 text-right">Fill Vol</th>
-                            <th className="px-2 py-1.5 text-right">Raw Avg Price</th>
-                            <th className="px-2 py-1.5 text-right">Total Markup</th>
-                            <th className="px-2 py-1.5 text-left">LP SID</th>
-                            <th className="px-2 py-1.5 text-left">Maker</th>
-                            <th className="px-2 py-1.5 text-left">Node Account</th>
-                            <th className="px-2 py-1.5 text-left">Login</th>
-                            <th className="px-2 py-1.5 text-left">Ext Order</th>
-                            <th className="px-2 py-1.5 text-left">Cen Ord ID</th>
-                            <th className="px-2 py-1.5 text-left">State</th>
-                            <th className="px-2 py-1.5 text-left">Create Time</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {unmatchedCentroidOrders.map((o, idx) => {
-                            const execPrice = num(o.avg_price) > 0 ? o.avg_price : o.price;
-                            return (
-                              <tr key={`ucen-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                                <td className="px-2 py-1.5 font-semibold">{safe(o.symbol)}</td>
-                                <td className="px-2 py-1.5">{safe(o.side)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(execPrice, 5)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(o.volume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(o.fill_volume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(o.raw_avg_price, 5)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(o.total_markup, 5)}</td>
-                                <td className="px-2 py-1.5">{safe(o.lpsid)}</td>
-                                <td className="px-2 py-1.5">{safe(o.maker)}</td>
-                                <td className="px-2 py-1.5">{safe(o.node_account)}</td>
-                                <td className="px-2 py-1.5">{safe(o.ext_login)}</td>
-                                <td className="px-2 py-1.5">{safe(o.ext_order) === "0" ? "FIX API" : safe(o.ext_order)}</td>
-                                <td className="px-2 py-1.5">{safe(o.cen_ord_id)}</td>
-                                <td className="px-2 py-1.5">{safe(o.state)}</td>
-                                <td className="px-2 py-1.5">{safe(o.create_time)}</td>
-                              </tr>
-                            );
-                          })}
-                          {!unmatchedCentroidOrders.length && <tr><td colSpan={15} className="px-2 py-8 text-center text-slate-500">No unmatched centroid orders.</td></tr>}
-                        </tbody>
-                      </table>
-                    </div>
+                    <SortableTable
+                      tableId="deal-matching-unmatched-cen"
+                      enableColumnVisibility
+                      rows={unmatchedCentroidOrders}
+                      columns={unmatchedCenColumns}
+                      tableClassName="min-w-full text-[11px]"
+                      emptyText="No unmatched centroid orders."
+                    />
                   )}
 
+                  {/* Partial Fills */}
                   <button type="button" onClick={() => setPartialOpen((v) => !v)} className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(partialOpen)}`}>{partialOpen ? "-" : "+"} Partial Fills</button>
                   {partialOpen && (
                     <div className="space-y-2">
-                      <div className="max-h-[28vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                        <table className="min-w-full text-[11px]">
-                          <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                            <tr>
-                              <th className="px-2 py-1.5 text-left">Deal</th>
-                              <th className="px-2 py-1.5 text-left">Login</th>
-                              <th className="px-2 py-1.5 text-left">Symbol</th>
-                              <th className="px-2 py-1.5 text-left">Side</th>
-                              <th className="px-2 py-1.5 text-right">Client Lots</th>
-                              <th className="px-2 py-1.5 text-right">LP Lots</th>
-                              <th className="px-2 py-1.5 text-right">Vol Diff</th>
-                              <th className="px-2 py-1.5 text-right">Fill %</th>
-                              <th className="px-2 py-1.5 text-left">Status</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {partialRows.map((p, idx) => (
-                              <tr key={`pf-${idx}`} onClick={() => setSelectedPartial(p)} className="cursor-pointer border-t border-slate-200 bg-white hover:bg-cyan-50 dark:border-slate-800 dark:bg-slate-950/30 dark:hover:bg-cyan-500/10">
-                                <td className="px-2 py-1.5">{safe(p.dealTicket)}</td>
-                                <td className="px-2 py-1.5">{safe(p.clientLogin)}</td>
-                                <td className="px-2 py-1.5 font-semibold">{safe(p.symbol)}</td>
-                                <td className="px-2 py-1.5">{safe(p.side)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(p.clientVolume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{fmtNum(p.lpVolume, 4)}</td>
-                                <td className="px-2 py-1.5 text-right text-rose-700 dark:text-rose-300">{fmtNum(Math.abs(num(p.clientVolume) - num(p.lpVolume)), 4)}</td>
-                                <td className="px-2 py-1.5 text-right">{num(p.clientVolume) > 0 ? `${fmtNum((num(p.lpVolume) / num(p.clientVolume)) * 100)}%` : "-"}</td>
-                                <td className="px-2 py-1.5">{safe(p.matchStatus)}</td>
-                              </tr>
-                            ))}
-                            {!partialRows.length && <tr><td colSpan={9} className="px-2 py-8 text-center text-slate-500">No partial fills.</td></tr>}
-                          </tbody>
-                        </table>
-                      </div>
+                      <SortableTable
+                        tableId="deal-matching-partial"
+                        enableColumnVisibility
+                        rows={partialRows}
+                        columns={partialColumns}
+                        tableClassName="min-w-full text-[11px]"
+                        emptyText="No partial fills."
+                        onRowClick={(row) => setSelectedPartial(row)}
+                      />
 
                       {selectedPartial && (
                         <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
                           <div className="rounded border border-slate-300 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
                             <h4 className="mb-2 text-xs font-semibold text-cyan-700 dark:text-cyan-200">MT5 Deal Details</h4>
-                            <div className="space-y-1 text-xs">
-                              {[
-                                ["Deal Ticket", selectedPartial.dealTicket],
-                                ["Order Ticket", selectedPartial.orderTicket],
-                                ["External ID", selectedPartial.externalDealId],
-                                ["Login", selectedPartial.clientLogin],
-                                ["Name", selectedPartial.clientName],
-                                ["Group", selectedPartial.clientGroup],
-                                ["Symbol", selectedPartial.symbol],
-                                ["Side", selectedPartial.side],
-                                ["Entry", selectedPartial.entry],
-                                ["Client Price", selectedPartial.clientPrice],
-                                ["Client Lots", fmtNum(selectedPartial.clientVolume, 4)],
-                                ["Commission", money(selectedPartial.clientCommission)],
-                                ["Time", selectedPartial.dealTime],
-                              ].map(([k, v]) => (
-                                <div key={String(k)} className="flex justify-between border-b border-slate-200 py-0.5 dark:border-slate-800"><span className="text-slate-500">{String(k)}</span><span>{safe(v)}</span></div>
-                              ))}
-                            </div>
+                            <SortableTable
+                              tableId="deal-matching-partial-mt5"
+                              rows={partialMt5Rows}
+                              columns={partialMt5DetailColumns}
+                              tableClassName="min-w-full text-[11px]"
+                              emptyText="No deal details."
+                            />
                           </div>
                           <div className="rounded border border-slate-300 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-900/40">
                             <div className="mb-2 flex items-center justify-between">
                               <h4 className="text-xs font-semibold text-cyan-700 dark:text-cyan-200">Centroid Legs</h4>
                               <span className="text-xs text-slate-500 dark:text-slate-400">{partialCentroidLegs.length} leg(s)</span>
                             </div>
-                            <div className="max-h-[30vh] overflow-auto rounded border border-slate-300 shadow-sm dark:border-slate-700">
-                              <table className="min-w-full text-[11px]">
-                                <thead className="sticky top-0 bg-slate-100/95 text-slate-700 backdrop-blur dark:bg-slate-900/90 dark:text-slate-300">
-                                  <tr>
-                                    <th className="px-2 py-1.5 text-left">Cen Ord ID</th>
-                                    <th className="px-2 py-1.5 text-left">Ext Order</th>
-                                    <th className="px-2 py-1.5 text-left">Symbol</th>
-                                    <th className="px-2 py-1.5 text-left">Side</th>
-                                    <th className="px-2 py-1.5 text-right">Avg Price</th>
-                                    <th className="px-2 py-1.5 text-right">Raw Avg</th>
-                                    <th className="px-2 py-1.5 text-right">Volume</th>
-                                    <th className="px-2 py-1.5 text-right">Fill Vol</th>
-                                    <th className="px-2 py-1.5 text-right">Markup</th>
-                                    <th className="px-2 py-1.5 text-left">State</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {partialCentroidLegs.map((leg, idx) => (
-                                    <tr key={`pcl-${idx}`} className="border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950/30">
-                                      <td className="px-2 py-1.5 font-mono">{leg.cenOrdId}</td>
-                                      <td className="px-2 py-1.5">{leg.extOrder}</td>
-                                      <td className="px-2 py-1.5 font-semibold">{leg.symbol}</td>
-                                      <td className="px-2 py-1.5">{leg.side}</td>
-                                      <td className="px-2 py-1.5 text-right">{leg.avgPrice}</td>
-                                      <td className="px-2 py-1.5 text-right">{leg.rawAvgPrice}</td>
-                                      <td className="px-2 py-1.5 text-right">{leg.volume}</td>
-                                      <td className="px-2 py-1.5 text-right">{leg.fillVolume}</td>
-                                      <td className="px-2 py-1.5 text-right">{leg.totalMarkup}</td>
-                                      <td className="px-2 py-1.5">{leg.state}</td>
-                                    </tr>
-                                  ))}
-                                  {!partialCentroidLegs.length && (
-                                    <tr><td colSpan={10} className="px-2 py-6 text-center text-slate-500">No centroid legs on this match row.</td></tr>
-                                  )}
-                                </tbody>
-                              </table>
-                            </div>
+                            <SortableTable
+                              tableId="deal-matching-partial-cen"
+                              enableColumnVisibility
+                              rows={partialCentroidLegs}
+                              columns={partialCenColumns}
+                              tableClassName="min-w-full text-[11px]"
+                              emptyText="No centroid legs on this match row."
+                            />
                           </div>
                         </div>
                       )}
@@ -1040,5 +1421,3 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     </section>
   );
 }
-
-
