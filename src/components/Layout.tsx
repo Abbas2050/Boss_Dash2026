@@ -82,7 +82,7 @@ export const Layout: React.FC = () => {
         <DashboardHeader theme={theme} onThemeToggle={toggleTheme} />
         <div className="flex min-w-0 flex-col lg:flex-row">
           {isSettings && hasAccess("Settings") && <SettingsSidebar />}
-          <main className="min-w-0 flex-1 overflow-x-hidden">
+          <main className="min-w-0 flex-1 overflow-x-clip">
             <Outlet />
           </main>
         </div>

@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>Slippage Report — SLC Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { theme:{ extend:{ colors:{ line:'#2a3344', neon:'#14f195' } } } }</script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/excel.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        .excel-btn {
+            background: rgba(37,99,235,0.18);
+            color: #93c5fd;
+            border: 1px solid rgba(37,99,235,0.55);
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.15s, color 0.15s;
+        }
+        .excel-btn:hover { background: #2563eb; color: #ffffff; }
+        .excel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Control Header -->
+    <div class="glass" style="padding:8px 10px;">
+        <div class="flex flex-wrap items-center gap-4">
+            <h2 class="font-bold" style="color:var(--neon);">Slippage Report</h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Group:</span>
+                <input type="text" id="sr-group" value="*" style="width:60px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">From:</span>
+                <input type="date" id="sr-from">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">To:</span>
+                <input type="date" id="sr-to">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Symbol:</span>
+                <input type="text" id="sr-symbol" placeholder="all" style="width:90px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Login:</span>
+                <input type="text" id="sr-login" placeholder="all" style="width:90px;">
+            </div>
+            <button onclick="runSlippage()" id="sr-runBtn" class="btn btn-primary">Run</button>
+            <span id="sr-stats" class="text-xs text-slate-400 ml-auto"></span>
+        </div>
+    </div>
+
+    <!-- KPI cards -->
+    <div id="sr-kpi-section" style="display:none;">
+        <div class="grid gap-2 mb-2 mt-2" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+            <div class="kpi">
+                <div class="val" style="font-size:16px;color:var(--neon)" id="kTotalLots">0</div>
+                <div class="lbl">Total Lots</div>
+            </div>
+            <div class="kpi">
+                <div class="val" style="font-size:16px;" id="kTotalNetSlip">0</div>
+                <div class="lbl">Total Net LP Slippage USD</div>
+            </div>
+            <div class="kpi">
+                <div class="val" style="font-size:14px;color:var(--pos);" id="kBestLpName">—</div>
+                <div class="val" style="font-size:13px;" id="kBestLpRate">0.00 USD/lot</div>
+                <div class="lbl">Best LP — lowest USD slippage per lot</div>
+            </div>
+            <div class="kpi">
+                <div class="val" style="font-size:14px;color:var(--neg);" id="kWorstLpName">—</div>
+                <div class="val" style="font-size:13px;" id="kWorstLpRate">0.00 USD/lot</div>
+                <div class="lbl">Worst LP — highest USD slippage per lot</div>
+            </div>
+            <div class="kpi">
+                <div class="val" style="font-size:14px;color:var(--neg);" id="kWorstClientName">—</div>
+                <div class="val" style="font-size:13px;" id="kWorstClientTotal">0.00 USD</div>
+                <div class="lbl">Worst Client — highest total USD slippage</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- By-LP rollup -->
+    <div id="sr-bylp-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:40vh;">
+        <div class="flex items-center justify-between mb-1">
+            <h3 class="text-xs font-semibold" style="color:var(--neon);">By LP — click a row to drill down by symbol</h3>
+            <div class="flex items-center gap-3">
+                <span id="sr-bylp-meta" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="sr-xl-bylp"
+                    onclick='event.stopPropagation(); exportGrid(this, "bylp");'>Download Excel</button>
+            </div>
+        </div>
+        <div id="sr-bylp-grid" class="ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- By-Symbol drilldown for selected LP -->
+    <div id="sr-bysym-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:40vh;">
+        <div class="flex items-center justify-between mb-1">
+            <h3 class="text-xs font-semibold" style="color:var(--neon);">
+                By Symbol — <span id="sr-bysym-lp" style="color:var(--fg)"></span>
+            </h3>
+            <div class="flex items-center gap-3">
+                <span id="sr-bysym-meta" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="sr-xl-bysym"
+                    onclick='event.stopPropagation(); exportGrid(this, "bysym");'>Download Excel</button>
+            </div>
+        </div>
+        <div id="sr-bysym-grid" class="ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Detailed per-order slippage — collapsible -->
+    <details id="sr-grid-section" class="glass rounded-lg p-2 mb-2" style="display:none;">
+        <summary class="cursor-pointer flex items-center justify-between" style="list-style:none;">
+            <h3 class="text-xs font-semibold" style="color:var(--neon);">▸ Detailed report — per-order slippage</h3>
+            <div class="flex items-center gap-3">
+                <span id="sr-grid-meta" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="sr-xl-grid"
+                    onclick='event.stopPropagation(); exportGrid(this, "detail");'>Download Excel</button>
+            </div>
+        </summary>
+        <div class="flex flex-col mt-2" style="height:70vh;">
+            <div id="sr-grid" class="ag-theme-alpine-dark w-full flex-1"></div>
+        </div>
+    </details>
+
+    <!-- Internal Accounts — collapsible, separate from main detail + excluded from totals/KPIs -->
+    <details id="sr-internals-section" class="glass rounded-lg p-2 mb-2" style="display:none;">
+        <summary class="cursor-pointer flex items-center justify-between" style="list-style:none;">
+            <h3 class="text-xs font-semibold" style="color:#fbbf24;">▸ Internal Accounts</h3>
+            <div class="flex items-center gap-3">
+                <span id="sr-internals-meta" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="sr-xl-internals"
+                    onclick='event.stopPropagation(); exportGrid(this, "internals");'>Download Excel</button>
+            </div>
+        </summary>
+        <div class="text-xs mt-1" style="color:#fbbf24;">
+            Not included in headline KPIs, By-LP rollup, or the detailed report above.
+        </div>
+        <div class="flex flex-col mt-2" style="height:60vh;">
+            <div id="sr-internals-grid" class="ag-theme-alpine-dark w-full flex-1"></div>
+        </div>
+    </details>
+
+    <!-- Error toast -->
+    <div id="sr-error" class="error" style="display:none; margin-top:8px;"></div>
+
+</div>
+
+<script>
+    let _gridApi;
+    let _byLpApi;
+    let _bySymApi;
+    let _internalsApi;
+    let _allRows = [];     // last fetched rows — re-used for drill-down aggregation
+
+    const nf2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const nfInt = new Intl.NumberFormat();
+
+    // Small status message piggybacking on the header stats span.
+    function msg(text) {
+        const s = document.getElementById('sr-stats');
+        if (s) s.textContent = text;
+    }
+
+    // Excel export wiring for the four grids on this page. Guard against zero
+    // rows (post-filter) with a msg() rather than an error dialog.
+    function exportGrid(btn, which) {
+        const map = {
+            bylp:      { api: _byLpApi,      base: 'slippage-report-by-lp',              sheet: 'By LP' },
+            bysym:     { api: _bySymApi,     base: 'slippage-report-by-symbol',          sheet: 'By Symbol' },
+            detail:    { api: _gridApi,      base: 'slippage-report-per-order-detail',   sheet: 'Per-Order Detail' },
+            internals: { api: _internalsApi, base: 'slippage-report-internal-accounts',  sheet: 'Internal Accounts' },
+        };
+        const cfg = map[which];
+        if (!cfg || !cfg.api) { msg('No rows to export'); return; }
+        if (typeof cfg.api.getDisplayedRowCount === 'function' && cfg.api.getDisplayedRowCount() <= 0) {
+            msg('No rows to export');
+            return;
+        }
+        SLC.downloadGridAsExcelWithDate(cfg.api, cfg.base, cfg.sheet);
+    }
+
+    function defaultDates() {
+        const today = new Date();
+        const iso = today.toISOString().slice(0, 10);
+        document.getElementById('sr-from').value = iso;
+        document.getElementById('sr-to').value = iso;
+    }
+
+    function fmtNum2(p) {
+        return p.value != null && p.value !== '' ? nf2.format(Number(p.value)) : '';
+    }
+
+    function fmtNum5(p) {
+        return p.value != null && p.value !== '' ? Number(p.value).toFixed(5) : '';
+    }
+
+    function fmtLots(p) {
+        return p.value != null && p.value !== '' ? nf2.format(Number(p.value)) : '';
+    }
+
+    function fmtTime(p) {
+        if (!p.value) return '';
+        // Trim trailing Z and replace T with space for compact display
+        return String(p.value).replace('T', ' ').replace(/Z$/, '').slice(0, 19);
+    }
+
+    // Cell coloring for slippage / pl impact columns.
+    // Positive value = favorable (won) => render GREEN.
+    // Negative value = adverse (lost)  => render RED.
+    // Zero / missing => muted grey.
+    function adverseStyle(p) {
+        if (p.value == null || p.value === '' || isNaN(Number(p.value))) {
+            return { color: 'var(--fg-dim)' };
+        }
+        const v = Number(p.value);
+        if (v > 0) return { color: 'var(--pos)' };
+        if (v < 0) return { color: 'var(--neg)' };
+        return { color: 'var(--fg-dim)' };
+    }
+
+    // For rows with no maker match, render LPSID and LP-side columns as muted dash.
+    function mutedIfNoMaker(formatter) {
+        return p => {
+            if (p.data && p.data.hasMakerMatch === false) return '—';
+            return formatter ? formatter(p) : (p.value == null ? '' : p.value);
+        };
+    }
+
+    function mutedStyleIfNoMaker(baseStyle) {
+        return p => {
+            if (p.data && p.data.hasMakerMatch === false) {
+                return { color: 'var(--fg-muted)', fontStyle: 'italic' };
+            }
+            return baseStyle ? baseStyle(p) : null;
+        };
+    }
+
+    function sideStyle(p) {
+        const v = String(p.value || '').toLowerCase();
+        if (v === 'buy') return { color: '#4ade80' };
+        if (v === 'sell') return { color: '#f87171' };
+        return null;
+    }
+
+    // KPI coloring: positive=green (favorable), negative=red (adverse).
+    function setKpiColored(elId, value) {
+        const el = document.getElementById(elId);
+        const v = Number(value || 0);
+        el.textContent = nf2.format(v);
+        if (v > 0) el.style.color = 'var(--pos)';
+        else if (v < 0) el.style.color = 'var(--neg)';
+        else el.style.color = 'var(--fg-dim)';
+    }
+
+    // Style applied to any pinned-bottom row cell: bold + brighter fg.
+    function totalRowStyle(baseStyle) {
+        return p => {
+            const base = baseStyle ? (baseStyle(p) || {}) : {};
+            if (p.node && p.node.rowPinned === 'bottom') {
+                return { ...base, fontWeight: 'bold', background: 'rgba(255,255,255,0.04)' };
+            }
+            return base;
+        };
+    }
+
+    // Sum the listed numeric fields across rows. Returns an object with only those fields
+    // populated; other fields are left blank so the pinned-bottom row only highlights totals.
+    function sumFields(rows, fields) {
+        const acc = {};
+        for (const f of fields) acc[f] = 0;
+        for (const r of rows) {
+            for (const f of fields) acc[f] += Number(r[f]) || 0;
+        }
+        return acc;
+    }
+
+    // Recompute the pinned-bottom row from currently-visible (post-filter) rows.
+    // computeFn takes the visible rows array and returns the TOTAL row object.
+    function refreshTotals(api, computeFn) {
+        if (!api || !api.forEachNodeAfterFilter) return;
+        const visible = [];
+        api.forEachNodeAfterFilter(n => { if (!n.rowPinned && n.data) visible.push(n.data); });
+        api.setGridOption('pinnedBottomRowData', visible.length ? [computeFn(visible)] : []);
+    }
+
+    function perLegTotals(rows) {
+        const t = sumFields(rows, ['fillVolume', 'clientSlipPoints', 'clientPlImpact', 'lpSlipPoints', 'lpPlImpact']);
+        t.time = 'TOTAL';
+
+        // Markup sums use absolute values so the totals match what each row displays.
+        let bridgeAbs = 0, mt5Abs = 0, savingsUsd = 0;
+        for (const r of rows) {
+            const b = Math.abs(Number(r.totalMarkup) || 0);
+            const m = Math.abs(Number(r.mt5Markup) || 0);
+            bridgeAbs += b;
+            mt5Abs += m;
+            const cs = Number(r.contractSize) || 0;
+            const lots = Number(r.fillVolume) || 0;
+            const units = cs > 0 ? lots * cs : lots;
+            const conv = Number(r.quoteConvRate) || 1;
+            savingsUsd += (m - b) * units * conv;
+        }
+        t.bridgeMarkupAbsSum = bridgeAbs;
+        t.mt5MarkupAbsSum = mt5Abs;
+        t.netMarkupSum = bridgeAbs + mt5Abs;
+        t.markupSavingsSum = mt5Abs - bridgeAbs;
+        t.markupSavingsUsdSum = savingsUsd;
+        return t;
+    }
+
+    function buildGrid(rows) {
+        if (_gridApi) _gridApi.destroy();
+        const totals = perLegTotals(rows);
+
+        const columnDefs = [
+            // Key columns — always visible, ordered as spec
+            { headerName: 'Time', field: 'time', minWidth: 150, pinned: 'left',
+                valueFormatter: p => (p.node && p.node.rowPinned === 'bottom') ? 'TOTAL' : fmtTime(p),
+                cellStyle: totalRowStyle(), sort: 'desc' },
+            { headerName: 'ExtLogin', field: 'extLogin', minWidth: 100, pinned: 'left' },
+            { headerName: 'Ext Order ID', field: 'extOrder', minWidth: 120 },
+            { headerName: 'Centroid Order ID', field: 'cenOrdId', minWidth: 160 },
+            { headerName: 'Symbol', field: 'symbol', minWidth: 110, pinned: 'left', cellStyle: { fontWeight: 'bold' } },
+            { headerName: 'Side', field: 'side', minWidth: 60, cellStyle: sideStyle },
+            { headerName: 'State', field: 'state', minWidth: 80 },
+            { headerName: 'FillVolume', field: 'fillVolume', minWidth: 90, type: 'numericColumn',
+                valueFormatter: fmtLots, cellStyle: totalRowStyle() },
+            { headerName: 'LPSID', field: 'lpsid', minWidth: 140,
+                valueFormatter: mutedIfNoMaker(p => p.value || ''),
+                cellStyle: mutedStyleIfNoMaker() },
+            { headerName: 'Client Req Price', field: 'reqPrice', minWidth: 120, type: 'numericColumn', valueFormatter: fmtNum5 },
+            { headerName: 'Client Price', field: 'clientPrice', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5 },
+            { headerName: 'LP Req Price', field: 'makerReqPrice', minWidth: 120, type: 'numericColumn', valueFormatter: fmtNum5 },
+            { headerName: 'LP Price', field: 'lpPrice', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5 },
+            { headerName: 'ClientSlipPoints', field: 'clientSlipPoints', minWidth: 120, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(adverseStyle) },
+            { headerName: 'Client Slippage USD', field: 'clientPlImpact', minWidth: 150, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(adverseStyle) },
+            { headerName: 'LpSlipPoints', field: 'lpSlipPoints', minWidth: 120, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum2),
+                cellStyle: totalRowStyle(mutedStyleIfNoMaker(adverseStyle)) },
+            { headerName: 'LP Slippage USD', field: 'lpPlImpact', minWidth: 150, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum2),
+                cellStyle: totalRowStyle(mutedStyleIfNoMaker(adverseStyle)) },
+
+            // Hidden by default — toggleable via column menu
+            { headerName: 'ClientSlipPrice', field: 'clientSlipPrice', minWidth: 110, type: 'numericColumn',
+                valueFormatter: fmtNum5, cellStyle: adverseStyle, hide: true },
+            { headerName: 'LpSlipPrice', field: 'lpSlipPrice', minWidth: 110, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum5),
+                cellStyle: mutedStyleIfNoMaker(adverseStyle), hide: true },
+            { headerName: 'AvgPrice', field: 'avgPrice', minWidth: 100, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'RawAvgPrice', field: 'rawAvgPrice', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'LP Bid (bid)', field: 'bid', minWidth: 90, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'LP Ask (ask)', field: 'ask', minWidth: 90, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'Client Bid (ext_bid)', field: 'extBid', minWidth: 100, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'Client Ask (ext_ask)', field: 'extAsk', minWidth: 100, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'PriceDev', field: 'priceDev', minWidth: 90, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            // Markup columns: always show magnitude (positive). Centroid may sign by side,
+            // but conceptually "markup" is the cut taken regardless of direction.
+            { headerName: 'Bridge Markup', colId: 'bridgeMarkupAbs', minWidth: 120, type: 'numericColumn', valueFormatter: fmtNum5,
+                cellStyle: totalRowStyle(),
+                valueGetter: p => p.node?.rowPinned ? (Number(p.data?.bridgeMarkupAbsSum) || 0)
+                                                    : Math.abs(Number(p.data?.totalMarkup) || 0) },
+            { headerName: 'MT5 Markup', colId: 'mt5MarkupAbs', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5,
+                cellStyle: totalRowStyle(),
+                valueGetter: p => p.node?.rowPinned ? (Number(p.data?.mt5MarkupAbsSum) || 0)
+                                                    : Math.abs(Number(p.data?.mt5Markup) || 0) },
+            { headerName: 'Net Markup', colId: 'netMarkup', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5,
+                cellStyle: totalRowStyle(),
+                valueGetter: p => p.node?.rowPinned ? (Number(p.data?.netMarkupSum) || 0)
+                                                    : Math.abs(Number(p.data?.totalMarkup) || 0) + Math.abs(Number(p.data?.mt5Markup) || 0) },
+            // Savings = MT5 markup captured beyond what bridge would have charged.
+            //   positive (green) = we collected more than expected
+            //   negative (red)   = bridge would have collected more than MT5 did
+            { headerName: 'Markup Savings', colId: 'markupSavings', minWidth: 130, type: 'numericColumn', valueFormatter: fmtNum5,
+                cellStyle: totalRowStyle(adverseStyle),
+                valueGetter: p => p.node?.rowPinned ? (Number(p.data?.markupSavingsSum) || 0)
+                                                    : Math.abs(Number(p.data?.mt5Markup) || 0) - Math.abs(Number(p.data?.totalMarkup) || 0) },
+            { headerName: 'Markup Savings USD', colId: 'markupSavingsUsd', minWidth: 150, type: 'numericColumn', valueFormatter: fmtNum2,
+                cellStyle: totalRowStyle(adverseStyle),
+                valueGetter: p => {
+                    if (p.node?.rowPinned) return Number(p.data?.markupSavingsUsdSum) || 0;
+                    if (!p.data) return 0;
+                    const cs = Number(p.data.contractSize) || 0;
+                    const lots = Number(p.data.fillVolume) || 0;
+                    const units = cs > 0 ? lots * cs : lots;
+                    const conv = Number(p.data.quoteConvRate) || 1;
+                    const savings = Math.abs(Number(p.data.mt5Markup) || 0) - Math.abs(Number(p.data.totalMarkup) || 0);
+                    return savings * units * conv;
+                } },
+            { headerName: 'QuoteConvRate', field: 'quoteConvRate', minWidth: 110, type: 'numericColumn', valueFormatter: fmtNum5, hide: true },
+            { headerName: 'ContractSize', field: 'contractSize', minWidth: 100, type: 'numericColumn', valueFormatter: fmtNum2, hide: true },
+            { headerName: 'MakerAvgPrice', field: 'makerAvgPrice', minWidth: 110, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum5), cellStyle: mutedStyleIfNoMaker(), hide: true },
+            { headerName: 'MakerRawAvgPrice', field: 'makerRawAvgPrice', minWidth: 120, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum5), cellStyle: mutedStyleIfNoMaker(), hide: true },
+            { headerName: 'MakerSlippageNative', field: 'makerSlippageNative', minWidth: 130, type: 'numericColumn',
+                valueFormatter: mutedIfNoMaker(fmtNum5), cellStyle: mutedStyleIfNoMaker(adverseStyle), hide: true },
+            { headerName: 'Group', field: 'group', minWidth: 140, hide: true },
+            { headerName: 'Account', field: 'account', minWidth: 140, hide: true },
+            { headerName: 'ExtDealid', field: 'extDealid', minWidth: 120, hide: true },
+        ];
+
+        _gridApi = SLC.createGrid(document.getElementById('sr-grid'), {
+            columnDefs: columnDefs,
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [totals] : [],
+            onFilterChanged: () => refreshTotals(_gridApi, perLegTotals),
+        });
+    }
+
+    // Internal Accounts grid — same column shape as the detailed grid, separate api so
+    // it has its own filter-aware totals row. Mirrors buildGrid; intentionally a copy
+    // rather than an abstraction so the detailed grid stays the simple default.
+    function buildInternalsGrid(rows) {
+        if (_internalsApi) _internalsApi.destroy();
+        if (!rows || rows.length === 0) return;
+        const totals = perLegTotals(rows);
+        // Re-use the detailed grid's column defs by querying ag-grid AFTER its build —
+        // simpler: just clone them inline. Keeping them in sync with the main grid is
+        // the only maintenance cost; matches the user's mental model of "same view,
+        // separate population".
+        const cols = _gridApi ? _gridApi.getColumnDefs() : [];
+        _internalsApi = SLC.createGrid(document.getElementById('sr-internals-grid'), {
+            columnDefs: cols,
+            rowData: rows,
+            pinnedBottomRowData: [totals],
+            onFilterChanged: () => refreshTotals(_internalsApi, perLegTotals),
+        });
+    }
+
+    // ── By-LP / By-Symbol aggregation ──────────────────────────────────────
+    // Groups rows by `keyField` (lpsid for by-LP, symbol for drilldown). Empty
+    // lpsid → "Unattributed". Each bucket reports lots + LP-slippage USD totals.
+    function aggregateBy(rows, keyField, emptyLabel) {
+        const map = new Map();
+        for (const r of rows) {
+            const key = String(r[keyField] || '').trim() || emptyLabel;
+            let agg = map.get(key);
+            if (!agg) {
+                agg = {
+                    key, lots: 0, count: 0,
+                    netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0,
+                    sumSlipPts: 0, slipPtsCount: 0,
+                };
+                map.set(key, agg);
+            }
+            const lots = Number(r.fillVolume) || 0;
+            const usd = Number(r.lpPlImpact) || 0;
+            const pts = Number(r.lpSlipPoints) || 0;
+            const hasLpFill = Number(r.lpPrice) > 0;
+
+            agg.count += 1;
+            agg.lots += lots;
+            agg.netSlipUsd += usd;
+            if (usd > 0) agg.netPosUsd += usd;
+            else if (usd < 0) agg.netNegUsd += usd;
+            if (hasLpFill) {
+                agg.sumSlipPts += pts;
+                agg.slipPtsCount += 1;
+            }
+        }
+        const out = [];
+        for (const a of map.values()) {
+            a.avgSlipPts = a.slipPtsCount > 0 ? (a.sumSlipPts / a.slipPtsCount) : 0;
+            out.push(a);
+        }
+        // Sort: worst net slippage first (most negative).
+        out.sort((a, b) => a.netSlipUsd - b.netSlipUsd);
+        return out;
+    }
+
+    function rollupColumnDefs(keyHeader, keyField) {
+        return [
+            { headerName: keyHeader, field: keyField, minWidth: 160, pinned: 'left',
+                cellStyle: totalRowStyle(() => ({ fontWeight: 'bold' })) },
+            { headerName: 'Lots', field: 'lots', minWidth: 90, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle() },
+            { headerName: 'Net Slippage USD', field: 'netSlipUsd', minWidth: 140, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(adverseStyle) },
+            { headerName: 'Avg Slippage (pts)', field: 'avgSlipPts', minWidth: 140, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(adverseStyle) },
+            { headerName: 'Net Positive USD', field: 'netPosUsd', minWidth: 140, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(() => ({ color: 'var(--pos)' })) },
+            { headerName: 'Net Negative USD', field: 'netNegUsd', minWidth: 140, type: 'numericColumn',
+                valueFormatter: fmtNum2, cellStyle: totalRowStyle(() => ({ color: 'var(--neg)' })) },
+        ];
+    }
+
+    // Build a TOTAL row for the rollup grids. Avg slippage is weighted by per-bucket
+    // contribution counts so it stays honest as a grand average.
+    function rollupTotals(buckets) {
+        const sumSlipPts = buckets.reduce((s, b) => s + (b.sumSlipPts || 0), 0);
+        const slipPtsCount = buckets.reduce((s, b) => s + (b.slipPtsCount || 0), 0);
+        return {
+            key: 'TOTAL',
+            count: buckets.reduce((s, b) => s + b.count, 0),
+            lots: buckets.reduce((s, b) => s + b.lots, 0),
+            netSlipUsd: buckets.reduce((s, b) => s + b.netSlipUsd, 0),
+            avgSlipPts: slipPtsCount > 0 ? sumSlipPts / slipPtsCount : 0,
+            netPosUsd: buckets.reduce((s, b) => s + b.netPosUsd, 0),
+            netNegUsd: buckets.reduce((s, b) => s + b.netNegUsd, 0),
+        };
+    }
+
+    function buildByLpGrid(rows) {
+        if (_byLpApi) _byLpApi.destroy();
+        const data = aggregateBy(rows, 'lpsid', 'Unattributed');
+        _byLpApi = SLC.createGrid(document.getElementById('sr-bylp-grid'), {
+            columnDefs: rollupColumnDefs('LP (lpsid)', 'key'),
+            rowData: data,
+            pinnedBottomRowData: data.length ? [rollupTotals(data)] : [],
+            onFilterChanged: () => refreshTotals(_byLpApi, rollupTotals),
+            onRowClicked: e => {
+                if (!e.data || e.node.rowPinned) return;
+                showBySymbolFor(e.data.key);
+            },
+        });
+        document.getElementById('sr-bylp-meta').textContent = `${data.length} LP(s)`;
+        return data;
+    }
+
+    // Compute top-of-page KPIs from the by-LP buckets. "Best" / "Worst" are ranked by
+    // USD/lot (volume-normalized) so a small fast-fill LP doesn't get drowned by a big
+    // slow-fill one. Excludes 'Unattributed' (no real LP) and LPs with zero lots.
+    function updateKpis(rows, lpBuckets) {
+        const totalLots = lpBuckets.reduce((s, b) => s + b.lots, 0);
+        const totalSlip = lpBuckets.reduce((s, b) => s + b.netSlipUsd, 0);
+
+        document.getElementById('kTotalLots').textContent = nf2.format(totalLots);
+        setKpiColored('kTotalNetSlip', totalSlip);
+
+        // Displayed as slippage COST per lot: positive = client/we paid this much per lot,
+        // negative = we gained. Best LP = lowest cost. Worst LP = highest cost. Internally
+        // our sign convention is positive=gain, so flip for display.
+        const ranked = lpBuckets
+            .filter(b => b.key !== 'Unattributed' && b.lots > 0)
+            .map(b => ({ ...b, costPerLot: -b.netSlipUsd / b.lots }))
+            .sort((a, b) => a.costPerLot - b.costPerLot);   // ascending — lowest cost first
+
+        const best = ranked[0];
+        const worst = ranked[ranked.length - 1];
+
+        document.getElementById('kBestLpName').textContent = best ? best.key : '—';
+        document.getElementById('kBestLpRate').textContent = best ? `${nf2.format(best.costPerLot)} USD/lot` : '0.00 USD/lot';
+        document.getElementById('kWorstLpName').textContent = worst && worst !== best ? worst.key : '—';
+        document.getElementById('kWorstLpRate').textContent = worst && worst !== best ? `${nf2.format(worst.costPerLot)} USD/lot` : '0.00 USD/lot';
+
+        // Worst client = ext_login with highest total client-slippage cost (positive=cost).
+        // Uses clientPlImpact (client-side slippage) since this is about the client's experience.
+        const byClient = new Map();
+        for (const r of rows) {
+            const login = String(r.extLogin || '').trim();
+            if (!login) continue;
+            byClient.set(login, (byClient.get(login) || 0) + (Number(r.clientPlImpact) || 0));
+        }
+        let worstClient = null, worstCost = 0;
+        for (const [login, gain] of byClient) {
+            const cost = -gain;
+            if (cost > worstCost) { worstCost = cost; worstClient = login; }
+        }
+        document.getElementById('kWorstClientName').textContent = worstClient || '—';
+        document.getElementById('kWorstClientTotal').textContent = worstClient ? `${nf2.format(worstCost)} USD` : '0.00 USD';
+    }
+
+    function showBySymbolFor(lpKey) {
+        if (_bySymApi) _bySymApi.destroy();
+        const filtered = _allRows.filter(r => {
+            const k = String(r.lpsid || '').trim() || 'Unattributed';
+            return k === lpKey;
+        });
+        const data = aggregateBy(filtered, 'symbol', '—');
+        _bySymApi = SLC.createGrid(document.getElementById('sr-bysym-grid'), {
+            columnDefs: rollupColumnDefs('Symbol', 'key'),
+            rowData: data,
+            pinnedBottomRowData: data.length ? [rollupTotals(data)] : [],
+            onFilterChanged: () => refreshTotals(_bySymApi, rollupTotals),
+        });
+        document.getElementById('sr-bysym-lp').textContent = lpKey;
+        document.getElementById('sr-bysym-meta').textContent = `${data.length} symbol(s) · ${filtered.length} order(s)`;
+        document.getElementById('sr-bysym-section').style.display = 'flex';
+    }
+
+    async function runSlippage() {
+        const btn = document.getElementById('sr-runBtn');
+        const stats = document.getElementById('sr-stats');
+        const errEl = document.getElementById('sr-error');
+        const from = document.getElementById('sr-from').value;
+        const to = document.getElementById('sr-to').value;
+        const group = document.getElementById('sr-group').value || '*';
+        const symbol = document.getElementById('sr-symbol').value.trim();
+        const login = document.getElementById('sr-login').value.trim();
+
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+
+        if (!from || !to) {
+            stats.textContent = 'Pick a date range first.';
+            return;
+        }
+
+        const params = new URLSearchParams({ from, to, group });
+        if (symbol) params.set('symbol', symbol);
+        if (login) params.set('login', login);
+
+        btn.disabled = true;
+        const t0 = Date.now();
+        stats.textContent = 'Loading…';
+
+        try {
+            const resp = await fetch(`/SlippageReport/Run?${params}`, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                const txt = await resp.text();
+                errEl.textContent = `Error ${resp.status}: ${txt}`;
+                errEl.style.display = 'block';
+                stats.textContent = `Error ${resp.status}`;
+                return;
+            }
+            const data = await resp.json();
+
+            _allRows = data.rows || [];
+            const internalRows = data.internalRows || [];
+            buildGrid(_allRows);
+            const lpBuckets = buildByLpGrid(_allRows);
+            updateKpis(_allRows, lpBuckets);
+            buildInternalsGrid(internalRows);
+            // Reset the drill-down whenever a fresh run lands.
+            document.getElementById('sr-bysym-section').style.display = 'none';
+
+            document.getElementById('sr-kpi-section').style.display = 'block';
+            document.getElementById('sr-grid-section').style.display = 'block';
+            document.getElementById('sr-bylp-section').style.display = 'flex';
+            document.getElementById('sr-internals-section').style.display = internalRows.length ? 'block' : 'none';
+            document.getElementById('sr-grid-meta').textContent =
+                `${nfInt.format(Number(data.rowCount || 0))} orders`;
+            // Inline summary on the Internal Accounts header so the user can read the
+            // total without expanding the section.
+            if (internalRows.length) {
+                const it = perLegTotals(internalRows);
+                document.getElementById('sr-internals-meta').textContent =
+                    `${nfInt.format(internalRows.length)} orders · `
+                    + `${nf2.format(it.fillVolume)} lots · `
+                    + `Client ${nf2.format(it.clientPlImpact)} USD · `
+                    + `LP ${nf2.format(it.lpPlImpact)} USD`;
+            } else {
+                document.getElementById('sr-internals-meta').textContent = '0 orders';
+            }
+
+            const dt = Date.now() - t0;
+            stats.textContent = `${data.fromDate} → ${data.toDate} · ${(dt / 1000).toFixed(1)}s`;
+        } catch (e) {
+            errEl.textContent = `Failed: ${e.message}`;
+            errEl.style.display = 'block';
+            stats.textContent = `Failed`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        defaultDates();
+        const detail = document.getElementById('sr-grid-section');
+        const heading = detail.querySelector('summary h3');
+        detail.addEventListener('toggle', () => {
+            heading.textContent = (detail.open ? '▾' : '▸') + ' Detailed report — per-order slippage';
+            // ag-Grid renders blank if it was instantiated while collapsed.
+            if (detail.open && _gridApi) {
+                requestAnimationFrame(() => {
+                    if (_gridApi.sizeColumnsToFit) _gridApi.sizeColumnsToFit();
+                    if (_gridApi.redrawRows) _gridApi.redrawRows();
+                });
+            }
+        });
+    });
+</script>
+
+</body>
+</html>

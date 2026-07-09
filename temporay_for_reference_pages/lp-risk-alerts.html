@@ -1,0 +1,793 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - LP Risk Alerts</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 8px; }
+
+        .status-bar { display: flex; gap: 10px; margin-bottom: 8px; font-size: 12px; align-items: center; flex-wrap: wrap; }
+        .ws-pill { padding: 4px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+        .ws-connected    { background: #1a3a2a; color: var(--pos); }
+        .ws-disconnected { background: #3a1a1a; color: var(--rose); }
+        .ws-reconnecting { background: #3a2a1a; color: #e0ac69; }
+        .last-tick { padding: 4px 10px; border-radius: 4px; background: #1a3a2a; color: var(--pos); }
+        .last-tick.stale { background: #3a1a1a; color: var(--rose); }
+        .alert-count { font-size: 12px; color: var(--fg-muted); margin-left: auto; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+        h2 { color: var(--pos); margin-bottom: 8px; font-size: 15px; }
+        .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .panel-head h2 { margin-bottom: 0; }
+
+        button { background: var(--blue); color: var(--surface); border: none; padding: 6px 14px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.danger { background: var(--rose); padding: 4px 10px; font-size: 12px; }
+        button.danger:hover { background: #ff9e9e; }
+        button.save { background: var(--pos); padding: 4px 10px; font-size: 12px; }
+        button.save:hover { background: #b5e88a; }
+        button.ghost { background: var(--bg3); color: var(--fg); padding: 4px 10px; font-size: 12px; border: 1px solid var(--line); }
+        button.ghost:hover { background: #2a3344; }
+
+        /* Live cards */
+        .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+        .card {
+            background: var(--bg3); border: 1px solid var(--line); border-radius: 6px;
+            padding: 10px 12px;
+            display: flex; flex-direction: column; gap: 6px;
+            border-left: 3px solid var(--rose);
+        }
+        .card.direction-up { border-left-color: var(--amber); }
+        .card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .card-name { font-weight: 600; color: var(--fg); font-size: 13px; flex: 1; min-width: 0; }
+        .arrow { font-size: 14px; font-weight: 700; }
+        .arrow.down { color: var(--rose); }
+        .arrow.up { color: var(--amber); }
+        .trig-badge { padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 0.3px; }
+        .trig-ml { background: rgba(247, 118, 142, 0.18); color: var(--rose); }
+        .trig-fund { background: rgba(224, 175, 104, 0.18); color: var(--amber); }
+        .card-lp { font-size: 12px; color: var(--fg-muted); }
+        .card-lp .source { color: var(--blue); font-weight: 700; font-size: 13px; }
+        .card-metrics {
+            display: grid; grid-template-columns: 1fr 1fr 1fr;
+            gap: 4px 10px;
+            font-size: 11px;
+        }
+        .metric { display: flex; flex-direction: column; gap: 1px; }
+        .metric-label { color: #7c89b0; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .metric-val { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+        .metric-val.neg { color: var(--rose); }
+        .metric-val.pos { color: var(--pos); }
+        .metric-val.ml-after-bad { color: var(--rose); }
+
+        /* Funding Needed callout - emphasized, own line */
+        .card-funding {
+            display: flex; justify-content: space-between; align-items: baseline;
+            padding: 6px 2px;
+            border-top: 1px dashed var(--line);
+            border-bottom: 1px dashed var(--line);
+        }
+        .card-funding .funding-label {
+            font-size: 11px; color: #7c89b0; text-transform: uppercase;
+            letter-spacing: 0.3px; font-weight: 700;
+        }
+        .card-funding .funding-val {
+            font-size: 15px; font-weight: 700;
+            font-variant-numeric: tabular-nums; color: var(--fg);
+        }
+        .card-funding .funding-val.neg { color: var(--rose); }
+
+        /* Position strip (per-symbol lots, alert order) */
+        .card-position {
+            display: flex; flex-wrap: wrap; gap: 4px 8px;
+            padding-top: 4px; border-top: 1px dashed var(--line);
+            font-size: 11px; align-items: center;
+        }
+        .position-label { color: #7c89b0; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+        .position-leg {
+            background: var(--bg2); border: 1px solid var(--line);
+            border-radius: 3px; padding: 1px 6px;
+            font-variant-numeric: tabular-nums; color: var(--fg);
+        }
+        .position-leg.pos { color: var(--pos); border-color: rgba(158, 206, 106, 0.35); }
+        .position-leg.neg { color: var(--rose); border-color: rgba(247, 118, 142, 0.35); }
+
+        .empty {
+            text-align: center; color: var(--fg-muted); font-size: 13px;
+            padding: 24px 12px;
+        }
+
+        /* CRUD grid */
+        #alertGrid { height: 360px; width: 100%; }
+        #alertGrid .ag-cell { display: flex; align-items: center; }
+        #alertGrid .actions { display: flex; gap: 5px; align-items: center; }
+
+        .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 3px; }
+        .badge-on  { background: rgba(158, 206, 106, 0.15); color: var(--pos); }
+        .badge-off { background: rgba(86, 95, 137, 0.15); color: var(--fg-muted); }
+
+        #msg { margin: 6px 0 0 0; font-size: 12px; min-height: 16px; }
+        .msg-ok { color: var(--pos); }
+        .msg-err { color: var(--rose); }
+
+        /* Modal (same shape as internal-accounts) */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px; width: 480px; max-height: 90vh; overflow-y: auto; }
+        .modal h2 { font-size: 15px; color: var(--blue); margin-bottom: 14px; }
+        .modal .field { margin-bottom: 12px; }
+        .modal .field label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+        .modal .field input[type=text], .modal .field input[type=number] {
+            width: 100%; box-sizing: border-box;
+            background: var(--bg3); border: 1px solid #414868; color: var(--fg);
+            padding: 5px 8px; border-radius: 4px; font-size: 13px;
+        }
+        .modal .field-row { display: flex; gap: 10px; }
+        .modal .field-row .field { flex: 1; }
+        .modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+        .modal .actions button.cancel { background: var(--fg-muted); }
+
+        /* Chip picker (reused shape from market-watch.html) */
+        .typeahead-wrap { position: relative; }
+        .typeahead-list {
+            position: absolute; top: 100%; left: 0; right: 0; max-height: 200px;
+            overflow-y: auto; background: var(--surface); border: 1px solid var(--line);
+            border-radius: 4px; margin-top: 2px; z-index: 200; display: none;
+        }
+        .typeahead-list.open { display: block; }
+        .typeahead-item { padding: 5px 8px; cursor: pointer; font-size: 12px; font-variant-numeric: tabular-nums; }
+        .typeahead-item:hover, .typeahead-item.active { background: rgba(122, 162, 247, 0.12); color: var(--blue); }
+        .typeahead-empty { padding: 6px 8px; font-size: 12px; color: var(--fg-muted); font-style: italic; }
+        .chips { margin-top: 4px; min-height: 22px; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 6px 2px 8px; margin: 2px 4px 2px 0;
+            background: rgba(122, 162, 247, 0.10); border: 1px solid rgba(122, 162, 247, 0.35);
+            border-radius: 10px; color: var(--blue); font-size: 11px; font-weight: 600;
+            font-variant-numeric: tabular-nums;
+        }
+        .chip button { background: none; border: none; color: var(--blue); cursor: pointer; padding: 0; font-size: 13px; line-height: 1; font-weight: 700; }
+        .chip-hint { font-size: 11px; color: var(--fg-muted); margin-top: 4px; }
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+</head>
+<body>
+<div class="page">
+    <h1>LP Risk Alerts</h1>
+    <p class="subtitle">
+        Preventative risk monitor: every tick a hypothetical +/-Move shock is applied to each
+        alert's symbols. LPs whose post-shock margin level or funding-to-target breach are surfaced
+        below before the market actually moves.
+    </p>
+
+    <div class="status-bar">
+        <span class="ws-pill ws-disconnected" id="wsStatus">Disconnected</span>
+        <span class="last-tick stale" id="lastTick">Waiting for first tick...</span>
+        <span class="alert-count" id="firingCount">0 firing</span>
+    </div>
+
+    <!-- Live "In Danger Now" cards -->
+    <div class="panel">
+        <h2>In Danger Now</h2>
+        <div id="cards" class="cards"></div>
+        <div id="cardsEmpty" class="empty">No alerts currently firing. Heartbeat is healthy.</div>
+    </div>
+
+    <!-- CRUD grid -->
+    <div class="panel">
+        <div class="panel-head">
+            <h2>All Alerts</h2>
+            <button onclick="openCreateModal()">+ New Alert</button>
+        </div>
+        <div id="alertGrid" class="ag-theme-alpine-dark"></div>
+        <div id="msg"></div>
+    </div>
+</div>
+
+<!-- Create / Edit modal -->
+<div class="modal-overlay" id="editModal">
+    <div class="modal">
+        <h2 id="modalTitle">New Alert</h2>
+        <input type="hidden" id="editId" />
+
+        <div class="field">
+            <label>Name</label>
+            <input id="editName" type="text" maxlength="200" placeholder="e.g. XAU swing watch" />
+        </div>
+
+        <div class="field">
+            <label>Symbols (1-4)</label>
+            <div class="typeahead-wrap">
+                <input id="symInput" type="text" placeholder="Click to browse or type to filter..." autocomplete="off" />
+                <div id="symList" class="typeahead-list"></div>
+            </div>
+            <div id="symChips" class="chips"></div>
+            <div class="chip-hint">Same Move (pts) is applied per symbol; per-symbol Digits handle scale.</div>
+        </div>
+
+        <div class="field-row">
+            <div class="field">
+                <label>Move (points)</label>
+                <input id="editMove" type="number" min="0.01" step="1" />
+            </div>
+            <div class="field">
+                <label>Target ML %</label>
+                <input id="editTargetMl" type="number" min="0.01" max="10000" step="10" />
+            </div>
+            <div class="field">
+                <label>ML-after threshold %</label>
+                <input id="editMlAfter" type="number" min="0.01" max="10000" step="10" />
+            </div>
+        </div>
+
+        <div class="field">
+            <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="checkbox" id="editEnabled" />
+                <span>Enabled</span>
+            </label>
+        </div>
+
+        <div id="modalMsg" style="font-size:12px; min-height:16px;"></div>
+
+        <div class="actions">
+            <button class="cancel" onclick="closeEditModal()">Cancel</button>
+            <button onclick="saveAlert()">Save</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --------------------------------------------------------------
+    //  Hardcoded poll interval - service default in appsettings is 10s
+    //  (see Services/LpRiskAlertService.cs IntervalSeconds clamp 5-600).
+    //  No GET endpoint exposed for v1; staleMs is derived from this.
+    // --------------------------------------------------------------
+    const INTERVAL_SEC = 10;
+    const STALE_MS = 3 * INTERVAL_SEC * 1000;
+
+    const API = '/api/LpRiskAlert';
+
+    let alertGridApi = null;
+    let cardsHostInit = false;
+    let lastTickAt = null;
+
+    // Symbol picker state
+    let allSymbols = [];
+    let pickedSymbols = [];   // ordered list (max 4)
+    let typeaheadIdx = -1;
+
+    // -- Formatting -------------------------------------------------
+    const fmtNum = (v, dp = 2) => {
+        if (v == null || isNaN(v)) return '-';
+        return Number(v).toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    };
+    const fmtSigned = (v, dp = 2) => {
+        if (v == null || isNaN(v)) return '-';
+        const n = Number(v);
+        const sign = n > 0 ? '+' : '';
+        return sign + n.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    };
+
+    function escapeHtml(s) {
+        return String(s ?? '').replace(/[&<>"']/g, c =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    // -- Live "In Danger Now" cards ---------------------------------
+    function cardKey(ev) { return `${ev.alertId}|${ev.lpName}`; }
+
+    function renderCard(ev) {
+        const isDown = (ev.direction || '').toLowerCase() === 'down';
+        const arrowSym = isDown ? 'v' : '^';
+        const arrowCls = isDown ? 'arrow down' : 'arrow up';
+        const dirCardCls = isDown ? '' : ' direction-up';
+
+        const triggers = Array.isArray(ev.triggers) ? ev.triggers : [];
+        const hasMl = triggers.includes('mlBreach');
+        const hasFund = triggers.includes('fundingBreach');
+
+        const mlAfterCls = (ev.mlAfter != null && ev.mlAfterThreshold != null && Number(ev.mlAfter) < Number(ev.mlAfterThreshold))
+            ? 'metric-val ml-after-bad'
+            : 'metric-val';
+
+        const deltaPlCls = (ev.deltaPl != null && Number(ev.deltaPl) < 0)
+            ? 'metric-val neg'
+            : 'metric-val';
+
+        const fundCls = (ev.fundingToTarget != null && Number(ev.fundingToTarget) > 0)
+            ? 'metric-val neg'
+            : 'metric-val';
+
+        const card = document.createElement('div');
+        card.className = 'card' + dirCardCls;
+        card.dataset.cardKey = cardKey(ev);
+        card.innerHTML = `
+            <div class="card-head">
+                <span class="${arrowCls}">${arrowSym}</span>
+                <span class="card-name">${escapeHtml(ev.alertName)}</span>
+                ${hasMl ? '<span class="trig-badge trig-ml">ML</span>' : ''}
+                ${hasFund ? '<span class="trig-badge trig-fund">FUND</span>' : ''}
+            </div>
+            <div class="card-lp">
+                <span class="source">${escapeHtml(ev.lpName)}</span>
+                <span style="opacity:0.7;"> - ${escapeHtml(ev.source || '')}</span>
+            </div>
+            <div class="card-metrics">
+                <div class="metric">
+                    <span class="metric-label">ML Now</span>
+                    <span class="metric-val">${fmtNum(ev.mlNow, 2)}%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">ML After</span>
+                    <span class="${mlAfterCls}">${fmtNum(ev.mlAfter, 2)}%</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Delta P/L</span>
+                    <span class="${deltaPlCls}">${fmtSigned(ev.deltaPl, 2)}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Equity Now</span>
+                    <span class="metric-val">${fmtNum(ev.equityNow, 2)}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Equity After</span>
+                    <span class="metric-val">${fmtNum(ev.equityAfter, 2)}</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Free Margin After</span>
+                    <span class="metric-val">${fmtNum(ev.freeMarginAfter, 2)}</span>
+                </div>
+            </div>
+            <div class="card-funding">
+                <span class="funding-label">Funding Needed</span>
+                <span class="${fundCls.replace('metric-val', 'funding-val')}">${fmtNum(ev.fundingToTarget, 2)}</span>
+            </div>
+            <div class="card-position">
+                <span class="position-label">Position:</span>
+                ${renderPositionLegs(ev)}
+            </div>
+        `;
+        return card;
+    }
+
+    // Per-symbol lots strip. Iterates the alert's symbols in user-configured
+    // order (ev.symbols) and looks them up in ev.lotsBySymbol; missing entries
+    // render as 0 so operators see "no exposure on GOLDFT" explicitly rather
+    // than wondering whether the data is missing.
+    function renderPositionLegs(ev) {
+        const syms = Array.isArray(ev.symbols) ? ev.symbols : [];
+        if (!syms.length) return '<span class="position-leg">-</span>';
+        const lotsMap = ev.lotsBySymbol || {};
+        return syms.map(sym => {
+            const lots = (lotsMap[sym] != null) ? Number(lotsMap[sym]) : 0;
+            const cls = lots > 0 ? 'pos' : (lots < 0 ? 'neg' : '');
+            return `<span class="position-leg ${cls}">${escapeHtml(sym)} ${fmtSigned(lots, 2)} lots</span>`;
+        }).join('');
+    }
+
+    // Hand-rolled diff for the card grid: same idea as SLC.applyDiff but for
+    // DOM nodes keyed by data-card-key. Avoids destroying nodes that haven't
+    // changed (no blink, no layout thrash); only mutates the cards whose
+    // content shifted, removes ones that stopped firing, adds new ones.
+    function applyCardDiff(events) {
+        const host = document.getElementById('cards');
+        const empty = document.getElementById('cardsEmpty');
+        const rows = Array.isArray(events) ? events : [];
+
+        // Index incoming + existing
+        const incomingByKey = new Map();
+        for (const ev of rows) incomingByKey.set(cardKey(ev), ev);
+        const existing = new Map();
+        host.querySelectorAll('[data-card-key]').forEach(n => existing.set(n.dataset.cardKey, n));
+
+        // Remove stale
+        for (const [k, node] of existing) {
+            if (!incomingByKey.has(k)) node.remove();
+        }
+        // Add new + replace existing (cheap full-card rebuild; cards are small)
+        for (const [k, ev] of incomingByKey) {
+            const fresh = renderCard(ev);
+            const prev = existing.get(k);
+            if (prev) prev.replaceWith(fresh);
+            else host.appendChild(fresh);
+        }
+
+        empty.style.display = rows.length ? 'none' : 'block';
+        document.getElementById('firingCount').textContent =
+            `${rows.length} firing`;
+    }
+
+    // -- Heartbeat --------------------------------------------------
+    function refreshLastTickLabel() {
+        const el = document.getElementById('lastTick');
+        if (lastTickAt == null) {
+            el.className = 'last-tick stale';
+            el.textContent = 'Waiting for first tick...';
+            return;
+        }
+        const ageMs = Date.now() - lastTickAt;
+        const ageSec = Math.floor(ageMs / 1000);
+        const stale = ageMs > STALE_MS;
+        el.className = stale ? 'last-tick stale' : 'last-tick';
+        el.textContent = stale
+            ? `Stale - no tick for ${ageSec}s`
+            : `Last tick: ${ageSec}s ago`;
+    }
+    setInterval(refreshLastTickLabel, 1000);
+
+    // -- CRUD grid --------------------------------------------------
+    const columnDefs = [
+        { headerName: 'Name', field: 'name', minWidth: 180, cellStyle: { fontWeight: 600 } },
+        {
+            headerName: 'Symbols', field: 'symbols', minWidth: 180,
+            valueFormatter: p => Array.isArray(p.value) ? p.value.join(', ') : (p.value || ''),
+        },
+        { headerName: 'Move (pts)', field: 'moveAmountPoints', maxWidth: 110, valueFormatter: p => fmtNum(p.value, 2) },
+        { headerName: 'ML After <=', field: 'mlAfterThreshold', maxWidth: 110, valueFormatter: p => fmtNum(p.value, 2) + '%' },
+        { headerName: 'Target ML', field: 'targetMl', maxWidth: 110, valueFormatter: p => fmtNum(p.value, 2) + '%' },
+        {
+            headerName: 'Enabled', field: 'isEnabled', maxWidth: 100,
+            cellRenderer: p => p.value
+                ? '<span class="badge badge-on">Yes</span>'
+                : '<span class="badge badge-off">No</span>',
+        },
+        {
+            headerName: 'Actions', field: 'id', sortable: false, filter: false, minWidth: 240, flex: 0,
+            cellRenderer: p => {
+                const row = p.data;
+                const div = document.createElement('div');
+                div.className = 'actions';
+
+                const editBtn = document.createElement('button');
+                editBtn.className = 'save';
+                editBtn.textContent = 'Edit';
+                editBtn.addEventListener('click', () => openEditModal(row));
+                div.appendChild(editBtn);
+
+                const toggleBtn = document.createElement('button');
+                toggleBtn.className = 'ghost';
+                toggleBtn.textContent = row.isEnabled ? 'Disable' : 'Enable';
+                toggleBtn.addEventListener('click', () => toggleEnabled(row));
+                div.appendChild(toggleBtn);
+
+                const delBtn = document.createElement('button');
+                delBtn.className = 'danger';
+                delBtn.textContent = 'Delete';
+                delBtn.addEventListener('click', () => deleteAlert(row));
+                div.appendChild(delBtn);
+
+                return div;
+            },
+        },
+    ];
+
+    function msg(text, ok) {
+        const el = document.getElementById('msg');
+        el.textContent = text;
+        el.className = ok ? 'msg-ok' : 'msg-err';
+        if (text) setTimeout(() => { el.textContent = ''; }, 4000);
+    }
+
+    async function loadAlerts() {
+        try {
+            const resp = await fetch(API);
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            if (alertGridApi) {
+                alertGridApi.setGridOption('rowData', data);
+                // Force re-render of cell renderers. With getRowId set, ag-Grid
+                // identifies rows by id and only refreshes cells whose value
+                // field changed. The Actions column's field is `id` (never
+                // changes), so without an explicit refresh its Edit/Toggle
+                // buttons keep their original closures + stale labels.
+                alertGridApi.refreshCells({ force: true });
+            }
+        } catch (e) {
+            msg('Failed to load alerts: ' + e.message, false);
+        }
+    }
+
+    async function toggleEnabled(row) {
+        const verb = row.isEnabled ? 'disable' : 'enable';
+        try {
+            const resp = await fetch(`${API}/${row.id}/${verb}`, { method: 'POST' });
+            if (!resp.ok) throw new Error(await resp.text());
+            msg(`${verb === 'enable' ? 'Enabled' : 'Disabled'} ${row.name}`, true);
+            loadAlerts();
+        } catch (e) {
+            msg('Failed: ' + e.message, false);
+        }
+    }
+
+    async function deleteAlert(row) {
+        if (!confirm(`Delete alert "${row.name}"?`)) return;
+        try {
+            const resp = await fetch(`${API}/${row.id}`, { method: 'DELETE' });
+            if (!resp.ok) throw new Error(await resp.text());
+            msg(`Deleted ${row.name}`, true);
+            loadAlerts();
+        } catch (e) {
+            msg('Failed: ' + e.message, false);
+        }
+    }
+
+    // -- Modal (create + edit) --------------------------------------
+    function openCreateModal() {
+        document.getElementById('modalTitle').textContent = 'New Alert';
+        document.getElementById('editId').value = '';
+        document.getElementById('editName').value = '';
+        document.getElementById('editMove').value = '50';
+        document.getElementById('editTargetMl').value = '150';
+        document.getElementById('editMlAfter').value = '150';
+        document.getElementById('editEnabled').checked = true;
+        pickedSymbols = [];
+        renderChips();
+        document.getElementById('modalMsg').textContent = '';
+        document.getElementById('editModal').classList.add('show');
+        document.getElementById('editName').focus();
+    }
+
+    function openEditModal(row) {
+        document.getElementById('modalTitle').textContent = 'Edit Alert';
+        document.getElementById('editId').value = row.id;
+        document.getElementById('editName').value = row.name;
+        document.getElementById('editMove').value = row.moveAmountPoints;
+        document.getElementById('editTargetMl').value = row.targetMl;
+        document.getElementById('editMlAfter').value = row.mlAfterThreshold;
+        document.getElementById('editEnabled').checked = !!row.isEnabled;
+        pickedSymbols = Array.isArray(row.symbols) ? [...row.symbols] : [];
+        renderChips();
+        document.getElementById('modalMsg').textContent = '';
+        document.getElementById('editModal').classList.add('show');
+    }
+
+    function closeEditModal() {
+        document.getElementById('editModal').classList.remove('show');
+        document.getElementById('symInput').value = '';
+        renderTypeahead();
+    }
+
+    async function saveAlert() {
+        const id = document.getElementById('editId').value;
+        const name = document.getElementById('editName').value.trim();
+        const move = parseFloat(document.getElementById('editMove').value);
+        const targetMl = parseFloat(document.getElementById('editTargetMl').value);
+        const mlAfter = parseFloat(document.getElementById('editMlAfter').value);
+        const enabled = document.getElementById('editEnabled').checked;
+
+        const modalMsg = document.getElementById('modalMsg');
+        modalMsg.className = 'msg-err';
+
+        if (!name) { modalMsg.textContent = 'Name is required'; return; }
+        if (!pickedSymbols.length) { modalMsg.textContent = 'Pick at least one symbol'; return; }
+        if (pickedSymbols.length > 4) { modalMsg.textContent = 'At most 4 symbols'; return; }
+        if (!move || move <= 0) { modalMsg.textContent = 'Move (pts) must be > 0'; return; }
+        if (!targetMl || targetMl <= 0 || targetMl > 10000) { modalMsg.textContent = 'Target ML must be in (0, 10000]'; return; }
+        if (!mlAfter || mlAfter <= 0 || mlAfter > 10000) { modalMsg.textContent = 'ML-after threshold must be in (0, 10000]'; return; }
+
+        const body = {
+            name,
+            symbols: pickedSymbols,
+            moveAmountPoints: move,
+            targetMl,
+            mlAfterThreshold: mlAfter,
+            isEnabled: enabled,
+        };
+
+        try {
+            const resp = await fetch(id ? `${API}/${id}` : API, {
+                method: id ? 'PUT' : 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!resp.ok) {
+                let err = await resp.text();
+                try { const j = JSON.parse(err); if (j && j.error) err = j.error; } catch {}
+                modalMsg.textContent = err || ('HTTP ' + resp.status);
+                return;
+            }
+            closeEditModal();
+            msg(id ? 'Updated' : 'Created', true);
+            loadAlerts();
+        } catch (e) {
+            modalMsg.textContent = 'Failed: ' + e.message;
+        }
+    }
+
+    // -- Symbol chip picker (typeahead, max 4) ----------------------
+    async function loadSymbols() {
+        try {
+            const resp = await fetch('/RiskScenario/symbols');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            allSymbols = await resp.json();
+        } catch (e) {
+            console.error('Failed to load symbols', e);
+            allSymbols = [];
+        }
+    }
+
+    function renderChips() {
+        const host = document.getElementById('symChips');
+        host.innerHTML = pickedSymbols.map(s =>
+            `<span class="chip">${escapeHtml(s)}<button type="button" data-sym="${escapeHtml(s)}" aria-label="Remove">x</button></span>`
+        ).join('');
+        host.querySelectorAll('button[data-sym]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const sym = btn.dataset.sym;
+                pickedSymbols = pickedSymbols.filter(s => s !== sym);
+                renderChips();
+                renderTypeahead();
+            });
+        });
+    }
+
+    function addChip(sym) {
+        if (!sym || pickedSymbols.includes(sym)) return;
+        if (pickedSymbols.length >= 4) return;
+        pickedSymbols.push(sym);
+        renderChips();
+        document.getElementById('symInput').value = '';
+        typeaheadIdx = -1;
+        renderTypeahead();
+        document.getElementById('symInput').focus();
+    }
+
+    // Combobox: dropdown opens on focus (showing all symbols minus picked),
+    // narrows as the user types. Called from input + focus + chip add/remove.
+    // Pass {force: true} to render even when the input has no query and no
+    // focus (e.g. on initial open). Default behavior closes when the input
+    // is empty AND not focused so the list doesn't linger after a chip pick.
+    function renderTypeahead(opts = {}) {
+        const input = document.getElementById('symInput');
+        const list = document.getElementById('symList');
+        const q = input.value.trim().toLowerCase();
+        const focused = (document.activeElement === input);
+
+        // Only suppress when no query AND not focused AND not forced.
+        if (!q && !focused && !opts.force) {
+            list.classList.remove('open');
+            list.innerHTML = '';
+            return;
+        }
+
+        const matches = allSymbols
+            .filter(s => !pickedSymbols.includes(s))
+            .filter(s => !q || s.toLowerCase().includes(q))
+            .slice(0, 50);
+
+        if (!matches.length) {
+            list.classList.remove('open');
+            list.innerHTML = q
+                ? '<div class="typeahead-empty">No matches</div>'
+                : '';
+            // Show the "no matches" hint only when actively searching.
+            if (q) list.classList.add('open');
+            return;
+        }
+
+        list.innerHTML = matches.map((s, i) =>
+            `<div class="typeahead-item ${i === typeaheadIdx ? 'active' : ''}" data-sym="${escapeHtml(s)}">${escapeHtml(s)}</div>`
+        ).join('');
+        list.classList.add('open');
+        list.querySelectorAll('.typeahead-item').forEach(el => {
+            el.addEventListener('mousedown', e => { e.preventDefault(); addChip(el.dataset.sym); });
+        });
+    }
+
+    // -- DOM setup --------------------------------------------------
+    document.addEventListener('DOMContentLoaded', () => {
+        alertGridApi = SLC.createGrid(document.getElementById('alertGrid'), {
+            columnDefs,
+            rowData: [],
+            getRowId: p => String(p.data.id),
+            overlayNoRowsTemplate: 'No alerts configured. Click "+ New Alert" to add one.',
+        });
+
+        // Show empty state on first paint
+        applyCardDiff([]);
+
+        // Symbol picker wiring
+        const symInput = document.getElementById('symInput');
+        symInput.addEventListener('input', () => { typeaheadIdx = -1; renderTypeahead(); });
+        symInput.addEventListener('focus', () => { typeaheadIdx = -1; renderTypeahead({ force: true }); });
+        // Click outside the picker wrap closes the dropdown.
+        document.addEventListener('mousedown', e => {
+            const wrap = symInput.closest('.typeahead-wrap');
+            if (wrap && !wrap.contains(e.target)) {
+                document.getElementById('symList').classList.remove('open');
+            }
+        });
+        symInput.addEventListener('keydown', e => {
+            const items = document.querySelectorAll('#symList .typeahead-item');
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (!items.length) return;
+                typeaheadIdx = (typeaheadIdx + 1) % items.length;
+                renderTypeahead();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!items.length) return;
+                typeaheadIdx = (typeaheadIdx - 1 + items.length) % items.length;
+                renderTypeahead();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                if (typeaheadIdx >= 0 && items[typeaheadIdx]) {
+                    addChip(items[typeaheadIdx].dataset.sym);
+                } else if (items.length === 1) {
+                    addChip(items[0].dataset.sym);
+                } else if (items.length > 1 && symInput.value.trim().length > 0) {
+                    // User typed a query but didn't arrow-navigate -> pick first match.
+                    addChip(items[0].dataset.sym);
+                }
+            } else if (e.key === 'Escape') {
+                document.getElementById('symList').classList.remove('open');
+            }
+        });
+
+        // Close modal on outside click + Escape
+        document.getElementById('editModal').addEventListener('click', e => {
+            if (e.target === document.getElementById('editModal')) closeEditModal();
+        });
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape' && document.getElementById('editModal').classList.contains('show')) {
+                closeEditModal();
+            }
+        });
+
+        loadAlerts();
+        loadSymbols();
+        startConnection();
+    });
+
+    // -- SignalR ----------------------------------------------------
+    function onAlerts(events) {
+        const rows = Array.isArray(events) ? events : [];
+        applyCardDiff(rows);
+        lastTickAt = Date.now();
+        refreshLastTickLabel();
+    }
+
+    const connection = new signalR.HubConnectionBuilder()
+        .withUrl('/ws/dashboard')
+        .withAutomaticReconnect([0, 1000, 2000, 5000, 10000])
+        .build();
+
+    connection.on('LpRiskAlerts', onAlerts);
+
+    function setWs(state) {
+        const el = document.getElementById('wsStatus');
+        if (state === 'connected') {
+            el.className = 'ws-pill ws-connected';
+            el.textContent = 'Connected';
+        } else if (state === 'reconnecting') {
+            el.className = 'ws-pill ws-reconnecting';
+            el.textContent = 'Reconnecting...';
+        } else {
+            el.className = 'ws-pill ws-disconnected';
+            el.textContent = 'Disconnected';
+        }
+    }
+
+    connection.onclose(() => setWs('disconnected'));
+    connection.onreconnecting(() => setWs('reconnecting'));
+    connection.onreconnected(() => setWs('connected'));
+
+    async function startConnection() {
+        try {
+            await connection.start();
+            setWs('connected');
+        } catch (e) {
+            console.error('SignalR error:', e);
+            setWs('disconnected');
+            setTimeout(startConnection, 3000);
+        }
+    }
+</script>
+</body>
+</html>

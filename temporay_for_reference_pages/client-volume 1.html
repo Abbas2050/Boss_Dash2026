@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <title>Client Volume</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config = { theme:{ extend:{ colors:{ line:'#2a3344', neon:'#14f195' } } } }</script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-charts-community@10/dist/umd/ag-charts-community.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/excel.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        .collapse-header { cursor: pointer; user-select: none; }
+        .excel-btn {
+            background: rgba(37,99,235,0.18);
+            color: #93c5fd;
+            border: 1px solid rgba(37,99,235,0.55);
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: background 0.15s, color 0.15s;
+        }
+        .excel-btn:hover { background: #2563eb; color: #ffffff; }
+        .excel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .collapse-arrow { display: inline-block; color: var(--fg-dim, #94a3b8); font-size: 10px;
+            margin-right: 6px; transition: transform 0.15s ease; }
+        .collapsed .collapse-arrow { transform: rotate(-90deg); }
+        .collapsed .collapse-body { display: none !important; }
+        .collapsed { height: auto !important; }
+        .chart-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0; }
+        .chart-card .card-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--line); background: #16161e; }
+        .chart-card .card-title { font-size: 13px; color: var(--fg); font-weight: 600; }
+        .chart-card .card-meta { font-size: 11px; color: var(--fg-muted); }
+        .chart-body { height: 200px; padding: 8px; }
+        .chart-empty { height: 200px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--fg-muted); font-style: italic; }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Control Header -->
+    <div class="glass" style="padding:8px 10px;">
+        <div class="flex flex-wrap items-center gap-4">
+            <h2 class="font-bold" style="color:var(--neon);">Client Volume</h2>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Group:</span>
+                <input type="text" id="cv-group" value="*" style="width:60px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">From:</span>
+                <input type="date" id="cv-from">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">To:</span>
+                <input type="date" id="cv-to">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Symbol:</span>
+                <input type="text" id="cv-symbol" placeholder="all" style="width:90px;">
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="text-xs text-slate-400">Login:</span>
+                <input type="text" id="cv-login" placeholder="all" style="width:90px;">
+            </div>
+            <button onclick="runVolume()" id="cv-runBtn" class="btn btn-primary">Run</button>
+            <span id="cv-stats" class="text-xs text-slate-400 ml-auto"></span>
+        </div>
+        <div class="text-xs text-slate-500 mt-1">
+            Volume counts the <b>closed leg only</b> (each round-trip once). Dates are MT5 server-local.
+        </div>
+    </div>
+
+    <!-- Monthly bar chart — driven by the From/To filter, split into months -->
+    <div class="chart-card">
+        <div class="card-header">
+            <span class="card-title">Monthly traded lots</span>
+            <span class="card-meta" id="cv-monthly-meta">Loading…</span>
+        </div>
+        <div id="cv-monthly-chart" class="chart-body"></div>
+        <div id="cv-monthly-empty" class="chart-empty" style="display:none;">No closed deals in the selected window.</div>
+    </div>
+
+    <!-- KPI cards -->
+    <div id="cv-kpi-section" style="display:none;">
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 mt-2">
+            <div class="kpi"><div class="val" style="font-size:16px;color:var(--neon)" id="kTotalLots">0</div><div class="lbl">Total Lots (closed)</div></div>
+            <div class="kpi"><div class="val" style="font-size:16px;color:#60a5fa" id="kStocksLots">0</div><div class="lbl">Stocks Lots</div></div>
+            <div class="kpi"><div class="val" style="font-size:16px;color:#c084fc" id="kCfdLots">0</div><div class="lbl">CFD Lots</div></div>
+            <div class="kpi"><div class="val" style="font-size:16px;color:var(--pos)" id="kAvgPerDay">0</div><div class="lbl">Avg Lots / Day</div></div>
+        </div>
+    </div>
+
+    <!-- By Date -->
+    <div id="cv-bydate-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:30vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold" style="color:var(--neon);">Daily totals (across all clients)</h3>
+            </div>
+            <button type="button" class="excel-btn" id="cv-xl-bydate"
+                onclick="event.stopPropagation(); exportGrid('bydate');">Download Excel</button>
+        </div>
+        <div id="cv-grid-bydate" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- By Client -->
+    <div id="cv-byclient-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:42vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-emerald-300">Per-client volume</h3>
+                <span class="text-xs text-slate-500 ml-2">Click a row to filter the per-symbol grid below</span>
+            </div>
+            <button type="button" class="excel-btn" id="cv-xl-byclient"
+                onclick="event.stopPropagation(); exportGrid('byclient');">Download Excel</button>
+        </div>
+        <div id="cv-grid-byclient" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Internal Accounts (not included in totals/KPIs) -->
+    <div id="cv-internals-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:36vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold" style="color:#fbbf24;">Internal Accounts</h3>
+                <span class="text-xs text-slate-400 ml-2">Not included in headline totals / KPIs / monthly chart.</span>
+            </div>
+            <button type="button" class="excel-btn" id="cv-xl-internals"
+                onclick="event.stopPropagation(); exportGrid('internals');">Download Excel</button>
+        </div>
+        <div id="cv-grid-internals" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- By Client × Symbol -->
+    <div id="cv-bysymbol-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:42vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold text-cyan-300">Volume per client × symbol</h3>
+            </div>
+            <div class="flex items-center gap-3">
+                <span id="cv-bysymbol-label" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="cv-xl-bysymbol"
+                    onclick="event.stopPropagation(); exportGrid('bysymbol');">Download Excel</button>
+            </div>
+        </div>
+        <div id="cv-grid-bysymbol" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+    <!-- Routing per symbol × LP (shown when a row in Per-client is clicked) -->
+    <div id="cv-routing-section" class="glass rounded-lg p-2 flex flex-col mb-2" style="display:none; height:48vh;">
+        <div class="collapse-header flex items-center justify-between mb-1">
+            <div class="flex items-center">
+                <span class="collapse-arrow">v</span>
+                <h3 class="text-xs font-semibold" style="color:#fbbf24;">Order routing by symbol × LP</h3>
+                <span id="cv-routing-label" class="text-xs text-slate-400 ml-2"></span>
+            </div>
+            <div class="flex items-center gap-3">
+                <span id="cv-routing-meta" class="text-xs text-slate-400"></span>
+                <button type="button" class="excel-btn" id="cv-xl-routing"
+                    onclick="event.stopPropagation(); exportGrid('routing');">Download Excel</button>
+            </div>
+        </div>
+        <div id="cv-grid-routing" class="collapse-body ag-theme-alpine-dark w-full flex-1"></div>
+    </div>
+
+</div>
+
+<script>
+    let _byDateApi, _byClientApi, _bySymbolApi, _routingApi, _internalsApi;
+    let _allBySymbol = [];
+    let _selectedLogin = null;
+    let _routingAbortCtrl = null;
+
+    // Small toast-like status message piggybacking on the existing header stats span.
+    function msg(text) {
+        const s = document.getElementById('cv-stats');
+        if (s) s.textContent = text;
+    }
+
+    // Excel export wiring for the five grids on this page. Guard against zero
+    // rows (post-filter) with a msg() rather than an error dialog.
+    function exportGrid(which) {
+        const map = {
+            bydate:    { api: _byDateApi,    base: 'client-volume-daily',              sheet: 'Daily Totals' },
+            byclient:  { api: _byClientApi,  base: 'client-volume-per-client',         sheet: 'Per Client' },
+            bysymbol:  { api: _bySymbolApi,  base: 'client-volume-per-client-symbol',  sheet: 'Per Client-Symbol' },
+            routing:   { api: _routingApi,   base: 'client-volume-order-routing',      sheet: 'Order Routing' },
+            internals: { api: _internalsApi, base: 'client-volume-internal-accounts',  sheet: 'Internal Accounts' },
+        };
+        const cfg = map[which];
+        if (!cfg || !cfg.api) { msg('No rows to export'); return; }
+        if (typeof cfg.api.getDisplayedRowCount === 'function' && cfg.api.getDisplayedRowCount() <= 0) {
+            msg('No rows to export');
+            return;
+        }
+        SLC.downloadGridAsExcelWithDate(cfg.api, cfg.base, cfg.sheet);
+    }
+
+    function defaultDates() {
+        const today = new Date();
+        const to = today.toISOString().slice(0, 10);
+        const fromDt = new Date(today.getTime() - 30 * 86400 * 1000);
+        const from = fromDt.toISOString().slice(0, 10);
+        document.getElementById('cv-from').value = from;
+        document.getElementById('cv-to').value = to;
+    }
+
+    function setupCollapses() {
+        document.querySelectorAll('.collapse-header').forEach(h => {
+            h.addEventListener('click', () => {
+                const section = h.closest('.glass');
+                if (section) section.classList.toggle('collapsed');
+            });
+        });
+    }
+
+    function fmtLots(p) {
+        return p.value != null ? Number(p.value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+    }
+
+    function buildByDateGrid(rows) {
+        if (_byDateApi) _byDateApi.destroy();
+        _byDateApi = SLC.createGrid(document.getElementById('cv-grid-bydate'), {
+            columnDefs: [
+                { headerName: 'Date', field: 'date', width: 110, pinned: 'left' },
+                { headerName: 'Lots', field: 'lots', width: 130, type: 'numericColumn', valueFormatter: fmtLots },
+                { headerName: 'Stocks Lots', field: 'stocksLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#60a5fa' } },
+                { headerName: 'CFD Lots', field: 'cfdLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#c084fc' } },
+            ],
+            rowData: rows,
+        });
+    }
+
+    function buildByClientGrid(rows) {
+        if (_byClientApi) _byClientApi.destroy();
+        _byClientApi = SLC.createGrid(document.getElementById('cv-grid-byclient'), {
+            columnDefs: [
+                { headerName: 'Login', field: 'login', width: 110, pinned: 'left' },
+                { headerName: 'Name', field: 'name', width: 180 },
+                { headerName: 'Group', field: 'group', width: 200 },
+                { headerName: 'System', field: 'system', width: 90 },
+                { headerName: 'Lots', field: 'lots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, sort: 'desc' },
+                { headerName: 'Stocks Lots', field: 'stocksLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#60a5fa' } },
+                { headerName: 'CFD Lots', field: 'cfdLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#c084fc' } },
+                { headerName: 'Active Days', field: 'activeDays', width: 110, type: 'numericColumn', valueFormatter: SLC.fmtInt },
+                { headerName: 'Daily Avg', field: 'dailyAverage', width: 110, type: 'numericColumn', valueFormatter: fmtLots },
+                { headerName: 'Symbols', field: 'symbolCount', width: 90, type: 'numericColumn', valueFormatter: SLC.fmtInt },
+            ],
+            rowData: rows,
+            rowSelection: 'single',
+            onRowClicked: (ev) => {
+                _selectedLogin = ev.data ? ev.data.login : null;
+                applyBySymbolFilter();
+                if (_selectedLogin != null) loadRouting(_selectedLogin, ev.data.name);
+            },
+        });
+    }
+
+    // Same column shape as Per-client; rendered in amber to signal exclusion. No row-
+    // click drill-down — internal accounts don't participate in per-symbol or routing
+    // breakdowns either.
+    function buildInternalsGrid(rows) {
+        if (_internalsApi) _internalsApi.destroy();
+        _internalsApi = SLC.createGrid(document.getElementById('cv-grid-internals'), {
+            columnDefs: [
+                { headerName: 'Login', field: 'login', width: 110, pinned: 'left' },
+                { headerName: 'Name', field: 'name', width: 180 },
+                { headerName: 'Group', field: 'group', width: 200 },
+                { headerName: 'System', field: 'system', width: 90 },
+                { headerName: 'Lots', field: 'lots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, sort: 'desc' },
+                { headerName: 'Stocks Lots', field: 'stocksLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#60a5fa' } },
+                { headerName: 'CFD Lots', field: 'cfdLots', width: 130, type: 'numericColumn', valueFormatter: fmtLots, cellStyle: { color: '#c084fc' } },
+                { headerName: 'Active Days', field: 'activeDays', width: 110, type: 'numericColumn', valueFormatter: SLC.fmtInt },
+                { headerName: 'Daily Avg', field: 'dailyAverage', width: 110, type: 'numericColumn', valueFormatter: fmtLots },
+                { headerName: 'Symbols', field: 'symbolCount', width: 90, type: 'numericColumn', valueFormatter: SLC.fmtInt },
+            ],
+            rowData: rows,
+        });
+    }
+
+    function buildBySymbolGrid(rows) {
+        if (_bySymbolApi) _bySymbolApi.destroy();
+        _bySymbolApi = SLC.createGrid(document.getElementById('cv-grid-bysymbol'), {
+            columnDefs: [
+                { headerName: 'Login', field: 'login', width: 110 },
+                { headerName: 'Name', field: 'name', width: 180 },
+                { headerName: 'Symbol', field: 'symbol', width: 130 },
+                { headerName: 'Lots', field: 'lots', width: 140, type: 'numericColumn', valueFormatter: fmtLots, sort: 'desc' },
+            ],
+            rowData: rows,
+        });
+    }
+
+    function buildRoutingGrid(rows) {
+        if (_routingApi) _routingApi.destroy();
+        _routingApi = SLC.createGrid(document.getElementById('cv-grid-routing'), {
+            columnDefs: [
+                { headerName: 'Symbol', field: 'symbol', width: 140, pinned: 'left',
+                    cellStyle: p => p.data.lpsid === 'Unattributed' ? { color: '#94a3b8' } : null },
+                { headerName: 'LP SID', field: 'lpsid', width: 220,
+                    cellStyle: p => p.value === 'Unattributed' ? { color: '#94a3b8', fontStyle: 'italic' } : null },
+                { headerName: 'Lots', field: 'lots', width: 140, type: 'numericColumn', valueFormatter: fmtLots },
+                { headerName: '% of Symbol', field: 'percentage', width: 140, type: 'numericColumn',
+                    valueFormatter: p => p.value != null ? Number(p.value).toFixed(2) + '%' : '',
+                    cellStyle: p => ({ color: p.value >= 50 ? '#9ece6a' : p.value >= 20 ? '#fbbf24' : '#a9b1d6' }) },
+            ],
+            rowData: rows,
+        });
+    }
+
+    async function loadRouting(login, clientName) {
+        const section = document.getElementById('cv-routing-section');
+        const label = document.getElementById('cv-routing-label');
+        const meta = document.getElementById('cv-routing-meta');
+        const from = document.getElementById('cv-from').value;
+        const to = document.getElementById('cv-to').value;
+        const group = document.getElementById('cv-group').value || '*';
+
+        if (!from || !to) { return; }
+
+        // Cancel any in-flight routing fetch — keeps the UI in sync with the most
+        // recently clicked client when a user clicks rapidly.
+        if (_routingAbortCtrl) _routingAbortCtrl.abort();
+        _routingAbortCtrl = new AbortController();
+
+        section.style.display = 'flex';
+        label.textContent = `login ${login}${clientName ? ' · ' + clientName : ''}`;
+        meta.textContent = 'Loading…';
+        buildRoutingGrid([]); // clear previous
+
+        const params = new URLSearchParams({ from, to, group, login: String(login) });
+        const t0 = Date.now();
+        try {
+            const resp = await fetch(`/ClientVolume/ClientRouting?${params}`, {
+                credentials: 'same-origin',
+                signal: _routingAbortCtrl.signal,
+            });
+            if (!resp.ok) {
+                meta.textContent = `Error ${resp.status}`;
+                return;
+            }
+            const data = await resp.json();
+            buildRoutingGrid(data.perSymbolLp || []);
+            const dt = Date.now() - t0;
+            const totalLots = Number(data.totalLots || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            meta.textContent = `${data.symbolCount || 0} symbols · ${totalLots} lots · ${(dt / 1000).toFixed(1)}s`;
+        } catch (e) {
+            if (e.name !== 'AbortError') meta.textContent = `Failed: ${e.message}`;
+        }
+    }
+
+    function applyBySymbolFilter() {
+        if (!_bySymbolApi) return;
+        const filtered = _selectedLogin == null
+            ? _allBySymbol
+            : _allBySymbol.filter(r => r.login === _selectedLogin);
+        _bySymbolApi.setGridOption('rowData', filtered);
+        const label = document.getElementById('cv-bysymbol-label');
+        label.textContent = _selectedLogin == null
+            ? `${_allBySymbol.length} rows (all clients)`
+            : `${filtered.length} rows · filtered to login ${_selectedLogin}`;
+    }
+
+    async function runVolume() {
+        const btn = document.getElementById('cv-runBtn');
+        const stats = document.getElementById('cv-stats');
+        const from = document.getElementById('cv-from').value;
+        const to = document.getElementById('cv-to').value;
+        const group = document.getElementById('cv-group').value || '*';
+        const symbol = document.getElementById('cv-symbol').value.trim();
+        const login = document.getElementById('cv-login').value.trim();
+
+        if (!from || !to) {
+            stats.textContent = 'Pick a date range first.';
+            return;
+        }
+
+        const params = new URLSearchParams({ from, to, group });
+        if (symbol) params.set('symbol', symbol);
+        if (login) params.set('login', login);
+
+        btn.disabled = true;
+        const t0 = Date.now();
+        stats.textContent = 'Loading…';
+
+        try {
+            const resp = await fetch(`/ClientVolume/Run?${params}`, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                stats.textContent = `Error ${resp.status}: ${await resp.text()}`;
+                return;
+            }
+            const data = await resp.json();
+
+            // KPIs
+            const fmtKpi = v => Number(v || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('kTotalLots').textContent = fmtKpi(data.totalLots);
+            document.getElementById('kStocksLots').textContent = fmtKpi(data.totalStocksLots);
+            document.getElementById('kCfdLots').textContent = fmtKpi(data.totalCfdLots);
+            document.getElementById('kAvgPerDay').textContent = fmtKpi(data.avgLotsPerDay);
+
+            // Grids
+            _allBySymbol = data.byClientSymbol || [];
+            _selectedLogin = null;
+            buildByDateGrid(data.byDate || []);
+            buildByClientGrid(data.byClient || []);
+            buildBySymbolGrid(_allBySymbol);
+            applyBySymbolFilter();
+            const internals = data.byInternalAccount || [];
+            buildInternalsGrid(internals);
+
+            // Reveal sections
+            document.getElementById('cv-kpi-section').style.display = 'block';
+            document.getElementById('cv-bydate-section').style.display = 'flex';
+            document.getElementById('cv-byclient-section').style.display = 'flex';
+            // Internal Accounts section only shows when there's something to show.
+            document.getElementById('cv-internals-section').style.display = internals.length ? 'flex' : 'none';
+            document.getElementById('cv-bysymbol-section').style.display = 'flex';
+            // Hide stale routing detail — user re-clicks a client row to refresh it.
+            document.getElementById('cv-routing-section').style.display = 'none';
+
+            // Refresh the monthly chart so it tracks the same window the grids are showing.
+            loadMonthlyChart();
+
+            const dt = Date.now() - t0;
+            stats.textContent = `${data.fromDate} → ${data.toDate} · ${data.activeDays} days · ${(dt / 1000).toFixed(1)}s`;
+        } catch (e) {
+            stats.textContent = `Failed: ${e.message}`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    let _monthlyChart = null;
+
+    function fmtMonthLabel(yyyymm) {
+        // "2026-06" → "Jun 26"
+        const [y, m] = yyyymm.split('-');
+        const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return `${monthNames[parseInt(m, 10) - 1]} ${y.slice(2)}`;
+    }
+
+    async function loadMonthlyChart() {
+        const meta = document.getElementById('cv-monthly-meta');
+        const chartEl = document.getElementById('cv-monthly-chart');
+        const emptyEl = document.getElementById('cv-monthly-empty');
+        const from = document.getElementById('cv-from').value;
+        const to = document.getElementById('cv-to').value;
+        const group = document.getElementById('cv-group').value || '*';
+        const login = document.getElementById('cv-login').value.trim();
+
+        if (!from || !to) {
+            meta.textContent = 'Pick a date range';
+            chartEl.style.display = 'none';
+            emptyEl.style.display = '';
+            return;
+        }
+
+        const params = new URLSearchParams({ from, to, group });
+        if (login) params.set('login', login);
+        meta.textContent = 'Loading…';
+        try {
+            const resp = await fetch(`/ClientVolume/Monthly?${params}`, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                meta.textContent = `Error ${resp.status}`;
+                return;
+            }
+            const rows = await resp.json();
+            const data = (rows || []).map(r => ({
+                month: fmtMonthLabel(r.month),
+                lots: r.lots,
+                stocksLots: r.stocksLots || 0,
+                cfdLots: r.cfdLots || 0,
+            }));
+            const totalLots = data.reduce((s, r) => s + (r.lots || 0), 0);
+            const totalStocks = data.reduce((s, r) => s + (r.stocksLots || 0), 0);
+            const totalCfd = data.reduce((s, r) => s + (r.cfdLots || 0), 0);
+            const windowLabel = `${from} → ${to}`;
+            if (totalLots <= 0) {
+                chartEl.style.display = 'none';
+                emptyEl.style.display = '';
+                meta.textContent = `${windowLabel} · 0 lots`;
+                return;
+            }
+            chartEl.style.display = '';
+            emptyEl.style.display = 'none';
+            const fmtTotal = v => v.toLocaleString(undefined, {maximumFractionDigits: 0});
+            meta.textContent = `${windowLabel} · ${fmtTotal(totalLots)} total · ${fmtTotal(totalStocks)} stocks · ${fmtTotal(totalCfd)} CFD`;
+
+            if (_monthlyChart) _monthlyChart.destroy();
+            // Stacked bars: stocks (blue) on top of CFD (purple). Total stays visible
+            // because the column height = stocks + cfd.
+            const stackTooltip = lotKey => ({
+                renderer: p => ({
+                    title: p.datum.month,
+                    content: `${(p.datum[lotKey] || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} lots`
+                })
+            });
+            _monthlyChart = agCharts.AgCharts.create({
+                container: chartEl,
+                data: data,
+                background: { fill: 'transparent' },
+                series: [
+                    {
+                        type: 'bar', xKey: 'month', yKey: 'cfdLots', yName: 'CFD',
+                        stacked: true, stackGroup: 'lots', fill: '#c084fc',
+                        tooltip: stackTooltip('cfdLots'),
+                    },
+                    {
+                        type: 'bar', xKey: 'month', yKey: 'stocksLots', yName: 'Stocks',
+                        stacked: true, stackGroup: 'lots', fill: '#60a5fa',
+                        tooltip: stackTooltip('stocksLots'),
+                        // Total label on top of the stack — only on the upper segment.
+                        label: {
+                            enabled: true, color: '#a9b1d6', fontSize: 10,
+                            formatter: p => p.datum.lots > 0
+                                ? p.datum.lots.toLocaleString(undefined, {maximumFractionDigits: 0})
+                                : ''
+                        },
+                    },
+                ],
+                axes: [
+                    { type: 'category', position: 'bottom', label: { color: '#a9b1d6', fontSize: 10 }, gridLine: { style: [{ stroke: '#24283b' }] } },
+                    { type: 'number', position: 'left', label: { color: '#a9b1d6', fontSize: 10, formatter: p => p.value >= 1000 ? (p.value / 1000).toFixed(0) + 'K' : p.value.toString() }, gridLine: { style: [{ stroke: '#24283b' }] } }
+                ],
+                legend: { enabled: true, position: 'bottom', item: { label: { color: '#a9b1d6', fontSize: 10 } } },
+            });
+        } catch (e) {
+            meta.textContent = `Failed: ${e.message}`;
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        defaultDates();
+        setupCollapses();
+        loadMonthlyChart();
+    });
+</script>
+
+</body>
+</html>
