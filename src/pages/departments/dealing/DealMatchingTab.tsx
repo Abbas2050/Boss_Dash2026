@@ -287,14 +287,6 @@ const clientRevenueColumns: SortableTableColumn<RevenueRow>[] = [
   { key: "system", label: "System", sortValue: (r) => String(r.system || ""), render: (r) => <span className={systemClass(r.system)}>{safe(r.system)}</span> },
   { key: "lots", label: "Lots", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.lots), render: (r) => fmtNum(r.lots) },
   {
-    key: "markupRevenueUsd",
-    label: "Markup Rev",
-    headerClassName: "text-right",
-    cellClassName: "text-right",
-    sortValue: (r) => num(r.markupRevenueUsd),
-    render: (r) => <span className={signedClass(r.markupRevenueUsd)}>{money(r.markupRevenueUsd)}</span>,
-  },
-  {
     key: "mt5MarkupUsd",
     label: "MT5 Markup",
     headerClassName: "text-right",
@@ -1203,7 +1195,6 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                     <TotalsBar
                       items={[
                         { label: "Lots", value: fmtNum(clientRevenueTotals.lots) },
-                        { label: "Markup", value: money(clientRevenueTotals.markupRevenueUsd) },
                         { label: "Client Comm", value: money(clientRevenueTotals.clientCommissionUsd) },
                         { label: "Gross", value: money(clientRevenueTotals.grossRevenueUsd) },
                         { label: "LP Comm", value: money(clientRevenueTotals.lpCommissionUsd) },
