@@ -388,6 +388,18 @@ router.post("/sync-approved-applications", async (req, res) => {
   }
 });
 
+// Operator-triggered sweep from the Back Office panel (session auth, not the webhook bearer).
+router.post("/run-sync", authRequired, requireBackoffice, async (_req, res) => {
+  try {
+    await initDocusignStore();
+    const summary = await runApprovedApplicationsSync({}, "panel_button");
+    if (summary?.skipped) return res.status(409).json({ ok: false, error: "sync_already_running", sync: summary.state });
+    return res.json({ ok: true, ...summary });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: "run_sync_failed", message: error instanceof Error ? error.message : String(error) });
+  }
+});
+
 // DocuSign Connect webhook endpoint.
 router.post("/webhooks/connect", async (req, res) => {
   try {
