@@ -45,21 +45,24 @@ function safeJsonParse(value) {
   }
 }
 
-function verifyConnectSignature(req) {
-  const secret = process.env.DOCUSIGN_CONNECT_HMAC_SECRET || "";
+export function verifyConnectSignatureRaw(rawBody, headerSig, secret) {
   if (!secret) return { ok: true, reason: "hmac_not_configured" };
+  const sig = String(headerSig || "").trim();
+  if (!sig) return { ok: false, reason: "missing_signature_header" };
+  if (!rawBody || !rawBody.length) return { ok: false, reason: "raw_body_unavailable" };
+  const computed = crypto.createHmac("sha256", secret).update(rawBody).digest("base64");
+  const a = Buffer.from(computed);
+  const b = Buffer.from(sig);
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  return { ok, reason: ok ? "ok" : "signature_mismatch" };
+}
 
-  const headerSig = String(req.headers["x-docusign-signature-1"] || "").trim();
-  if (!headerSig) return { ok: false, reason: "missing_signature_header" };
-
-  // Express JSON middleware runs before this router in server.js.
-  // We recompute using the JSON string for a best-effort check.
-  const raw = JSON.stringify(req.body || {});
-  const computed = crypto.createHmac("sha256", secret).update(raw).digest("base64");
-  return {
-    ok: computed === headerSig,
-    reason: computed === headerSig ? "ok" : "signature_mismatch",
-  };
+function verifyConnectSignature(req) {
+  return verifyConnectSignatureRaw(
+    req.rawBody,
+    req.headers["x-docusign-signature-1"],
+    process.env.DOCUSIGN_CONNECT_HMAC_SECRET || ""
+  );
 }
 
 function toSqlDateTime(date) {
