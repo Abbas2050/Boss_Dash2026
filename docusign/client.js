@@ -184,3 +184,40 @@ export async function createEnvelopeFromTemplate(input) {
     payload,
   };
 }
+
+export async function downloadCombinedDocument(envelopeId) {
+  const id = String(envelopeId || "").trim();
+  if (!id) throw new Error("envelopeId is required");
+  const accessToken = await getDocusignAccessToken();
+  const { baseUri, accountId } = await resolveApiBase(accessToken);
+  const resp = await fetch(`${baseUri}/restapi/v2.1/accounts/${accountId}/envelopes/${id}/documents/combined`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/pdf" },
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`DocuSign document download failed (${resp.status}): ${text.slice(0, 200)}`);
+  }
+  return Buffer.from(await resp.arrayBuffer());
+}
+
+export async function listStatusChanges(fromDateIso) {
+  const accessToken = await getDocusignAccessToken();
+  const { baseUri, accountId } = await resolveApiBase(accessToken);
+  const params = new URLSearchParams({ from_date: String(fromDateIso) });
+  const resp = await fetch(`${baseUri}/restapi/v2.1/accounts/${accountId}/envelopes?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(45_000),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`DocuSign listStatusChanges failed (${resp.status}): ${text.slice(0, 200)}`);
+  }
+  const json = await resp.json();
+  const envelopes = Array.isArray(json?.envelopes) ? json.envelopes : [];
+  return envelopes.map((e) => ({
+    envelopeId: String(e?.envelopeId || ""),
+    status: String(e?.status || "").toLowerCase(),
+    statusChangedDateTime: String(e?.statusChangedDateTime || ""),
+  })).filter((e) => e.envelopeId);
+}
