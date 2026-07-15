@@ -28,6 +28,13 @@ function writeCursor(iso) {
  */
 export async function onEnvelopeStatus(envelopeId, status) {
   const next = String(status || "unknown").toLowerCase();
+  const current = await findByEnvelopeId(envelopeId);
+  if (current && String(current.status || "").toLowerCase() === "superseded") {
+    // Superseded rows are terminal: a migration marked the older duplicate of
+    // an envelope pair this way on purpose, and DocuSign still reports real
+    // status for its envelope id. Never let the poller/webhook resurrect it.
+    return current;
+  }
   const updated = await markEnvelopeStatus(envelopeId, next);
   if (next === "completed") {
     await uploadSignedDocument(envelopeId).catch((e) =>
@@ -49,6 +56,7 @@ export async function runReconcileOnce() {
     const row = await findByEnvelopeId(change.envelopeId);
     if (!row) continue;
     matched += 1;
+    if (String(row.status || "").toLowerCase() === "superseded") continue;
     if (String(row.status || "").toLowerCase() === change.status) continue;
     await onEnvelopeStatus(change.envelopeId, change.status);
     updated += 1;
