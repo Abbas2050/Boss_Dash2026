@@ -15,6 +15,8 @@ import authRouter from "./auth/router.js";
 import clientProfileRouter from "./clientProfileRouter.js";
 import docusignRouter from "./docusign/router.js";
 import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
+import { runAppIdMigration } from "./docusign/migrateAppIds.js";
+import { getDocusignPool } from "./docusign/store.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
@@ -879,6 +881,10 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () => {
   console.log(`Express + mock SignalR server running on http://localhost:${PORT}`);
+  getDocusignPool()
+    .then((pool) => runAppIdMigration(pool))
+    .then((r) => console.log("[docusign-migrate]", JSON.stringify(r)))
+    .catch((e) => console.error("[docusign-migrate] failed:", e?.message || String(e)));
   startDocusignApprovedSyncScheduler();
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
