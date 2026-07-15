@@ -8,6 +8,10 @@ const normalizeLpForMatch = (value: unknown) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// Buckets follow the LP/Broker category sheet (Crypto + Bank flags per account):
+//   Crypto only -> "Crypto" | Bank only -> "Bank" | both flags -> "Both".
+// Aliases cover both the official broker name and the coverage-account names the
+// /Metrics/lp API actually returns (e.g. "ICM (5101163)", "Amana2 (8008598)").
 const LP_BUCKET_ALIASES: Record<LpBucket, string[]> = {
   Bank: [
     "CMC MARKETS MIDDLE EAST LIMITED",
@@ -22,6 +26,12 @@ const LP_BUCKET_ALIASES: Record<LpBucket, string[]> = {
     "XTB",
     "XTB Bonus 1(Coverage)",
     "XTB Bonus 1 (Coverage)",
+    "Velocity",
+    "TopFX",
+    "IRESS COVERAGE acc",
+    "IRESS",
+    "EdgeWaterMark Coverage ACC",
+    "EdgeWaterMark",
   ],
   Both: [
     "AFS Global Limited - Amana",
@@ -42,14 +52,14 @@ const LP_BUCKET_ALIASES: Record<LpBucket, string[]> = {
     "Lmax 3rd acc TOBS",
     "Lmax 3rd acc TOB5",
     "LMAX Old",
-    "ICM Capital Limited",
-    "ICM",
+    "B2Prime",
+    "B2B",
+    "B2B Coverage account",
+    "B2B 2Nd acc",
   ],
   Crypto: [
     "AIDI Financial",
     "AIDI",
-    "B2Prime",
-    "B2B Coverage account",
     "Broctagon Prime Markets Limited",
     "Broctagon1",
     "Broctagon2",
@@ -65,6 +75,8 @@ const LP_BUCKET_ALIASES: Record<LpBucket, string[]> = {
     "Taurex (Zenfinex Global Limited)",
     "Taurex",
     "Taurex2",
+    "ICM Capital Limited",
+    "ICM",
   ],
 };
 
