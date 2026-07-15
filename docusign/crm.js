@@ -4,7 +4,7 @@ function required(name) {
   return value;
 }
 
-function getCrmBaseUrl() {
+export function getCrmBaseUrl() {
   const apiUrl = required("VITE_API_URL");
   const trimmed = String(apiUrl).replace(/\/+$/, "");
   if (trimmed.includes("/rest/transactions")) {
@@ -17,7 +17,7 @@ function getCrmBaseUrl() {
   return trimmed;
 }
 
-function authHeaders() {
+export function authHeaders() {
   const token = required("VITE_API_TOKEN");
   return {
     "Content-Type": "application/json",
@@ -26,7 +26,7 @@ function authHeaders() {
   };
 }
 
-function versionQuery() {
+export function versionQuery() {
   return `version=${encodeURIComponent(process.env.VITE_API_VERSION || "1.0.0")}`;
 }
 
@@ -200,4 +200,19 @@ export async function fetchCrmApplicationsByType(type = "docusign", query = {}) 
 
   const rows = await resp.json();
   return Array.isArray(rows) ? rows : [];
+}
+
+export async function createCrmDocument(payload) {
+  const endpoint = `${getCrmBaseUrl()}/documents/new?${versionQuery()}`;
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`CRM documents/new failed (${resp.status}): ${text.slice(0, 200)}`);
+  }
+  return resp.json();
 }
