@@ -5,6 +5,7 @@ import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmU
 import { verifyOAuthBearerToken } from "../oauth/router.js";
 import { normalizeApplicationId } from "./appId.js";
 import { onEnvelopeStatus } from "./reconcile.js";
+import { authRequired, hasAccessPermission } from "../auth/router.js";
 import { getDocusignSyncState, runApprovedApplicationsSync } from "./sync.js";
 import {
   findByApplicationId,
@@ -16,6 +17,11 @@ import {
 } from "./store.js";
 
 const router = express.Router();
+
+function requireBackoffice(req, res, next) {
+  if (!hasAccessPermission(req.auth, "Backoffice")) return res.status(403).json({ ok: false, error: "forbidden" });
+  return next();
+}
 
 function verifyFxboWebhookAuth(req) {
   const expected = process.env.DOCUSIGN_FXBO_WEBHOOK_BEARER || "";
@@ -127,7 +133,7 @@ router.get("/health", async (_req, res) => {
   }
 });
 
-router.get("/sync-status", async (_req, res) => {
+router.get("/sync-status", authRequired, requireBackoffice, async (_req, res) => {
   try {
     await initDocusignStore();
     return res.json({ ok: true, sync: getDocusignSyncState() });
@@ -140,7 +146,21 @@ router.get("/sync-status", async (_req, res) => {
   }
 });
 
-router.get("/overview", async (_req, res) => {
+const COMPLETED_STATUSES = new Set(["completed", "signed", "delivered"]);
+const PENDING_STATUSES = new Set(["created", "sent", "delivered", "pending"]);
+const ATTENTION_STATUSES = new Set(["declined", "voided", "expired"]);
+
+export function bucketEnvelopes(rows) {
+  const norm = rows.map((r) => ({ ...r, status: String(r.status || "unknown").toLowerCase() }));
+  const live = norm.filter((r) => r.status !== "superseded");
+  return {
+    completed: live.filter((r) => COMPLETED_STATUSES.has(r.status)),
+    pending: live.filter((r) => !COMPLETED_STATUSES.has(r.status) && PENDING_STATUSES.has(r.status)),
+    needsAttention: live.filter((r) => ATTENTION_STATUSES.has(r.status)),
+  };
+}
+
+router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
   try {
     await initDocusignStore();
 
@@ -151,12 +171,8 @@ router.get("/overview", async (_req, res) => {
       crm_upload_status: String(row.crm_upload_status || "pending").toLowerCase(),
     }));
 
-    const completedStatuses = new Set(["completed", "signed", "delivered"]);
-    const pendingStatuses = new Set(["created", "sent", "delivered", "pending"]);
-
-    const sentCount = normalizedRows.length;
-    const completedRows = normalizedRows.filter((row) => completedStatuses.has(row.status));
-    const pendingRows = normalizedRows.filter((row) => !completedStatuses.has(row.status) && pendingStatuses.has(row.status));
+    const { completed: completedRows, pending: pendingRows, needsAttention: attentionRows } = bucketEnvelopes(normalizedRows);
+    const sentCount = normalizedRows.filter((r) => r.status !== "superseded").length;
 
     const latestUpdatedAt = normalizedRows[0]?.updated_at || null;
     const hasCoreConfig = Boolean(
@@ -203,15 +219,25 @@ router.get("/overview", async (_req, res) => {
       pendingApplicationsError = error instanceof Error ? error.message : String(error);
     }
 
+    const needsAttentionClients = attentionRows.slice(0, 8).map((row) => ({
+      applicationId: row.application_id,
+      name: row.applicant_name || row.applicant_email,
+      email: row.applicant_email,
+      status: row.status,
+      updatedAt: row.updated_at,
+    }));
+
     return res.json({
       ok: true,
       summary: {
         sent: sentCount,
         pending: pendingRows.length,
         completed: completedRows.length,
+        needsAttention: attentionRows.length,
       },
       pendingClients,
       completedClients,
+      needsAttentionClients,
       pendingApplications,
       pendingApplicationsCount: pendingApplications.length,
       system: {
@@ -404,7 +430,7 @@ router.post("/webhooks/connect", async (req, res) => {
   }
 });
 
-router.get("/applications/:applicationId", async (req, res) => {
+router.get("/applications/:applicationId", authRequired, requireBackoffice, async (req, res) => {
   try {
     await initDocusignStore();
     const applicationId = String(req.params.applicationId || "").trim();
@@ -419,7 +445,7 @@ router.get("/applications/:applicationId", async (req, res) => {
   }
 });
 
-router.get("/envelopes/:envelopeId", async (req, res) => {
+router.get("/envelopes/:envelopeId", authRequired, requireBackoffice, async (req, res) => {
   try {
     await initDocusignStore();
     const envelopeId = String(req.params.envelopeId || "").trim();

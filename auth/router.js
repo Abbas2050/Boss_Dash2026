@@ -273,6 +273,14 @@ function canManageUsers(payload) {
   return role === "super admin" || access.includes(MANAGE_USERS_PERMISSION);
 }
 
+function hasAccessPermission(payload, key) {
+  const access = Array.isArray(payload?.access) ? payload.access : [];
+  const role = String(payload?.role || "").trim().toLowerCase();
+  if (role === "super admin") return true;
+  if (access.includes(key)) return true;
+  return access.some((a) => String(a).split(":")[0] === key);
+}
+
 async function logAuthEvent(actorUserId, action, targetUserId, metadata) {
   if (!pool) return;
   try {
@@ -517,5 +525,5 @@ router.get("/audit-events", authRequired, async (req, res) => {
   }
 });
 
-export { authRequired, canManageUsers };
+export { authRequired, canManageUsers, hasAccessPermission };
 export default router;

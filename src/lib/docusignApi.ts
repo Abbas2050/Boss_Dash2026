@@ -1,3 +1,5 @@
+import { authHeaders } from "@/lib/auth";
+
 export type DocusignClientItem = {
   applicationId: string;
   name: string;
@@ -18,13 +20,10 @@ export type DocusignPendingApplicationItem = {
 
 export type DocusignOverview = {
   ok: boolean;
-  summary: {
-    sent: number;
-    pending: number;
-    completed: number;
-  };
+  summary: { sent: number; pending: number; completed: number; needsAttention?: number };
   pendingClients: DocusignClientItem[];
   completedClients: DocusignClientItem[];
+  needsAttentionClients?: DocusignClientItem[];
   pendingApplications: DocusignPendingApplicationItem[];
   pendingApplicationsCount: number;
   system: {
@@ -39,9 +38,7 @@ export type DocusignOverview = {
 
 export async function fetchDocusignOverview(): Promise<DocusignOverview> {
   const res = await fetch("/api/docusign/overview", {
-    headers: {
-      Accept: "application/json",
-    },
+    headers: { Accept: "application/json", ...authHeaders() },
   });
 
   if (!res.ok) {

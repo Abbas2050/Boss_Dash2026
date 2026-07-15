@@ -2563,6 +2563,10 @@ export function BackOfficeDepartment({
                 </div>
                 <div className="mt-2 font-mono text-2xl font-semibold text-emerald-900 dark:text-emerald-100">{docusignOverview?.summary.completed ?? 0}</div>
               </div>
+              <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3">
+                <div className="text-[11px] uppercase tracking-wide text-rose-700 dark:text-rose-300">Needs Attention</div>
+                <div className="mt-2 font-mono text-2xl font-semibold text-rose-900 dark:text-rose-100">{docusignOverview?.summary.needsAttention ?? 0}</div>
+              </div>
               <div className="rounded-lg border border-primary/20 bg-primary/10 p-3">
                 <div className="text-[11px] text-muted-foreground">System Status</div>
                 <div className={`mt-2 inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${docusignOverview?.system.status === 'operational' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'}`}>
