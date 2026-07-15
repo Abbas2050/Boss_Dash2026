@@ -190,3 +190,8 @@ export async function listEnvelopeMaps(limit = 100) {
     [safeLimit]
   );
 }
+
+export async function getDocusignPool() {
+  await initDocusignStore();
+  return pool;
+}
