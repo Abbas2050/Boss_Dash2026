@@ -21,10 +21,10 @@ describe("verifyConnectSignatureRaw", () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toBe("missing_signature_header");
   });
-  it("passes through when no secret is configured (documented gap)", () => {
+  it("rejects when no secret is configured (fail closed)", () => {
     const raw = Buffer.from("{}");
     const r = verifyConnectSignatureRaw(raw, "", "");
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
     expect(r.reason).toBe("hmac_not_configured");
   });
   it("fails when raw body was not captured but a secret is set", () => {

@@ -51,8 +51,13 @@ function safeJsonParse(value) {
   }
 }
 
+// Fail CLOSED when no HMAC secret is configured: the DocuSign account currently has
+// ZERO Connect configurations, meaning DocuSign never calls this endpoint at all — so
+// any request that arrives here is not DocuSign, it's an unauthenticated caller on the
+// internet. Once a Connect configuration and DOCUSIGN_CONNECT_HMAC_SECRET are added,
+// this check starts verifying signatures automatically with no code change required.
 export function verifyConnectSignatureRaw(rawBody, headerSig, secret) {
-  if (!secret) return { ok: true, reason: "hmac_not_configured" };
+  if (!secret) return { ok: false, reason: "hmac_not_configured" };
   const sig = String(headerSig || "").trim();
   if (!sig) return { ok: false, reason: "missing_signature_header" };
   if (!rawBody || !rawBody.length) return { ok: false, reason: "raw_body_unavailable" };
