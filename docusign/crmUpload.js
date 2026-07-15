@@ -20,8 +20,8 @@ export function buildDocumentPayload({ crmUserId, configId, applicationId, envel
 
 export async function uploadSignedDocument(envelopeId) {
   const configId = String(process.env.DOCUSIGN_CRM_DOC_CONFIG_ID || "").trim();
-  if (!configId) {
-    console.warn("[docusign-crm-upload] DOCUSIGN_CRM_DOC_CONFIG_ID not set — skipping upload.");
+  if (!configId || !Number.isInteger(Number(configId))) {
+    console.warn("[docusign-crm-upload] DOCUSIGN_CRM_DOC_CONFIG_ID not set (or not an integer) — skipping upload.");
     return { ok: false, reason: "config_id_not_set" };
   }
 

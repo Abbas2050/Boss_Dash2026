@@ -203,6 +203,20 @@ export async function listEnvelopeMaps(limit = 100) {
   );
 }
 
+export async function listPendingCrmUploads(limit = 50) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
+  return all(
+    `
+      SELECT *
+      FROM docusign_envelope_map
+      WHERE status = 'completed' AND crm_upload_status <> 'uploaded'
+      ORDER BY updated_at ASC
+      LIMIT ?
+    `,
+    [safeLimit]
+  );
+}
+
 export async function getDocusignPool() {
   await initDocusignStore();
   return pool;

@@ -25,4 +25,9 @@ describe("bucketEnvelopes", () => {
     expect(r.completed).toHaveLength(0);
     expect(r.needsAttention).toHaveLength(0);
   });
+  it("buckets delivered as pending, not completed", () => {
+    const r = bucketEnvelopes([row("delivered")]);
+    expect(r.pending).toHaveLength(1);
+    expect(r.completed).toHaveLength(0);
+  });
 });

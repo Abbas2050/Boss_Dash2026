@@ -3,7 +3,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { listStatusChanges } from "./client.js";
 import { uploadSignedDocument } from "./crmUpload.js";
-import { findByEnvelopeId, initDocusignStore, markEnvelopeStatus } from "./store.js";
+import {
+  findByEnvelopeId,
+  initDocusignStore,
+  listPendingCrmUploads,
+  markEnvelopeStatus,
+} from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_FILE = path.join(__dirname, "../storage/docusign_reconcile_state.json");
@@ -62,9 +67,20 @@ export async function runReconcileOnce() {
     updated += 1;
   }
 
+  // Sweep any envelope that settled at completed but never made it to the CRM
+  // (e.g. DOCUSIGN_CRM_DOC_CONFIG_ID was unset at the time, or a transient
+  // failure). Without this, a status TRANSITION is the only trigger for
+  // uploadSignedDocument and a row stuck at completed is never retried.
+  const pending = await listPendingCrmUploads();
+  for (const row of pending) {
+    await uploadSignedDocument(row.envelope_id).catch((e) =>
+      console.error("[docusign-reconcile] retry upload threw:", e?.message || String(e))
+    );
+  }
+
   // Only advance on success, so a failure never skips a window.
   writeCursor(startedAt);
-  const summary = { from, fetched: changes.length, matched, updated };
+  const summary = { from, fetched: changes.length, matched, updated, uploadsAttempted: pending.length };
   console.log("[docusign-reconcile]", JSON.stringify(summary));
   return summary;
 }

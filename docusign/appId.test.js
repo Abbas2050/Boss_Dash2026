@@ -24,4 +24,7 @@ describe("normalizeApplicationId", () => {
   it("accepts a number input", () => {
     expect(normalizeApplicationId(3525)).toBe("3525");
   });
+  it("leaves an opaque non-numeric id unchanged", () => {
+    expect(normalizeApplicationId("APP-TEST-001")).toBe("APP-TEST-001");
+  });
 });

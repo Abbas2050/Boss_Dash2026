@@ -12,7 +12,6 @@ import {
   findByEnvelopeId,
   initDocusignStore,
   listEnvelopeMaps,
-  markEnvelopeStatus,
   upsertEnvelopeMap,
 } from "./store.js";
 
@@ -146,7 +145,7 @@ router.get("/sync-status", authRequired, requireBackoffice, async (_req, res) =>
   }
 });
 
-const COMPLETED_STATUSES = new Set(["completed", "signed", "delivered"]);
+const COMPLETED_STATUSES = new Set(["completed", "signed"]);
 const PENDING_STATUSES = new Set(["created", "sent", "delivered", "pending"]);
 const ATTENTION_STATUSES = new Set(["declined", "voided", "expired"]);
 

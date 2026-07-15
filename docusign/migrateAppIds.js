@@ -111,7 +111,13 @@ export async function runAppIdMigration(pool) {
   console.log("[docusign-migrate] plan:", JSON.stringify(plan.summary));
 
   for (const id of plan.supersedes) {
-    await pool.query(`UPDATE docusign_envelope_map SET status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+    // Free the application_id too: leaving it unchanged means the winner's
+    // UPDATE below can collide with uq_docusign_application_id if the loser
+    // held the clean numeric id the winner is being normalized to.
+    await pool.query(
+      `UPDATE docusign_envelope_map SET status = 'superseded', application_id = CONCAT('superseded:', id, ':', application_id), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
   }
   for (const id of plan.deletes) {
     await pool.query(`DELETE FROM docusign_envelope_map WHERE id = ?`, [id]);
