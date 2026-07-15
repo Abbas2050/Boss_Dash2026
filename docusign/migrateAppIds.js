@@ -1,6 +1,8 @@
 import { normalizeApplicationId } from "./appId.js";
 
 const isClean = (v) => /^\d+$/.test(String(v ?? ""));
+const hasHtmlTag = (v) => /<[^>]+>/.test(String(v ?? ""));
+const hasAnyDigit = (v) => /\d/.test(String(v ?? ""));
 const ts = (v) => {
   const t = Date.parse(String(v ?? ""));
   return Number.isFinite(t) ? t : 0;
@@ -8,10 +10,21 @@ const ts = (v) => {
 
 /**
  * Pure decision function: given the current rows, decide what to change.
- * - no digits            -> delete (junk, e.g. a spreadsheet header row)
- * - normalizes to an id already held by another row -> keep the newest,
- *   mark the loser 'superseded' (kept for audit, excluded from buckets)
- * - otherwise            -> update application_id in place
+ *
+ * Classification of each row by its raw application_id:
+ *  1. Already a clean digit-run (/^\d+$/)        -> keep as-is, but still
+ *     participate in collision grouping (may be the duplicate partner of an
+ *     HTML row).
+ *  2. Contains an HTML tag (the FXBO anchor bug)  -> normalize via
+ *     normalizeApplicationId. Empty result -> delete. Otherwise participate
+ *     in collision grouping and update to the normalized id (unless already
+ *     clean).
+ *  3. No HTML and no digits at all                -> delete (junk, e.g. a
+ *     spreadsheet header row).
+ *  4. No HTML but has digits, not a pure digit-run -> leave completely
+ *     alone: opaque ids like "APP-TEST-001" must never be mangled by
+ *     extracting a substring of digits, and must not enter collision
+ *     grouping.
  */
 export function decideRowActions(rows) {
   const updates = [];
@@ -20,14 +33,37 @@ export function decideRowActions(rows) {
 
   const byNorm = new Map();
   for (const r of rows) {
-    const norm = normalizeApplicationId(r.application_id);
-    if (!norm) {
+    const raw = r.application_id;
+
+    if (isClean(raw)) {
+      // Rule 1: clean digit-run, keep as-is but still group for collisions.
+      const norm = String(raw ?? "");
+      const list = byNorm.get(norm) || [];
+      list.push(r);
+      byNorm.set(norm, list);
+      continue;
+    }
+
+    if (hasHtmlTag(raw)) {
+      // Rule 2: HTML-wrapped id, normalize.
+      const norm = normalizeApplicationId(raw);
+      if (!norm) {
+        deletes.push(r.id);
+        continue;
+      }
+      const list = byNorm.get(norm) || [];
+      list.push(r);
+      byNorm.set(norm, list);
+      continue;
+    }
+
+    if (!hasAnyDigit(raw)) {
+      // Rule 3: no HTML, no digits at all -> junk.
       deletes.push(r.id);
       continue;
     }
-    const list = byNorm.get(norm) || [];
-    list.push(r);
-    byNorm.set(norm, list);
+
+    // Rule 4: no HTML, has digits, not a pure digit-run -> opaque id, leave alone.
   }
 
   for (const [norm, list] of byNorm) {

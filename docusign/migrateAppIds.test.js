@@ -43,6 +43,28 @@ describe("decideRowActions", () => {
     expect(r.updates).toEqual([{ id: 21, applicationId: "3900" }]);
   });
 
+  it("leaves an opaque non-numeric id alone", () => {
+    const r = decideRowActions([row(30, "APP-TEST-001", "2026-06-01")]);
+    expect(r.updates).toEqual([]);
+    expect(r.deletes).toEqual([]);
+    expect(r.supersedes).toEqual([]);
+  });
+
+  it("still deletes a no-digit junk row", () => {
+    const r = decideRowActions([row(31, "Application ID + Link", "2026-06-01")]);
+    expect(r.deletes).toEqual([31]);
+  });
+
+  it("normalizes an HTML row whose plain twin exists, superseding the older", () => {
+    const rows = [
+      row(10, "3892", "2026-06-24T14:20:58Z"),
+      row(11, '<a href="x">3892</a>', "2026-06-24T10:19:19Z"),
+    ];
+    const r = decideRowActions(rows);
+    expect(r.supersedes).toEqual([11]);
+    expect(r.updates).toEqual([]);
+  });
+
   it("reports a summary", () => {
     const r = decideRowActions([
       row(1, "3525", "2026-06-01"),
