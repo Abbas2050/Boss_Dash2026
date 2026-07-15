@@ -178,6 +178,7 @@ export async function processApprovedApplications(options = {}) {
         templateId: templateId || process.env.DOCUSIGN_TEMPLATE_ID || "",
         docType,
         rawPayload: app,
+        crmUserId: userId,
       });
 
       summary.sent += 1;

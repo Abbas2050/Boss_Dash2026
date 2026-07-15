@@ -304,6 +304,7 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       templateId: templateId || process.env.DOCUSIGN_TEMPLATE_ID || "",
       docType,
       rawPayload: req.body,
+      crmUserId: userId,
     });
 
     return res.json({

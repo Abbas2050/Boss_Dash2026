@@ -87,6 +87,14 @@ export async function initDocusignStore() {
     `CREATE INDEX IF NOT EXISTS idx_docusign_envelope_map_envelope_id ON docusign_envelope_map(envelope_id)`
   );
 
+  const [colRows] = await pool.query(
+    `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'docusign_envelope_map' AND COLUMN_NAME = 'crm_user_id'`
+  );
+  if (Number(colRows?.[0]?.cnt || 0) === 0) {
+    await run(`ALTER TABLE docusign_envelope_map ADD COLUMN crm_user_id BIGINT NULL`);
+  }
+
   initialized = true;
 }
 
@@ -108,6 +116,7 @@ export async function upsertEnvelopeMap(input) {
     templateId,
     docType,
     rawPayload,
+    crmUserId,
   } = input;
 
   await run(
@@ -121,8 +130,9 @@ export async function upsertEnvelopeMap(input) {
         template_id,
         doc_type,
         raw_payload,
+        crm_user_id,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
       ON DUPLICATE KEY UPDATE
         applicant_email = VALUES(applicant_email),
         applicant_name = VALUES(applicant_name),
@@ -131,6 +141,7 @@ export async function upsertEnvelopeMap(input) {
         template_id = VALUES(template_id),
         doc_type = VALUES(doc_type),
         raw_payload = VALUES(raw_payload),
+        crm_user_id = VALUES(crm_user_id),
         updated_at = CURRENT_TIMESTAMP
     `,
     [
@@ -142,6 +153,7 @@ export async function upsertEnvelopeMap(input) {
       templateId ? String(templateId) : null,
       docType ? String(docType) : null,
       rawPayload ? JSON.stringify(rawPayload) : null,
+      crmUserId == null ? null : Number(crmUserId),
     ]
   );
 
