@@ -532,14 +532,15 @@ export function AccountsDepartment({
 
   const periodLabel = 'Today';
   const lpDepositsTotal = toBeDepositedIntoLpsK20 + toBeDepositedIntoLpsK21;
+  // Credit by LPs (J30) is intentionally NOT subtracted here — it is shown as its own
+  // tile instead. Do not add it back into this formula.
   const lpPlusPspDifference =
     lpEquitySummary.difference +
     metrics.totalBalance +
     cryptoReceivable +
     bankReceivable +
-    lpDepositsTotal -
-    creditByLps;
-  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT) - Credit by LPs (J30)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} - ${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+    lpDepositsTotal;
+  const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
   const lpEquityChartSeries = lpEquitySeries.length >= 2
     ? lpEquitySeries
     : [
