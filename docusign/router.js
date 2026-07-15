@@ -4,6 +4,7 @@ import { createEnvelopeFromTemplate } from "./client.js";
 import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
 import { verifyOAuthBearerToken } from "../oauth/router.js";
 import { normalizeApplicationId } from "./appId.js";
+import { onEnvelopeStatus } from "./reconcile.js";
 import { getDocusignSyncState, runApprovedApplicationsSync } from "./sync.js";
 import {
   findByApplicationId,
@@ -392,7 +393,7 @@ router.post("/webhooks/connect", async (req, res) => {
       "";
     const status = String(statusRaw || "unknown").toLowerCase();
 
-    const updated = await markEnvelopeStatus(envelopeId, status);
+    const updated = await onEnvelopeStatus(envelopeId, status);
     return res.json({ ok: true, envelopeId, status, record: updated });
   } catch (error) {
     return res.status(500).json({

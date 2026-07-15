@@ -17,6 +17,7 @@ import docusignRouter from "./docusign/router.js";
 import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import { runAppIdMigration } from "./docusign/migrateAppIds.js";
 import { getDocusignPool } from "./docusign/store.js";
+import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
@@ -894,6 +895,7 @@ server.listen(PORT, () => {
     .then((r) => console.log("[docusign-migrate]", JSON.stringify(r)))
     .catch((e) => console.error("[docusign-migrate] failed:", e?.message || String(e)));
   startDocusignApprovedSyncScheduler();
+  startDocusignReconcileScheduler();
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
   const profileCronExpr = String(process.env.CLIENT_PROFILE_CRON || "15 2 * * *");
