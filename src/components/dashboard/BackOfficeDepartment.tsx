@@ -2585,32 +2585,39 @@ export function BackOfficeDepartment({
                 </div>
                 <div className="mt-2 font-mono text-2xl font-semibold text-emerald-900 dark:text-emerald-100">{docusignOverview?.summary.completed ?? 0}</div>
               </div>
-              <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3">
-                <div className="text-[11px] uppercase tracking-wide text-rose-700 dark:text-rose-300">Needs Attention</div>
+              <div className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-3">
+                <div className="flex items-center gap-2 text-[11px] text-rose-700 dark:text-rose-300">
+                  <AlertCircle className="h-3.5 w-3.5" /> Needs Attention
+                </div>
                 <div className="mt-2 font-mono text-2xl font-semibold text-rose-900 dark:text-rose-100">{docusignOverview?.summary.needsAttention ?? 0}</div>
-              </div>
-              <div className="rounded-lg border border-primary/20 bg-primary/10 p-3">
-                <div className="text-[11px] text-muted-foreground">System Status</div>
-                <div className={`mt-2 inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${docusignOverview?.system.status === 'operational' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'}`}>
-                  {docusignOverview?.system.status === 'operational' ? 'Working Fine' : 'Needs Attention'}
-                </div>
-                <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
-                  <div>Core Config: {docusignOverview?.system.hasCoreConfig ? 'Yes' : 'No'}</div>
-                  <div>OAuth: {docusignOverview?.system.oauthEnabled ? 'Enabled' : 'Disabled'}</div>
-                </div>
               </div>
             </div>
 
-            <div className="mt-3 rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-[11px] text-violet-800 dark:text-violet-300">CRM Applications (Status: Pending)</div>
-                <div className="font-mono text-lg font-semibold text-violet-900 dark:text-violet-100">{docusignOverview?.pendingApplicationsCount ?? 0}</div>
-              </div>
-              {docusignOverview?.system.pendingApplicationsError && (
-                <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-                  Pending applications fetch issue: {docusignOverview.system.pendingApplicationsError}
+            <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
+                <div className="flex items-center gap-2 text-[11px] text-violet-800 dark:text-violet-300">
+                  <Users className="h-3.5 w-3.5" /> CRM Applications (Pending)
                 </div>
-              )}
+                <div className="mt-2 font-mono text-2xl font-semibold text-violet-900 dark:text-violet-100">{docusignOverview?.pendingApplicationsCount ?? 0}</div>
+                {docusignOverview?.system.pendingApplicationsError && (
+                  <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+                    Pending applications fetch issue: {docusignOverview.system.pendingApplicationsError}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-lg border border-primary/20 bg-primary/10 p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="text-[11px] text-muted-foreground">System Status</div>
+                  <div className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${docusignOverview?.system.status === 'operational' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-amber-500/15 text-amber-700 dark:text-amber-300'}`}>
+                    {docusignOverview?.system.status === 'operational' ? 'Working Fine' : 'Config Required'}
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                  <div>Core Config: {docusignOverview?.system.hasCoreConfig ? 'Yes' : 'No'}</div>
+                  <div>OAuth: {docusignOverview?.system.oauthEnabled ? 'Enabled' : 'Disabled'}</div>
+                  <div>Connect HMAC: {docusignOverview?.system.connectHmacEnabled ? 'Enabled' : 'Disabled'}</div>
+                </div>
+              </div>
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-3">
