@@ -1,5 +1,5 @@
 import { downloadCombinedDocument } from "./client.js";
-import { createCrmDocument, fetchCrmApplicationApplicantById } from "./crm.js";
+import { createCrmDocument, fetchCrmUserByEmail, fetchCrmUserById } from "./crm.js";
 import { findByEnvelopeId, markCrmUploadStatus } from "./store.js";
 
 /**
@@ -32,11 +32,21 @@ export async function uploadSignedDocument(envelopeId) {
   }
 
   try {
-    let crmUserId = row.crm_user_id ? Number(row.crm_user_id) : null;
-    if (!crmUserId) {
-      const applicant = await fetchCrmApplicationApplicantById(row.application_id).catch(() => null);
-      crmUserId = applicant?.userId ? Number(applicant.userId) : null;
+    const signerEmail = String(row.applicant_email || "").trim().toLowerCase();
+    let crmUserId = null;
+
+    if (signerEmail) {
+      const user = await fetchCrmUserByEmail(signerEmail).catch(() => null);
+      if (user?.id) crmUserId = Number(user.id);
     }
+
+    if (!crmUserId && row.crm_user_id) {
+      const fallbackUser = await fetchCrmUserById(row.crm_user_id).catch(() => null);
+      if (fallbackUser?.email && fallbackUser.email === signerEmail) {
+        crmUserId = Number(fallbackUser.id);
+      }
+    }
+
     if (!crmUserId) {
       await markCrmUploadStatus(envelopeId, "failed", "crm_user_unresolved");
       return { ok: false, reason: "crm_user_unresolved" };

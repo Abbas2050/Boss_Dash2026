@@ -124,6 +124,39 @@ export async function fetchCrmUserById(userId) {
   };
 }
 
+export async function fetchCrmUserByEmail(email) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) throw new Error("email is required");
+
+  const endpoint = `${getCrmBaseUrl()}/users?${versionQuery()}`;
+
+  const resp = await fetch(endpoint, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({
+      email: normalizedEmail,
+      segment: { limit: 5, offset: 0 },
+    }),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`CRM users lookup failed (${resp.status}): ${text}`);
+  }
+
+  const rows = await resp.json();
+  const list = Array.isArray(rows) ? rows : [];
+  const match = list.find((u) => String(u?.email || "").trim().toLowerCase() === normalizedEmail);
+  if (!match) return null;
+
+  return {
+    id: Number(match.id),
+    firstName: String(match.firstName || "").trim(),
+    lastName: String(match.lastName || "").trim(),
+    email: String(match.email || "").trim().toLowerCase(),
+  };
+}
+
 async function fetchJsonIfOk(url, options) {
   const resp = await fetch(url, options);
   if (!resp.ok) return null;
@@ -160,7 +193,14 @@ export async function fetchCrmApplicationApplicantById(applicationId) {
     const json = await fetchJsonIfOk(candidate.url, candidate.options).catch(() => null);
     if (!json) continue;
 
-    const record = Array.isArray(json) ? json[0] : json;
+    let record;
+    if (Array.isArray(json)) {
+      record = json.find((entry) => String(entry?.id) === String(applicationId));
+    } else {
+      record = String(json?.id) === String(applicationId) ? json : null;
+    }
+    if (!record) continue;
+
     const parsed = normalizeApplicant(record);
     if (parsed && (parsed.userId || parsed.email || parsed.fullName)) {
       return parsed;
