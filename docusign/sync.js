@@ -1,6 +1,7 @@
 import { createEnvelopeFromTemplate } from "./client.js";
 import { fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
 import { findByApplicationId, upsertEnvelopeMap } from "./store.js";
+import { normalizeApplicationId } from "./appId.js";
 
 const syncState = {
   schedulerEnabled: false,
@@ -113,6 +114,7 @@ export async function processApprovedApplications(options = {}) {
     alreadySent: 0,
     skippedNotApproved: 0,
     skippedMissingUser: 0,
+    skippedInvalidId: 0,
     skippedMissingSigner: 0,
     sent: 0,
     failed: 0,
@@ -122,11 +124,14 @@ export async function processApprovedApplications(options = {}) {
   };
 
   for (const app of apps) {
-    const applicationId = String(app?.id || "").trim();
+    const applicationId = normalizeApplicationId(app?.id);
     const status = String(app?.status || "").trim().toLowerCase();
     const userId = Number(app?.userId || 0) || null;
 
-    if (!applicationId) continue;
+    if (!applicationId) {
+      summary.skippedInvalidId += 1;
+      continue;
+    }
 
     if (status !== "approved") {
       summary.skippedNotApproved += 1;

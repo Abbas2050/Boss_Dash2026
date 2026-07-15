@@ -3,6 +3,7 @@ import express from "express";
 import { createEnvelopeFromTemplate } from "./client.js";
 import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
 import { verifyOAuthBearerToken } from "../oauth/router.js";
+import { normalizeApplicationId } from "./appId.js";
 import { getDocusignSyncState, runApprovedApplicationsSync } from "./sync.js";
 import {
   findByApplicationId,
@@ -239,7 +240,8 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
 
     // Merge body and query params — FXBO may send via form-encoded body, JSON body, or query string
     const p = Object.assign({}, req.query || {}, req.body || {});
-    const applicationId = String(p.applicationId || p.id || "").trim();
+    const rawApplicationId = String(p.applicationId || p.id || "").trim();
+    const applicationId = normalizeApplicationId(rawApplicationId);
     let userId = Number(p.userId || p.user?.id || 0) || null;
     let signerEmail = normalizeWebhookEmail(p.email || p.applicantEmail || "");
     let signerName = normalizeWebhookText(p.name || p.applicantName || "");
@@ -264,7 +266,10 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       }
     }
 
-    if (!applicationId) return res.status(400).json({ ok: false, error: "applicationId_required" });
+    if (!rawApplicationId) return res.status(400).json({ ok: false, error: "applicationId_required" });
+    if (!applicationId) {
+      return res.status(400).json({ ok: false, error: "applicationId_invalid", received: rawApplicationId.slice(0, 120) });
+    }
     if (!signerEmail) return res.status(400).json({ ok: false, error: "signer_email_required" });
     if (!signerName) return res.status(400).json({ ok: false, error: "signer_name_required" });
 
