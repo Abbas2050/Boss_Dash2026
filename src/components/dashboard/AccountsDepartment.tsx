@@ -252,7 +252,6 @@ export function AccountsDepartment({
     totalMargin: 0,
     avgMarginLevel: 0,
   });
-  const [lpEquitySeries, setLpEquitySeries] = useState<LpEquityPoint[]>([]);
   const [lpRealEquityBuckets, setLpRealEquityBuckets] = useState<Record<LpBucket, number>>({
     Bank: 0,
     Both: 0,
@@ -402,34 +401,8 @@ export function AccountsDepartment({
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
     };
 
-    const loadLpEquitySeries = async () => {
-      try {
-        const response = await fetch('/api/lp-equity-live-snapshots?hours=168');
-        if (!response.ok) return;
-        const payload = await response.json();
-        const rows = Array.isArray(payload?.rows) ? payload.rows : [];
-        const mapped: LpEquityPoint[] = rows
-          .map((row: any) => {
-            const snapshotKey = String(row?.snapshotTime || row?.snapshot_time || '').trim();
-            if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(snapshotKey)) return null;
-            const ts = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
-            return {
-              ts: Number.isFinite(ts) ? ts : Date.now(),
-              snapshotKey,
-              time: formatSnapshotLabel(snapshotKey),
-              lpWithdrawableEquity: Number(row?.lpWithdrawableEquity ?? row?.lp_withdrawable_equity ?? 0) || 0,
-              clientWithdrawableEquity: Number(row?.clientWithdrawableEquity ?? row?.client_withdrawable_equity ?? 0) || 0,
-              difference: Number(row?.difference ?? row?.equity_difference ?? 0) || 0,
-            } satisfies LpEquityPoint;
-          })
-          .filter((point: LpEquityPoint | null): point is LpEquityPoint => Boolean(point));
-
-        setLpEquitySeries(mapped.slice(-240));
-      } catch (_err) {
-        // silently ignore
-      }
-    };
-
+    // Snapshots are still written for persistence/history; the dashboard no longer
+    // reads them back, so there is no loader here.
     const upsertLpEquitySnapshot = async (point: LpEquityPoint) => {
       try {
         await fetch('/api/lp-equity-live-snapshots', {
@@ -470,11 +443,6 @@ export function AccountsDepartment({
           difference,
         };
         await upsertLpEquitySnapshot(nextPoint);
-        setLpEquitySeries((prev) => {
-          const withoutCurrentMinute = prev.filter((item) => item.snapshotKey !== nextPoint.snapshotKey);
-          const next = [...withoutCurrentMinute, nextPoint].sort((a, b) => a.ts - b.ts);
-          return next.slice(-240);
-        });
       } catch (err) {
         // silently ignore
       }
@@ -581,7 +549,6 @@ export function AccountsDepartment({
       fetchWalletData();
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
     } else {
-      loadLpEquitySeries();
       fetchLpEquitySummary();
       fetchLpOverview();
       fetchWalletData();
@@ -608,26 +575,6 @@ export function AccountsDepartment({
     bankReceivable +
     lpDepositsTotal;
   const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
-  const lpEquityChartSeries = lpEquitySeries.length >= 2
-    ? lpEquitySeries
-    : [
-        {
-          ts: Date.now() - 60_000,
-          snapshotKey: 'seed-prev',
-          time: 'Prev',
-          lpWithdrawableEquity: lpEquitySummary.lpWithdrawableEquity,
-          clientWithdrawableEquity: lpEquitySummary.clientWithdrawableEquity,
-          difference: lpEquitySummary.difference,
-        },
-        {
-          ts: Date.now(),
-          snapshotKey: 'seed-now',
-          time: 'Now',
-          lpWithdrawableEquity: lpEquitySummary.lpWithdrawableEquity,
-          clientWithdrawableEquity: lpEquitySummary.clientWithdrawableEquity,
-          difference: lpEquitySummary.difference,
-        },
-      ];
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
