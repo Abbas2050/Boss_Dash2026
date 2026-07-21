@@ -44,5 +44,14 @@ crm_mt5.db
 # Local wallet token cache
 storage/bitpace_token.json
 
+# Vite dependency pre-bundle cache — regenerated on every dev run.
+# Was tracked, which produced large meaningless diffs on every restart.
+.vite-cache/
+
+# Runtime state written by the server (reconcile cursors, report state,
+# generated report images). Machine-local and environment-specific; every
+# reader recreates it when absent, so it must not be version controlled.
+storage/
+
 # Brainstorming visual companion artifacts
 .superpowers/
