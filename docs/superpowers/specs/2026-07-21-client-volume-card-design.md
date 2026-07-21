@@ -59,7 +59,7 @@ One responsibility: fetch and normalize client volume.
 
 Layout, top to bottom, inside the existing rounded/gradient wrapper:
 
-1. **Header row** — label **"Client Volume"** on the left; preset pills on the right: `Today · Yest · Week · Month`. **Default preset on first render: `month`** (the widest range, so the card opens on a populated trend rather than a possibly-empty single day). Active pill is filled; others are quiet outlines. Each is a real `<button>` with `aria-pressed` and a visible focus ring.
+1. **Header row** — label **"Client Volume"** on the left; preset pills on the right: `Today · Yest · Week · Month`. **Default preset on first render: `today`.** Because `today` is a single-day range, the card opens on the single-day fallback (§3) — a stacked bar, not an area — and on a quiet day may legitimately show only the CFD band or an empty state. This is intended.
 2. **Two value tiles** (2-col grid, matching the card's existing tile idiom `p-2 rounded-lg bg-*/10 border border-*/20`):
    - **Equity Volume** — `totalStocksLots`, cyan
    - **CFD Volume** — `totalCfdLots`, violet
@@ -102,7 +102,7 @@ Refetch triggers: preset change, and the card's existing `refreshKey` prop. Requ
 
 ## Out of scope
 
-- Refactoring `ClientVolumeTab` to use the new lib (it keeps its own fetch for now).
+- **Refactoring `ClientVolumeTab` onto the new lib — explicitly declined.** The tab keeps its own inline fetch, so `/ClientVolume/Run` is called from two places. Accepted knowingly: the tab works today and refactoring it would require re-testing its Run/Monthly/ClientRouting calls, filters and drill-downs for no user-visible gain. If the endpoint's contract ever changes, **both** `src/lib/clientVolumeApi.ts` and `src/pages/departments/dealing/ClientVolumeTab.tsx` must be updated.
 - Any change to the Dealing (Client) card or the Accounts card.
 - Group filtering (always `group=*`), client/symbol drill-downs, and internal-account splits — the tab already covers those.
 - Wiring the block to the homepage From/To filter (deliberately replaced by the presets).
