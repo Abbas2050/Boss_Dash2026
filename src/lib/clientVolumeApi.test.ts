@@ -58,3 +58,60 @@ describe("resolveVolumeRange", () => {
     expect(resolveVolumeRange("week", thu)).toEqual({ from: "2026-08-03", to: "2026-08-06" });
   });
 });
+
+import { afterEach, vi } from "vitest";
+import { fetchClientVolume } from "./clientVolumeApi";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const okResponse = (body: unknown) => ({
+  ok: true,
+  status: 200,
+  json: async () => body,
+});
+
+describe("fetchClientVolume", () => {
+  it("requests the documented URL with group=* by default", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse({ byDate: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchClientVolume({ from: "2026-07-01", to: "2026-07-21" });
+
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/ClientVolume/Run?");
+    expect(url).toContain("from=2026-07-01");
+    expect(url).toContain("to=2026-07-21");
+    expect(url).toContain("group=*");
+  });
+
+  it("coerces numeric strings and fills missing fields", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({
+      fromDate: "2026-07-01",
+      toDate: "2026-07-21",
+      totalLots: "84767.16",
+      totalStocksLots: "72321",
+      totalCfdLots: null,
+      byDate: [{ date: "2026-07-20", lots: "483.5", stocksLots: null, cfdLots: "483.5" }],
+    })));
+
+    const r = await fetchClientVolume({ from: "2026-07-01", to: "2026-07-21" });
+
+    expect(r.totalLots).toBe(84767.16);
+    expect(r.totalStocksLots).toBe(72321);
+    expect(r.totalCfdLots).toBe(0);
+    expect(r.byDate).toEqual([{ date: "2026-07-20", lots: 483.5, stocksLots: 0, cfdLots: 483.5 }]);
+  });
+
+  it("returns an empty byDate when the field is missing or not an array", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse({ totalLots: 0 })));
+    const r = await fetchClientVolume({ from: "2026-07-01", to: "2026-07-21" });
+    expect(r.byDate).toEqual([]);
+  });
+
+  it("throws on a non-OK response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 502, json: async () => ({}) }));
+    await expect(fetchClientVolume({ from: "2026-07-01", to: "2026-07-21" })).rejects.toThrow(/502/);
+  });
+});
