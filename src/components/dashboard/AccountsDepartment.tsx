@@ -7,7 +7,8 @@ import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } 
 import { StatusBadge } from './StatusBadge';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { fetchClientVolume, resolveVolumeRange, type ClientVolumeSummary, type VolumeRangePreset } from '@/lib/clientVolumeApi';
 
 interface PSPBalance {
   name: string;
@@ -164,6 +165,45 @@ export function AccountsDepartment({
   mode?: 'accounts' | 'lp';
 }) {
   const isLpMode = mode === 'lp';
+  const [volumePreset, setVolumePreset] = useState<VolumeRangePreset>('today');
+  const [volume, setVolume] = useState<ClientVolumeSummary | null>(null);
+  const [volumeLoading, setVolumeLoading] = useState(false);
+  const [volumeError, setVolumeError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isLpMode) return;
+    const controller = new AbortController();
+    const { from, to } = resolveVolumeRange(volumePreset, new Date());
+    setVolumeLoading(true);
+    setVolumeError(null);
+    fetchClientVolume({ from, to, signal: controller.signal })
+      .then((data) => setVolume(data))
+      .catch((err) => {
+        if (err?.name === 'AbortError') return;
+        setVolumeError(err instanceof Error ? err.message : 'Failed to load client volume');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setVolumeLoading(false);
+      });
+    return () => controller.abort();
+  }, [isLpMode, volumePreset, refreshKey]);
+
+  const volumeSeries = volume?.byDate ?? [];
+  const volumeIsSingleDay = volumeSeries.length < 2;
+  const volumeHasData = volumeSeries.length > 0;
+  const fmtLots = (n: number) => Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fmtDayLabel = (value: string) => {
+    const parts = String(value || '').split('-');
+    if (parts.length !== 3) return String(value || '');
+    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+  const VOLUME_PRESETS: Array<{ key: VolumeRangePreset; label: string; title: string }> = [
+    { key: 'today', label: 'Today', title: 'Today' },
+    { key: 'yesterday', label: 'Yest', title: 'Yesterday' },
+    { key: 'week', label: 'Week', title: 'This week (from Monday)' },
+    { key: 'month', label: 'Month', title: 'This month (from the 1st)' },
+  ];
   const [metrics, setMetrics] = useState({
     depositsToday: 0,
     withdrawalsToday: 0,
@@ -642,41 +682,136 @@ export function AccountsDepartment({
             </div>
           </div>
           <div className="rounded-lg border border-primary/20 bg-gradient-to-br from-primary/10 via-background to-success/10 p-2">
-            <div className="mb-2 text-xs text-muted-foreground">Live Equity Trend (date)</div>
-            <div className="h-32">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={lpEquityChartSeries}>
-                  <defs>
-                    <linearGradient id="lpWdGradient" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#22c55e" stopOpacity={0.36} />
-                      <stop offset="100%" stopColor="#22c55e" stopOpacity={0.03} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.16} />
-                  <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={24} />
-                  <YAxis hide domain={['auto', 'auto']} />
-                  <Tooltip
-                    contentStyle={{
-                      background: 'rgba(15,23,42,0.92)',
-                      border: '1px solid rgba(148,163,184,0.35)',
-                      borderRadius: 8,
-                      color: '#e2e8f0',
-                      fontSize: 11,
-                    }}
-                    labelStyle={{ color: '#cbd5e1' }}
-                    formatter={(value: number) => `$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                    labelFormatter={(label) => `Date: ${label}`}
-                  />
-                  <Area type="monotone" dataKey="lpWithdrawableEquity" stroke="#22c55e" fill="url(#lpWdGradient)" strokeWidth={2.4} />
-                  <Area type="monotone" dataKey="clientWithdrawableEquity" stroke="#38bdf8" fill="none" strokeWidth={2.1} />
-                  <Area type="monotone" dataKey="difference" stroke="#f43f5e" fill="none" strokeWidth={2.1} />
-                </AreaChart>
-              </ResponsiveContainer>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-xs text-muted-foreground">Client Volume</div>
+              <div className="flex items-center gap-1">
+                {VOLUME_PRESETS.map((p) => (
+                  <button
+                    key={p.key}
+                    type="button"
+                    title={p.title}
+                    aria-pressed={volumePreset === p.key}
+                    onClick={() => setVolumePreset(p.key)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] transition focus:outline-none focus-visible:ring-1 focus-visible:ring-primary ${
+                      volumePreset === p.key
+                        ? 'bg-primary/20 text-primary font-semibold'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-primary/10'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
+                <div className="text-xs text-muted-foreground mb-1">Equity Volume</div>
+                <div className="font-mono font-semibold text-sm sm:text-base text-cyan-600 dark:text-cyan-300">
+                  {volume ? fmtLots(volume.totalStocksLots) : '—'}
+                </div>
+              </div>
+              <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20">
+                <div className="text-xs text-muted-foreground mb-1">CFD Volume</div>
+                <div className="font-mono font-semibold text-sm sm:text-base text-violet-600 dark:text-violet-300">
+                  {volume ? fmtLots(volume.totalCfdLots) : '—'}
+                </div>
+              </div>
+            </div>
+
+            {volumeError && (
+              <div className="mb-1 text-[11px] text-warning/90">{volumeError}</div>
+            )}
+
+            <div className="h-32">
+              {!volumeHasData ? (
+                <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
+                  {volumeLoading ? 'Loading…' : 'No client volume in this range.'}
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  {volumeIsSingleDay ? (
+                    <BarChart data={volumeSeries}>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.16} />
+                      <XAxis dataKey="date" tickFormatter={fmtDayLabel} tick={{ fontSize: 10 }} />
+                      <YAxis hide domain={[0, 'auto']} />
+                      <Tooltip
+                        cursor={{ fill: 'rgba(148,163,184,0.12)' }}
+                        contentStyle={{
+                          background: 'rgba(15,23,42,0.92)',
+                          border: '1px solid rgba(148,163,184,0.35)',
+                          borderRadius: 8,
+                          color: '#e2e8f0',
+                          fontSize: 11,
+                        }}
+                        labelStyle={{ color: '#cbd5e1' }}
+                        formatter={(value: number, name: string) => [
+                          `${fmtLots(Number(value))} lots`,
+                          name === 'stocksLots' ? 'Equity' : 'CFD',
+                        ]}
+                        labelFormatter={(label) => fmtDayLabel(String(label))}
+                      />
+                      <Bar dataKey="stocksLots" stackId="vol" fill="hsl(186 100% 50%)" radius={[0, 0, 0, 0]} maxBarSize={54} />
+                      <Bar dataKey="cfdLots" stackId="vol" fill="#a78bfa" radius={[3, 3, 0, 0]} maxBarSize={54} />
+                    </BarChart>
+                  ) : (
+                    <AreaChart data={volumeSeries}>
+                      <defs>
+                        <linearGradient id="cvEquityGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(186 100% 50%)" stopOpacity={0.42} />
+                          <stop offset="100%" stopColor="hsl(186 100% 50%)" stopOpacity={0.04} />
+                        </linearGradient>
+                        <linearGradient id="cvCfdGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.42} />
+                          <stop offset="100%" stopColor="#a78bfa" stopOpacity={0.04} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.16} />
+                      <XAxis dataKey="date" tickFormatter={fmtDayLabel} tick={{ fontSize: 10 }} minTickGap={22} />
+                      <YAxis hide domain={[0, 'auto']} />
+                      <Tooltip
+                        contentStyle={{
+                          background: 'rgba(15,23,42,0.92)',
+                          border: '1px solid rgba(148,163,184,0.35)',
+                          borderRadius: 8,
+                          color: '#e2e8f0',
+                          fontSize: 11,
+                        }}
+                        labelStyle={{ color: '#cbd5e1' }}
+                        formatter={(value: number, name: string) => [
+                          `${fmtLots(Number(value))} lots`,
+                          name === 'stocksLots' ? 'Equity' : 'CFD',
+                        ]}
+                        labelFormatter={(label) => fmtDayLabel(String(label))}
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="stocksLots"
+                        stackId="vol"
+                        stroke="hsl(186 100% 50%)"
+                        strokeWidth={2.2}
+                        fill="url(#cvEquityGradient)"
+                        isAnimationActive
+                      />
+                      <Area
+                        type="monotone"
+                        dataKey="cfdLots"
+                        stackId="vol"
+                        stroke="#a78bfa"
+                        strokeWidth={2.2}
+                        fill="url(#cvCfdGradient)"
+                        isAnimationActive
+                      />
+                    </AreaChart>
+                  )}
+                </ResponsiveContainer>
+              )}
+            </div>
+
             <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
-              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-green-500" />LP WD</span>
-              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-400" />Client WD</span>
-              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" />Difference</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-cyan-400" />Equity</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-400" />CFD</span>
+              {volumeLoading && volumeHasData && <span className="text-muted-foreground/70">updating…</span>}
             </div>
           </div>
           <div className="space-y-1 pt-2 border-t border-border/30">
