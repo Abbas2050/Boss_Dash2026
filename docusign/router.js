@@ -10,6 +10,7 @@ import { getDocusignSyncState, runApprovedApplicationsSync } from "./sync.js";
 import {
   findByApplicationId,
   findByEnvelopeId,
+  findOutstandingEnvelopeForEmail,
   initDocusignStore,
   listEnvelopeMaps,
   upsertEnvelopeMap,
@@ -315,6 +316,20 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
         applicationId,
         envelopeId: existing.envelope_id,
         status: existing.status,
+      });
+    }
+
+    const outstanding = await findOutstandingEnvelopeForEmail(signerEmail);
+    if (outstanding) {
+      console.log(`[docusign] skipping send for ${signerEmail} — envelope ${outstanding.envelope_id} (application ${outstanding.application_id}) is still ${outstanding.status}`);
+      return res.json({
+        ok: true,
+        skipped: true,
+        reason: "client_has_outstanding_envelope",
+        applicationId,
+        existingEnvelopeId: outstanding.envelope_id,
+        existingApplicationId: outstanding.application_id,
+        status: outstanding.status,
       });
     }
 

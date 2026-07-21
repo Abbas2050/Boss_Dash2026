@@ -1,6 +1,6 @@
 import { createEnvelopeFromTemplate } from "./client.js";
 import { fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
-import { findByApplicationId, upsertEnvelopeMap } from "./store.js";
+import { findByApplicationId, findOutstandingEnvelopeForEmail, upsertEnvelopeMap } from "./store.js";
 import { normalizeApplicationId } from "./appId.js";
 
 const syncState = {
@@ -116,6 +116,7 @@ export async function processApprovedApplications(options = {}) {
     skippedMissingUser: 0,
     skippedInvalidId: 0,
     skippedMissingSigner: 0,
+    skippedOutstanding: 0,
     sent: 0,
     failed: 0,
     query,
@@ -158,6 +159,12 @@ export async function processApprovedApplications(options = {}) {
 
       if (!signerEmail || !signerName) {
         summary.skippedMissingSigner += 1;
+        continue;
+      }
+
+      const outstanding = await findOutstandingEnvelopeForEmail(signerEmail);
+      if (outstanding) {
+        summary.skippedOutstanding += 1;
         continue;
       }
 

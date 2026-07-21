@@ -106,6 +106,19 @@ export async function findByEnvelopeId(envelopeId) {
   return get(`SELECT * FROM docusign_envelope_map WHERE envelope_id = ?`, [String(envelopeId)]);
 }
 
+export async function findOutstandingEnvelopeForEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return get(
+    `SELECT * FROM docusign_envelope_map
+      WHERE LOWER(applicant_email) = ?
+        AND LOWER(status) IN ('created', 'sent', 'delivered')
+      ORDER BY updated_at DESC
+      LIMIT 1`,
+    [normalized]
+  );
+}
+
 export async function upsertEnvelopeMap(input) {
   const {
     applicationId,
