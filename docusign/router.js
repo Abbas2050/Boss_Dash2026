@@ -111,6 +111,37 @@ function getApplicationFullName(application) {
   return value;
 }
 
+/**
+ * Summarise an inbound webhook request for diagnostics.
+ *
+ * FXBO placeholders such as %application_id% sometimes arrive unresolved — either
+ * empty or as the placeholder's own description text ("Application ID + Link").
+ * Echoing every field received makes it obvious whether one placeholder failed or
+ * the whole rule lost its application context, instead of inferring it.
+ */
+export function describeWebhookPayload(req, merged) {
+  const fields = {};
+  for (const [key, value] of Object.entries(merged || {})) {
+    if (value && typeof value === "object") {
+      fields[key] = { type: Array.isArray(value) ? "array" : "object", value: JSON.stringify(value).slice(0, 160) };
+      continue;
+    }
+    const text = String(value ?? "");
+    fields[key] = {
+      type: typeof value,
+      value: text.slice(0, 160),
+      empty: text.trim() === "",
+      looksUnresolved: isLikelyPlaceholder(text) || /^[A-Z][A-Za-z ]+ \+ [A-Za-z ]+$/.test(text.trim()),
+    };
+  }
+  return {
+    contentType: String(req?.headers?.["content-type"] || ""),
+    bodyKeys: Object.keys(req?.body || {}),
+    queryKeys: Object.keys(req?.query || {}),
+    fields,
+  };
+}
+
 function isLikelyPlaceholder(value) {
   const v = String(value || "").trim();
   if (!v) return false;
@@ -301,9 +332,20 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       }
     }
 
-    if (!rawApplicationId) return res.status(400).json({ ok: false, error: "applicationId_required" });
-    if (!applicationId) {
-      return res.status(400).json({ ok: false, error: "applicationId_invalid", received: rawApplicationId.slice(0, 120) });
+    if (!rawApplicationId || !applicationId) {
+      // Echo back exactly what arrived so a misconfigured/unresolved placeholder can be
+      // identified from the webhook response alone, without guesswork.
+      const debug = describeWebhookPayload(req, p);
+      console.warn(
+        `[docusign-webhook] rejected: ${!rawApplicationId ? "applicationId_required" : "applicationId_invalid"} ` +
+        `received=${JSON.stringify(rawApplicationId)} payload=${JSON.stringify(debug)}`
+      );
+      return res.status(400).json({
+        ok: false,
+        error: !rawApplicationId ? "applicationId_required" : "applicationId_invalid",
+        received: rawApplicationId.slice(0, 120),
+        debug,
+      });
     }
     if (!signerEmail) return res.status(400).json({ ok: false, error: "signer_email_required" });
     if (!signerName) return res.status(400).json({ ok: false, error: "signer_name_required" });
