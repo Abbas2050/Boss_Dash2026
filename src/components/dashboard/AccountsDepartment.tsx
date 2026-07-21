@@ -167,7 +167,7 @@ export function AccountsDepartment({
   const isLpMode = mode === 'lp';
   const [volumePreset, setVolumePreset] = useState<VolumeRangePreset>('today');
   const [volume, setVolume] = useState<ClientVolumeSummary | null>(null);
-  const [volumeLoading, setVolumeLoading] = useState(false);
+  const [volumeLoading, setVolumeLoading] = useState(isLpMode);
   const [volumeError, setVolumeError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -181,6 +181,7 @@ export function AccountsDepartment({
       .catch((err) => {
         if (err?.name === 'AbortError') return;
         setVolumeError(err instanceof Error ? err.message : 'Failed to load client volume');
+        setVolume(null);
       })
       .finally(() => {
         if (!controller.signal.aborted) setVolumeLoading(false);
@@ -195,8 +196,34 @@ export function AccountsDepartment({
   const fmtDayLabel = (value: string) => {
     const parts = String(value || '').split('-');
     if (parts.length !== 3) return String(value || '');
-    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    const y = Number(parts[0]);
+    const m = Number(parts[1]);
+    const day = Number(parts[2]);
+    if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(day)) return String(value || '');
+    const d = new Date(y, m - 1, day);
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  };
+  const renderVolumeTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload || !payload.length) return null;
+    const datum = payload[0]?.payload;
+    if (!datum) return null;
+    return (
+      <div
+        style={{
+          background: 'rgba(15,23,42,0.92)',
+          border: '1px solid rgba(148,163,184,0.35)',
+          borderRadius: 8,
+          color: '#e2e8f0',
+          fontSize: 11,
+          padding: '6px 8px',
+        }}
+      >
+        <div style={{ color: '#cbd5e1', marginBottom: 4 }}>{fmtDayLabel(String(label))}</div>
+        <div>Equity: {fmtLots(Number(datum.stocksLots))} lots</div>
+        <div>CFD: {fmtLots(Number(datum.cfdLots))} lots</div>
+        <div>Total: {fmtLots(Number(datum.lots))} lots</div>
+      </div>
+    );
   };
   const VOLUME_PRESETS: Array<{ key: VolumeRangePreset; label: string; title: string }> = [
     { key: 'today', label: 'Today', title: 'Today' },
@@ -708,13 +735,27 @@ export function AccountsDepartment({
               <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20">
                 <div className="text-xs text-muted-foreground mb-1">Equity Volume</div>
                 <div className="font-mono font-semibold text-sm sm:text-base text-cyan-600 dark:text-cyan-300">
-                  {volume ? fmtLots(volume.totalStocksLots) : '—'}
+                  {volume ? (
+                    <>
+                      {fmtLots(volume.totalStocksLots)}
+                      <span className="text-xs text-muted-foreground"> lots</span>
+                    </>
+                  ) : (
+                    '—'
+                  )}
                 </div>
               </div>
               <div className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20">
                 <div className="text-xs text-muted-foreground mb-1">CFD Volume</div>
                 <div className="font-mono font-semibold text-sm sm:text-base text-violet-600 dark:text-violet-300">
-                  {volume ? fmtLots(volume.totalCfdLots) : '—'}
+                  {volume ? (
+                    <>
+                      {fmtLots(volume.totalCfdLots)}
+                      <span className="text-xs text-muted-foreground"> lots</span>
+                    </>
+                  ) : (
+                    '—'
+                  )}
                 </div>
               </div>
             </div>
@@ -737,19 +778,7 @@ export function AccountsDepartment({
                       <YAxis hide domain={[0, 'auto']} />
                       <Tooltip
                         cursor={{ fill: 'rgba(148,163,184,0.12)' }}
-                        contentStyle={{
-                          background: 'rgba(15,23,42,0.92)',
-                          border: '1px solid rgba(148,163,184,0.35)',
-                          borderRadius: 8,
-                          color: '#e2e8f0',
-                          fontSize: 11,
-                        }}
-                        labelStyle={{ color: '#cbd5e1' }}
-                        formatter={(value: number, name: string) => [
-                          `${fmtLots(Number(value))} lots`,
-                          name === 'stocksLots' ? 'Equity' : 'CFD',
-                        ]}
-                        labelFormatter={(label) => fmtDayLabel(String(label))}
+                        content={renderVolumeTooltip}
                       />
                       <Bar dataKey="stocksLots" stackId="vol" fill="hsl(186 100% 50%)" radius={[0, 0, 0, 0]} maxBarSize={54} />
                       <Bar dataKey="cfdLots" stackId="vol" fill="#a78bfa" radius={[3, 3, 0, 0]} maxBarSize={54} />
@@ -769,21 +798,7 @@ export function AccountsDepartment({
                       <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.16} />
                       <XAxis dataKey="date" tickFormatter={fmtDayLabel} tick={{ fontSize: 10 }} minTickGap={22} />
                       <YAxis hide domain={[0, 'auto']} />
-                      <Tooltip
-                        contentStyle={{
-                          background: 'rgba(15,23,42,0.92)',
-                          border: '1px solid rgba(148,163,184,0.35)',
-                          borderRadius: 8,
-                          color: '#e2e8f0',
-                          fontSize: 11,
-                        }}
-                        labelStyle={{ color: '#cbd5e1' }}
-                        formatter={(value: number, name: string) => [
-                          `${fmtLots(Number(value))} lots`,
-                          name === 'stocksLots' ? 'Equity' : 'CFD',
-                        ]}
-                        labelFormatter={(label) => fmtDayLabel(String(label))}
-                      />
+                      <Tooltip content={renderVolumeTooltip} />
                       <Area
                         type="monotone"
                         dataKey="stocksLots"
@@ -809,7 +824,7 @@ export function AccountsDepartment({
             </div>
 
             <div className="mt-1 flex items-center gap-3 text-[10px] text-muted-foreground">
-              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-cyan-400" />Equity</span>
+              <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full" style={{ background: 'hsl(186 100% 50%)' }} />Equity</span>
               <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-violet-400" />CFD</span>
               {volumeLoading && volumeHasData && <span className="text-muted-foreground/70">updating…</span>}
             </div>

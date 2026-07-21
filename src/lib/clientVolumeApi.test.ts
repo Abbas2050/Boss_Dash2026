@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { resolveVolumeRange, formatLocalYmd } from "./clientVolumeApi";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveVolumeRange, formatLocalYmd, fetchClientVolume } from "./clientVolumeApi";
 
 // 2026-07-21 is a Tuesday. Constructed via local-time args on purpose.
 const tue = new Date(2026, 6, 21, 15, 30, 0);
@@ -58,9 +58,6 @@ describe("resolveVolumeRange", () => {
     expect(resolveVolumeRange("week", thu)).toEqual({ from: "2026-08-03", to: "2026-08-06" });
   });
 });
-
-import { afterEach, vi } from "vitest";
-import { fetchClientVolume } from "./clientVolumeApi";
 
 afterEach(() => {
   vi.unstubAllGlobals();
