@@ -13,8 +13,10 @@ import {
   findOutstandingEnvelopeForEmail,
   initDocusignStore,
   listEnvelopeMaps,
+  recordWebhookCall,
   upsertEnvelopeMap,
 } from "./store.js";
+import { buildWebhookLogEntry } from "./webhookLog.js";
 
 const router = express.Router();
 
@@ -294,6 +296,18 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
   }
 });
 
+/**
+ * Log one inbound-webhook outcome and return the response, so every exit point
+ * is recorded with a single expression. Logging is awaited but never throws —
+ * recordWebhookCall swallows its own errors.
+ */
+async function logAndRespond(res, { status, body, outcome, error, applicationId, applicantEmail, envelopeId, payload }) {
+  await recordWebhookCall(
+    buildWebhookLogEntry({ outcome, httpStatus: status, error, applicationId, applicantEmail, envelopeId, payload })
+  );
+  return res.status(status).json(body);
+}
+
 // Triggered by FXBO assistant/webhook when application is approved.
 router.post("/webhooks/fxbo/application-approved", async (req, res) => {
   try {
@@ -301,7 +315,13 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
 
     const authCheck = verifyFxboWebhookAuth(req);
     if (!authCheck.ok) {
-      return res.status(401).json({ ok: false, error: "unauthorized_webhook", reason: authCheck.reason });
+      return logAndRespond(res, {
+        status: 401,
+        body: { ok: false, error: "unauthorized_webhook", reason: authCheck.reason },
+        outcome: "rejected",
+        error: "unauthorized_webhook",
+        payload: Object.assign({}, req.query || {}, req.body || {}),
+      });
     }
 
     // Merge body and query params — FXBO may send via form-encoded body, JSON body, or query string
@@ -340,38 +360,73 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
         `[docusign-webhook] rejected: ${!rawApplicationId ? "applicationId_required" : "applicationId_invalid"} ` +
         `received=${JSON.stringify(rawApplicationId)} payload=${JSON.stringify(debug)}`
       );
-      return res.status(400).json({
-        ok: false,
-        error: !rawApplicationId ? "applicationId_required" : "applicationId_invalid",
-        received: rawApplicationId.slice(0, 120),
-        debug,
+      const errorCode = !rawApplicationId ? "applicationId_required" : "applicationId_invalid";
+      return logAndRespond(res, {
+        status: 400,
+        body: { ok: false, error: errorCode, received: rawApplicationId.slice(0, 120), debug },
+        outcome: "rejected",
+        error: errorCode,
+        applicationId: rawApplicationId,
+        applicantEmail: signerEmail,
+        payload: p,
       });
     }
-    if (!signerEmail) return res.status(400).json({ ok: false, error: "signer_email_required" });
-    if (!signerName) return res.status(400).json({ ok: false, error: "signer_name_required" });
+    if (!signerEmail) {
+      return logAndRespond(res, {
+        status: 400,
+        body: { ok: false, error: "signer_email_required" },
+        outcome: "rejected",
+        error: "signer_email_required",
+        applicationId,
+        payload: p,
+      });
+    }
+    if (!signerName) {
+      return logAndRespond(res, {
+        status: 400,
+        body: { ok: false, error: "signer_name_required" },
+        outcome: "rejected",
+        error: "signer_name_required",
+        applicationId,
+        applicantEmail: signerEmail,
+        payload: p,
+      });
+    }
 
     const existing = await findByApplicationId(applicationId);
     if (existing?.envelope_id) {
-      return res.json({
-        ok: true,
-        idempotent: true,
+      return logAndRespond(res, {
+        status: 200,
+        body: { ok: true, idempotent: true, applicationId, envelopeId: existing.envelope_id, status: existing.status },
+        outcome: "skipped",
+        error: "already_sent",
         applicationId,
+        applicantEmail: signerEmail,
         envelopeId: existing.envelope_id,
-        status: existing.status,
+        payload: p,
       });
     }
 
     const outstanding = await findOutstandingEnvelopeForEmail(signerEmail);
     if (outstanding) {
       console.log(`[docusign] skipping send for ${signerEmail} — envelope ${outstanding.envelope_id} (application ${outstanding.application_id}) is still ${outstanding.status}`);
-      return res.json({
-        ok: true,
-        skipped: true,
-        reason: "client_has_outstanding_envelope",
+      return logAndRespond(res, {
+        status: 200,
+        body: {
+          ok: true,
+          skipped: true,
+          reason: "client_has_outstanding_envelope",
+          applicationId,
+          existingEnvelopeId: outstanding.envelope_id,
+          existingApplicationId: outstanding.application_id,
+          status: outstanding.status,
+        },
+        outcome: "skipped",
+        error: "client_has_outstanding_envelope",
         applicationId,
-        existingEnvelopeId: outstanding.envelope_id,
-        existingApplicationId: outstanding.application_id,
-        status: outstanding.status,
+        applicantEmail: signerEmail,
+        envelopeId: outstanding.envelope_id,
+        payload: p,
       });
     }
 
@@ -395,18 +450,22 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       crmUserId: userId,
     });
 
-    return res.json({
-      ok: true,
+    return logAndRespond(res, {
+      status: 200,
+      body: { ok: true, applicationId, envelopeId: created.envelopeId, status: created.status, record: row },
+      outcome: "sent",
       applicationId,
+      applicantEmail: signerEmail,
       envelopeId: created.envelopeId,
-      status: created.status,
-      record: row,
+      payload: p,
     });
   } catch (error) {
-    return res.status(500).json({
-      ok: false,
+    return logAndRespond(res, {
+      status: 500,
+      body: { ok: false, error: "docusign_send_failed", message: error instanceof Error ? error.message : String(error) },
+      outcome: "rejected",
       error: "docusign_send_failed",
-      message: error instanceof Error ? error.message : String(error),
+      payload: Object.assign({}, req.query || {}, req.body || {}),
     });
   }
 });
