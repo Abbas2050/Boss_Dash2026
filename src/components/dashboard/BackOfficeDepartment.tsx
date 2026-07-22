@@ -2571,6 +2571,30 @@ export function BackOfficeDepartment({
               </div>
             </div>
 
+            {(() => {
+              const w = docusignOverview?.webhook;
+              if (!w) return null;
+              const age = w.ageHours == null
+                ? null
+                : w.ageHours < 1
+                  ? `${Math.max(1, Math.round(w.ageHours * 60))}m`
+                  : w.ageHours < 48
+                    ? `${Math.round(w.ageHours)}h`
+                    : `${Math.round(w.ageHours / 24)}d`;
+              return (
+                <div className={`mt-3 rounded-lg border px-3 py-2 text-[11px] ${
+                  w.stale
+                    ? 'border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300'
+                    : 'border-border/40 bg-background/40 text-muted-foreground'
+                }`}>
+                  {w.stale
+                    ? `⚠ Rule webhook: ${w.lastReceivedAt ? `none in ${age}` : 'never received'} — the FXBO rule may have stopped firing`
+                    : `Rule webhook: last received ${age} ago (${w.lastOutcome})`}
+                  {w.rejected7d > 0 && ` · ${w.rejected7d} rejected in 7d`}
+                </div>
+              );
+            })()}
+
             <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
               <div className="rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
                 <div className="flex items-center gap-2 text-[11px] text-violet-800 dark:text-violet-300">

@@ -12,10 +12,11 @@ import {
   findOutstandingEnvelopeForEmail,
   initDocusignStore,
   listEnvelopeMaps,
+  listWebhookLog,
   recordWebhookCall,
   upsertEnvelopeMap,
 } from "./store.js";
-import { buildWebhookLogEntry } from "./webhookLog.js";
+import { buildWebhookLogEntry, summariseWebhookHealth } from "./webhookLog.js";
 
 const router = express.Router();
 
@@ -251,6 +252,9 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
       updatedAt: row.updated_at,
     }));
 
+    const webhookRows = await listWebhookLog(100);
+    const webhookHealth = summariseWebhookHealth(webhookRows, new Date());
+
     return res.json({
       ok: true,
       summary: {
@@ -271,6 +275,15 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
         connectHmacEnabled: Boolean(process.env.DOCUSIGN_CONNECT_HMAC_SECRET),
         latestUpdatedAt,
         pendingApplicationsError,
+      },
+      webhook: {
+        ...webhookHealth,
+        recent: webhookRows.slice(0, 5).map((r) => ({
+          receivedAt: r.received_at,
+          outcome: r.outcome,
+          error: r.error,
+          applicationId: r.application_id,
+        })),
       },
     });
   } catch (error) {

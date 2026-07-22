@@ -34,6 +34,14 @@ export type DocusignOverview = {
     latestUpdatedAt: string | null;
     pendingApplicationsError?: string | null;
   };
+  webhook?: {
+    lastReceivedAt: string | null;
+    lastOutcome: string | null;
+    ageHours: number | null;
+    stale: boolean;
+    rejected7d: number;
+    recent?: Array<{ receivedAt: string; outcome: string; error: string | null; applicationId: string | null }>;
+  };
 };
 
 export async function fetchDocusignOverview(): Promise<DocusignOverview> {
