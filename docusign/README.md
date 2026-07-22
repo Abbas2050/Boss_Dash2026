@@ -6,11 +6,10 @@ This module sends documents for signature when an approved application event arr
 
 - `GET /api/docusign/health`
 - `POST /api/docusign/webhooks/fxbo/application-approved`
-- `POST /api/docusign/sync-approved-applications`
-- `GET /api/docusign/sync-status`
 - `POST /api/docusign/webhooks/connect`
-- `GET /api/docusign/applications/:applicationId`
-- `GET /api/docusign/envelopes/:envelopeId`
+- `GET /api/docusign/overview` (auth: Back Office)
+- `GET /api/docusign/applications/:applicationId` (auth: Back Office)
+- `GET /api/docusign/envelopes/:envelopeId` (auth: Back Office)
 
 ## Required environment variables
 
@@ -110,46 +109,32 @@ The integration will try common FXBO application endpoints first to resolve appl
 3. Stores mapping in MySQL (`docusign_envelope_map` in `AUTH_DB_NAME`).
 4. Accepts DocuSign Connect status updates and tracks envelope status.
 
-## Real CRM approved sync flow
+## Who receives a document
 
-Use this when you want the backend to fetch and process all CRM applications of type `docusign`:
+The **FXBO Assistant rule** is the single source of truth for who gets a document.
+On an approved application it POSTs the FXBO webhook, which sends the DocuSign
+envelope. There is no backend poller that independently selects applications —
+the previous send poller (`sync.js`, `type: "docusign"` sweep) was removed so the
+CRM rule owns the decision.
 
-```json
-POST /api/docusign/sync-approved-applications
-{}
-```
+Each inbound webhook call is recorded in `docusign_webhook_log`
+(`outcome` = `sent` | `skipped` | `rejected`, with a reason code, bounded to the
+newest 500 rows). `GET /api/docusign/overview` exposes a `webhook` health summary
+(`lastReceivedAt`, `ageHours`, `stale`, `rejected7d`) which the Back Office panel
+renders as a "last received / stale" line — so a rule that stops firing is visible
+rather than silent.
 
-Behavior:
+Duplicate protection: before sending, the handler skips when the same signer email
+already has an outstanding (`created`/`sent`/`delivered`) envelope, so a rule that
+fires twice — or fires alongside a manual backfill — cannot double-send.
 
-- Calls `POST /rest/applications?version=...` with `{ "type": "docusign" }`
-- Uses `createdAt.begin/end` by default (rolling window, default `DOCUSIGN_SYNC_LOOKBACK_MINUTES=6`)
-- Processes only applications where `status` is `approved`
-- Skips applications already present in `docusign_envelope_map`
-- Uses `userId` to fetch signer `firstName`, `lastName`, and `email` from `/rest/users`
-- Sends DocuSign envelope only for approved + unsent records
+## Completion + CRM upload
 
-You can override the query body on manual trigger with any of these fields:
-
-- `user`
-- `createdAt` (`begin`/`end`)
-- `processedAt` (`begin`/`end`)
-- `checkedAt` (`begin`/`end`)
-- `uploadedByClient`
-- `orders`
-- `segment`
-
-If automatic sync is enabled, the same flow runs on an interval using the env settings above.
-
-`GET /api/docusign/sync-status` returns:
-
-- `schedulerEnabled`
-- `intervalSeconds`
-- `isRunning`
-- `lastStartedAt`
-- `lastCompletedAt`
-- `lastTrigger`
-- `lastSummary`
-- `lastError`
+The reconcile poller (`reconcile.js`, every `DOCUSIGN_RECONCILE_INTERVAL_SECONDS`)
+pulls DocuSign status changes and, on completion, downloads the signed PDF and
+uploads it to the client's FXBO record (config `DOCUSIGN_CRM_DOC_CONFIG_ID`). This
+is separate from "who receives a document" and is the only completion detector,
+because the account has no DocuSign Connect configuration.
 
 ## Next phase (C-D)
 
