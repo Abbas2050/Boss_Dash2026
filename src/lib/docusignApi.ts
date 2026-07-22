@@ -48,14 +48,3 @@ export async function fetchDocusignOverview(): Promise<DocusignOverview> {
 
   return res.json();
 }
-
-export async function runDocusignSyncNow(): Promise<{ ok: boolean; sent?: number; approved?: number; alreadySent?: number; failed?: number; message?: string }> {
-  const res = await fetch("/api/docusign/run-sync", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: JSON.stringify({}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.message || data?.error || `run-sync ${res.status}`);
-  return data;
-}

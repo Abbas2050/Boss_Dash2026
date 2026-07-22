@@ -14,7 +14,6 @@ import { runClientProfilingJob } from "./agent/clientProfilingService.js";
 import authRouter from "./auth/router.js";
 import clientProfileRouter from "./clientProfileRouter.js";
 import docusignRouter from "./docusign/router.js";
-import { startDocusignApprovedSyncScheduler } from "./docusign/sync.js";
 import { runAppIdMigration } from "./docusign/migrateAppIds.js";
 import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
@@ -894,7 +893,6 @@ server.listen(PORT, () => {
     .then((pool) => runAppIdMigration(pool))
     .then((r) => console.log("[docusign-migrate]", JSON.stringify(r)))
     .catch((e) => console.error("[docusign-migrate] failed:", e?.message || String(e)));
-  startDocusignApprovedSyncScheduler();
   startDocusignReconcileScheduler();
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";

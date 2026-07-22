@@ -6,7 +6,6 @@ import { verifyOAuthBearerToken } from "../oauth/router.js";
 import { normalizeApplicationId } from "./appId.js";
 import { onEnvelopeStatus } from "./reconcile.js";
 import { authRequired, hasAccessPermission } from "../auth/router.js";
-import { getDocusignSyncState, runApprovedApplicationsSync } from "./sync.js";
 import {
   findByApplicationId,
   findByEnvelopeId,
@@ -168,19 +167,6 @@ router.get("/health", async (_req, res) => {
     res.json({ ok: true, service: "docusign-integration" });
   } catch (error) {
     res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
-  }
-});
-
-router.get("/sync-status", authRequired, requireBackoffice, async (_req, res) => {
-  try {
-    await initDocusignStore();
-    return res.json({ ok: true, sync: getDocusignSyncState() });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: "sync_status_failed",
-      message: error instanceof Error ? error.message : String(error),
-    });
   }
 });
 
@@ -467,56 +453,6 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       error: "docusign_send_failed",
       payload: Object.assign({}, req.query || {}, req.body || {}),
     });
-  }
-});
-
-// Pull from CRM applications API and send DocuSign for approved+unsent applications.
-router.post("/sync-approved-applications", async (req, res) => {
-  try {
-    await initDocusignStore();
-
-    const authCheck = verifyFxboWebhookAuth(req);
-    if (!authCheck.ok) {
-      return res.status(401).json({ ok: false, error: "unauthorized_webhook", reason: authCheck.reason });
-    }
-
-    const summary = await runApprovedApplicationsSync({
-      type: req.body?.type,
-      templateId: req.body?.templateId,
-      roleName: req.body?.roleName,
-      docType: req.body?.docType,
-      user: req.body?.user,
-      createdAt: req.body?.createdAt,
-      processedAt: req.body?.processedAt,
-      checkedAt: req.body?.checkedAt,
-      uploadedByClient: req.body?.uploadedByClient,
-      orders: req.body?.orders,
-      segment: req.body?.segment,
-    }, "manual_api");
-
-    if (summary?.skipped) {
-      return res.status(409).json({ ok: false, error: "sync_already_running", sync: summary.state });
-    }
-
-    return res.json({ ok: true, ...summary });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      error: "sync_approved_applications_failed",
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
-});
-
-// Operator-triggered sweep from the Back Office panel (session auth, not the webhook bearer).
-router.post("/run-sync", authRequired, requireBackoffice, async (_req, res) => {
-  try {
-    await initDocusignStore();
-    const summary = await runApprovedApplicationsSync({}, "panel_button");
-    if (summary?.skipped) return res.status(409).json({ ok: false, error: "sync_already_running", sync: summary.state });
-    return res.json({ ok: true, ...summary });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: "run_sync_failed", message: error instanceof Error ? error.message : String(error) });
   }
 });
 

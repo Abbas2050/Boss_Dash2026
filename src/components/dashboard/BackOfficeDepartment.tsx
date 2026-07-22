@@ -34,7 +34,7 @@ import {
   type AccountRequest,
   type Account,
 } from '@/lib/api';
-import { fetchDocusignOverview, runDocusignSyncNow, type DocusignOverview } from '@/lib/docusignApi';
+import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
@@ -253,8 +253,6 @@ export function BackOfficeDepartment({
   const [docusignOverview, setDocusignOverview] = useState<DocusignOverview | null>(null);
   const [docusignLoading, setDocusignLoading] = useState(false);
   const [docusignError, setDocusignError] = useState<string | null>(null);
-  const [docusignSyncing, setDocusignSyncing] = useState(false);
-  const [docusignSyncMsg, setDocusignSyncMsg] = useState<string | null>(null);
   const [rebateIbId, setRebateIbId] = useState('');
   const [rebateFromDate, setRebateFromDate] = useState(() => toInputDate(fromDate || new Date()));
   const [rebateToDate, setRebateToDate] = useState(() => toInputDate(toDate || new Date()));
@@ -2537,26 +2535,6 @@ export function BackOfficeDepartment({
               <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
                 <Activity className={`h-3.5 w-3.5 ${docusignLoading ? 'animate-pulse' : ''}`} />
                 {docusignLoading ? 'Refreshing' : formatStatusDate(docusignOverview?.system?.latestUpdatedAt)}
-                <button
-                  type="button"
-                  onClick={async () => {
-                    setDocusignSyncing(true);
-                    setDocusignSyncMsg(null);
-                    try {
-                      const r = await runDocusignSyncNow();
-                      setDocusignSyncMsg(`Sent ${r.sent ?? 0} · already sent ${r.alreadySent ?? 0} · failed ${r.failed ?? 0}`);
-                    } catch (e) {
-                      setDocusignSyncMsg(e instanceof Error ? e.message : 'Failed');
-                    } finally {
-                      setDocusignSyncing(false);
-                    }
-                  }}
-                  disabled={docusignSyncing}
-                  className="rounded-md border border-border/60 bg-secondary px-2 py-1 text-[11px] hover:bg-secondary/80 disabled:opacity-50"
-                >
-                  {docusignSyncing ? 'Syncing…' : 'Run sync now'}
-                </button>
-                {docusignSyncMsg && <span className="text-[11px] text-muted-foreground">{docusignSyncMsg}</span>}
               </div>
             </div>
 
