@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import { WEBHOOK_LOG_RETENTION } from "./webhookLog.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -94,6 +95,22 @@ export async function initDocusignStore() {
   if (Number(colRows?.[0]?.cnt || 0) === 0) {
     await run(`ALTER TABLE docusign_envelope_map ADD COLUMN crm_user_id BIGINT NULL`);
   }
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS docusign_webhook_log (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      outcome VARCHAR(20) NOT NULL,
+      http_status SMALLINT NOT NULL DEFAULT 0,
+      error VARCHAR(100) NULL,
+      application_id VARCHAR(255) NULL,
+      applicant_email VARCHAR(255) NULL,
+      envelope_id VARCHAR(255) NULL,
+      payload TEXT NULL,
+      PRIMARY KEY (id),
+      INDEX idx_docusign_webhook_log_received_at (received_at)
+    )
+  `);
 
   initialized = true;
 }
@@ -233,4 +250,55 @@ export async function listPendingCrmUploads(limit = 50) {
 export async function getDocusignPool() {
   await initDocusignStore();
   return pool;
+}
+
+/**
+ * Best-effort: never let a logging failure affect the webhook response.
+ * Prunes to the newest WEBHOOK_LOG_RETENTION rows after each insert.
+ */
+export async function recordWebhookCall(entry) {
+  try {
+    await run(
+      `INSERT INTO docusign_webhook_log
+         (outcome, http_status, error, application_id, applicant_email, envelope_id, payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        String(entry?.outcome || "rejected"),
+        Number(entry?.httpStatus) || 0,
+        entry?.error ?? null,
+        entry?.applicationId ?? null,
+        entry?.applicantEmail ?? null,
+        entry?.envelopeId ?? null,
+        entry?.payload ?? null,
+      ]
+    );
+    // Derived table wrapper is required: MySQL cannot use a LIMIT subquery on the
+    // same table it is deleting from.
+    await run(
+      `DELETE FROM docusign_webhook_log
+        WHERE id NOT IN (
+          SELECT id FROM (
+            SELECT id FROM docusign_webhook_log ORDER BY id DESC LIMIT ${WEBHOOK_LOG_RETENTION}
+          ) AS keep
+        )`
+    );
+  } catch (error) {
+    console.error("[docusign-webhook-log] write failed:", error instanceof Error ? error.message : String(error));
+  }
+}
+
+export async function listWebhookLog(limit = 50) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 50, 500));
+  try {
+    return await all(
+      `SELECT received_at, outcome, http_status, error, application_id, applicant_email, envelope_id
+         FROM docusign_webhook_log
+        ORDER BY id DESC
+        LIMIT ?`,
+      [safeLimit]
+    );
+  } catch (error) {
+    console.error("[docusign-webhook-log] read failed:", error instanceof Error ? error.message : String(error));
+    return [];
+  }
 }
