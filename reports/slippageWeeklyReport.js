@@ -171,28 +171,44 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
-      body { margin:0; padding:0; background:#0b1220; color:#e2e8f0; font-family: Arial, Helvetica, sans-serif; }
-      .outer { width:100%; background:#0b1220; padding:20px 10px; }
-      .wrap { max-width: 1120px; margin: 0 auto; background:#111a2c; border:1px solid #1f2a44; border-radius:14px; overflow:hidden; }
-      .header { padding:18px 20px; background:linear-gradient(135deg,#0b1a33,#132a4f); color:#eaf4ff; }
+      /* ── Mobile-first base: stacked & fluid so it stays responsive even in
+         clients that honor <style> but strip @media (Gmail app for non-Google
+         accounts, several webmail clients). Desktop layout is restored in the
+         @media (min-width) block below. ── */
+      body { margin:0; padding:0; background:#0b1220; color:#e2e8f0; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+      /* box-sizing on the layout wrappers: without it, width:100% + padding
+         overflows the viewport and the whole email scrolls sideways. */
+      .outer, .wrap, .header, .content { box-sizing:border-box; }
+      .outer { width:100%; background:#0b1220; padding:8px 4px; }
+      .wrap { width:100%; max-width: 1120px; margin: 0 auto; background:#111a2c; border:1px solid #1f2a44; border-radius:10px; overflow:hidden; }
+      .header { padding:14px 16px; background:linear-gradient(135deg,#0b1a33,#132a4f); color:#eaf4ff; }
       .header-grid { width:100%; border-collapse:collapse; }
+      .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
       .header-left { vertical-align:top; text-align:left; }
-      .header-right { vertical-align:top; text-align:right; }
-      .title { margin:0; font-size:22px; font-weight:700; letter-spacing:0.2px; }
-      .subtitle { margin:6px 0 0; font-size:13px; color:#93c5fd; }
+      .header-right { vertical-align:top; text-align:left; margin-top:10px; }
+      .title { margin:0; font-size:19px; font-weight:700; letter-spacing:0.2px; }
+      .subtitle { margin:6px 0 0; font-size:12px; color:#93c5fd; }
       .header-meta { margin:0; font-size:11px; line-height:1.55; color:#9fb8d6; }
-      .content { padding:18px 20px 16px; }
-      .kpis { width:100%; border-collapse:separate; border-spacing:8px; margin: 0 0 14px; }
-      .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:10px 12px; }
+      .content { padding:16px; }
+      /* KPI cards: full-width blocks that stack on mobile. Spacing between
+         cards uses margin so the card's own padding is never overridden. */
+      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; }
+      .kpis td { display:block; width:100% !important; margin:0 0 10px; box-sizing:border-box; }
+      .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:12px 14px; }
       .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#8ea4c6; margin:0 0 6px; }
       .kpi-value { font-size:17px; font-weight:700; color:#e2e8f0; margin:0; }
       .kpi-sub { font-size:11px; color:#8ea4c6; margin:4px 0 0; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#e2e8f0; font-weight:700; }
+      /* Data table: card-per-row on mobile using data-label pseudo-headers */
       table.data { border-collapse: collapse; width: 100%; font-size: 12px; }
-      table.data th, table.data td { border: 1px solid #223255; padding: 8px; }
-      table.data th { background: #16233f; color:#cfe0fb; text-align:left; font-weight:700; }
-      table.data tbody tr:nth-child(even) { background:#101c33; }
-      table.data tfoot td { font-weight:700; background:#16233f; color:#e2e8f0; }
+      table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
+      table.data thead { display:none; }
+      table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; overflow:hidden; }
+      table.data td { border:0; border-bottom:1px solid #1a2740; padding:8px 10px 8px 44%; position:relative; text-align:right; min-height:18px; }
+      table.data td:last-child { border-bottom:0; }
+      table.data td:before { position:absolute; left:10px; top:8px; width:38%; text-align:left; font-weight:700; color:#8ea4c6; content: attr(data-label); white-space:nowrap; }
+      table.data tfoot tr { border:1px solid #2c3f68; background:#16233f; }
+      table.data tfoot td { font-weight:700; color:#e2e8f0; }
       .muted-key { font-style:italic; color:#7186a8; }
       .pos { color:#34d399; font-weight:700; }
       .neg { color:#f87171; font-weight:700; }
@@ -200,22 +216,30 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       .chart-wrap { margin: 6px 0 16px; text-align:center; }
       .chart-wrap img { max-width:100%; border-radius:8px; border:1px solid #223255; }
       .foot { border-top:1px solid #223255; margin-top:14px; padding-top:10px; color:#8ea4c6; font-size:12px; line-height:1.5; }
-      @media only screen and (max-width: 680px) {
-        .outer { padding:8px 2px; }
-        .wrap { border-radius:8px; }
-        .header { padding:12px; }
-        .header-grid, .header-grid tbody, .header-grid tr, .header-grid td { display:block !important; width:100% !important; }
-        .header-right { text-align:left !important; margin-top:10px; }
-        .content { padding:10px; }
-        .kpis, .kpis tbody, .kpis tr, .kpis td { display:block !important; width:100% !important; }
-        .kpis { border-spacing:0; }
-        .kpi { display:block; margin:0 0 8px; }
-        table.data, table.data thead, table.data tbody, table.data th, table.data td, table.data tr, table.data tfoot { display:block !important; width:100% !important; }
-        table.data thead { display:none !important; }
-        table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; overflow:hidden; }
-        table.data td { border:0; border-bottom:1px solid #1a2740; padding:7px 8px 7px 42%; position:relative; text-align:right !important; min-height:18px; font-size:11px; }
-        table.data td:last-child { border-bottom:0; }
-        table.data td:before { position:absolute; left:8px; top:7px; width:36%; text-align:left; font-weight:700; color:#8ea4c6; content: attr(data-label); white-space:nowrap; }
+      /* ── Desktop enhancement: restore the multi-column table layout ── */
+      @media only screen and (min-width: 681px) {
+        .outer { padding:20px 10px; }
+        .wrap { border-radius:14px; }
+        .header { padding:18px 20px; }
+        .header-grid td { display:table-cell; width:auto !important; }
+        .header-left { width:48%; }
+        .header-right { width:52%; text-align:right; margin-top:0; }
+        .title { font-size:22px; }
+        .subtitle { font-size:13px; }
+        .content { padding:18px 20px 16px; }
+        .kpis { border-collapse:separate; border-spacing:8px; }
+        .kpis td { display:table-cell; width:20% !important; margin:0; }
+        table.data { display:table; }
+        table.data thead { display:table-header-group; }
+        table.data tbody { display:table-row-group; }
+        table.data tfoot { display:table-footer-group; }
+        table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
+        table.data th, table.data td { display:table-cell; width:auto; border:1px solid #223255; padding:8px; text-align:left; position:static; min-height:0; }
+        table.data td:before { display:none; content:none; }
+        table.data th { background:#16233f; color:#cfe0fb; font-weight:700; }
+        table.data tbody tr:nth-child(even) { background:#101c33; }
+        table.data tfoot tr { border:0; background:transparent; }
+        table.data tfoot td { background:#16233f; }
       }
     </style>
   </head>

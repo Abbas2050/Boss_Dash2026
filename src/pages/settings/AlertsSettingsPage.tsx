@@ -15,6 +15,27 @@ import { hasAccess, getUsers, refreshUsers, getCurrentUser, authHeaders, type Au
 import { primeAudio, playAlarm } from "@/lib/alertSound";
 import { AlarmConfig, getAlarmConfig, saveAlarmConfig } from "@/lib/alarmConfig";
 
+// Weekly report emails that can be test-sent on demand. Each entry maps to the
+// matching /api/reports/<endpoint>/test route on the server.
+const WEEKLY_REPORTS = [
+  {
+    key: "slippage",
+    label: "Slippage Report",
+    endpoint: "/api/reports/slippage-weekly/test",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.lps ?? 0} LPs`,
+  },
+  {
+    key: "dealmatch",
+    label: "Deal Match Report",
+    endpoint: "/api/reports/dealmatch-weekly/test",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.rows ?? 0} clients`,
+  },
+] as const;
+
+type WeeklyReportKey = (typeof WEEKLY_REPORTS)[number]["key"];
+
 export const AlertsSettingsPage: React.FC = () => {
   const allowedEventKeys = useMemo(
     () => ALERT_EVENT_KEYS.filter((key) => hasAccess(`Notifications:${key}`)),
@@ -29,6 +50,7 @@ export const AlertsSettingsPage: React.FC = () => {
   const [reportTestEmail, setReportTestEmail] = useState<string>(() => getCurrentUser()?.email || "");
   const [reportTestSending, setReportTestSending] = useState(false);
   const [reportTestMsg, setReportTestMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [reportTestKind, setReportTestKind] = useState<WeeklyReportKey>("slippage");
 
   useEffect(() => {
     getAlarmConfig().then(setAlarmCfg).catch(() => undefined);
@@ -60,12 +82,14 @@ export const AlertsSettingsPage: React.FC = () => {
     }
   };
 
-  const sendSlippageTest = async () => {
+  const selectedReport = WEEKLY_REPORTS.find((r) => r.key === reportTestKind) ?? WEEKLY_REPORTS[0];
+
+  const sendReportTest = async () => {
     setReportTestSending(true);
     setReportTestMsg(null);
     try {
       const recipients = reportTestEmail.split(",").map((s) => s.trim()).filter(Boolean);
-      const res = await fetch("/api/reports/slippage-weekly/test", {
+      const res = await fetch(selectedReport.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ recipients }),
@@ -74,7 +98,10 @@ export const AlertsSettingsPage: React.FC = () => {
       if (!res.ok || data?.ok === false) {
         setReportTestMsg({ text: data?.message || data?.error || `Failed (${res.status})`, ok: false });
       } else {
-        setReportTestMsg({ text: `Sent to ${recipients.join(", ")} · ${data.lps} LPs · ${data.fromYmd}→${data.toYmd}`, ok: true });
+        setReportTestMsg({
+          text: `${selectedReport.label} sent to ${recipients.join(", ")} · ${selectedReport.summary(data)} · ${data.fromYmd}→${data.toYmd}`,
+          ok: true,
+        });
       }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -298,8 +325,8 @@ export const AlertsSettingsPage: React.FC = () => {
             <div>
               <h2 className="text-lg font-semibold text-foreground">Weekly Reports</h2>
               <p className="text-xs text-muted-foreground">
-                Send an on-demand test of the weekly <strong>Slippage Report</strong> email (last full week's data) so you
-                don't have to wait for the Friday schedule. Uses the same Brevo pipeline as the live report.
+                Pick a report and send an on-demand test of its weekly email (last full week's data) so you don't have to
+                wait for the Friday schedule. Uses the same Brevo pipeline as the live report.
               </p>
             </div>
             {reportTestMsg && (
@@ -307,6 +334,17 @@ export const AlertsSettingsPage: React.FC = () => {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={reportTestKind}
+              onChange={(e) => setReportTestKind(e.target.value as WeeklyReportKey)}
+              className="rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-foreground"
+            >
+              {WEEKLY_REPORTS.map((r) => (
+                <option key={r.key} value={r.key}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
             <input
               type="text"
               value={reportTestEmail}
@@ -316,11 +354,11 @@ export const AlertsSettingsPage: React.FC = () => {
             />
             <button
               type="button"
-              onClick={sendSlippageTest}
+              onClick={sendReportTest}
               disabled={reportTestSending || !reportTestEmail.trim()}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
-              {reportTestSending ? "Sending…" : "Send Slippage test"}
+              {reportTestSending ? "Sending…" : `Send ${selectedReport.label} test`}
             </button>
           </div>
         </section>

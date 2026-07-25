@@ -29,7 +29,7 @@ import {
   saveGoogleSheetsMappingConfig,
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
-import { startWeeklyDealMatchScheduler } from './reports/dealMatchWeeklyReport.js';
+import { startWeeklyDealMatchScheduler, runWeeklyDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
 import { startWeeklySlippageScheduler, runWeeklySlippageEmailReport } from './reports/slippageWeeklyReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -777,17 +777,37 @@ app.put('/api/alarm-config', authRequired, (req, res) => {
   }
 });
 
+// Recipients for an on-demand weekly-report test send: accepts either an array
+// or a comma-separated string in the request body.
+function parseTestRecipients(body) {
+  const rawList = Array.isArray(body?.recipients)
+    ? body.recipients
+    : String(body?.recipients || '').split(',');
+  return rawList.map((e) => String(e).trim()).filter(Boolean);
+}
+
 // On-demand test send of the weekly Slippage email (admin-only). Sends to the
 // recipients in the body (falls back to the configured SLIPPAGE_ALERT_RECIPIENTS).
 app.post('/api/reports/slippage-weekly/test', authRequired, async (req, res) => {
   if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const rawList = Array.isArray(req.body?.recipients)
-    ? req.body.recipients
-    : String(req.body?.recipients || '').split(',');
-  const recipients = rawList.map((e) => String(e).trim()).filter(Boolean);
+  const recipients = parseTestRecipients(req.body);
   if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
   try {
     const result = await runWeeklySlippageEmailReport({ recipients });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
+// On-demand test send of the weekly Deal Match email (admin-only). Mirrors the
+// slippage test route; recipients in the body override DEALMATCH_ALERT_RECIPIENTS.
+app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  try {
+    const result = await runWeeklyDealMatchEmailReport({ recipients });
     res.json(result);
   } catch (e) {
     res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
