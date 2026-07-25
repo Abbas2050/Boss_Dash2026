@@ -126,21 +126,33 @@ function slipCls(value) {
   return "muted";
 }
 
+// Builds one table cell carrying its own visible row label. The label span is
+// hidden at the desktop breakpoint, where the real <thead> takes over.
+function dataCell(label, value, { align = "left", cls = "" } = {}) {
+  const valueCls = cls ? ` ${cls}` : "";
+  return `<td data-label="${escapeHtml(label)}" style="text-align:${align};"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
+}
+
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
+function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
+  return `<td colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
+}
+
 function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
   const bodyRows = buckets
     .map((b) => {
       const isUnattributed = b.key === "Unattributed";
       return `<tr>
-        <td data-label="LP" class="${isUnattributed ? "muted-key" : ""}">${escapeHtml(b.key)}</td>
-        <td data-label="Lots" style="text-align:right;">${fmtNum(b.lots, 2)}</td>
-        <td data-label="LP Avg Slip (pts)" style="text-align:right;" class="${slipCls(b.avgSlipPts)}">${fmtNum(b.avgSlipPts, 2)}</td>
-        <td data-label="LP Avg Slip (USD)" style="text-align:right;" class="${slipCls(b.lpAvgSlipUsd)}">${money(b.lpAvgSlipUsd)}</td>
-        <td data-label="LP Total Slip (USD)" style="text-align:right;" class="${slipCls(b.netSlipUsd)}">${money(b.netSlipUsd)}</td>
-        <td data-label="Client Avg Slip (pts)" style="text-align:right;" class="${slipCls(b.clientAvgSlipPts)}">${fmtNum(b.clientAvgSlipPts, 2)}</td>
-        <td data-label="Client Avg Slip (USD)" style="text-align:right;" class="${slipCls(b.clientAvgSlipUsd)}">${money(b.clientAvgSlipUsd)}</td>
-        <td data-label="Client Total Slip (USD)" style="text-align:right;" class="${slipCls(b.clientTotalSlipUsd)}">${money(b.clientTotalSlipUsd)}</td>
-        <td data-label="Net Positive USD" style="text-align:right;" class="pos">${money(b.netPosUsd)}</td>
-        <td data-label="Net Negative USD" style="text-align:right;" class="neg">${money(b.netNegUsd)}</td>
+        ${dataCell("LP", escapeHtml(b.key), { cls: isUnattributed ? "muted-key" : "" })}
+        ${dataCell("Lots", fmtNum(b.lots, 2), { align: "right" })}
+        ${dataCell("LP Avg Slip (pts)", fmtNum(b.avgSlipPts, 2), { align: "right", cls: slipCls(b.avgSlipPts) })}
+        ${dataCell("LP Avg Slip (USD)", money(b.lpAvgSlipUsd), { align: "right", cls: slipCls(b.lpAvgSlipUsd) })}
+        ${dataCell("LP Total Slip (USD)", money(b.netSlipUsd), { align: "right", cls: slipCls(b.netSlipUsd) })}
+        ${dataCell("Client Avg Slip (pts)", fmtNum(b.clientAvgSlipPts, 2), { align: "right", cls: slipCls(b.clientAvgSlipPts) })}
+        ${dataCell("Client Avg Slip (USD)", money(b.clientAvgSlipUsd), { align: "right", cls: slipCls(b.clientAvgSlipUsd) })}
+        ${dataCell("Client Total Slip (USD)", money(b.clientTotalSlipUsd), { align: "right", cls: slipCls(b.clientTotalSlipUsd) })}
+        ${dataCell("Net Positive USD", money(b.netPosUsd), { align: "right", cls: "pos" })}
+        ${dataCell("Net Negative USD", money(b.netNegUsd), { align: "right", cls: "neg" })}
       </tr>`;
     })
     .join("");
@@ -204,9 +216,12 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
       table.data thead { display:none; }
       table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; overflow:hidden; }
-      table.data td { border:0; border-bottom:1px solid #1a2740; padding:8px 10px 8px 44%; position:relative; text-align:right; min-height:18px; }
+      table.data td { border:0; border-bottom:1px solid #1a2740; padding:8px 10px; min-height:18px; }
       table.data td:last-child { border-bottom:0; }
-      table.data td:before { position:absolute; left:10px; top:8px; width:38%; text-align:left; font-weight:700; color:#8ea4c6; content: attr(data-label); white-space:nowrap; }
+      /* Row labels are REAL text, not ::before content — Zoho/Gmail and most
+         webmail strip CSS pseudo-elements, which would leave values unlabelled. */
+      table.data td .lbl { display:inline-block; width:38%; text-align:left; font-weight:700; color:#8ea4c6; vertical-align:top; }
+      table.data td .val { display:inline-block; width:60%; text-align:right; vertical-align:top; }
       table.data tfoot tr { border:1px solid #2c3f68; background:#16233f; }
       table.data tfoot td { font-weight:700; color:#e2e8f0; }
       .muted-key { font-style:italic; color:#7186a8; }
@@ -235,7 +250,8 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
         table.data tfoot { display:table-footer-group; }
         table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
         table.data th, table.data td { display:table-cell; width:auto; border:1px solid #223255; padding:8px; text-align:left; position:static; min-height:0; }
-        table.data td:before { display:none; content:none; }
+        table.data td .lbl { display:none; }
+        table.data td .val { display:inline; width:auto; text-align:inherit; }
         table.data th { background:#16233f; color:#cfe0fb; font-weight:700; }
         table.data tbody tr:nth-child(even) { background:#101c33; }
         table.data tfoot tr { border:0; background:transparent; }
@@ -309,20 +325,20 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
               </tr>
             </thead>
             <tbody>
-              ${bodyRows || `<tr><td data-label="Notice" colspan="10" style="text-align:center;color:#8ea4c6;">No slippage rows for this week.</td></tr>`}
+              ${bodyRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 10, align: "center" })}</tr>`}
             </tbody>
             <tfoot>
               <tr>
-                <td data-label="LP">TOTAL</td>
-                <td data-label="Lots" style="text-align:right;">${fmtNum(rollupTotals.lots, 2)}</td>
-                <td data-label="LP Avg Slip (pts)" style="text-align:right;" class="${slipCls(totalLpAvgPts)}">${fmtNum(totalLpAvgPts, 2)}</td>
-                <td data-label="LP Avg Slip (USD)" style="text-align:right;" class="${slipCls(totalLpAvgUsd)}">${money(totalLpAvgUsd)}</td>
-                <td data-label="LP Total Slip (USD)" style="text-align:right;" class="${slipCls(rollupTotals.netSlipUsd)}">${money(rollupTotals.netSlipUsd)}</td>
-                <td data-label="Client Avg Slip (pts)" style="text-align:right;" class="${slipCls(totalClientAvgPts)}">${fmtNum(totalClientAvgPts, 2)}</td>
-                <td data-label="Client Avg Slip (USD)" style="text-align:right;" class="${slipCls(totalClientAvgUsd)}">${money(totalClientAvgUsd)}</td>
-                <td data-label="Client Total Slip (USD)" style="text-align:right;" class="${slipCls(rollupTotals.clientSumUsd)}">${money(rollupTotals.clientSumUsd)}</td>
-                <td data-label="Net Positive USD" style="text-align:right;" class="pos">${money(rollupTotals.netPosUsd)}</td>
-                <td data-label="Net Negative USD" style="text-align:right;" class="neg">${money(rollupTotals.netNegUsd)}</td>
+                ${spanCell("TOTAL")}
+                ${dataCell("Lots", fmtNum(rollupTotals.lots, 2), { align: "right" })}
+                ${dataCell("LP Avg Slip (pts)", fmtNum(totalLpAvgPts, 2), { align: "right", cls: slipCls(totalLpAvgPts) })}
+                ${dataCell("LP Avg Slip (USD)", money(totalLpAvgUsd), { align: "right", cls: slipCls(totalLpAvgUsd) })}
+                ${dataCell("LP Total Slip (USD)", money(rollupTotals.netSlipUsd), { align: "right", cls: slipCls(rollupTotals.netSlipUsd) })}
+                ${dataCell("Client Avg Slip (pts)", fmtNum(totalClientAvgPts, 2), { align: "right", cls: slipCls(totalClientAvgPts) })}
+                ${dataCell("Client Avg Slip (USD)", money(totalClientAvgUsd), { align: "right", cls: slipCls(totalClientAvgUsd) })}
+                ${dataCell("Client Total Slip (USD)", money(rollupTotals.clientSumUsd), { align: "right", cls: slipCls(rollupTotals.clientSumUsd) })}
+                ${dataCell("Net Positive USD", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
+                ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
               </tr>
             </tfoot>
           </table>

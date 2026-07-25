@@ -193,6 +193,19 @@ function deriveClientRevenueRows(report) {
   }));
 }
 
+// Builds one table cell carrying its own visible row label. The label span is
+// hidden at the desktop breakpoint, where the real <thead> takes over.
+function dataCell(label, value, { align = "left", bold = false, cls = "" } = {}) {
+  const style = `text-align:${align};${bold ? "font-weight:700;" : ""}`;
+  const valueCls = cls ? ` ${cls}` : "";
+  return `<td data-label="${escapeHtml(label)}" style="${style}"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
+}
+
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
+function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
+  return `<td colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
+}
+
 function buildEmailHtml({ fromYmd, toYmd, rows }) {
   const totals = rows.reduce(
     (acc, row) => {
@@ -211,15 +224,15 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
   const bodyRows = rows
     .map((row) => {
       return `<tr>
-        <td data-label="Login">${escapeHtml(row.login)}</td>
-        <td data-label="Name">${escapeHtml(row.name)}</td>
-        <td data-label="Lots" style="text-align:right;">${fmtNum(row.lots, 2)}</td>
-        <td data-label="Markup" style="text-align:right;">${money(row.markup)}</td>
-        <td data-label="Client Comm" style="text-align:right;">${money(row.clientComm)}</td>
-        <td data-label="LP Comm" style="text-align:right;">${money(row.lpComm)}</td>
-        <td data-label="Total Rev" style="text-align:right;font-weight:700;">${money(row.totalRev)}</td>
-        <td data-label="IB Commission" style="text-align:right;">${money(row.ibCommission)}</td>
-        <td data-label="Net Revenue" style="text-align:right;font-weight:700;">${money(row.netRev)}</td>
+        ${dataCell("Login", escapeHtml(row.login))}
+        ${dataCell("Name", escapeHtml(row.name))}
+        ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
+        ${dataCell("Markup", money(row.markup), { align: "right" })}
+        ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
+        ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
+        ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
+        ${dataCell("IB Commission", money(row.ibCommission), { align: "right" })}
+        ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
       </tr>`;
     })
     .join("");
@@ -272,9 +285,12 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
       table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
       table.data thead { display:none; }
       table.data tr { margin:0 0 10px; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#fff; }
-      table.data td { border:0; border-bottom:1px solid #eef2f7; padding:8px 10px 8px 44%; position:relative; text-align:right; min-height:18px; }
+      table.data td { border:0; border-bottom:1px solid #eef2f7; padding:8px 10px; min-height:18px; }
       table.data td:last-child { border-bottom:0; }
-      table.data td:before { position:absolute; left:10px; top:8px; width:38%; text-align:left; font-weight:700; color:#475569; content: attr(data-label); white-space:nowrap; }
+      /* Row labels are REAL text, not ::before content — Zoho/Gmail and most
+         webmail strip CSS pseudo-elements, which would leave values unlabelled. */
+      table.data td .lbl { display:inline-block; width:38%; text-align:left; font-weight:700; color:#475569; vertical-align:top; }
+      table.data td .val { display:inline-block; width:60%; text-align:right; vertical-align:top; }
       table.data tfoot tr { border:1px solid #cfe3ff; background:#eff6ff; }
       table.data tfoot td { font-weight:700; color:#0f2d4f; }
       .money-pos { color:#0369a1; font-weight:700; }
@@ -302,7 +318,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
         table.data tfoot { display:table-footer-group; }
         table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
         table.data th, table.data td { display:table-cell; width:auto; border:1px solid #e2e8f0; padding:8px; text-align:left; position:static; min-height:0; }
-        table.data td:before { display:none; content:none; }
+        table.data td .lbl { display:none; }
+        table.data td .val { display:inline; width:auto; text-align:inherit; }
         table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; }
         table.data tbody tr:nth-child(even) { background:#f9fcff; }
         table.data tbody tr:hover { background:#eef6ff; }
@@ -375,18 +392,18 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
           </tr>
         </thead>
         <tbody>
-          ${bodyRows || `<tr><td data-label="Notice" colspan="9" style="text-align:center;color:#64748b;">No rows with Lots &gt; 0 for this week.</td></tr>`}
+          ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
         </tbody>
         <tfoot>
           <tr>
-            <td data-label="Login" colspan="2">TOTAL</td>
-            <td data-label="Lots" style="text-align:right;">${fmtNum(totals.lots, 2)}</td>
-            <td data-label="Markup" style="text-align:right;" class="money-pos">${money(totals.markup)}</td>
-            <td data-label="Client Comm" style="text-align:right;" class="money-pos">${money(totals.clientComm)}</td>
-            <td data-label="LP Comm" style="text-align:right;" class="money-cost">${money(totals.lpComm)}</td>
-            <td data-label="Total Rev" style="text-align:right;" class="money-pos">${money(totals.totalRev)}</td>
-            <td data-label="IB Commission" style="text-align:right;" class="money-cost">${money(totals.ibCommission)}</td>
-            <td data-label="Net Revenue" style="text-align:right;" class="${totals.netRev < 0 ? "money-neg" : "money-pos"}">${money(totals.netRev)}</td>
+            ${spanCell("TOTAL", { colspan: 2 })}
+            ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
+            ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
+            ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
+            ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
+            ${dataCell("Total Rev", money(totals.totalRev), { align: "right", cls: "money-pos" })}
+            ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
+            ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
           </tr>
         </tfoot>
           </table>
