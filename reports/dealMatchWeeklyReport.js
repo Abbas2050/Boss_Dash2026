@@ -146,6 +146,46 @@ async function getIbCommissionForLogin(login, cache, period) {
   }
 }
 
+// ── client volume (Equity vs CFD, per day) ───────────────────────────────────
+// Same source the home dashboard's "Dealing (LP) → Client Volume" tile uses, so
+// the report and the tile agree: ClientVolume/Run, all groups.
+
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// "2026-07-13" -> "Mon 13 Jul". Parsed as UTC to match the report's UTC week.
+function fmtDayLabel(ymd) {
+  const parts = String(ymd || "").split("-");
+  if (parts.length !== 3) return String(ymd || "");
+  const date = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+  if (Number.isNaN(date.getTime())) return String(ymd);
+  return `${DAY_NAMES[date.getUTCDay()]} ${parts[2]} ${MONTH_NAMES[Number(parts[1]) - 1]}`;
+}
+
+async function fetchClientVolume(fromYmd, toYmd) {
+  const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
+  const url = `${BACKEND_BASE_URL}/ClientVolume/Run?${params.toString()}`;
+  const resp = await fetch(url, { signal: AbortSignal.timeout(45_000) });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`ClientVolume/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);
+  }
+  const raw = await resp.json();
+  const num = (v) => Number(v) || 0;
+  const byDate = Array.isArray(raw?.byDate) ? raw.byDate : [];
+  return {
+    totalLots: num(raw?.totalLots),
+    totalStocksLots: num(raw?.totalStocksLots),
+    totalCfdLots: num(raw?.totalCfdLots),
+    byDate: byDate.map((r) => ({
+      date: String(r?.date || ""),
+      lots: num(r?.lots),
+      stocksLots: num(r?.stocksLots),
+      cfdLots: num(r?.cfdLots),
+    })),
+  };
+}
+
 function deriveClientRevenueRows(report) {
   const list = Array.isArray(report?.clientRevenueSummaries) ? report.clientRevenueSummaries : [];
   if (list.length) {
@@ -206,7 +246,65 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
   return `<td colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
 }
 
-function buildEmailHtml({ fromYmd, toYmd, rows }) {
+// Equity-vs-CFD summary cards + a per-day table for the report week. Renders a
+// short notice instead of throwing when the volume endpoint was unavailable.
+function buildVolumeSection(volume) {
+  const title = `<p class="section-title" style="margin-top:18px;">Client Volume &mdash; Equity vs CFD</p>`;
+
+  if (!volume) {
+    return `${title}
+          <p style="font-size:12px;color:#64748b;margin:0 0 10px;">Volume data was unavailable when this report was generated.</p>`;
+  }
+
+  const days = volume.byDate || [];
+  const dailyRows = days
+    .map(
+      (d) => `<tr>
+        ${dataCell("Day", escapeHtml(fmtDayLabel(d.date)))}
+        ${dataCell("Equity Lots", fmtNum(d.stocksLots, 2), { align: "right" })}
+        ${dataCell("CFD Lots", fmtNum(d.cfdLots, 2), { align: "right" })}
+        ${dataCell("Total Lots", fmtNum(d.lots, 2), { align: "right", bold: true })}
+      </tr>`,
+    )
+    .join("");
+
+  return `${title}
+          <table class="vol-kpis" role="presentation">
+            <tr>
+              <td class="kpi equity" width="33%">
+                <p class="kpi-label">Equity Lots</p>
+                <p class="kpi-value">${fmtNum(volume.totalStocksLots, 2)}</p>
+              </td>
+              <td class="kpi cfd" width="33%">
+                <p class="kpi-label">CFD Lots</p>
+                <p class="kpi-value">${fmtNum(volume.totalCfdLots, 2)}</p>
+              </td>
+              <td class="kpi vol-total" width="33%">
+                <p class="kpi-label">Total Lots</p>
+                <p class="kpi-value">${fmtNum(volume.totalLots, 2)}</p>
+              </td>
+            </tr>
+          </table>
+
+          <table class="data">
+            <thead>
+              <tr><th>Day</th><th>Equity Lots</th><th>CFD Lots</th><th>Total Lots</th></tr>
+            </thead>
+            <tbody>
+              ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
+            </tbody>
+            <tfoot>
+              <tr>
+                ${spanCell("TOTAL")}
+                ${dataCell("Equity Lots", fmtNum(volume.totalStocksLots, 2), { align: "right" })}
+                ${dataCell("CFD Lots", fmtNum(volume.totalCfdLots, 2), { align: "right" })}
+                ${dataCell("Total Lots", fmtNum(volume.totalLots, 2), { align: "right" })}
+              </tr>
+            </tfoot>
+          </table>`;
+}
+
+function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -276,6 +374,12 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
       .kpi.gross { background:#fffbeb; border-color:#fde68a; }
       .kpi.net { background:#f5f3ff; border-color:#ddd6fe; }
+      /* Volume summary: 3 cards, same stacking behaviour as .kpis */
+      .vol-kpis { width:100%; border-collapse:collapse; margin: 4px 0 12px; }
+      .vol-kpis td { display:block; width:100% !important; margin:0 0 10px; box-sizing:border-box; }
+      .kpi.equity { background:#ecfeff; border-color:#a5f3fc; }
+      .kpi.cfd { background:#f5f3ff; border-color:#ddd6fe; }
+      .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
       .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#64748b; margin:0 0 6px; }
       .kpi-value { font-size:17px; font-weight:700; color:#0f2d4f; margin:0; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
@@ -311,6 +415,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
         .content { padding:18px 20px 16px; }
         .kpis { border-collapse:separate; border-spacing:8px; }
         .kpis td { display:table-cell; width:25% !important; margin:0; }
+        .vol-kpis { border-collapse:separate; border-spacing:8px; }
+        .vol-kpis td { display:table-cell; width:33.33% !important; margin:0; }
         .kpi-value { font-size:18px; }
         table.data { display:table; }
         table.data thead { display:table-header-group; }
@@ -408,12 +514,15 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
         </tfoot>
           </table>
 
+          ${buildVolumeSection(volume)}
+
           <div class="attachments">
-            Attached visuals: Top 10 Net Revenue, Gross vs Net Revenue, Lots vs Net Revenue, Revenue Composition.
+            Attached visuals: Top 10 Net Revenue, Gross vs Net Revenue, Lots vs Net Revenue, Revenue Composition${volume && (volume.byDate || []).length ? ", Daily Volume (Equity vs CFD)" : ""}.
           </div>
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
-            Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)
+            Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
+            Client Volume is sourced from ClientVolume/Run (all groups) &mdash; the same feed as the dashboard's Dealing (LP) volume tile.
           </div>
         </div>
       </div>
@@ -422,7 +531,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows }) {
 </html>`;
 }
 
-async function buildEmailChartAttachments(rows, fromYmd, toYmd) {
+async function buildEmailChartAttachments(rows, fromYmd, toYmd, volume) {
   const topNet = [...rows].sort((a, b) => (Number(b.netRev) || 0) - (Number(a.netRev) || 0)).slice(0, 10);
   const topTotal = [...rows].sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0)).slice(0, 10);
   const topLots = [...rows].sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0)).slice(0, 12);
@@ -592,6 +701,53 @@ async function buildEmailChartAttachments(rows, fromYmd, toYmd) {
     },
   ];
 
+  // Daily Equity-vs-CFD volume — grouped bars, one pair per day of the week.
+  // Colours match the dashboard's volume tile (cyan = equity, violet = CFD).
+  const volumeDays = volume?.byDate ?? [];
+  if (volumeDays.length) {
+    charts.push({
+      name: "daily-volume-equity-vs-cfd.png",
+      config: {
+        type: "bar",
+        data: {
+          labels: volumeDays.map((d) => fmtDayLabel(d.date)),
+          datasets: [
+            {
+              label: "Equity Lots",
+              data: volumeDays.map((d) => Number(d.stocksLots) || 0),
+              backgroundColor: "#0891b2",
+              borderRadius: 5,
+            },
+            {
+              label: "CFD Lots",
+              data: volumeDays.map((d) => Number(d.cfdLots) || 0),
+              backgroundColor: "#7c3aed",
+              borderRadius: 5,
+            },
+          ],
+        },
+        options: {
+          responsive: false,
+          animation: false,
+          scales: {
+            x: { ticks: { color: "#334155" }, grid: { display: false } },
+            y: {
+              beginAtZero: true,
+              ticks: { color: "#334155", callback: (v) => Math.round(v).toLocaleString() },
+              grid: { color: "#e2e8f0" },
+              title: { display: true, text: "Lots", color: "#64748b" },
+            },
+          },
+          plugins: {
+            ...commonPlugins,
+            title: { ...commonPlugins.title, text: `Daily Volume - Equity vs CFD ${titleSuffix}` },
+            subtitle: { ...commonPlugins.subtitle, text: "Lots traded per day, split by instrument class" },
+          },
+        },
+      },
+    });
+  }
+
   const attachments = [];
   for (const item of charts) {
     const buffer = await renderChartBuffer(item.config, item.name.includes("composition") ? 1100 : 1200, 700);
@@ -659,9 +815,18 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     console.warn("[DealMatchWeekly] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", rows: rows.length, fromYmd, toYmd };
   }
+  // Volume is supplementary — a ClientVolume outage must not block the revenue
+  // report, so fall back to rendering the section as unavailable.
+  let volume = null;
+  try {
+    volume = await fetchClientVolume(fromYmd, toYmd);
+  } catch (error) {
+    console.warn("[DealMatchWeekly] client volume lookup failed:", error?.message || error);
+  }
+
   const subject = `Weekly Deal Match Analysis (${fromYmd} to ${toYmd})`;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows });
-  const attachments = await buildEmailChartAttachments(rows, fromYmd, toYmd);
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume });
+  const attachments = await buildEmailChartAttachments(rows, fromYmd, toYmd, volume);
   await sendBrevoEmail({ subject, html, recipients, attachments });
 
   console.log(`[DealMatchWeekly] Sent to ${recipients.join(", ")} | rows=${rows.length} | period=${fromYmd}..${toYmd}`);
