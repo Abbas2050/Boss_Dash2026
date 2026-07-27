@@ -241,9 +241,10 @@ function dataCell(label, value, { align = "left", bold = false, cls = "" } = {})
   return `<td data-label="${escapeHtml(label)}" style="${style}"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
 }
 
-// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split, and
+// `full` opts it out of the fluid chip width so it spans the whole card.
 function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
-  return `<td colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
+  return `<td class="full" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
 }
 
 // Equity-vs-CFD summary cards + a per-day table for the report week. Renders a
@@ -355,7 +356,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
          overflows the viewport and the whole email scrolls sideways. */
       .outer, .wrap, .header, .content { box-sizing:border-box; }
       .outer { width:100%; background:#f3f7fb; padding:8px 4px; }
-      .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#ffffff; border:1px solid #dbe6f2; border-radius:10px; overflow:hidden; }
+      .wrap { width:100%; max-width: 1120px; margin: 0 auto; background:#ffffff; border:1px solid #dbe6f2; border-radius:10px; overflow:hidden; }
       .header { padding:14px 16px; background:linear-gradient(135deg,#0f2d4f,#114b7a); color:#eaf4ff; }
       .header-grid { width:100%; border-collapse:collapse; }
       .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
@@ -366,17 +367,23 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .header-meta { margin:0; font-size:11px; line-height:1.55; color:#bcd6ee; }
       .content { padding:16px; }
       .meta { color:#475569; font-size:13px; margin:0 0 14px; line-height:1.5; }
-      /* KPI cards: full-width blocks that stack on mobile */
-      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; }
-      .kpis td { display:block; width:100% !important; margin:0 0 10px; box-sizing:border-box; }
+      /* ── Fluid card grid, NO @media ──────────────────────────────────────
+         Zoho (and several other clients) strip @media entirely, so the layout
+         has to adapt purely by available width. Each cell is inline-block with
+         a px max-width: several sit side by side when there's room and wrap to
+         one per line on a phone. font-size:0 on the row kills the whitespace
+         gap between inline-blocks; children restore a real size. */
+      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; font-size:0; text-align:center; }
+      .kpis td { display:inline-block; width:100%; max-width:452px; margin:0 4px 8px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
       .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:12px 14px; }
       .kpi.clients { background:#eef8ff; border-color:#bfe3ff; }
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
       .kpi.gross { background:#fffbeb; border-color:#fde68a; }
       .kpi.net { background:#f5f3ff; border-color:#ddd6fe; }
-      /* Volume summary: 3 cards, same stacking behaviour as .kpis */
-      .vol-kpis { width:100%; border-collapse:collapse; margin: 4px 0 12px; }
-      .vol-kpis td { display:block; width:100% !important; margin:0 0 10px; box-sizing:border-box; }
+      /* Volume summary: 3 cards — same fluid behaviour, narrower cap so all
+         three sit on one line on a desktop-width email. */
+      .vol-kpis { width:100%; border-collapse:collapse; margin: 4px 0 12px; font-size:0; text-align:center; }
+      .vol-kpis td { display:inline-block; width:100%; max-width:298px; margin:0 4px 8px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
       .kpi.equity { background:#ecfeff; border-color:#a5f3fc; }
       .kpi.cfd { background:#f5f3ff; border-color:#ddd6fe; }
       .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
@@ -384,17 +391,18 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .kpi-value { font-size:17px; font-weight:700; color:#0f2d4f; margin:0; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
-      /* Data table: card-per-row on mobile using data-label pseudo-headers */
+      /* Data table: one card per record, each field a fluid label/value chip.
+         ~3 chips per line at desktop email width, 1 per line on a phone. */
       table.data { border-collapse: collapse; width: 100%; font-size: 12px; }
-      table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
+      table.data, table.data tbody, table.data tfoot, table.data tr { display:block; width:100%; box-sizing:border-box; }
       table.data thead { display:none; }
-      table.data tr { margin:0 0 10px; border:1px solid #e2e8f0; border-radius:8px; overflow:hidden; background:#fff; }
-      table.data td { border:0; border-bottom:1px solid #eef2f7; padding:8px 10px; min-height:18px; }
-      table.data td:last-child { border-bottom:0; }
+      table.data tr { margin:0 0 10px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; padding:4px; font-size:0; text-align:center; }
+      table.data td { display:inline-block; width:100%; max-width:345px; margin:0 3px; vertical-align:top; box-sizing:border-box; border:0; border-bottom:1px solid #eef2f7; padding:7px 8px; font-size:12px; }
+      table.data td.full { max-width:none; width:100%; margin:0; border-bottom:0; }
       /* Row labels are REAL text, not ::before content — Zoho/Gmail and most
          webmail strip CSS pseudo-elements, which would leave values unlabelled. */
-      table.data td .lbl { display:inline-block; width:38%; text-align:left; font-weight:700; color:#475569; vertical-align:top; }
-      table.data td .val { display:inline-block; width:60%; text-align:right; vertical-align:top; }
+      table.data td .lbl { display:inline-block; width:46%; text-align:left; font-weight:700; color:#475569; vertical-align:top; }
+      table.data td .val { display:inline-block; width:52%; text-align:right; vertical-align:top; }
       table.data tfoot tr { border:1px solid #cfe3ff; background:#eff6ff; }
       table.data tfoot td { font-weight:700; color:#0f2d4f; }
       .money-pos { color:#0369a1; font-weight:700; }
@@ -402,7 +410,9 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .money-neg { color:#b91c1c; font-weight:700; }
       .foot { border-top:1px solid #e2e8f0; margin-top:14px; padding-top:10px; color:#64748b; font-size:12px; line-height:1.5; }
       .attachments { margin-top:8px; color:#334155; font-size:12px; }
-      /* ── Desktop enhancement: restore the multi-column table layout ── */
+      /* Cosmetic only. The data layout above is deliberately NOT switched here:
+         clients that strip @media (Zoho) must render the same thing as clients
+         that honour it, otherwise the report looks different per mailbox. */
       @media only screen and (min-width: 681px) {
         .outer { padding:20px 10px; }
         .wrap { border-radius:14px; }
@@ -413,24 +423,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
         .title { font-size:22px; }
         .subtitle { font-size:13px; }
         .content { padding:18px 20px 16px; }
-        .kpis { border-collapse:separate; border-spacing:8px; }
-        .kpis td { display:table-cell; width:25% !important; margin:0; }
-        .vol-kpis { border-collapse:separate; border-spacing:8px; }
-        .vol-kpis td { display:table-cell; width:33.33% !important; margin:0; }
         .kpi-value { font-size:18px; }
-        table.data { display:table; }
-        table.data thead { display:table-header-group; }
-        table.data tbody { display:table-row-group; }
-        table.data tfoot { display:table-footer-group; }
-        table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
-        table.data th, table.data td { display:table-cell; width:auto; border:1px solid #e2e8f0; padding:8px; text-align:left; position:static; min-height:0; }
-        table.data td .lbl { display:none; }
-        table.data td .val { display:inline; width:auto; text-align:inherit; }
-        table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; }
-        table.data tbody tr:nth-child(even) { background:#f9fcff; }
-        table.data tbody tr:hover { background:#eef6ff; }
-        table.data tfoot tr { border:0; background:transparent; }
-        table.data tfoot td { background:#eff6ff; }
       }
     </style>
   </head>

@@ -133,9 +133,10 @@ function dataCell(label, value, { align = "left", cls = "" } = {}) {
   return `<td data-label="${escapeHtml(label)}" style="text-align:${align};"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
 }
 
-// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split, and
+// `full` opts it out of the fluid chip width so it spans the whole card.
 function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
-  return `<td colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
+  return `<td class="full" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
 }
 
 function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
@@ -202,26 +203,32 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       .subtitle { margin:6px 0 0; font-size:12px; color:#93c5fd; }
       .header-meta { margin:0; font-size:11px; line-height:1.55; color:#9fb8d6; }
       .content { padding:16px; }
-      /* KPI cards: full-width blocks that stack on mobile. Spacing between
-         cards uses margin so the card's own padding is never overridden. */
-      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; }
-      .kpis td { display:block; width:100% !important; margin:0 0 10px; box-sizing:border-box; }
+      /* ── Fluid card grid, NO @media ──────────────────────────────────────
+         Zoho (and several other clients) strip @media entirely, so the layout
+         has to adapt purely by available width. Each cell is inline-block with
+         a px max-width: several sit side by side when there's room and wrap to
+         one per line on a phone. font-size:0 on the row kills the whitespace
+         gap between inline-blocks; children restore a real size. */
+      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; font-size:0; text-align:center; }
+      .kpis td { display:inline-block; width:100%; max-width:350px; margin:0 4px 8px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
       .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:12px 14px; }
       .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#8ea4c6; margin:0 0 6px; }
       .kpi-value { font-size:17px; font-weight:700; color:#e2e8f0; margin:0; }
       .kpi-sub { font-size:11px; color:#8ea4c6; margin:4px 0 0; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#e2e8f0; font-weight:700; }
-      /* Data table: card-per-row on mobile using data-label pseudo-headers */
+      /* Data table: one card per LP, each field a fluid label/value chip.
+         Chips are wider than the Deal Match report's because these labels are
+         long ("Client Total Slip (USD)"); ~3 per line at desktop email width. */
       table.data { border-collapse: collapse; width: 100%; font-size: 12px; }
-      table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
+      table.data, table.data tbody, table.data tfoot, table.data tr { display:block; width:100%; box-sizing:border-box; }
       table.data thead { display:none; }
-      table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; overflow:hidden; }
-      table.data td { border:0; border-bottom:1px solid #1a2740; padding:8px 10px; min-height:18px; }
-      table.data td:last-child { border-bottom:0; }
+      table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; padding:4px; font-size:0; text-align:center; }
+      table.data td { display:inline-block; width:100%; max-width:345px; margin:0 3px; vertical-align:top; box-sizing:border-box; border:0; border-bottom:1px solid #1a2740; padding:7px 8px; font-size:12px; }
+      table.data td.full { max-width:none; width:100%; margin:0; border-bottom:0; }
       /* Row labels are REAL text, not ::before content — Zoho/Gmail and most
          webmail strip CSS pseudo-elements, which would leave values unlabelled. */
-      table.data td .lbl { display:inline-block; width:38%; text-align:left; font-weight:700; color:#8ea4c6; vertical-align:top; }
-      table.data td .val { display:inline-block; width:60%; text-align:right; vertical-align:top; }
+      table.data td .lbl { display:inline-block; width:46%; text-align:left; font-weight:700; color:#8ea4c6; vertical-align:top; }
+      table.data td .val { display:inline-block; width:52%; text-align:right; vertical-align:top; }
       table.data tfoot tr { border:1px solid #2c3f68; background:#16233f; }
       table.data tfoot td { font-weight:700; color:#e2e8f0; }
       .muted-key { font-style:italic; color:#7186a8; }
@@ -231,7 +238,9 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       .chart-wrap { margin: 6px 0 16px; text-align:center; }
       .chart-wrap img { max-width:100%; border-radius:8px; border:1px solid #223255; }
       .foot { border-top:1px solid #223255; margin-top:14px; padding-top:10px; color:#8ea4c6; font-size:12px; line-height:1.5; }
-      /* ── Desktop enhancement: restore the multi-column table layout ── */
+      /* Cosmetic only. The data layout above is deliberately NOT switched here:
+         clients that strip @media (Zoho) must render the same thing as clients
+         that honour it, otherwise the report looks different per mailbox. */
       @media only screen and (min-width: 681px) {
         .outer { padding:20px 10px; }
         .wrap { border-radius:14px; }
@@ -242,20 +251,6 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
         .title { font-size:22px; }
         .subtitle { font-size:13px; }
         .content { padding:18px 20px 16px; }
-        .kpis { border-collapse:separate; border-spacing:8px; }
-        .kpis td { display:table-cell; width:20% !important; margin:0; }
-        table.data { display:table; }
-        table.data thead { display:table-header-group; }
-        table.data tbody { display:table-row-group; }
-        table.data tfoot { display:table-footer-group; }
-        table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
-        table.data th, table.data td { display:table-cell; width:auto; border:1px solid #223255; padding:8px; text-align:left; position:static; min-height:0; }
-        table.data td .lbl { display:none; }
-        table.data td .val { display:inline; width:auto; text-align:inherit; }
-        table.data th { background:#16233f; color:#cfe0fb; font-weight:700; }
-        table.data tbody tr:nth-child(even) { background:#101c33; }
-        table.data tfoot tr { border:0; background:transparent; }
-        table.data tfoot td { background:#16233f; }
       }
     </style>
   </head>
