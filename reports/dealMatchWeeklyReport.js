@@ -289,7 +289,7 @@ function buildVolumeSection(volume) {
 
           <table class="data">
             <thead>
-              <tr><th>Day</th><th>Equity Lots</th><th>CFD Lots</th><th>Total Lots</th></tr>
+              <tr><th width="28%">Day</th><th width="24%">Equity Lots</th><th width="24%">CFD Lots</th><th width="24%">Total Lots</th></tr>
             </thead>
             <tbody>
               ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
@@ -367,23 +367,21 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .header-meta { margin:0; font-size:11px; line-height:1.55; color:#bcd6ee; }
       .content { padding:16px; }
       .meta { color:#475569; font-size:13px; margin:0 0 14px; line-height:1.5; }
-      /* ── Fluid card grid, NO @media ──────────────────────────────────────
-         Zoho (and several other clients) strip @media entirely, so the layout
-         has to adapt purely by available width. Each cell is inline-block with
-         a px max-width: several sit side by side when there's room and wrap to
-         one per line on a phone. font-size:0 on the row kills the whitespace
-         gap between inline-blocks; children restore a real size. */
-      .kpis { width:100%; border-collapse:collapse; margin: 4px 0 14px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; max-width:452px; margin:0 4px 8px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
-      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:12px 14px; }
+      /* ── Single layout, NO @media ────────────────────────────────────────
+         Zoho (and several other clients) strip @media entirely, so there is no
+         breakpoint to switch on: real tables are the one and only layout, and
+         table-layout:fixed keeps every column inside the viewport at any width
+         (narrow screens wrap the text rather than clipping the table). */
+      .kpis { width:100%; border-collapse:separate; border-spacing:6px; margin: 0 0 10px; table-layout:fixed; }
+      .kpis td { vertical-align:top; box-sizing:border-box; }
+      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:10px 12px; }
       .kpi.clients { background:#eef8ff; border-color:#bfe3ff; }
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
       .kpi.gross { background:#fffbeb; border-color:#fde68a; }
       .kpi.net { background:#f5f3ff; border-color:#ddd6fe; }
-      /* Volume summary: 3 cards — same fluid behaviour, narrower cap so all
-         three sit on one line on a desktop-width email. */
-      .vol-kpis { width:100%; border-collapse:collapse; margin: 4px 0 12px; font-size:0; text-align:center; }
-      .vol-kpis td { display:inline-block; width:100%; max-width:298px; margin:0 4px 8px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
+      /* Volume summary: 3 cards, always on one row. */
+      .vol-kpis { width:100%; border-collapse:separate; border-spacing:6px; margin: 0 0 10px; table-layout:fixed; }
+      .vol-kpis td { vertical-align:top; box-sizing:border-box; }
       .kpi.equity { background:#ecfeff; border-color:#a5f3fc; }
       .kpi.cfd { background:#f5f3ff; border-color:#ddd6fe; }
       .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
@@ -391,20 +389,17 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .kpi-value { font-size:17px; font-weight:700; color:#0f2d4f; margin:0; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
-      /* Data table: one card per record, each field a fluid label/value chip.
-         ~3 chips per line at desktop email width, 1 per line on a phone. */
-      table.data { border-collapse: collapse; width: 100%; font-size: 12px; }
-      table.data, table.data tbody, table.data tfoot, table.data tr { display:block; width:100%; box-sizing:border-box; }
-      table.data thead { display:none; }
-      table.data tr { margin:0 0 10px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; padding:4px; font-size:0; text-align:center; }
-      table.data td { display:inline-block; width:100%; max-width:345px; margin:0 3px; vertical-align:top; box-sizing:border-box; border:0; border-bottom:1px solid #eef2f7; padding:7px 8px; font-size:12px; }
-      table.data td.full { max-width:none; width:100%; margin:0; border-bottom:0; }
-      /* Row labels are REAL text, not ::before content — Zoho/Gmail and most
-         webmail strip CSS pseudo-elements, which would leave values unlabelled. */
-      table.data td .lbl { display:inline-block; width:46%; text-align:left; font-weight:700; color:#475569; vertical-align:top; }
-      table.data td .val { display:inline-block; width:52%; text-align:right; vertical-align:top; }
-      table.data tfoot tr { border:1px solid #cfe3ff; background:#eff6ff; }
-      table.data tfoot td { font-weight:700; color:#0f2d4f; }
+      /* Data table: real table everywhere. Column widths are declared on the
+         <th> cells so table-layout:fixed can honour them. */
+      table.data { border-collapse:collapse; width:100%; font-size:12px; table-layout:fixed; }
+      table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 6px; text-align:left; word-wrap:break-word; overflow-wrap:break-word; }
+      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
+      table.data tbody tr:nth-child(even) { background:#f9fcff; }
+      table.data tfoot td { font-weight:700; background:#eff6ff; color:#0f2d4f; }
+      /* The <thead> carries the column names, so the per-cell label spans that
+         the card layout needed stay hidden here. */
+      table.data td .lbl { display:none; }
+      table.data td .val { display:inline; }
       .money-pos { color:#0369a1; font-weight:700; }
       .money-cost { color:#b45309; }
       .money-neg { color:#b91c1c; font-weight:700; }
@@ -479,15 +474,15 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
           <table class="data">
         <thead>
           <tr>
-            <th>Login</th>
-            <th>Name</th>
-            <th>Lots</th>
-            <th>Markup</th>
-            <th>Client Comm</th>
-            <th>LP Comm</th>
-            <th>Total Rev</th>
-            <th>IB Commission</th>
-            <th>Net Revenue</th>
+            <th width="8%">Login</th>
+            <th width="18%">Name</th>
+            <th width="10%">Lots</th>
+            <th width="10%">Markup</th>
+            <th width="11%">Client Comm</th>
+            <th width="10%">LP Comm</th>
+            <th width="11%">Total Rev</th>
+            <th width="11%">IB Commission</th>
+            <th width="11%">Net Revenue</th>
           </tr>
         </thead>
         <tbody>
