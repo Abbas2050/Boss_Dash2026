@@ -235,16 +235,19 @@ function deriveClientRevenueRows(report) {
 
 // Builds one table cell carrying its own visible row label. The label span is
 // hidden at the desktop breakpoint, where the real <thead> takes over.
-function dataCell(label, value, { align = "left", bold = false, cls = "" } = {}) {
-  const style = `text-align:${align};${bold ? "font-weight:700;" : ""}`;
+// Right-aligned cells are numeric and get `num` (never wraps); `nowrap` marks a
+// left-aligned identifier such as a login (also never wraps — "10218/6" is
+// worse than a wide column); everything else gets `txt` (wraps between words).
+function dataCell(label, value, { align = "left", bold = false, cls = "", nowrap = false } = {}) {
+  const kind = align === "right" ? "num" : nowrap ? "key" : "txt";
+  const style = bold ? ' style="font-weight:700;"' : "";
   const valueCls = cls ? ` ${cls}` : "";
-  return `<td data-label="${escapeHtml(label)}" style="${style}"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
+  return `<td class="${kind}" data-label="${escapeHtml(label)}"${style}><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
 }
 
-// Full-width cell (TOTAL label, empty-state notice) — no label/value split, and
-// `full` opts it out of the fluid chip width so it spans the whole card.
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
 function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
-  return `<td class="full" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}" style="width:auto;">${value}</span></td>`;
+  return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
 // Equity-vs-CFD summary cards + a per-day table for the report week. Renders a
@@ -261,7 +264,7 @@ function buildVolumeSection(volume) {
   const dailyRows = days
     .map(
       (d) => `<tr>
-        ${dataCell("Day", escapeHtml(fmtDayLabel(d.date)))}
+        ${dataCell("Day", escapeHtml(fmtDayLabel(d.date)), { nowrap: true })}
         ${dataCell("Equity Lots", fmtNum(d.stocksLots, 2), { align: "right" })}
         ${dataCell("CFD Lots", fmtNum(d.cfdLots, 2), { align: "right" })}
         ${dataCell("Total Lots", fmtNum(d.lots, 2), { align: "right", bold: true })}
@@ -320,20 +323,31 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
     { lots: 0, markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, totalRev: 0, netRev: 0 },
   );
 
-  const bodyRows = rows
-    .map((row) => {
-      return `<tr>
-        ${dataCell("Login", escapeHtml(row.login))}
+  // Nine columns cannot fit a 375px screen (~38px each), so the data is split
+  // across two 5-column tables: the headline figures first, then the components
+  // that make them up. Login is the key that ties the two together.
+  const summaryRows = rows
+    .map(
+      (row) => `<tr>
+        ${dataCell("Login", escapeHtml(row.login), { nowrap: true })}
         ${dataCell("Name", escapeHtml(row.name))}
         ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
+        ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
+        ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
+      </tr>`,
+    )
+    .join("");
+
+  const breakdownRows = rows
+    .map(
+      (row) => `<tr>
+        ${dataCell("Login", escapeHtml(row.login), { nowrap: true })}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
         ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
-        ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
         ${dataCell("IB Commission", money(row.ibCommission), { align: "right" })}
-        ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
-      </tr>`;
-    })
+      </tr>`,
+    )
     .join("");
 
   const topClient = rows.reduce((best, row) => {
@@ -356,7 +370,10 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
          overflows the viewport and the whole email scrolls sideways. */
       .outer, .wrap, .header, .content { box-sizing:border-box; }
       .outer { width:100%; background:#f3f7fb; padding:8px 4px; }
-      .wrap { width:100%; max-width: 1120px; margin: 0 auto; background:#ffffff; border:1px solid #dbe6f2; border-radius:10px; overflow:hidden; }
+      /* 980px is what Zoho actually gives the message body; pinning the canvas
+         there makes the card-per-row maths deterministic instead of depending
+         on the reader's window size. */
+      .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#ffffff; border:1px solid #dbe6f2; border-radius:10px; overflow:hidden; }
       .header { padding:14px 16px; background:linear-gradient(135deg,#0f2d4f,#114b7a); color:#eaf4ff; }
       .header-grid { width:100%; border-collapse:collapse; }
       .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
@@ -368,32 +385,48 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .content { padding:16px; }
       .meta { color:#475569; font-size:13px; margin:0 0 14px; line-height:1.5; }
       /* ── Single layout, NO @media ────────────────────────────────────────
-         Zoho (and several other clients) strip @media entirely, so there is no
-         breakpoint to switch on: real tables are the one and only layout, and
-         table-layout:fixed keeps every column inside the viewport at any width
-         (narrow screens wrap the text rather than clipping the table). */
-      .kpis { width:100%; border-collapse:separate; border-spacing:6px; margin: 0 0 10px; table-layout:fixed; }
-      .kpis td { vertical-align:top; box-sizing:border-box; }
-      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:10px 12px; }
+         Zoho strips @media entirely, so there is no breakpoint to switch on and
+         one layout has to read well at both 375px and desktop width.
+         Card grids use inline-block cells with a px cap: 4 fit a desktop row and
+         collapse to one per line on a phone. That trick only works for small
+         counts — a 9-across row can never also be 1-across — so the data tables
+         are split into <=5-column tables instead. */
+      /* Four cards capped at 150px: four-across on a desktop-width email, and
+         two-across (filling the width) on a phone. Forcing all four onto one
+         375px row gives 78px each, which is narrower than "$13,677.50" — the
+         values then bleed over each other. */
+      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
+      .kpis td { display:inline-block; width:100%; max-width:150px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
+      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:8px 10px; }
       .kpi.clients { background:#eef8ff; border-color:#bfe3ff; }
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
       .kpi.gross { background:#fffbeb; border-color:#fde68a; }
       .kpi.net { background:#f5f3ff; border-color:#ddd6fe; }
-      /* Volume summary: 3 cards, always on one row. */
-      .vol-kpis { width:100%; border-collapse:separate; border-spacing:6px; margin: 0 0 10px; table-layout:fixed; }
+      /* Volume summary: 3 cards, one row at every width. Only three columns to
+         share, so these fit a phone — but the padding and value size have to be
+         trimmed, or "29,160.45" overruns its third of a 375px screen. */
+      .vol-kpis { width:100%; border-collapse:separate; border-spacing:5px; margin:0 0 8px; table-layout:fixed; }
       .vol-kpis td { vertical-align:top; box-sizing:border-box; }
+      .vol-kpis .kpi { padding:8px 5px; }
+      .vol-kpis .kpi-value { font-size:13px; }
       .kpi.equity { background:#ecfeff; border-color:#a5f3fc; }
       .kpi.cfd { background:#f5f3ff; border-color:#ddd6fe; }
       .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
-      .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#64748b; margin:0 0 6px; }
-      .kpi-value { font-size:17px; font-weight:700; color:#0f2d4f; margin:0; }
+      .kpi-label { font-size:9px; text-transform:uppercase; letter-spacing:0.2px; color:#64748b; margin:0 0 4px; line-height:1.25; }
+      .kpi-value { font-size:14px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
-      /* Data table: real table everywhere. Column widths are declared on the
-         <th> cells so table-layout:fixed can honour them. */
-      table.data { border-collapse:collapse; width:100%; font-size:12px; table-layout:fixed; }
-      table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 6px; text-align:left; word-wrap:break-word; overflow-wrap:break-word; }
-      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
+      /* Data tables: real tables, capped at 5 columns so a 375px screen still
+         gives each column ~68px. Numeric cells never wrap — a figure broken
+         mid-value ("51,/90/0.0/0") is worse than no table at all. Only text
+         columns are allowed to break, and only between words. */
+      table.data { border-collapse:collapse; width:100%; font-size:11px; table-layout:fixed; margin:0 0 16px; }
+      table.data th, table.data td { border:1px solid #e2e8f0; padding:6px 5px; text-align:left; vertical-align:top; }
+      /* Headers wrap between words only — break-word gives "IB Commissi/on". */
+      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:10px; }
+      table.data td.num { text-align:right; white-space:nowrap; }
+      table.data td.key { white-space:nowrap; }
+      table.data td.txt { overflow-wrap:break-word; }
       table.data tbody tr:nth-child(even) { background:#f9fcff; }
       table.data tfoot td { font-weight:700; background:#eff6ff; color:#0f2d4f; }
       /* The <thead> carries the column names, so the per-cell label spans that
@@ -470,36 +503,53 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
-          <p class="section-title">Client Revenue Table</p>
+          <p class="section-title">Client Revenue</p>
           <table class="data">
-        <thead>
-          <tr>
-            <th width="8%">Login</th>
-            <th width="18%">Name</th>
-            <th width="10%">Lots</th>
-            <th width="10%">Markup</th>
-            <th width="11%">Client Comm</th>
-            <th width="10%">LP Comm</th>
-            <th width="11%">Total Rev</th>
-            <th width="11%">IB Commission</th>
-            <th width="11%">Net Revenue</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
-        </tbody>
-        <tfoot>
-          <tr>
-            ${spanCell("TOTAL", { colspan: 2 })}
-            ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
-            ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
-            ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
-            ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
-            ${dataCell("Total Rev", money(totals.totalRev), { align: "right", cls: "money-pos" })}
-            ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
-            ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
-          </tr>
-        </tfoot>
+            <thead>
+              <tr>
+                <th width="14%">Login</th>
+                <th width="26%">Name</th>
+                <th width="20%">Lots</th>
+                <th width="20%">Total Rev</th>
+                <th width="20%">Net Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${summaryRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 5, align: "center" })}</tr>`}
+            </tbody>
+            <tfoot>
+              <tr>
+                ${spanCell("TOTAL", { colspan: 2 })}
+                ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
+                ${dataCell("Total Rev", money(totals.totalRev), { align: "right", cls: "money-pos" })}
+                ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
+              </tr>
+            </tfoot>
+          </table>
+
+          <p class="section-title">Revenue Breakdown</p>
+          <table class="data">
+            <thead>
+              <tr>
+                <th width="20%">Login</th>
+                <th width="20%">Markup</th>
+                <th width="20%">Client Comm</th>
+                <th width="20%">LP Comm</th>
+                <th width="20%">IB Commission</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${breakdownRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 5, align: "center" })}</tr>`}
+            </tbody>
+            <tfoot>
+              <tr>
+                ${spanCell("TOTAL")}
+                ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
+                ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
+                ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
+                ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
+              </tr>
+            </tfoot>
           </table>
 
           ${buildVolumeSection(volume)}
