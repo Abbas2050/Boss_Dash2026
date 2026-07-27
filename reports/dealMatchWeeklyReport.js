@@ -290,7 +290,7 @@ function buildVolumeSection(volume) {
             </tr>
           </table>
 
-          <table class="data">
+          <table class="data narrow">
             <thead>
               <tr><th width="28%">Day</th><th width="24%">Equity Lots</th><th width="24%">CFD Lots</th><th width="24%">Total Lots</th></tr>
             </thead>
@@ -323,29 +323,18 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
     { lots: 0, markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, totalRev: 0, netRev: 0 },
   );
 
-  // Nine columns cannot fit a 375px screen (~38px each), so the data is split
-  // across two 5-column tables: the headline figures first, then the components
-  // that make them up. Login is the key that ties the two together.
-  const summaryRows = rows
+  const bodyRows = rows
     .map(
       (row) => `<tr>
         ${dataCell("Login", escapeHtml(row.login), { nowrap: true })}
         ${dataCell("Name", escapeHtml(row.name))}
         ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
-        ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
-        ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
-      </tr>`,
-    )
-    .join("");
-
-  const breakdownRows = rows
-    .map(
-      (row) => `<tr>
-        ${dataCell("Login", escapeHtml(row.login), { nowrap: true })}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
         ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
+        ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
         ${dataCell("IB Commission", money(row.ibCommission), { align: "right" })}
+        ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
       </tr>`,
     )
     .join("");
@@ -391,13 +380,13 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
          collapse to one per line on a phone. That trick only works for small
          counts — a 9-across row can never also be 1-across — so the data tables
          are split into <=5-column tables instead. */
-      /* Four cards capped at 150px: four-across on a desktop-width email, and
-         two-across (filling the width) on a phone. Forcing all four onto one
-         375px row gives 78px each, which is narrower than "$13,677.50" — the
-         values then bleed over each other. */
+      /* Four cards capped at 230px: they span the full width four-across on a
+         desktop-width email, and stack one per line on a phone. Forcing all
+         four onto a 375px row gives 78px each — narrower than "$13,677.50",
+         so the values would bleed over each other. */
       .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; max-width:150px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
-      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:8px 10px; }
+      .kpis td { display:inline-block; width:100%; max-width:222px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
+      .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:10px 12px; }
       .kpi.clients { background:#eef8ff; border-color:#bfe3ff; }
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
       .kpi.gross { background:#fffbeb; border-color:#fde68a; }
@@ -412,18 +401,21 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .kpi.equity { background:#ecfeff; border-color:#a5f3fc; }
       .kpi.cfd { background:#f5f3ff; border-color:#ddd6fe; }
       .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
-      .kpi-label { font-size:9px; text-transform:uppercase; letter-spacing:0.2px; color:#64748b; margin:0 0 4px; line-height:1.25; }
-      .kpi-value { font-size:14px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
+      .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:#64748b; margin:0 0 5px; line-height:1.25; }
+      .kpi-value { font-size:16px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
-      /* Data tables: real tables, capped at 5 columns so a 375px screen still
-         gives each column ~68px. Numeric cells never wrap — a figure broken
-         mid-value ("51,/90/0.0/0") is worse than no table at all. Only text
-         columns are allowed to break, and only between words. */
-      table.data { border-collapse:collapse; width:100%; font-size:11px; table-layout:fixed; margin:0 0 16px; }
-      table.data th, table.data td { border:1px solid #e2e8f0; padding:6px 5px; text-align:left; vertical-align:top; }
+      /* The full table needs ~860px to stay legible. On a desktop-width email it
+         simply fills the width; on a phone the wrapper scrolls sideways rather
+         than crushing nine columns into 375px, which is what mangled the
+         figures. Numeric cells never wrap. */
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; min-width:860px; font-size:12px; table-layout:fixed; }
+      /* Four columns fit a phone unaided — no minimum, no sideways scroll. */
+      table.data.narrow { min-width:0; }
+      table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 8px; text-align:left; vertical-align:top; }
       /* Headers wrap between words only — break-word gives "IB Commissi/on". */
-      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:10px; }
+      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
       table.data td.num { text-align:right; white-space:nowrap; }
       table.data td.key { white-space:nowrap; }
       table.data td.txt { overflow-wrap:break-word; }
@@ -438,6 +430,16 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       .money-neg { color:#b91c1c; font-weight:700; }
       .foot { border-top:1px solid #e2e8f0; margin-top:14px; padding-top:10px; color:#64748b; font-size:12px; line-height:1.5; }
       .attachments { margin-top:8px; color:#334155; font-size:12px; }
+      /* TEMPORARY probe: tells us whether this mail client honours @media at
+         all. If the footer reads WIDE on a desktop and NARROW on a phone, we
+         can serve a table to desktop and cards to phones. If it reads the same
+         on both, @media is being stripped and one layout must serve both.
+         Remove once the question is settled. */
+      .probe-wide { display:none; }
+      @media only screen and (min-width: 681px) {
+        .probe-narrow { display:none; }
+        .probe-wide { display:inline; }
+      }
       /* Cosmetic only. The data layout above is deliberately NOT switched here:
          clients that strip @media (Zoho) must render the same thing as clients
          that honour it, otherwise the report looks different per mailbox. */
@@ -503,54 +505,39 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
-          <p class="section-title">Client Revenue</p>
+          <p class="section-title">Client Revenue Table</p>
+          <div class="tscroll">
           <table class="data">
             <thead>
               <tr>
-                <th width="14%">Login</th>
-                <th width="26%">Name</th>
-                <th width="20%">Lots</th>
-                <th width="20%">Total Rev</th>
-                <th width="20%">Net Revenue</th>
+                <th width="8%">Login</th>
+                <th width="20%">Name</th>
+                <th width="9%">Lots</th>
+                <th width="9%">Markup</th>
+                <th width="10%">Client Comm</th>
+                <th width="9%">LP Comm</th>
+                <th width="10%">Total Rev</th>
+                <th width="11%">IB Commission</th>
+                <th width="10%">Net Revenue</th>
               </tr>
             </thead>
             <tbody>
-              ${summaryRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 5, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
             </tbody>
             <tfoot>
               <tr>
                 ${spanCell("TOTAL", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
+                ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
+                ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
+                ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
                 ${dataCell("Total Rev", money(totals.totalRev), { align: "right", cls: "money-pos" })}
+                ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
                 ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
               </tr>
             </tfoot>
           </table>
-
-          <p class="section-title">Revenue Breakdown</p>
-          <table class="data">
-            <thead>
-              <tr>
-                <th width="20%">Login</th>
-                <th width="20%">Markup</th>
-                <th width="20%">Client Comm</th>
-                <th width="20%">LP Comm</th>
-                <th width="20%">IB Commission</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${breakdownRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 5, align: "center" })}</tr>`}
-            </tbody>
-            <tfoot>
-              <tr>
-                ${spanCell("TOTAL")}
-                ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
-                ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
-                ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
-                ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
-              </tr>
-            </tfoot>
-          </table>
+          </div>
 
           ${buildVolumeSection(volume)}
 
@@ -560,7 +547,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
             Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
-            Client Volume is sourced from ClientVolume/Run (all groups) &mdash; the same feed as the dashboard's Dealing (LP) volume tile.
+            Client Volume is sourced from ClientVolume/Run (all groups) &mdash; the same feed as the dashboard's Dealing (LP) volume tile.<br/>
+            Layout probe: <strong><span class="probe-narrow">NARROW</span><span class="probe-wide">WIDE</span></strong>
           </div>
         </div>
       </div>

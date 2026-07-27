@@ -142,31 +142,19 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
 }
 
 function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
-  // Ten columns cannot fit a 375px screen (~34px each), so the data is split
-  // into an LP-side table and a client-side table, keyed on LP.
-  const lpKeyCell = (b) => dataCell("LP", escapeHtml(b.key), { nowrap: true, cls: b.key === "Unattributed" ? "muted-key" : "" });
-
-  const lpRows = buckets
+  const bodyRows = buckets
     .map(
       (b) => `<tr>
-        ${lpKeyCell(b)}
+        ${dataCell("LP", escapeHtml(b.key), { nowrap: true, cls: b.key === "Unattributed" ? "muted-key" : "" })}
         ${dataCell("Lots", fmtNum(b.lots, 2), { align: "right" })}
-        ${dataCell("Avg Slip (pts)", fmtNum(b.avgSlipPts, 2), { align: "right", cls: slipCls(b.avgSlipPts) })}
-        ${dataCell("Avg Slip (USD)", money(b.lpAvgSlipUsd), { align: "right", cls: slipCls(b.lpAvgSlipUsd) })}
-        ${dataCell("Total Slip (USD)", money(b.netSlipUsd), { align: "right", cls: slipCls(b.netSlipUsd) })}
-      </tr>`,
-    )
-    .join("");
-
-  const clientRows = buckets
-    .map(
-      (b) => `<tr>
-        ${lpKeyCell(b)}
-        ${dataCell("Avg Slip (pts)", fmtNum(b.clientAvgSlipPts, 2), { align: "right", cls: slipCls(b.clientAvgSlipPts) })}
-        ${dataCell("Avg Slip (USD)", money(b.clientAvgSlipUsd), { align: "right", cls: slipCls(b.clientAvgSlipUsd) })}
-        ${dataCell("Total Slip (USD)", money(b.clientTotalSlipUsd), { align: "right", cls: slipCls(b.clientTotalSlipUsd) })}
-        ${dataCell("Net Positive", money(b.netPosUsd), { align: "right", cls: "pos" })}
-        ${dataCell("Net Negative", money(b.netNegUsd), { align: "right", cls: "neg" })}
+        ${dataCell("LP Avg Slip (pts)", fmtNum(b.avgSlipPts, 2), { align: "right", cls: slipCls(b.avgSlipPts) })}
+        ${dataCell("LP Avg Slip (USD)", money(b.lpAvgSlipUsd), { align: "right", cls: slipCls(b.lpAvgSlipUsd) })}
+        ${dataCell("LP Total Slip (USD)", money(b.netSlipUsd), { align: "right", cls: slipCls(b.netSlipUsd) })}
+        ${dataCell("Client Avg Slip (pts)", fmtNum(b.clientAvgSlipPts, 2), { align: "right", cls: slipCls(b.clientAvgSlipPts) })}
+        ${dataCell("Client Avg Slip (USD)", money(b.clientAvgSlipUsd), { align: "right", cls: slipCls(b.clientAvgSlipUsd) })}
+        ${dataCell("Client Total Slip (USD)", money(b.clientTotalSlipUsd), { align: "right", cls: slipCls(b.clientTotalSlipUsd) })}
+        ${dataCell("Net Positive USD", money(b.netPosUsd), { align: "right", cls: "pos" })}
+        ${dataCell("Net Negative USD", money(b.netNegUsd), { align: "right", cls: "neg" })}
       </tr>`,
     )
     .join("");
@@ -230,19 +218,21 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
          of a phone screen. Capped at 150px they sit five-across on desktop and
          fall to two-across (filling the width) on a phone. */
       .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; max-width:150px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
-      .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:8px 10px; }
+      .kpis td { display:inline-block; width:100%; max-width:182px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
+      .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:10px 12px; }
       .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#8ea4c6; margin:0 0 6px; }
       .kpi-value { font-size:17px; font-weight:700; color:#e2e8f0; margin:0; }
       .kpi-sub { font-size:11px; color:#8ea4c6; margin:4px 0 0; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#e2e8f0; font-weight:700; }
-      /* Data tables: real tables, kept narrow enough that a 375px screen still
-         gives each column ~56-68px. Numeric cells never wrap — a figure broken
-         mid-value ("-$9,/40/4.3/0") is worse than no table at all. */
-      table.data { border-collapse:collapse; width:100%; font-size:11px; table-layout:fixed; margin:0 0 16px; }
-      table.data th, table.data td { border:1px solid #223255; padding:6px 5px; text-align:left; vertical-align:top; }
+      /* The full table needs ~940px to stay legible. On a desktop-width email it
+         simply fills the width; on a phone the wrapper scrolls sideways rather
+         than crushing ten columns into 375px, which mangled the figures.
+         Numeric cells never wrap. */
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; min-width:940px; font-size:12px; table-layout:fixed; }
+      table.data th, table.data td { border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
       /* Headers wrap between words only — break-word gives "Client Total Sli/p". */
-      table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:10px; }
+      table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }
       table.data td.num { text-align:right; white-space:nowrap; }
       table.data td.key { white-space:nowrap; }
       table.data td.txt { overflow-wrap:break-word; }
@@ -324,57 +314,42 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
             </tr>
           </table>
 
-          <p class="section-title">LP Slippage &mdash; by LP</p>
+          <p class="section-title">By-LP Summary</p>
+          <div class="tscroll">
           <table class="data">
             <thead>
               <tr>
-                <th width="20%">LP</th>
-                <th width="20%">Lots</th>
-                <th width="20%">Avg Slip (pts)</th>
-                <th width="20%">Avg Slip (USD)</th>
-                <th width="20%">Total Slip (USD)</th>
+                <th width="11%">LP</th>
+                <th width="9%">Lots</th>
+                <th width="10%">LP Avg Slip (pts)</th>
+                <th width="10%">LP Avg Slip (USD)</th>
+                <th width="11%">LP Total Slip (USD)</th>
+                <th width="10%">Client Avg Slip (pts)</th>
+                <th width="10%">Client Avg Slip (USD)</th>
+                <th width="11%">Client Total Slip (USD)</th>
+                <th width="9%">Net Positive USD</th>
+                <th width="9%">Net Negative USD</th>
               </tr>
             </thead>
             <tbody>
-              ${lpRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 5, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 10, align: "center" })}</tr>`}
             </tbody>
             <tfoot>
               <tr>
                 ${spanCell("TOTAL")}
                 ${dataCell("Lots", fmtNum(rollupTotals.lots, 2), { align: "right" })}
-                ${dataCell("Avg Slip (pts)", fmtNum(totalLpAvgPts, 2), { align: "right", cls: slipCls(totalLpAvgPts) })}
-                ${dataCell("Avg Slip (USD)", money(totalLpAvgUsd), { align: "right", cls: slipCls(totalLpAvgUsd) })}
-                ${dataCell("Total Slip (USD)", money(rollupTotals.netSlipUsd), { align: "right", cls: slipCls(rollupTotals.netSlipUsd) })}
+                ${dataCell("LP Avg Slip (pts)", fmtNum(totalLpAvgPts, 2), { align: "right", cls: slipCls(totalLpAvgPts) })}
+                ${dataCell("LP Avg Slip (USD)", money(totalLpAvgUsd), { align: "right", cls: slipCls(totalLpAvgUsd) })}
+                ${dataCell("LP Total Slip (USD)", money(rollupTotals.netSlipUsd), { align: "right", cls: slipCls(rollupTotals.netSlipUsd) })}
+                ${dataCell("Client Avg Slip (pts)", fmtNum(totalClientAvgPts, 2), { align: "right", cls: slipCls(totalClientAvgPts) })}
+                ${dataCell("Client Avg Slip (USD)", money(totalClientAvgUsd), { align: "right", cls: slipCls(totalClientAvgUsd) })}
+                ${dataCell("Client Total Slip (USD)", money(rollupTotals.clientSumUsd), { align: "right", cls: slipCls(rollupTotals.clientSumUsd) })}
+                ${dataCell("Net Positive USD", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
+                ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
               </tr>
             </tfoot>
           </table>
-
-          <p class="section-title">Client Slippage &mdash; by LP</p>
-          <table class="data">
-            <thead>
-              <tr>
-                <th width="14%">LP</th>
-                <th width="14%">Avg Slip (pts)</th>
-                <th width="18%">Avg Slip (USD)</th>
-                <th width="18%">Total Slip (USD)</th>
-                <th width="18%">Net Positive</th>
-                <th width="18%">Net Negative</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${clientRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 6, align: "center" })}</tr>`}
-            </tbody>
-            <tfoot>
-              <tr>
-                ${spanCell("TOTAL")}
-                ${dataCell("Avg Slip (pts)", fmtNum(totalClientAvgPts, 2), { align: "right", cls: slipCls(totalClientAvgPts) })}
-                ${dataCell("Avg Slip (USD)", money(totalClientAvgUsd), { align: "right", cls: slipCls(totalClientAvgUsd) })}
-                ${dataCell("Total Slip (USD)", money(rollupTotals.clientSumUsd), { align: "right", cls: slipCls(rollupTotals.clientSumUsd) })}
-                ${dataCell("Net Positive", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
-                ${dataCell("Net Negative", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
-              </tr>
-            </tfoot>
-          </table>
+          </div>
 
           <p class="section-title" style="margin-top:16px;">Net Slippage by LP</p>
           <div class="chart-wrap" style="color:#8ea4c6;font-size:12px;">
