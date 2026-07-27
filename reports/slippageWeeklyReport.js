@@ -217,8 +217,9 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       /* Five cards, and one of them holds "-$12,480.55" — too wide for a fifth
          of a phone screen. Capped at 150px they sit five-across on desktop and
          fall to two-across (filling the width) on a phone. */
-      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; max-width:182px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
+      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; }
+      .kpis, .kpis tbody, .kpis tr, .kpis td { display:block; width:100%; box-sizing:border-box; }
+      .kpis td { margin:0 0 8px; }
       .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:10px 12px; }
       .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#8ea4c6; margin:0 0 6px; }
       .kpi-value { font-size:17px; font-weight:700; color:#e2e8f0; margin:0; }
@@ -228,20 +229,19 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
          simply fills the width; on a phone the wrapper scrolls sideways rather
          than crushing ten columns into 375px, which mangled the figures.
          Numeric cells never wrap. */
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; min-width:940px; font-size:12px; table-layout:fixed; }
-      table.data th, table.data td { border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
-      /* Headers wrap between words only — break-word gives "Client Total Sli/p". */
-      table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }
-      table.data td.num { text-align:right; white-space:nowrap; }
-      table.data td.key { white-space:nowrap; }
-      table.data td.txt { overflow-wrap:break-word; }
-      table.data tbody tr:nth-child(even) { background:#101c33; }
-      table.data tfoot td { font-weight:700; background:#16233f; color:#e2e8f0; }
-      /* The <thead> carries the column names, so the per-cell label spans that
-         the card layout needed stay hidden here. */
-      table.data td .lbl { display:none; }
-      table.data td .val { display:inline; }
+      /* BASE = phone: one card per LP, each field a label/value line. This is
+         the default so a phone is right even where @media is stripped. */
+      .tscroll { width:100%; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; font-size:12px; }
+      table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
+      table.data thead { display:none; }
+      table.data tr { margin:0 0 10px; border:1px solid #223255; border-radius:8px; overflow:hidden; }
+      table.data td { border:0; border-bottom:1px solid #1a2740; padding:8px 10px; }
+      table.data td:last-child { border-bottom:0; }
+      table.data td .lbl { display:inline-block; width:44%; text-align:left; font-weight:700; color:#8ea4c6; vertical-align:top; }
+      table.data td .val { display:inline-block; width:54%; text-align:right; vertical-align:top; }
+      table.data tfoot tr { border:1px solid #2c3f68; background:#16233f; }
+      table.data tfoot td { font-weight:700; color:#e2e8f0; }
       .muted-key { font-style:italic; color:#7186a8; }
       .pos { color:#34d399; font-weight:700; }
       .neg { color:#f87171; font-weight:700; }
@@ -262,6 +262,28 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
         .title { font-size:22px; }
         .subtitle { font-size:13px; }
         .content { padding:18px 20px 16px; }
+
+        .kpis { display:table; table-layout:fixed; border-collapse:separate; border-spacing:6px; }
+        .kpis tbody { display:table-row-group; }
+        .kpis tr { display:table-row; }
+        .kpis td { display:table-cell; width:20%; margin:0; }
+
+        .tscroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+        table.data { display:table; table-layout:fixed; min-width:940px; }
+        table.data thead { display:table-header-group; }
+        table.data tbody { display:table-row-group; }
+        table.data tfoot { display:table-footer-group; }
+        table.data tr { display:table-row; margin:0; border:0; border-radius:0; }
+        table.data th, table.data td { display:table-cell; width:auto; border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
+        table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }
+        table.data td.num { text-align:right; white-space:nowrap; }
+        table.data td.key { white-space:nowrap; }
+        table.data td.txt { overflow-wrap:break-word; }
+        table.data td .lbl { display:none; }
+        table.data td .val { display:inline; width:auto; text-align:inherit; }
+        table.data tbody tr:nth-child(even) { background:#101c33; }
+        table.data tfoot tr { border:0; background:transparent; }
+        table.data tfoot td { background:#16233f; }
       }
     </style>
   </head>
