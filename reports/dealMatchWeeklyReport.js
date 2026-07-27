@@ -308,16 +308,14 @@ function buildVolumeSection(volume) {
               <tr><th width="28%">Day</th><th width="24%">Equity Lots</th><th width="24%">CFD Lots</th><th width="24%">Traded Lots</th></tr>
             </thead>
             <tbody>
-              ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
-            </tbody>
-            <tfoot>
-              <tr>
+              <tr class="total-row">
                 ${spanCell("TOTAL")}
                 ${dataCell("Equity Lots", fmtNum(volume.totalStocksLots, 2), { align: "right" })}
                 ${dataCell("CFD Lots", fmtNum(volume.totalCfdLots, 2), { align: "right" })}
                 ${dataCell("Traded Lots", fmtNum(volume.totalLots, 2), { align: "right" })}
               </tr>
-            </tfoot>
+              ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
+            </tbody>
           </table>`;
 }
 
@@ -397,9 +395,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
          desktop-width email, and stack one per line on a phone. Forcing all
          four onto a 375px row gives 78px each — narrower than "$13,677.50",
          so the values would bleed over each other. */
-      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; }
-      .kpis, .kpis tbody, .kpis tr, .kpis td { display:block; width:100%; box-sizing:border-box; }
-      .kpis td { margin:0 0 8px; }
+      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
+      .kpis td { display:inline-block; width:100%; max-width:222px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
       .kpi { background:#f8fbff; border:1px solid #d9e8f8; border-radius:10px; padding:10px 12px; }
       .kpi.clients { background:#eef8ff; border-color:#bfe3ff; }
       .kpi.lots { background:#edfdf7; border-color:#bbf7d0; }
@@ -423,88 +420,31 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
          simply fills the width; on a phone the wrapper scrolls sideways rather
          than crushing nine columns into 375px, which is what mangled the
          figures. Numeric cells never wrap. */
-      /* BASE = phone: one card per record, each field a label/value line. This
-         is the default so a phone is right even where @media is stripped. */
-      .tscroll { width:100%; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; font-size:12px; }
-      table.data, table.data tbody, table.data tfoot, table.data tr, table.data td { display:block; width:100%; box-sizing:border-box; }
-      table.data thead { display:none; }
-      table.data tr { margin:0 0 10px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; overflow:hidden; }
-      table.data td { border:0; border-bottom:1px solid #eef2f7; padding:8px 10px; }
-      table.data td:last-child { border-bottom:0; }
-      table.data td .lbl { display:inline-block; width:44%; text-align:left; font-weight:700; color:#475569; vertical-align:top; }
-      table.data td .val { display:inline-block; width:54%; text-align:right; vertical-align:top; }
-      table.data tfoot tr { border:1px solid #cfe3ff; background:#eff6ff; }
-      table.data tfoot td { font-weight:700; color:#0f2d4f; }
+      /* BASE = the real table. Zoho ignores @media (verified in production from
+         both directions), so there is no breakpoint to switch on — the table has
+         to be the default or a desktop reader never gets one. The wrapper keeps
+         a phone usable: it scrolls sideways instead of crushing 9 columns. */
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; min-width:860px; font-size:12px; table-layout:fixed; }
+      table.data.narrow { min-width:0; font-size:11px; }
+      table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 8px; text-align:left; vertical-align:top; }
+      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
+      table.data td.num { text-align:right; white-space:nowrap; }
+      table.data td.key { white-space:nowrap; }
+      table.data td.txt { overflow-wrap:break-word; }
+      table.data tbody tr:nth-child(even) { background:#f9fcff; }
+      /* TOTAL sits at the TOP of the body, not in a <tfoot>, so the headline
+         figures are visible without scrolling past every client. Declared after
+         the zebra rule so the stripe never overrides its fill. */
+      table.data tr.total-row td { font-weight:700; background:#eff6ff; color:#0f2d4f; }
+      table.data td .lbl { display:none; }
+      table.data td .val { display:inline; }
 
-      /* The 4-column volume table fits a phone as-is, so it stays a real table
-         at every width rather than expanding into seven cards. */
-      table.data.narrow, table.data.narrow tbody, table.data.narrow tfoot { display:revert; }
-      table.data.narrow { display:table; table-layout:fixed; font-size:11px; }
-      table.data.narrow thead { display:table-header-group; }
-      table.data.narrow tbody { display:table-row-group; }
-      table.data.narrow tfoot { display:table-footer-group; }
-      table.data.narrow tr { display:table-row; margin:0; border:0; border-radius:0; }
-      table.data.narrow th, table.data.narrow td { display:table-cell; width:auto; border:1px solid #e2e8f0; padding:6px 5px; text-align:left; }
-      table.data.narrow th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:10px; }
-      table.data.narrow td.num { text-align:right; white-space:nowrap; }
-      table.data.narrow td .lbl { display:none; }
-      table.data.narrow td .val { display:inline; width:auto; text-align:inherit; }
-      table.data.narrow tbody tr:nth-child(even) { background:#f9fcff; }
-      table.data.narrow tfoot td { background:#eff6ff; }
       .money-pos { color:#0369a1; font-weight:700; }
       .money-cost { color:#b45309; }
       .money-neg { color:#b91c1c; font-weight:700; }
       .foot { border-top:1px solid #e2e8f0; margin-top:14px; padding-top:10px; color:#64748b; font-size:12px; line-height:1.5; }
       .attachments { margin-top:8px; color:#334155; font-size:12px; }
-      /* TEMPORARY probe: tells us whether this mail client honours @media at
-         all. If the footer reads WIDE on a desktop and NARROW on a phone, we
-         can serve a table to desktop and cards to phones. If it reads the same
-         on both, @media is being stripped and one layout must serve both.
-         Remove once the question is settled. */
-      .probe-wide { display:none; }
-      @media only screen and (min-width: 681px) {
-        .probe-narrow { display:none; }
-        .probe-wide { display:inline; }
-      }
-      /* DESKTOP enhancement: restore the full-width table and the four-across
-         KPI row. If a client strips @media it simply keeps the phone layout
-         above, which is the safer thing to fall back to. */
-      @media only screen and (min-width: 681px) {
-        .outer { padding:20px 10px; }
-        .wrap { border-radius:14px; }
-        .header { padding:18px 20px; }
-        .header-grid td { display:table-cell; width:auto !important; }
-        .header-left { width:48%; }
-        .header-right { width:52%; text-align:right; margin-top:0; }
-        .title { font-size:22px; }
-        .subtitle { font-size:13px; }
-        .content { padding:18px 20px 16px; }
-        .kpi-value { font-size:18px; }
-
-        .kpis { display:table; table-layout:fixed; border-collapse:separate; border-spacing:6px; }
-        .kpis tbody { display:table-row-group; }
-        .kpis tr { display:table-row; }
-        .kpis td { display:table-cell; width:25%; margin:0; }
-
-        .tscroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
-        table.data { display:table; table-layout:fixed; min-width:860px; }
-        table.data thead { display:table-header-group; }
-        table.data tbody { display:table-row-group; }
-        table.data tfoot { display:table-footer-group; }
-        table.data tr { display:table-row; margin:0; border:0; border-radius:0; background:transparent; }
-        table.data th, table.data td { display:table-cell; width:auto; border:1px solid #e2e8f0; padding:7px 8px; text-align:left; vertical-align:top; }
-        table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
-        table.data td.num { text-align:right; white-space:nowrap; }
-        table.data td.key { white-space:nowrap; }
-        table.data td.txt { overflow-wrap:break-word; }
-        table.data td .lbl { display:none; }
-        table.data td .val { display:inline; width:auto; text-align:inherit; }
-        table.data tbody tr:nth-child(even) { background:#f9fcff; }
-        table.data tfoot tr { border:0; background:transparent; }
-        table.data tfoot td { background:#eff6ff; }
-        table.data.narrow { min-width:0; font-size:12px; }
-      }
     </style>
   </head>
   <body>
@@ -572,10 +512,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
               </tr>
             </thead>
             <tbody>
-              ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
-            </tbody>
-            <tfoot>
-              <tr>
+              <tr class="total-row">
                 ${spanCell("TOTAL", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
                 ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
@@ -585,7 +522,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
                 ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
                 ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
               </tr>
-            </tfoot>
+              ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
+            </tbody>
           </table>
           </div>
 
@@ -597,8 +535,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
             Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
-            Traded Lots come from ClientVolume/Run (the dashboard's Dealing (LP) volume tile). Total Lots above come from DealMatch/Run &mdash; a different measure, so the two do not reconcile.<br/>
-            Layout probe: <strong><span class="probe-narrow">NARROW</span><span class="probe-wide">WIDE</span></strong>
+            Traded Lots come from ClientVolume/Run (the dashboard's Dealing (LP) volume tile). Total Lots above come from DealMatch/Run &mdash; a different measure, so the two do not reconcile.
           </div>
         </div>
       </div>
