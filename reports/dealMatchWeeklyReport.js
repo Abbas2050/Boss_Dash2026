@@ -11,6 +11,7 @@ import {
   toUnixRange,
   sendBrevoEmail,
   renderChartBuffer,
+  publishChartImages,
 } from "./reportShared.js";
 
 const DEFAULT_SCHEDULE = "0 20 * * 5"; // 20:00 every Friday (UAE time)
@@ -263,9 +264,388 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
   return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
+// ── inline charts ────────────────────────────────────────────────────────────
+// Charts ship as real Chart.js PNGs embedded in the message via Content-ID, so
+// shapes CSS cannot draw (doughnut, dual-axis line) are available and nothing is
+// exposed on a public URL. The table-based bar builders further down are the
+// fallback used when image rendering is unavailable — a message with plain HTML
+// bars beats a message with five broken images.
+
+const pct = (value, max) => (max > 0 ? Math.max(0, Math.min(100, (Math.abs(value) / max) * 100)) : 0);
+
+// ── PNG charts (Chart.js) ────────────────────────────────────────────────────
+
+const CH = {
+  ink: "#0f172a",
+  grid: "#e2e8f0",
+  axis: "#334155",
+  muted: "#64748b",
+  markup: "#0891b2",
+  clientComm: "#0f766e",
+  lpComm: "#b45309",
+  ibComm: "#be123c",
+  net: "#15803d",
+  gross: "#1d4ed8",
+  loss: "#b91c1c",
+};
+
+const shortMoney = (v) => {
+  const n = Number(v) || 0;
+  const abs = Math.abs(n);
+  const sign = n < 0 ? "-" : "";
+  if (abs >= 1000) return `${sign}$${(abs / 1000).toFixed(abs >= 10000 ? 0 : 1)}k`;
+  return `${sign}$${abs.toFixed(0)}`;
+};
+const shortNum = (v) => {
+  const n = Math.abs(Number(v) || 0);
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
+  return n.toFixed(0);
+};
+
+// Draws each value onto its own bar/point. chartjs-plugin-datalabels is not a
+// dependency here, so this is a small inline plugin instead.
+function valueLabels(formatFor) {
+  return {
+    id: "valueLabels",
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      ctx.save();
+      ctx.font = "bold 11px Arial";
+      ctx.fillStyle = CH.ink;
+      chart.data.datasets.forEach((ds, di) => {
+        const meta = chart.getDatasetMeta(di);
+        if (meta.hidden) return;
+        meta.data.forEach((el, i) => {
+          const raw = ds.data[i];
+          if (raw === null || raw === undefined) return;
+          const text = formatFor(raw, di, i);
+          if (!text) return;
+          const horizontal = chart.options.indexAxis === "y";
+          if (horizontal) {
+            ctx.textAlign = raw < 0 ? "right" : "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(text, el.x + (raw < 0 ? -6 : 6), el.y);
+          } else {
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+            ctx.fillText(text, el.x, el.y - 4);
+          }
+        });
+      });
+      ctx.restore();
+    },
+  };
+}
+
+// Doughnut labels sit on the slice, with the share underneath.
+const doughnutLabels = {
+  id: "doughnutLabels",
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    const ds = chart.data.datasets[0];
+    const total = ds.data.reduce((s, v) => s + Math.abs(Number(v) || 0), 0);
+    if (!total) return;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    chart.getDatasetMeta(0).data.forEach((arc, i) => {
+      const value = Math.abs(Number(ds.data[i]) || 0);
+      const share = (value / total) * 100;
+      if (share < 4) return; // too thin to letter without collision
+      const { x, y } = arc.tooltipPosition();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 13px Arial";
+      ctx.fillText(shortMoney(value), x, y - 8);
+      ctx.font = "11px Arial";
+      ctx.fillText(`${share.toFixed(1)}%`, x, y + 8);
+    });
+    ctx.restore();
+  },
+};
+
+const chartTitle = (text, subtitle) => ({
+  legend: { labels: { color: CH.axis, font: { size: 12 } } },
+  title: { display: true, text, color: CH.ink, font: { size: 18, weight: "700" }, padding: { bottom: 2 } },
+  subtitle: { display: Boolean(subtitle), text: subtitle || "", color: CH.muted, font: { size: 12 }, padding: { bottom: 10 } },
+});
+
+// Builds every PNG and returns [{ name, content }] ready for Brevo, each keyed
+// by the same name the HTML references as cid:<name>.
+async function buildChartImages(rows, volume, totals, titleSuffix) {
+  const byNet = [...rows].sort((a, b) => (Number(b.netRev) || 0) - (Number(a.netRev) || 0)).slice(0, 10);
+  const byTotal = [...rows].sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0)).slice(0, 10);
+  const byLots = [...rows].sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0)).slice(0, 12);
+  const days = volume?.byDate ?? [];
+
+  const specs = [];
+
+  specs.push({
+    name: "top10-net-revenue.png",
+    width: 1100,
+    height: 620,
+    config: {
+      type: "bar",
+      data: {
+        labels: byNet.map((r) => String(r.login)),
+        datasets: [
+          {
+            label: "Net revenue",
+            data: byNet.map((r) => Number(r.netRev) || 0),
+            backgroundColor: byNet.map((r) => ((Number(r.netRev) || 0) < 0 ? CH.loss : CH.net)),
+            borderRadius: 5,
+          },
+        ],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: false,
+        animation: false,
+        layout: { padding: { right: 70 } },
+        scales: {
+          x: { ticks: { color: CH.axis, callback: (v) => shortMoney(v) }, grid: { color: CH.grid } },
+          y: { ticks: { color: CH.axis }, grid: { display: false } },
+        },
+        plugins: { ...chartTitle(`Top 10 Clients by Net Revenue ${titleSuffix}`, "highest net contributors this period"), legend: { display: false } },
+      },
+      plugins: [valueLabels((v) => money(v))],
+    },
+  });
+
+  specs.push({
+    name: "gross-vs-net.png",
+    width: 1100,
+    height: 620,
+    config: {
+      type: "bar",
+      data: {
+        labels: byTotal.map((r) => String(r.login)),
+        datasets: [
+          { label: "Gross revenue", data: byTotal.map((r) => Number(r.totalRev) || 0), backgroundColor: CH.gross, borderRadius: 4 },
+          { label: "Net revenue", data: byTotal.map((r) => Number(r.netRev) || 0), backgroundColor: CH.net, borderRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: false,
+        animation: false,
+        layout: { padding: { top: 20 } },
+        scales: {
+          x: { ticks: { color: CH.axis }, grid: { display: false } },
+          y: { ticks: { color: CH.axis, callback: (v) => shortMoney(v) }, grid: { color: CH.grid } },
+        },
+        plugins: chartTitle(`Gross vs Net Revenue ${titleSuffix}`, "the gap between the pair is LP + IB commission"),
+      },
+      plugins: [valueLabels((v) => shortMoney(v))],
+    },
+  });
+
+  specs.push({
+    name: "lots-vs-net-by-client.png",
+    width: 1100,
+    height: 620,
+    config: {
+      type: "bar",
+      data: {
+        labels: byLots.map((r) => String(r.login)),
+        datasets: [
+          { type: "bar", label: "Lots", yAxisID: "yLots", data: byLots.map((r) => Number(r.lots) || 0), backgroundColor: "rgba(8,145,178,0.55)", borderRadius: 4 },
+          { type: "line", label: "Net revenue", yAxisID: "yRev", data: byLots.map((r) => Number(r.netRev) || 0), borderColor: CH.net, backgroundColor: CH.net, borderWidth: 3, tension: 0.3, pointRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: false,
+        animation: false,
+        layout: { padding: { top: 24 } },
+        scales: {
+          x: { ticks: { color: CH.axis }, grid: { display: false } },
+          yLots: { position: "left", ticks: { color: CH.axis, callback: (v) => shortNum(v) }, grid: { color: CH.grid }, title: { display: true, text: "Lots", color: CH.muted } },
+          yRev: { position: "right", ticks: { color: CH.axis, callback: (v) => shortMoney(v) }, grid: { drawOnChartArea: false }, title: { display: true, text: "Net revenue", color: CH.muted } },
+        },
+        plugins: chartTitle(`Lots vs Net Revenue by Client ${titleSuffix}`, "volume against what it actually earned"),
+      },
+      plugins: [valueLabels((v, di) => (di === 0 ? shortNum(v) : shortMoney(v)))],
+    },
+  });
+
+  specs.push({
+    name: "revenue-composition.png",
+    width: 900,
+    height: 620,
+    config: {
+      type: "doughnut",
+      data: {
+        labels: ["Markup", "Client commission", "LP commission", "IB commission", "Net revenue"],
+        datasets: [
+          {
+            data: [totals.markup, totals.clientComm, totals.lpComm, totals.ibCommission, Math.abs(totals.netRev)],
+            backgroundColor: [CH.markup, CH.clientComm, CH.lpComm, CH.ibComm, CH.net],
+            borderColor: "#ffffff",
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: false,
+        animation: false,
+        cutout: "45%",
+        plugins: { ...chartTitle(`Revenue Composition ${titleSuffix}`, "what was earned, what was paid out, what was kept"), legend: { position: "right", labels: { color: CH.axis, font: { size: 12 }, boxWidth: 14 } } },
+      },
+      plugins: [doughnutLabels],
+    },
+  });
+
+  if (days.length) {
+    specs.push({
+      name: "daily-volume-equity-vs-cfd.png",
+      width: 1100,
+      height: 620,
+      config: {
+        type: "bar",
+        data: {
+          labels: days.map((d) => fmtDayLabel(d.date)),
+          datasets: [
+            { label: "Equity lots", data: days.map((d) => Number(d.stocksLots) || 0), backgroundColor: CH.markup, borderRadius: 4 },
+            { label: "CFD lots", data: days.map((d) => Number(d.cfdLots) || 0), backgroundColor: "#7c3aed", borderRadius: 4 },
+          ],
+        },
+        options: {
+          responsive: false,
+          animation: false,
+          layout: { padding: { top: 20 } },
+          scales: {
+            x: { ticks: { color: CH.axis }, grid: { display: false } },
+            y: { beginAtZero: true, ticks: { color: CH.axis, callback: (v) => shortNum(v) }, grid: { color: CH.grid }, title: { display: true, text: "Lots", color: CH.muted } },
+          },
+          plugins: chartTitle(`Daily Volume - Equity vs CFD ${titleSuffix}`, "lots traded per day, split by instrument class"),
+        },
+        plugins: [valueLabels((v) => (Math.abs(Number(v) || 0) > 0 ? shortNum(v) : ""))],
+      },
+    });
+  }
+
+  const images = [];
+  for (const spec of specs) {
+    const buffer = await renderChartBuffer(spec.config, spec.width, spec.height);
+    images.push({ name: spec.name, buffer });
+  }
+  return images;
+}
+
+// Brevo's API ignores cid:, so charts are fetched over HTTPS from the app.
+const chartImg = (urls, name, alt) =>
+  urls && urls[name]
+    ? `<div class="ch-img"><img src="${urls[name]}" alt="${escapeHtml(alt)}" width="100%" /></div>`
+    : "";
+
+// One bar: a full-width table split into a filled cell and an empty remainder.
+function barCell(segments) {
+  const filled = segments
+    .filter((s) => s.width > 0.4)
+    .map(
+      (s) =>
+        `<td width="${s.width.toFixed(1)}%" style="width:${s.width.toFixed(1)}%;background:${s.color};font-size:0;line-height:14px;height:14px;">&nbsp;</td>`,
+    )
+    .join("");
+  const used = segments.reduce((sum, s) => sum + (s.width > 0.4 ? s.width : 0), 0);
+  const rest = Math.max(0, 100 - used);
+  const filler = rest > 0.4 ? `<td width="${rest.toFixed(1)}%" style="width:${rest.toFixed(1)}%;font-size:0;line-height:14px;height:14px;">&nbsp;</td>` : "";
+  return `<table role="presentation" class="ch-track"><tr>${filled}${filler}</tr></table>`;
+}
+
+// Horizontal bar chart. rows: [{ label, value, display, color }]
+function buildBarChart(heading, note, rows) {
+  if (!rows.length) return "";
+  const max = Math.max(...rows.map((r) => Math.abs(Number(r.value) || 0)), 0);
+  const body = rows
+    .map(
+      (r) => `<tr>
+        <td class="ch-label">${escapeHtml(r.label)}</td>
+        <td class="ch-bar">${barCell([{ width: pct(r.value, max), color: r.color }])}</td>
+        <td class="ch-val">${r.display}</td>
+      </tr>`,
+    )
+    .join("");
+  return `<p class="section-title" style="margin-top:16px;">${heading}</p>
+          ${note ? `<p class="ch-note">${note}</p>` : ""}
+          <table class="chart" role="presentation">${body}</table>`;
+}
+
+const legendDot = (color, text) =>
+  `<span class="ch-key"><span class="ch-swatch" style="background:${color};">&nbsp;&nbsp;&nbsp;</span> ${escapeHtml(text)}</span>`;
+
+// Grouped chart — one labelled bar per series, per category.
+// series: [{ key, label, color }]; rows: [{ label, values:{key}, displays:{key} }]
+// scale "shared" compares series against one axis (Gross vs Net); "per-series"
+// gives each its own axis, for quantities in different units (lots vs dollars).
+function buildGroupedChart(heading, note, series, rows, { scale = "shared" } = {}) {
+  if (!rows.length) return "";
+  const maxAll = Math.max(...rows.flatMap((r) => series.map((s) => Math.abs(Number(r.values[s.key]) || 0))), 0);
+  const maxBySeries = Object.fromEntries(
+    series.map((s) => [s.key, Math.max(...rows.map((r) => Math.abs(Number(r.values[s.key]) || 0)), 0)]),
+  );
+  const body = rows
+    .map((r) =>
+      series
+        .map((s, i) => {
+          const max = scale === "shared" ? maxAll : maxBySeries[s.key];
+          return `<tr class="${i === 0 ? "ch-group-start" : ""}">
+            <td class="ch-label">${i === 0 ? escapeHtml(r.label) : "&nbsp;"}</td>
+            <td class="ch-series">${escapeHtml(s.label)}</td>
+            <td class="ch-bar">${barCell([{ width: pct(r.values[s.key], max), color: s.color }])}</td>
+            <td class="ch-val">${r.displays[s.key]}</td>
+          </tr>`;
+        })
+        .join(""),
+    )
+    .join("");
+  return `<p class="section-title" style="margin-top:16px;">${heading}</p>
+          <p class="ch-note">${series.map((s) => legendDot(s.color, s.label)).join(" ")}${note ? ` &nbsp;&middot;&nbsp; ${note}` : ""}</p>
+          <table class="chart" role="presentation">${body}</table>`;
+}
+
+// Composition chart — each component as a share of a whole, with its percentage.
+// Conveys what the doughnut did, but readable without an image.
+function buildCompositionChart(heading, note, parts, whole) {
+  const base = Math.abs(whole) || parts.reduce((s, p) => s + Math.abs(Number(p.value) || 0), 0);
+  if (!base) return "";
+  const body = parts
+    .map((p) => {
+      const share = (Math.abs(Number(p.value) || 0) / base) * 100;
+      return `<tr>
+        <td class="ch-label">${escapeHtml(p.label)}</td>
+        <td class="ch-bar">${barCell([{ width: Math.min(100, share), color: p.color }])}</td>
+        <td class="ch-val">${p.display}<span class="ch-pct">${share.toFixed(1)}%</span></td>
+      </tr>`;
+    })
+    .join("");
+  return `<p class="section-title" style="margin-top:16px;">${heading}</p>
+          ${note ? `<p class="ch-note">${note}</p>` : ""}
+          <table class="chart" role="presentation">${body}</table>`;
+}
+
+// Stacked bar chart — one bar per row, split into coloured segments.
+// series: [{ key, label, color }]; rows: [{ label, values:{key:number}, display }]
+function buildStackedChart(heading, note, series, rows) {
+  if (!rows.length) return "";
+  const totalOf = (r) => series.reduce((sum, s) => sum + Math.abs(Number(r.values[s.key]) || 0), 0);
+  const max = Math.max(...rows.map(totalOf), 0);
+  const body = rows
+    .map((r) => {
+      const segs = series.map((s) => ({ width: pct(r.values[s.key], max), color: s.color }));
+      return `<tr>
+        <td class="ch-label">${escapeHtml(r.label)}</td>
+        <td class="ch-bar">${barCell(segs)}</td>
+        <td class="ch-val">${r.display}</td>
+      </tr>`;
+    })
+    .join("");
+  return `<p class="section-title" style="margin-top:16px;">${heading}</p>
+          <p class="ch-note">${series.map((s) => legendDot(s.color, s.label)).join(" ")}${note ? ` &nbsp;&middot;&nbsp; ${note}` : ""}</p>
+          <table class="chart" role="presentation">${body}</table>`;
+}
+
 // Equity-vs-CFD summary cards + a per-day table for the report week. Renders a
 // short notice instead of throwing when the volume endpoint was unavailable.
-function buildVolumeSection(volume) {
+function buildVolumeSection(volume, charts) {
   const title = `<p class="section-title" style="margin-top:18px;">Client Volume &mdash; Equity vs CFD</p>`;
 
   if (!volume) {
@@ -316,10 +696,24 @@ function buildVolumeSection(volume) {
               </tr>
               ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
             </tbody>
-          </table>`;
+          </table>
+
+          ${charts ? chartImg(charts, "daily-volume-equity-vs-cfd.png", "Daily volume, equity versus CFD lots") : buildStackedChart(
+            "Daily Volume &mdash; Equity vs CFD",
+            "lots traded per day",
+            [
+              { key: "stocksLots", label: "Equity", color: "#0891b2" },
+              { key: "cfdLots", label: "CFD", color: "#7c3aed" },
+            ],
+            days.map((d) => ({
+              label: fmtDayLabel(d.date),
+              values: { stocksLots: d.stocksLots, cfdLots: d.cfdLots },
+              display: fmtNum(d.lots, 2),
+            })),
+          )}`;
 }
 
-function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
+function buildEmailHtml({ fromYmd, toYmd, rows, volume, charts = null }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -440,6 +834,26 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
       table.data td .lbl { display:none; }
       table.data td .val { display:inline; }
 
+      /* Inline charts: bars are nested tables with a background colour, which
+         renders even when the client blocks images. Values sit in their own
+         right-hand cell so short bars stay readable. */
+      table.chart { width:100%; border-collapse:collapse; font-size:11px; margin:0 0 14px; }
+      table.chart td { padding:3px 4px; vertical-align:middle; border:0; }
+      .ch-label { width:26%; color:#334155; }
+      .ch-series { width:11%; color:#64748b; font-size:10px; }
+      .ch-bar { width:43%; }
+      .ch-val { width:20%; text-align:right; font-weight:700; color:#0f2d4f; white-space:nowrap; }
+      .ch-pct { display:block; font-weight:400; font-size:10px; color:#64748b; }
+      tr.ch-group-start td { padding-top:7px; }
+      table.ch-track { width:100%; border-collapse:collapse; background:#eef2f7; }
+      table.ch-track td { padding:0; }
+      .ch-note { margin:0 0 6px; font-size:11px; color:#64748b; }
+      /* Chart images are embedded by Content-ID. max-width keeps them inside a
+         375px screen; height:auto stops clients stretching them. */
+      .ch-img { margin:0 0 16px; }
+      .ch-img img { display:block; width:100%; max-width:100%; height:auto; border:1px solid #e2e8f0; border-radius:8px; }
+      .ch-key { margin-right:10px; white-space:nowrap; }
+      .ch-swatch { display:inline-block; font-size:0; line-height:9px; height:9px; border-radius:2px; vertical-align:middle; }
       .money-pos { color:#0369a1; font-weight:700; }
       .money-cost { color:#b45309; }
       .money-neg { color:#b91c1c; font-weight:700; }
@@ -495,7 +909,9 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
-          <p class="section-title">Client Revenue Table</p>
+          ${buildVolumeSection(volume, charts)}
+
+          <p class="section-title" style="margin-top:18px;">Client Revenue Table</p>
           <div class="tscroll">
           <table class="data">
             <thead>
@@ -527,11 +943,67 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
           </table>
           </div>
 
-          ${buildVolumeSection(volume)}
+          ${charts ? chartImg(charts, "top10-net-revenue.png", "Top 10 clients by net revenue") : buildBarChart(
+            "Top 10 Clients by Net Revenue",
+            "ranked by net revenue for the period",
+            [...rows]
+              .sort((a, b) => (Number(b.netRev) || 0) - (Number(a.netRev) || 0))
+              .slice(0, 10)
+              .map((r) => ({
+                label: `${r.login} ${String(r.name || "").slice(0, 18)}`.trim(),
+                value: r.netRev,
+                display: money(r.netRev),
+                color: (Number(r.netRev) || 0) < 0 ? "#b91c1c" : "#0f766e",
+              })),
+          )}
 
-          <div class="attachments">
-            Attached visuals: Top 10 Net Revenue, Gross vs Net Revenue, Lots vs Net Revenue, Revenue Composition${volume && (volume.byDate || []).length ? ", Daily Volume (Equity vs CFD)" : ""}.
-          </div>
+          ${charts ? chartImg(charts, "gross-vs-net.png", "Gross versus net revenue by client") : buildGroupedChart(
+            "Gross vs Net Revenue",
+            "top 10 by total revenue &mdash; the gap is LP + IB commission",
+            [
+              { key: "totalRev", label: "Gross", color: "#1d4ed8" },
+              { key: "netRev", label: "Net", color: "#15803d" },
+            ],
+            [...rows]
+              .sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0))
+              .slice(0, 10)
+              .map((r) => ({
+                label: `${r.login} ${String(r.name || "").slice(0, 10)}`.trim(),
+                values: { totalRev: r.totalRev, netRev: r.netRev },
+                displays: { totalRev: money(r.totalRev), netRev: money(r.netRev) },
+              })),
+          )}
+
+          ${charts ? chartImg(charts, "lots-vs-net-by-client.png", "Lots versus net revenue by client") : buildGroupedChart(
+            "Lots vs Net Revenue by Client",
+            "top 12 by volume &mdash; each series on its own scale, so compare shapes not lengths",
+            [
+              { key: "lots", label: "Lots", color: "#0891b2" },
+              { key: "netRev", label: "Net rev", color: "#15803d" },
+            ],
+            [...rows]
+              .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0))
+              .slice(0, 12)
+              .map((r) => ({
+                label: `${r.login} ${String(r.name || "").slice(0, 10)}`.trim(),
+                values: { lots: r.lots, netRev: r.netRev },
+                displays: { lots: fmtNum(r.lots, 2), netRev: money(r.netRev) },
+              })),
+            { scale: "per-series" },
+          )}
+
+          ${charts ? chartImg(charts, "revenue-composition.png", "Revenue composition doughnut") : buildCompositionChart(
+            "Revenue Composition",
+            `share of gross revenue (${money(totals.markup + totals.clientComm)} earned before costs)`,
+            [
+              { label: "Markup", value: totals.markup, display: money(totals.markup), color: "#0891b2" },
+              { label: "Client Comm", value: totals.clientComm, display: money(totals.clientComm), color: "#0f766e" },
+              { label: "LP Comm", value: totals.lpComm, display: money(totals.lpComm), color: "#b45309" },
+              { label: "IB Commission", value: totals.ibCommission, display: money(totals.ibCommission), color: "#be123c" },
+              { label: "Net Revenue", value: totals.netRev, display: money(totals.netRev), color: "#15803d" },
+            ],
+            totals.markup + totals.clientComm,
+          )}
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
             Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
@@ -544,233 +1016,6 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume }) {
 </html>`;
 }
 
-async function buildEmailChartAttachments(rows, fromYmd, toYmd, volume) {
-  const topNet = [...rows].sort((a, b) => (Number(b.netRev) || 0) - (Number(a.netRev) || 0)).slice(0, 10);
-  const topTotal = [...rows].sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0)).slice(0, 10);
-  const topLots = [...rows].sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0)).slice(0, 12);
-
-  const breakdown = rows.reduce(
-    (acc, row) => {
-      acc.markup += Number(row.markup) || 0;
-      acc.clientComm += Number(row.clientComm) || 0;
-      acc.lpComm += Math.abs(Number(row.lpComm) || 0);
-      acc.ibCommission += Math.abs(Number(row.ibCommission) || 0);
-      acc.netRevenue += Number(row.netRev) || 0;
-      return acc;
-    },
-    { markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, netRevenue: 0 },
-  );
-
-  const titleSuffix = `(${fromYmd} to ${toYmd})`;
-  const commonPlugins = {
-    legend: { labels: { color: "#334155", font: { size: 12 } } },
-    title: { display: true, text: "", color: "#1d4ed8", font: { size: 22, weight: "700" } },
-    subtitle: { display: true, text: "", color: "#64748b", font: { size: 12 } },
-  };
-
-  const charts = [
-    {
-      name: "top10-net-revenue.png",
-      config: {
-        type: "bar",
-        data: {
-          labels: topNet.map((r) => `${r.login}`),
-          datasets: [
-            {
-              label: "Net Revenue",
-              data: topNet.map((r) => Number(r.netRev) || 0),
-              backgroundColor: topNet.map((_, i) => (i < 3 ? "#b45309" : "#0f766e")),
-              borderRadius: 6,
-            },
-          ],
-        },
-        options: {
-          indexAxis: "y",
-          responsive: false,
-          animation: false,
-          scales: {
-            x: { ticks: { color: "#334155", callback: (v) => `$${Math.round(v / 1000)}k` }, grid: { color: "#e2e8f0" } },
-            y: { ticks: { color: "#334155" }, grid: { display: false } },
-          },
-          plugins: {
-            ...commonPlugins,
-            title: { ...commonPlugins.title, text: `Top 10 Clients by Net Revenue ${titleSuffix}` },
-            subtitle: { ...commonPlugins.subtitle, text: "Top 3 highlighted" },
-          },
-        },
-      },
-    },
-    {
-      name: "gross-vs-net.png",
-      config: {
-        type: "bar",
-        data: {
-          labels: topTotal.map((r) => `${r.login}`),
-          datasets: [
-            {
-              label: "Total Revenue",
-              data: topTotal.map((r) => Number(r.totalRev) || 0),
-              backgroundColor: "#1d4ed8",
-              borderRadius: 5,
-            },
-            {
-              label: "Net Revenue",
-              data: topTotal.map((r) => Number(r.netRev) || 0),
-              backgroundColor: "#15803d",
-              borderRadius: 5,
-            },
-          ],
-        },
-        options: {
-          responsive: false,
-          animation: false,
-          scales: {
-            x: { ticks: { color: "#334155" }, grid: { display: false } },
-            y: { ticks: { color: "#334155", callback: (v) => `$${Math.round(v / 1000)}k` }, grid: { color: "#e2e8f0" } },
-          },
-          plugins: {
-            ...commonPlugins,
-            title: { ...commonPlugins.title, text: `Gross Revenue vs Net Revenue ${titleSuffix}` },
-            subtitle: { ...commonPlugins.subtitle, text: "Top clients by total revenue" },
-          },
-        },
-      },
-    },
-    {
-      name: "lots-vs-net-by-client.png",
-      config: {
-        type: "bar",
-        data: {
-          labels: topLots.map((r) => `${r.login}`),
-          datasets: [
-            {
-              type: "bar",
-              label: "Lots",
-              yAxisID: "yLots",
-              data: topLots.map((r) => Number(r.lots) || 0),
-              backgroundColor: "rgba(8,145,178,0.55)",
-              borderRadius: 4,
-            },
-            {
-              type: "line",
-              label: "Net Revenue",
-              yAxisID: "yRev",
-              data: topLots.map((r) => Number(r.netRev) || 0),
-              borderColor: "#15803d",
-              backgroundColor: "#15803d",
-              tension: 0.3,
-            },
-          ],
-        },
-        options: {
-          responsive: false,
-          animation: false,
-          scales: {
-            yLots: { position: "left", ticks: { color: "#334155" }, grid: { color: "#e2e8f0" } },
-            yRev: {
-              position: "right",
-              ticks: { color: "#334155", callback: (v) => `$${Math.round(v / 1000)}k` },
-              grid: { drawOnChartArea: false },
-            },
-            x: { ticks: { color: "#334155" } },
-          },
-          plugins: {
-            ...commonPlugins,
-            title: { ...commonPlugins.title, text: `Lots vs Net Revenue by Client ${titleSuffix}` },
-            subtitle: { ...commonPlugins.subtitle, text: "Top volume clients" },
-          },
-        },
-      },
-    },
-    {
-      name: "revenue-composition.png",
-      config: {
-        type: "doughnut",
-        data: {
-          labels: ["Markup", "Client Comm", "LP Comm", "IB Commission", "Net Revenue"],
-          datasets: [
-            {
-              data: [
-                breakdown.markup,
-                breakdown.clientComm,
-                breakdown.lpComm,
-                breakdown.ibCommission,
-                Math.abs(breakdown.netRevenue),
-              ],
-              backgroundColor: ["#0891b2", "#0f766e", "#b45309", "#be123c", "#15803d"],
-            },
-          ],
-        },
-        options: {
-          responsive: false,
-          animation: false,
-          plugins: {
-            ...commonPlugins,
-            title: { ...commonPlugins.title, text: `Revenue Composition ${titleSuffix}` },
-            subtitle: { ...commonPlugins.subtitle, text: "Aggregate contribution by component" },
-          },
-        },
-      },
-    },
-  ];
-
-  // Daily Equity-vs-CFD volume — grouped bars, one pair per day of the week.
-  // Colours match the dashboard's volume tile (cyan = equity, violet = CFD).
-  const volumeDays = volume?.byDate ?? [];
-  if (volumeDays.length) {
-    charts.push({
-      name: "daily-volume-equity-vs-cfd.png",
-      config: {
-        type: "bar",
-        data: {
-          labels: volumeDays.map((d) => fmtDayLabel(d.date)),
-          datasets: [
-            {
-              label: "Equity Lots",
-              data: volumeDays.map((d) => Number(d.stocksLots) || 0),
-              backgroundColor: "#0891b2",
-              borderRadius: 5,
-            },
-            {
-              label: "CFD Lots",
-              data: volumeDays.map((d) => Number(d.cfdLots) || 0),
-              backgroundColor: "#7c3aed",
-              borderRadius: 5,
-            },
-          ],
-        },
-        options: {
-          responsive: false,
-          animation: false,
-          scales: {
-            x: { ticks: { color: "#334155" }, grid: { display: false } },
-            y: {
-              beginAtZero: true,
-              ticks: { color: "#334155", callback: (v) => Math.round(v).toLocaleString() },
-              grid: { color: "#e2e8f0" },
-              title: { display: true, text: "Lots", color: "#64748b" },
-            },
-          },
-          plugins: {
-            ...commonPlugins,
-            title: { ...commonPlugins.title, text: `Daily Volume - Equity vs CFD ${titleSuffix}` },
-            subtitle: { ...commonPlugins.subtitle, text: "Lots traded per day, split by instrument class" },
-          },
-        },
-      },
-    });
-  }
-
-  const attachments = [];
-  for (const item of charts) {
-    const buffer = await renderChartBuffer(item.config, item.name.includes("composition") ? 1100 : 1200, 700);
-    attachments.push({
-      name: item.name,
-      content: buffer.toString("base64"),
-    });
-  }
-  return attachments;
-}
 
 export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipients: recipientsOverride } = {}) {
   const week = fromDate && toDate ? { start: fromDate, end: toDate } : previousFullWeekUtc();
@@ -837,10 +1082,36 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     console.warn("[DealMatchWeekly] client volume lookup failed:", error?.message || error);
   }
 
+  // Charts render to PNG and travel inside the message, referenced by cid:. If
+  // rendering is unavailable (chartjs-node-canvas needs a native canvas build),
+  // fall back to the HTML bar charts rather than shipping broken images.
+  const totalsForCharts = rows.reduce(
+    (acc, row) => {
+      acc.markup += Number(row.markup) || 0;
+      acc.clientComm += Number(row.clientComm) || 0;
+      acc.lpComm += Number(row.lpComm) || 0;
+      acc.ibCommission += Number(row.ibCommission) || 0;
+      acc.netRev += Number(row.netRev) || 0;
+      return acc;
+    },
+    { markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, netRev: 0 },
+  );
+
+  let chartUrls = null;
+  try {
+    const images = await buildChartImages(rows, volume, totalsForCharts, `(${fromYmd} to ${toYmd})`);
+    const published = await publishChartImages(images);
+    chartUrls = published.urls;
+    console.log(`[DealMatchWeekly] published ${images.length} charts to ${published.dir}`);
+  } catch (error) {
+    console.warn("[DealMatchWeekly] chart rendering failed, using HTML fallback:", error?.message || error);
+    chartUrls = null;
+  }
+
   const subject = `Weekly Deal Match Analysis (${fromYmd} to ${toYmd})`;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume });
-  const attachments = await buildEmailChartAttachments(rows, fromYmd, toYmd, volume);
-  await sendBrevoEmail({ subject, html, recipients, attachments });
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, charts: chartUrls });
+  // Charts are referenced by URL and rendered in the body — no attachments.
+  await sendBrevoEmail({ subject, html, recipients });
 
   console.log(`[DealMatchWeekly] Sent to ${recipients.join(", ")} | rows=${rows.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, rows: rows.length, fromYmd, toYmd };

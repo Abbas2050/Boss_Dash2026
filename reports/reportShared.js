@@ -1,10 +1,71 @@
 import { ChartJSNodeCanvas } from "chartjs-node-canvas";
+import { mkdir, writeFile, readdir, rm, stat } from "fs/promises";
+import path from "path";
+import crypto from "crypto";
 
 export const BACKEND_BASE_URL = String(
   process.env.BACKEND_API_BASE_URL ||
   process.env.VITE_BACKEND_BASE_URL ||
   "https://api.skylinkscapital.com",
 ).replace(/\/+$/, "");
+
+// Where the report emails point when they reference a chart image. Must be the
+// app's public origin, because the reader's mail client fetches it directly.
+export const PUBLIC_BASE_URL = String(
+  process.env.PUBLIC_BASE_URL || "https://app.skylinkscapital.com",
+).replace(/\/+$/, "");
+
+export const CHART_DIR = String(process.env.REPORT_CHART_DIR || "storage/report-charts");
+export const CHART_ROUTE = "/report-charts";
+const CHART_RETENTION_DAYS = Number(process.env.REPORT_CHART_RETENTION_DAYS || 60);
+
+// Writes rendered charts to disk under a random, unguessable folder and returns
+// absolute URLs. Brevo's transactional API ignores cid:, so inline images have
+// to be fetched over HTTP — there is no way to keep the bytes inside the message
+// short of switching the whole mailer to SMTP.
+export async function publishChartImages(images) {
+  const token = crypto.randomBytes(16).toString("hex");
+  const dir = path.join(CHART_DIR, token);
+  await mkdir(dir, { recursive: true });
+
+  const urls = {};
+  for (const image of images) {
+    // Names are used in a URL and a filesystem path, so keep them boring.
+    if (!/^[A-Za-z0-9._-]+\.png$/.test(image.name)) {
+      throw new Error(`unsafe chart filename: ${image.name}`);
+    }
+    await writeFile(path.join(dir, image.name), image.buffer);
+    urls[image.name] = `${PUBLIC_BASE_URL}${CHART_ROUTE}/${token}/${image.name}`;
+  }
+
+  pruneChartImages().catch((error) =>
+    console.warn("[reports] chart cleanup failed:", error?.message || error),
+  );
+  return { token, dir, urls };
+}
+
+// Old report images are dead weight once the email has been read; drop folders
+// past the retention window so the directory does not grow without bound.
+export async function pruneChartImages() {
+  let entries;
+  try {
+    entries = await readdir(CHART_DIR, { withFileTypes: true });
+  } catch {
+    return 0; // nothing written yet
+  }
+  const cutoff = Date.now() - CHART_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(CHART_DIR, entry.name);
+    const info = await stat(full).catch(() => null);
+    if (info && info.mtimeMs < cutoff) {
+      await rm(full, { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  return removed;
+}
 
 export function toYmdUtc(date) {
   const y = date.getUTCFullYear();
