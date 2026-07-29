@@ -31,7 +31,7 @@ import {
 } from './wallet/googleSheetsMappingConfig.js';
 import { startWeeklyDealMatchScheduler, runWeeklyDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
 import { startWeeklySlippageScheduler, runWeeklySlippageEmailReport } from './reports/slippageWeeklyReport.js';
-import { CHART_DIR, CHART_ROUTE } from './reports/reportShared.js';
+import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -837,14 +837,20 @@ app.all('/ws/dashboard/negotiate', (req, res) => {
 // unauthenticated, so the folder name is a 128-bit random token and nothing is
 // listable: an exact token + filename is the only way in. Images are pruned
 // after REPORT_CHART_RETENTION_DAYS.
-app.get(`${CHART_ROUTE}/:token/:name`, (req, res) => {
+app.get(`${CHART_ROUTE}/:token/:name`, async (req, res) => {
   const { token, name } = req.params;
   if (!/^[a-f0-9]{32}$/.test(token) || !/^[A-Za-z0-9._-]+\.png$/.test(name)) {
     return res.status(400).end();
   }
-  const file = path.resolve(CHART_DIR, token, name);
+  let base;
+  try {
+    base = await getChartDir();
+  } catch {
+    return res.status(503).end();
+  }
+  const file = path.resolve(base, token, name);
   // Belt and braces against traversal even though both parts are regex-checked.
-  if (!file.startsWith(path.resolve(CHART_DIR) + path.sep)) return res.status(400).end();
+  if (!file.startsWith(path.resolve(base) + path.sep)) return res.status(400).end();
   res.type('png');
   res.setHeader('Cache-Control', 'public, max-age=2592000, immutable');
   res.sendFile(file, (err) => {

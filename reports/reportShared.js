@@ -1,6 +1,7 @@
 import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 import { mkdir, writeFile, readdir, rm, stat } from "fs/promises";
 import { fileURLToPath } from "url";
+import os from "os";
 import path from "path";
 import crypto from "crypto";
 
@@ -20,10 +21,35 @@ export const PUBLIC_BASE_URL = String(
 // directory is often not the app root, and a relative path would then write
 // (or look) somewhere unexpected.
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const CHART_DIR = path.resolve(
-  process.env.REPORT_CHART_DIR || path.join(REPO_ROOT, "storage", "report-charts"),
-);
 export const CHART_ROUTE = "/report-charts";
+
+// The app pool cannot always create folders inside the site root (Plesk/IIS
+// returns EPERM there), so fall through to a location it can write. Resolved
+// once and cached, because the write side and the serving route must agree.
+let resolvedChartDir = null;
+export async function getChartDir() {
+  if (resolvedChartDir) return resolvedChartDir;
+  const candidates = [
+    process.env.REPORT_CHART_DIR,
+    path.join(REPO_ROOT, "storage", "report-charts"),
+    path.join(os.tmpdir(), "boss-dash-report-charts"),
+  ]
+    .filter(Boolean)
+    .map((p) => path.resolve(p));
+
+  const failures = [];
+  for (const dir of candidates) {
+    try {
+      await mkdir(dir, { recursive: true });
+      resolvedChartDir = dir;
+      if (dir !== candidates[0]) console.warn(`[reports] chart dir not writable higher up; using ${dir}`);
+      return dir;
+    } catch (error) {
+      failures.push(`${dir} (${error?.code || error?.message})`);
+    }
+  }
+  throw new Error(`no writable chart directory. Tried: ${failures.join("; ")}`);
+}
 const CHART_RETENTION_DAYS = Number(process.env.REPORT_CHART_RETENTION_DAYS || 60);
 
 // Writes rendered charts to disk under a random, unguessable folder and returns
@@ -31,8 +57,9 @@ const CHART_RETENTION_DAYS = Number(process.env.REPORT_CHART_RETENTION_DAYS || 6
 // to be fetched over HTTP — there is no way to keep the bytes inside the message
 // short of switching the whole mailer to SMTP.
 export async function publishChartImages(images) {
+  const base = await getChartDir();
   const token = crypto.randomBytes(16).toString("hex");
-  const dir = path.join(CHART_DIR, token);
+  const dir = path.join(base, token);
   await mkdir(dir, { recursive: true });
 
   const urls = {};
@@ -54,9 +81,11 @@ export async function publishChartImages(images) {
 // Old report images are dead weight once the email has been read; drop folders
 // past the retention window so the directory does not grow without bound.
 export async function pruneChartImages() {
+  const base = await getChartDir().catch(() => null);
+  if (!base) return 0;
   let entries;
   try {
-    entries = await readdir(CHART_DIR, { withFileTypes: true });
+    entries = await readdir(base, { withFileTypes: true });
   } catch {
     return 0; // nothing written yet
   }
@@ -64,7 +93,7 @@ export async function pruneChartImages() {
   let removed = 0;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const full = path.join(CHART_DIR, entry.name);
+    const full = path.join(base, entry.name);
     const info = await stat(full).catch(() => null);
     if (info && info.mtimeMs < cutoff) {
       await rm(full, { recursive: true, force: true });
