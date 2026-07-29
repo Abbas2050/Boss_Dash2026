@@ -1,5 +1,6 @@
 import { ChartJSNodeCanvas } from "chartjs-node-canvas";
 import { mkdir, writeFile, readdir, rm, stat } from "fs/promises";
+import { fileURLToPath } from "url";
 import path from "path";
 import crypto from "crypto";
 
@@ -15,7 +16,13 @@ export const PUBLIC_BASE_URL = String(
   process.env.PUBLIC_BASE_URL || "https://app.skylinkscapital.com",
 ).replace(/\/+$/, "");
 
-export const CHART_DIR = String(process.env.REPORT_CHART_DIR || "storage/report-charts");
+// Resolved from this file, not process.cwd(): under IIS/a service the working
+// directory is often not the app root, and a relative path would then write
+// (or look) somewhere unexpected.
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const CHART_DIR = path.resolve(
+  process.env.REPORT_CHART_DIR || path.join(REPO_ROOT, "storage", "report-charts"),
+);
 export const CHART_ROUTE = "/report-charts";
 const CHART_RETENTION_DAYS = Number(process.env.REPORT_CHART_RETENTION_DAYS || 60);
 
