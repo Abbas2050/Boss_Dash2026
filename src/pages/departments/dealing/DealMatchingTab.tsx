@@ -16,6 +16,23 @@ type DealMatchResponse = {
   totalGrossRevenueUsd?: number;
   totalLpCommissionAllocated?: number;
   fixApiOrderCount?: number;
+  // ── volume scalars (see slippage/deal-match reference report) ──────────────
+  // "Deal" lots count every MT5 deal, so a round trip counts twice (open +
+  // close). "Realized" lots count the closed position once — which is why
+  // realized ≈ deals / 2, and why ClientVolume/Run agrees with realized, not
+  // with deals.
+  totalMt5DealLots?: number;
+  totalShiftingMt5DealLots?: number;
+  totalRealizedLotsCfd?: number;
+  totalRealizedLotsEquity?: number;
+  totalShiftingRealizedLots?: number;
+  totalInternalAccountLots?: number;
+  totalInternalAccountRealizedLots?: number;
+  totalMatchedLots?: number;
+  totalBridgeLots?: number;
+  symbolCentroidVolumes?: Row[];
+  symbolBridgeKpiVolumes?: Row[];
+  internalAccountBreakdown?: Row[];
   matches?: Row[];
   unmatchedClientDeals?: Row[];
   unmatchedCentroidOrders?: Row[];
@@ -125,6 +142,34 @@ function signedClass(value: any): string {
   return "text-slate-500 dark:text-slate-400";
 }
 
+// Volume KPI tile. `title` carries the definition so the difference between
+// "deals" and "realized" is discoverable without leaving the page.
+const LOT_TONES = {
+  emerald: "border-emerald-300/40 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  cyan: "border-cyan-300/40 bg-cyan-50 dark:bg-cyan-500/10 text-cyan-700 dark:text-cyan-300",
+  amber: "border-amber-300/40 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300",
+} as const;
+
+function LotTile({
+  label,
+  value,
+  tone,
+  title,
+}: {
+  label: string;
+  value: number;
+  tone: keyof typeof LOT_TONES;
+  title?: string;
+}) {
+  const cls = LOT_TONES[tone];
+  return (
+    <div className={`rounded-lg border p-2 ${cls.split(" ").slice(0, 4).join(" ")}`} title={title}>
+      <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</div>
+      <div className={`mt-1 text-sm font-semibold ${cls.split(" ").slice(4).join(" ")}`}>{fmtNum(value)}</div>
+    </div>
+  );
+}
+
 function sideClass(value: any): string {
   const v = String(value || "").toLowerCase();
   if (v === "buy") return "font-semibold text-emerald-700 dark:text-emerald-300";
@@ -152,6 +197,23 @@ function ymdToUnixRange(fromDate: string, toDate: string) {
   const to = Math.floor(new Date(`${toDate}T23:59:59Z`).getTime() / 1000);
   return { from, to };
 }
+
+// ── reconciliation grids (collapsed "debug" section) ────────────────────────
+// A TOTAL row is appended client-side so the grid can be checked against the
+// KPI tile above it without exporting anything.
+const symbolVolumeColumns: SortableTableColumn<Row>[] = [
+  { key: "symbol", label: "Symbol", sortValue: (r) => String(r.symbol ?? ""), render: (r) => <span className={r.symbol === "TOTAL" ? "font-semibold" : ""}>{String(r.symbol ?? "")}</span> },
+  { key: "rawVolume", label: "Volume (raw)", headerClassName: "text-right", cellClassName: "text-right tabular-nums", sortValue: (r) => num(r.rawVolume), render: (r) => fmtNum(r.rawVolume) },
+  { key: "contractSize", label: "Contract Size", headerClassName: "text-right", cellClassName: "text-right tabular-nums", sortValue: (r) => num(r.contractSize), render: (r) => (r.contractSize == null ? "" : fmtNum(r.contractSize)) },
+  { key: "bridgeLots", label: "Bridge Lots", headerClassName: "text-right", cellClassName: "text-right tabular-nums", sortValue: (r) => num(r.bridgeLots), render: (r) => <span className={r.symbol === "TOTAL" ? "font-semibold" : ""}>{fmtNum(r.bridgeLots)}</span> },
+];
+
+const internalAccountColumns: SortableTableColumn<Row>[] = [
+  { key: "login", label: "Login", sortValue: (r) => String(r.login ?? ""), render: (r) => <span className={r.login === "TOTAL" ? "font-semibold" : ""}>{String(r.login ?? "")}</span> },
+  { key: "name", label: "Account Name", sortValue: (r) => String(r.name ?? ""), render: (r) => String(r.name ?? "") },
+  { key: "deals", label: "Deals (lots)", headerClassName: "text-right", cellClassName: "text-right tabular-nums", sortValue: (r) => num(r.deals), render: (r) => <span className={r.login === "TOTAL" ? "font-semibold" : ""}>{fmtNum(r.deals)}</span> },
+  { key: "realized", label: "Realized (lots)", headerClassName: "text-right", cellClassName: "text-right tabular-nums", sortValue: (r) => num(r.realized), render: (r) => <span className={r.login === "TOTAL" ? "font-semibold" : ""}>{fmtNum(r.realized)}</span> },
+];
 
 function collapseTitleClass(open: boolean) {
   return open
@@ -737,6 +799,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   const [unmatchedMt5Open, setUnmatchedMt5Open] = useState(false);
   const [unmatchedCenOpen, setUnmatchedCenOpen] = useState(false);
   const [partialOpen, setPartialOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
 
   const [clientRevenueDetailRows, setClientRevenueDetailRows] = useState<Row[]>([]);
   const [clientRevenueDetailLabel, setClientRevenueDetailLabel] = useState("");
@@ -860,6 +923,49 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     }
     return rows;
   }, [selectedPartial]);
+
+  // TOTAL row appended so each grid can be reconciled against its KPI tile.
+  const symbolCentroidRows = useMemo(() => {
+    const rows = report?.symbolCentroidVolumes ?? [];
+    if (!rows.length) return [];
+    return [
+      ...rows,
+      {
+        symbol: "TOTAL",
+        rawVolume: rows.reduce((sum, r) => sum + num(r.rawVolume), 0),
+        contractSize: null,
+        bridgeLots: rows.reduce((sum, r) => sum + num(r.bridgeLots), 0),
+      } as Row,
+    ];
+  }, [report]);
+
+  const symbolBridgeRows = useMemo(() => {
+    const rows = report?.symbolBridgeKpiVolumes ?? [];
+    if (!rows.length) return [];
+    return [
+      ...rows,
+      {
+        symbol: "TOTAL",
+        rawVolume: rows.reduce((sum, r) => sum + num(r.rawVolume), 0),
+        contractSize: null,
+        bridgeLots: rows.reduce((sum, r) => sum + num(r.bridgeLots), 0),
+      } as Row,
+    ];
+  }, [report]);
+
+  const internalAccountRows = useMemo(() => {
+    const rows = report?.internalAccountBreakdown ?? [];
+    if (!rows.length) return [];
+    return [
+      ...rows,
+      {
+        login: "TOTAL",
+        name: "",
+        deals: rows.reduce((sum, r) => sum + num(r.deals), 0),
+        realized: rows.reduce((sum, r) => sum + num(r.realized), 0),
+      } as Row,
+    ];
+  }, [report]);
 
   const summaryRows = useMemo(() => {
     if (!detailsLoaded || !report) return [];
@@ -1143,6 +1249,33 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
             </div>
           </div>
 
+          {/* MT5 client volume — "deals" count each leg, "realized" counts the
+              closed position once, so realized is roughly half of deals. */}
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">MT5 Client Volume (lots)</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
+            <LotTile label="Total MT5 Deals" value={num(report.totalMt5DealLots) + num(report.totalShiftingMt5DealLots)} tone="emerald"
+              title="Client deal lots + shifting deal lots. Counts every MT5 deal, so an open and its close each count." />
+            <LotTile label="Client Deals" value={num(report.totalMt5DealLots)} tone="emerald"
+              title="MT5 client deal lots (each leg counted)." />
+            <LotTile label="MT5 Realized (CFD)" value={num(report.totalRealizedLotsCfd)} tone="cyan"
+              title="Closed CFD volume, counted once per round trip. Together with Equity this equals ClientVolume/Run totalLots." />
+            <LotTile label="MT5 Realized (Equity)" value={num(report.totalRealizedLotsEquity)} tone="cyan"
+              title="Closed equity volume, counted once per round trip. Equity lots are share-based, so this number dwarfs CFD." />
+            <LotTile label="Shifting Deals" value={num(report.totalShiftingMt5DealLots)} tone="amber" />
+            <LotTile label="Shifting Realized" value={num(report.totalShiftingRealizedLots)} tone="amber" />
+            <LotTile label="Internal Deals" value={num(report.totalInternalAccountLots)} tone="amber"
+              title="Internal-account deal lots. Excluded from the Slippage report; included here." />
+            <LotTile label="Internal Realized" value={num(report.totalInternalAccountRealizedLots)} tone="amber" />
+          </div>
+
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Bridge / Matched (lots)</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <LotTile label="Bridge Lots" value={num(report.totalBridgeLots)} tone="amber"
+              title="Volume that reached the bridge. Reconciles with the Per-Symbol Bridge Lots grid below." />
+            <LotTile label="Matched Lots" value={num(report.totalMatchedLots)} tone="emerald"
+              title="Client volume matched to an LP order." />
+          </div>
+
           <div className="space-y-2">
             {/* Overall Summary — only rendered once match details are loaded */}
             {detailsLoaded && (
@@ -1406,6 +1539,61 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Reconciliation grids. Collapsed by default: they exist to prove the
+              KPI tiles above, not for day-to-day reading. */}
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => setDebugOpen((v) => !v)}
+              className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold ${collapseTitleClass(debugOpen)}`}
+            >
+              {debugOpen ? "-" : "+"} Reconciliation (debug) - per-symbol volumes &amp; internal accounts
+            </button>
+            {debugOpen && (
+              <div className="space-y-3">
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-purple-700 dark:text-purple-300">Per-Symbol Centroid Volume</div>
+                  <p className="mb-1 text-[11px] text-slate-500 dark:text-slate-400">
+                    Raw Centroid rollup. Useful for spotting a bad contract size; it does not have to equal the Bridge Lots tile.
+                  </p>
+                  <SortableTable
+                    tableId="deal-matching-per-symbol-cen"
+                    rows={symbolCentroidRows}
+                    columns={symbolVolumeColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No per-symbol Centroid volume returned."
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-purple-700 dark:text-purple-300">Per-Symbol Bridge Lots (KPI methodology)</div>
+                  <p className="mb-1 text-[11px] text-slate-500 dark:text-slate-400">
+                    Same code path as the Bridge Lots tile. TOTAL should equal it exactly - a difference means a bug.
+                  </p>
+                  <SortableTable
+                    tableId="deal-matching-per-symbol-bridge"
+                    rows={symbolBridgeRows}
+                    columns={symbolVolumeColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No per-symbol bridge volume returned."
+                  />
+                </div>
+                <div>
+                  <div className="mb-1 text-xs font-semibold text-amber-700 dark:text-amber-300">Internal Account Breakdown</div>
+                  <p className="mb-1 text-[11px] text-slate-500 dark:text-slate-400">
+                    TOTAL Deals must equal the Internal Deals tile and TOTAL Realized the Internal Realized tile.
+                  </p>
+                  <SortableTable
+                    tableId="deal-matching-internal-accounts"
+                    rows={internalAccountRows}
+                    columns={internalAccountColumns}
+                    tableClassName="min-w-full text-[11px]"
+                    emptyText="No internal-account rows returned."
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}

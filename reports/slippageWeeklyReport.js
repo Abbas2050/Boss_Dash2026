@@ -23,7 +23,7 @@ function aggregateByLp(rows) {
     const key = String(raw || "").trim() || "Unattributed";
     let agg = map.get(key);
     if (!agg) {
-      agg = { key, count: 0, lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0 };
+      agg = { key, count: 0, lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0, clientCostSumUsd: 0 };
       map.set(key, agg);
     }
     const lots = Number(r?.fillVolume) || 0;
@@ -31,12 +31,17 @@ function aggregateByLp(rows) {
     const pts = Number(r?.lpSlipPoints) || 0;
     const hasLpFill = Number(r?.lpPrice) > 0;
     const clientUsd = Number(r?.clientPlImpact) || 0;
+    // Client Cost = the client's all-in cost above LP market (slippage minus the
+    // MT5 markup we earned back). Documented on the reference report as
+    // reconciling with Centroid bridge "Client Order Slippage Ext" (col 33).
+    const clientCost = Number(r?.clientCostUsd) || 0;
     const clientPts = Number(r?.clientSlipPoints) || 0;
 
     agg.count += 1;
     agg.lots += lots;
     agg.netSlipUsd += usd;
     agg.clientSumUsd += clientUsd;
+    agg.clientCostSumUsd += clientCost;
     agg.clientSumPts += clientPts;
     if (usd > 0) agg.netPosUsd += usd;
     else if (usd < 0) agg.netNegUsd += usd;
@@ -60,9 +65,11 @@ function aggregateByLp(rows) {
       clientAvgSlipPts: a.count > 0 ? a.clientSumPts / a.count : 0,
       clientAvgSlipUsd: a.count > 0 ? a.clientSumUsd / a.count : 0,
       clientTotalSlipUsd: a.clientSumUsd,
+      clientTotalCostUsd: a.clientCostSumUsd,
       sumSlipPts: a.sumSlipPts,
       slipPtsCount: a.slipPtsCount,
       clientSumUsd: a.clientSumUsd,
+      clientCostSumUsd: a.clientCostSumUsd,
       clientSumPts: a.clientSumPts,
     });
   }
@@ -153,6 +160,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
         ${dataCell("Client Avg Slip (pts)", fmtNum(b.clientAvgSlipPts, 2), { align: "right", cls: slipCls(b.clientAvgSlipPts) })}
         ${dataCell("Client Avg Slip (USD)", money(b.clientAvgSlipUsd), { align: "right", cls: slipCls(b.clientAvgSlipUsd) })}
         ${dataCell("Client Total Slip (USD)", money(b.clientTotalSlipUsd), { align: "right", cls: slipCls(b.clientTotalSlipUsd) })}
+        ${dataCell("Client Cost (USD)", money(b.clientTotalCostUsd), { align: "right", cls: slipCls(b.clientTotalCostUsd) })}
         ${dataCell("Net Positive USD", money(b.netPosUsd), { align: "right", cls: "pos" })}
         ${dataCell("Net Negative USD", money(b.netNegUsd), { align: "right", cls: "neg" })}
       </tr>`,
@@ -168,11 +176,12 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
       acc.sumSlipPts += b.sumSlipPts;
       acc.slipPtsCount += b.slipPtsCount;
       acc.clientSumUsd += b.clientSumUsd;
+      acc.clientCostSumUsd += b.clientCostSumUsd;
       acc.clientSumPts += b.clientSumPts;
       acc.count += b.count;
       return acc;
     },
-    { lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0, count: 0 },
+    { lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientSumPts: 0, clientCostSumUsd: 0, count: 0 },
   );
   const totalLpAvgPts = rollupTotals.slipPtsCount > 0 ? rollupTotals.sumSlipPts / rollupTotals.slipPtsCount : 0;
   const totalLpAvgUsd = rollupTotals.slipPtsCount > 0 ? rollupTotals.netSlipUsd / rollupTotals.slipPtsCount : 0;
@@ -233,7 +242,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
          to be the default or a desktop reader never gets one. The wrapper keeps
          a phone usable: it scrolls sideways instead of crushing 10 columns. */
       .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; min-width:940px; font-size:12px; table-layout:fixed; }
+      table.data { border-collapse:collapse; width:100%; min-width:1020px; font-size:12px; table-layout:fixed; }
       table.data th, table.data td { border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
       table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }
       table.data td.num { text-align:right; white-space:nowrap; }
@@ -309,16 +318,17 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
           <table class="data">
             <thead>
               <tr>
-                <th width="11%">LP</th>
-                <th width="9%">Lots</th>
-                <th width="10%">LP Avg Slip (pts)</th>
-                <th width="10%">LP Avg Slip (USD)</th>
-                <th width="11%">LP Total Slip (USD)</th>
-                <th width="10%">Client Avg Slip (pts)</th>
-                <th width="10%">Client Avg Slip (USD)</th>
-                <th width="11%">Client Total Slip (USD)</th>
-                <th width="9%">Net Positive USD</th>
-                <th width="9%">Net Negative USD</th>
+                <th width="10%">LP</th>
+                <th width="8%">Lots</th>
+                <th width="9%">LP Avg Slip (pts)</th>
+                <th width="9%">LP Avg Slip (USD)</th>
+                <th width="10%">LP Total Slip (USD)</th>
+                <th width="9%">Client Avg Slip (pts)</th>
+                <th width="9%">Client Avg Slip (USD)</th>
+                <th width="10%">Client Total Slip (USD)</th>
+                <th width="10%">Client Cost (USD)</th>
+                <th width="8%">Net Positive USD</th>
+                <th width="8%">Net Negative USD</th>
               </tr>
             </thead>
             <tbody>
@@ -331,10 +341,11 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
                 ${dataCell("Client Avg Slip (pts)", fmtNum(totalClientAvgPts, 2), { align: "right", cls: slipCls(totalClientAvgPts) })}
                 ${dataCell("Client Avg Slip (USD)", money(totalClientAvgUsd), { align: "right", cls: slipCls(totalClientAvgUsd) })}
                 ${dataCell("Client Total Slip (USD)", money(rollupTotals.clientSumUsd), { align: "right", cls: slipCls(rollupTotals.clientSumUsd) })}
+                ${dataCell("Client Cost (USD)", money(rollupTotals.clientCostSumUsd), { align: "right", cls: slipCls(rollupTotals.clientCostSumUsd) })}
                 ${dataCell("Net Positive USD", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
                 ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
               </tr>
-              ${bodyRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 10, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 11, align: "center" })}</tr>`}
             </tbody>
           </table>
           </div>

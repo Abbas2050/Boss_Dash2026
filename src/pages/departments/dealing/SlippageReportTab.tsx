@@ -65,6 +65,7 @@ type SlippageRow = {
   lpPrice?: number;
   clientSlipPoints?: number;
   clientPlImpact?: number;
+  clientCostUsd?: number;
   lpSlipPoints?: number;
   lpPlImpact?: number;
   clientSlipPrice?: number;
@@ -113,6 +114,7 @@ type PerLegTotals = {
   fillVolume: number;
   clientSlipPoints: number;
   clientPlImpact: number;
+  clientCostUsd: number;
   lpSlipPoints: number;
   lpPlImpact: number;
   bridgeMarkupAbsSum: number;
@@ -208,6 +210,7 @@ function perLegTotals(rows: SlippageRow[]): PerLegTotals {
     fillVolume: 0,
     clientSlipPoints: 0,
     clientPlImpact: 0,
+    clientCostUsd: 0,
     lpSlipPoints: 0,
     lpPlImpact: 0,
     bridgeMarkupAbsSum: 0,
@@ -220,6 +223,7 @@ function perLegTotals(rows: SlippageRow[]): PerLegTotals {
     t.fillVolume += Number(r.fillVolume) || 0;
     t.clientSlipPoints += Number(r.clientSlipPoints) || 0;
     t.clientPlImpact += Number(r.clientPlImpact) || 0;
+    t.clientCostUsd += Number(r.clientCostUsd) || 0;
     t.lpSlipPoints += Number(r.lpSlipPoints) || 0;
     t.lpPlImpact += Number(r.lpPlImpact) || 0;
     t.bridgeMarkupAbsSum += bridgeMarkupAbs(r);
@@ -465,10 +469,26 @@ export function SlippageReportTab({ refreshKey }: { refreshKey: number }) {
       {
         key: "clientPlImpact",
         label: "Client Slippage USD",
+        // Definition per the Centroid reference report: pure execution slip against
+        // the marked-up client quote, EXCLUDING MT5 broker markup.
+        headerTitle:
+          'Pure execution slip vs the marked-up client quote: (ext_bid − avg_price) × side × units × conv. Excludes MT5 broker markup. Reconciles with Centroid bridge "Order Slippage Broker" (col 29).',
         sortValue: (r) => Number(r.clientPlImpact) || 0,
         headerClassName: "text-right",
         cellClassName: "text-right tabular-nums",
         render: (r) => <span className={adverseCls(r.clientPlImpact)}>{nf2(r.clientPlImpact)}</span>,
+      },
+      {
+        key: "clientCostUsd",
+        label: "Client Cost USD",
+        // The client's all-in cost above LP market. Note this same $ also appears
+        // as broker revenue in Deal Matching — ledger accounting, not a double count.
+        headerTitle:
+          'Total client cost above the LP market price = Client Slippage USD − MT5 markup revenue. Reconciles with Centroid bridge "Client Order Slippage Ext" (col 33). The same $ ALSO shows up as broker revenue in Deal Matching MT5 Markup / Gross — correct ledger accounting, not a double-count.',
+        sortValue: (r) => Number(r.clientCostUsd) || 0,
+        headerClassName: "text-right",
+        cellClassName: "text-right tabular-nums",
+        render: (r) => <span className={adverseCls(r.clientCostUsd)}>{nf2(r.clientCostUsd)}</span>,
       },
       {
         key: "lpSlipPoints",
@@ -767,6 +787,7 @@ export function SlippageReportTab({ refreshKey }: { refreshKey: number }) {
                   { label: "FillVolume", value: nf2(detailTotals.fillVolume) },
                   { label: "ClientSlipPoints", value: nf2(detailTotals.clientSlipPoints), cls: adverseCls(detailTotals.clientSlipPoints) },
                   { label: "Client Slippage USD", value: nf2(detailTotals.clientPlImpact), cls: adverseCls(detailTotals.clientPlImpact) },
+                  { label: "Client Cost USD", value: nf2(detailTotals.clientCostUsd), cls: adverseCls(detailTotals.clientCostUsd) },
                   { label: "LpSlipPoints", value: nf2(detailTotals.lpSlipPoints), cls: adverseCls(detailTotals.lpSlipPoints) },
                   { label: "LP Slippage USD", value: nf2(detailTotals.lpPlImpact), cls: adverseCls(detailTotals.lpPlImpact) },
                 ]}
@@ -805,6 +826,7 @@ export function SlippageReportTab({ refreshKey }: { refreshKey: number }) {
                   { label: "FillVolume", value: nf2(internalTotals.fillVolume) },
                   { label: "ClientSlipPoints", value: nf2(internalTotals.clientSlipPoints), cls: adverseCls(internalTotals.clientSlipPoints) },
                   { label: "Client Slippage USD", value: nf2(internalTotals.clientPlImpact), cls: adverseCls(internalTotals.clientPlImpact) },
+                  { label: "Client Cost USD", value: nf2(internalTotals.clientCostUsd), cls: adverseCls(internalTotals.clientCostUsd) },
                   { label: "LpSlipPoints", value: nf2(internalTotals.lpSlipPoints), cls: adverseCls(internalTotals.lpSlipPoints) },
                   { label: "LP Slippage USD", value: nf2(internalTotals.lpPlImpact), cls: adverseCls(internalTotals.lpPlImpact) },
                 ]}

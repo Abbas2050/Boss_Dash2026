@@ -14,6 +14,8 @@ export type SortableTableColumn<T> = {
   defaultVisible?: boolean;
   /** Optional custom renderer for the header cell content (e.g. a select-all checkbox). When present, rendered instead of the column label. */
   headerRender?: () => React.ReactNode;
+  /** Native tooltip on the header cell — used to document how a figure is derived. */
+  headerTitle?: string;
 };
 
 type SortableTableProps<T> = {
@@ -398,6 +400,7 @@ export function SortableTable<T>({
               {visibleColumns.map((col) => (
                 <th
                   key={col.key}
+                  title={col.headerTitle}
                   onClick={() => {
                     if (!col.sortValue) return;
                     if (sortKey === col.key) {
