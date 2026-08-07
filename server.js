@@ -31,6 +31,7 @@ import {
 } from './wallet/googleSheetsMappingConfig.js';
 import { startWeeklyDealMatchScheduler, runWeeklyDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
 import { startWeeklySlippageScheduler, runWeeklySlippageEmailReport } from './reports/slippageWeeklyReport.js';
+import { startWeeklyBusinessSummaryScheduler, runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
 import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -801,6 +802,19 @@ app.post('/api/reports/slippage-weekly/test', authRequired, async (req, res) => 
   }
 });
 
+// On-demand test send of the Weekly Business Summary (admin-only).
+app.post('/api/reports/summary-weekly/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  try {
+    const result = await runWeeklyBusinessSummary({ recipients });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
 // On-demand test send of the weekly Deal Match email (admin-only). Mirrors the
 // slippage test route; recipients in the body override DEALMATCH_ALERT_RECIPIENTS.
 app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) => {
@@ -958,6 +972,7 @@ server.listen(PORT, () => {
 
   startWeeklyDealMatchScheduler();
   startWeeklySlippageScheduler();
+  startWeeklyBusinessSummaryScheduler();
 
   try {
     startHubWatcher();

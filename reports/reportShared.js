@@ -221,3 +221,181 @@ export async function renderChartBuffer(config, width = 1200, height = 700) {
   });
   return renderer.renderToBuffer(config, "image/png");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CRM (FXBO) access
+// ─────────────────────────────────────────────────────────────────────────────
+// dealMatchWeeklyReport.js has its own private copy of this for IB commission.
+// These exports exist so new reports do not hand-copy it; that report is
+// deliberately left alone rather than refactored onto this.
+
+export const CRM_API_VERSION = String(process.env.VITE_API_VERSION || "1.0.0");
+export const CRM_REST_BASE = String(
+  process.env.REST_PROXY_TARGET || "https://portal.skylinkscapital.com",
+).replace(/\/+$/, "");
+
+const CRM_API_TOKEN = String(process.env.VITE_API_TOKEN || process.env.API_TOKEN || "").trim();
+
+export function crmConfigured() {
+  return Boolean(CRM_API_TOKEN);
+}
+
+// POSTs a CRM search payload and returns the parsed array. `path` is the part
+// after /rest, e.g. "transactions".
+export async function crmPost(path, payload, { timeoutMs = 45_000 } = {}) {
+  const url = `${CRM_REST_BASE}/rest/${path}?version=${encodeURIComponent(CRM_API_VERSION)}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`CRM /rest/${path} HTTP ${resp.status}: ${body.slice(0, 200)}`);
+  }
+  const json = await resp.json();
+  return Array.isArray(json) ? json : [];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email shell
+// ─────────────────────────────────────────────────────────────────────────────
+// Encodes the rendering rules documented in docs/dealing-reporting.md section 6:
+//   * NO @media anywhere — Zoho strips it, so one layout serves every screen.
+//   * Row labels are real DOM text, never ::before content.
+//   * box-sizing on the wrappers, or width:100% + padding overflows the viewport.
+//   * Numeric cells never wrap; wide tables scroll inside .tscroll.
+//   * TOTAL rows go at the TOP of <tbody>, never in <tfoot>.
+// Do not "tidy" these back to conventional responsive CSS.
+
+const THEMES = {
+  light: {
+    pageBg: "#f3f7fb", cardBg: "#ffffff", cardBorder: "#dbe6f2",
+    headerBg: "linear-gradient(135deg,#0f2d4f,#114b7a)", headerFg: "#eaf4ff",
+    headerMeta: "#bcd6ee", subtitle: "#cfe3f8",
+    ink: "#0f172a", muted: "#64748b", line: "#e2e8f0", zebra: "#f9fcff",
+    thBg: "#0f2d4f", thFg: "#f8fafc", totalBg: "#eff6ff", totalFg: "#0f2d4f",
+    kpiBg: "#f8fbff", kpiBorder: "#d9e8f8", kpiValue: "#0f2d4f",
+  },
+  dark: {
+    pageBg: "#0b1220", cardBg: "#111a2c", cardBorder: "#1f2a44",
+    headerBg: "linear-gradient(135deg,#0b1a33,#132a4f)", headerFg: "#eaf4ff",
+    headerMeta: "#9fb8d6", subtitle: "#93c5fd",
+    ink: "#e2e8f0", muted: "#8ea4c6", line: "#223255", zebra: "#101c33",
+    thBg: "#16233f", thFg: "#cfe0fb", totalBg: "#16233f", totalFg: "#e2e8f0",
+    kpiBg: "#0f1a30", kpiBorder: "#223255", kpiValue: "#e2e8f0",
+  },
+};
+
+// One table cell carrying its own visible row label. Right-aligned cells are
+// numeric and never wrap; `nowrap` marks a left-aligned identifier (a login),
+// which must not break either — "10218/6" is worse than a wide column.
+export function dataCell(label, value, { align = "left", bold = false, cls = "", nowrap = false } = {}) {
+  const kind = align === "right" ? "num" : nowrap ? "key" : "txt";
+  const style = bold ? ' style="font-weight:700;"' : "";
+  const valueCls = cls ? ` ${cls}` : "";
+  return `<td class="${kind}" data-label="${escapeHtml(label)}"${style}><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
+}
+
+// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
+export function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
+  return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
+}
+
+// KPI cards. Capped at a px width so several sit on a desktop row and they
+// stack one per line on a phone — no media query involved.
+export function kpiGrid(cards, { maxWidth = 222 } = {}) {
+  if (!cards.length) return "";
+  const cells = cards
+    .map(
+      (c) => `<td class="kpi" style="max-width:${maxWidth}px;">
+        <p class="kpi-label">${escapeHtml(c.label)}</p>
+        <p class="kpi-value${c.cls ? ` ${c.cls}` : ""}">${c.value}</p>
+        ${c.note ? `<p class="kpi-note-sm">${escapeHtml(c.note)}</p>` : ""}
+      </td>`,
+    )
+    .join("");
+  return `<table class="kpis" role="presentation"><tr>${cells}</tr></table>`;
+}
+
+// A data table with its TOTAL row first. `headers` is [{label, width}].
+export function dataTable({ headers, totalRow = "", bodyRows = "", emptyText = "No rows.", narrow = false }) {
+  const head = headers.map((h) => `<th width="${h.width}">${h.label}</th>`).join("");
+  const empty = `<tr>${spanCell(emptyText, { colspan: headers.length, align: "center" })}</tr>`;
+  const table = `<table class="data${narrow ? " narrow" : ""}">
+            <thead><tr>${head}</tr></thead>
+            <tbody>
+              ${totalRow ? `<tr class="total-row">${totalRow}</tr>` : ""}
+              ${bodyRows || empty}
+            </tbody>
+          </table>`;
+  return narrow ? table : `<div class="tscroll">${table}</div>`;
+}
+
+export function emailShell({ theme = "light", title, subtitle = "", metaLines = [], body, footerLines = [] }) {
+  const t = THEMES[theme] || THEMES.light;
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { margin:0; padding:0; background:${t.pageBg}; color:${t.ink}; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+      .outer, .wrap, .header, .content { box-sizing:border-box; }
+      .outer { width:100%; background:${t.pageBg}; padding:8px 4px; }
+      .wrap { width:100%; max-width:980px; margin:0 auto; background:${t.cardBg}; border:1px solid ${t.cardBorder}; border-radius:10px; overflow:hidden; }
+      .header { padding:14px 16px; background:${t.headerBg}; color:${t.headerFg}; }
+      .title { margin:0; font-size:19px; font-weight:700; letter-spacing:0.2px; }
+      .subtitle { margin:6px 0 0; font-size:12px; color:${t.subtitle}; }
+      .header-meta { margin:10px 0 0; font-size:11px; line-height:1.55; color:${t.headerMeta}; }
+      .content { padding:16px; }
+      .section-title { margin:14px 0 8px; font-size:14px; color:${t.totalFg}; font-weight:700; }
+      .note { margin:0 0 10px; font-size:11px; color:${t.muted}; }
+      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
+      .kpis td { display:inline-block; width:100%; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; background:${t.kpiBg}; border:1px solid ${t.kpiBorder}; border-radius:10px; padding:10px 12px; }
+      .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:${t.muted}; margin:0 0 5px; line-height:1.25; }
+      .kpi-value { font-size:16px; font-weight:700; color:${t.kpiValue}; margin:0; white-space:nowrap; }
+      .kpi-note-sm { font-size:10px; color:${t.muted}; margin:4px 0 0; }
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; min-width:760px; font-size:12px; table-layout:fixed; }
+      table.data.narrow { min-width:0; font-size:11px; margin:0 0 16px; }
+      table.data th, table.data td { border:1px solid ${t.line}; padding:7px 8px; text-align:left; vertical-align:top; }
+      table.data th { background:${t.thBg}; color:${t.thFg}; font-weight:700; font-size:11px; }
+      table.data td.num { text-align:right; white-space:nowrap; }
+      table.data td.key { white-space:nowrap; }
+      table.data td.txt { overflow-wrap:break-word; }
+      table.data tbody tr:nth-child(even) { background:${t.zebra}; }
+      table.data tr.total-row td { font-weight:700; background:${t.totalBg}; color:${t.totalFg}; }
+      table.data td .lbl { display:none; }
+      table.data td .val { display:inline; }
+      .ch-img { margin:0 0 16px; }
+      .ch-img img { display:block; width:100%; max-width:100%; height:auto; border:1px solid ${t.line}; border-radius:8px; }
+      .pos { color:#15803d; font-weight:700; }
+      .neg { color:#b91c1c; font-weight:700; }
+      .cost { color:#b45309; }
+      .badge { display:inline-block; font-size:9px; font-weight:700; color:#15803d; border:1px solid #86efac; background:#f0fdf4; border-radius:4px; padding:1px 4px; margin-left:4px; }
+      .foot { border-top:1px solid ${t.line}; margin-top:14px; padding-top:10px; color:${t.muted}; font-size:12px; line-height:1.5; }
+    </style>
+  </head>
+  <body>
+    <div class="outer">
+      <div class="wrap">
+        <div class="header">
+          <h1 class="title">${escapeHtml(title)}</h1>
+          ${subtitle ? `<div class="subtitle">${escapeHtml(subtitle)}</div>` : ""}
+          ${metaLines.length ? `<div class="header-meta">${metaLines.join("<br/>")}</div>` : ""}
+        </div>
+        <div class="content">
+          ${body}
+          ${footerLines.length ? `<div class="foot">${footerLines.join("<br/>")}</div>` : ""}
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+}

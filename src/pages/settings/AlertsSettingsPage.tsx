@@ -32,6 +32,13 @@ const WEEKLY_REPORTS = [
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.rows ?? 0} clients`,
   },
+  {
+    key: "summary",
+    label: "Business Summary",
+    endpoint: "/api/reports/summary-weekly/test",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.depositors ?? 0} active accounts`,
+  },
 ] as const;
 
 type WeeklyReportKey = (typeof WEEKLY_REPORTS)[number]["key"];
