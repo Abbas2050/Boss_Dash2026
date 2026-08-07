@@ -1,6 +1,6 @@
 # Weekly Business Summary report — design
 
-**Status:** approved in brainstorming, not yet implemented
+**Status:** implemented and sent; corrected against the first live send
 **Date:** 2026-08-07
 
 A third weekly email covering money movement and account activity, with a
@@ -46,11 +46,29 @@ assumes them rather than repeating them.
 | Net Revenue | Total Revenue less IB Rebate |
 | Active Accounts | this report |
 
-### Section 2 -- Account Activity
+### Section 2 -- Large Depositors
+
+The subset of Section 4 whose **client deposits exceeded the threshold**
+(default $1,000). Same columns. An account funded only by IB commission does not
+qualify, because an IB transfer is not a client deposit.
+
+### Section 3 -- Daily flow + chart
+
+`Day | Deposits | Withdrawals | IB Rebate | Net`, TOTAL row on top, followed by
+grouped deposit/withdrawal bars with values drawn on them, rendered as a PNG and
+published exactly as the Deal Match charts are (`publishChartImages`).
+
+### Section 4 -- Account Activity
 
 Every account that moved money during the week -- a client deposit, or IB
-commission received. `Login | Name | Deposits | Withdrawals | IB Rebate | Net`,
-largest deposit first, TOTAL row on top.
+commission received. `Client | Client ID | Deposits | Withdrawals | IB Rebate |
+Net`, largest deposit first, TOTAL row on top.
+
+**One row per CRM client, keyed on `fromUserId`.** `fromLoginSid` is a composite
+*account* id (doc pattern `\d+-[\w-]+`, e.g. `2-154439`); one client owns
+several, so keying on it split single clients into rows like `1-43` and
+`2-101939`. `TransactionDefinition` carries no name field either, so names are
+resolved separately from `POST /rest/users`, batched 200 at a time.
 
 `Net = Deposits - Withdrawals - IB Rebate`, the same chain the Deal Match report
 uses for `Total Revenue - IB Commission = Net Revenue`.
@@ -59,7 +77,7 @@ uses for `Total Revenue - IB Commission = Net Revenue`.
 their own column and excluded from both. This is load-bearing, not cosmetic: an
 `ib withdrawal` counted in Withdrawals *and* in IB Rebate would be deducted
 twice, and the per-row Net would be wrong (observed: -$6,500 instead of -$1,375
-for one IB account). The same split is applied to Sections 4 and 5 so every
+for one IB account). The same split is applied to Sections 3 and 5 so every
 level reconciles.
 
 IB accounts appear even with no client deposit -- otherwise their rebate would
@@ -68,18 +86,6 @@ Net.
 
 This section makes no claim about an account's history. It deliberately
 replaced an earlier "New Funded Accounts" design -- see §10.
-
-### Section 3 -- Large Depositors
-
-The subset of Section 2 whose **client deposits exceeded the threshold**
-(default $1,000). Same columns. An account funded only by IB commission does not
-qualify, because an IB transfer is not a client deposit.
-
-### Section 4 -- Daily flow + chart
-
-`Day | Deposits | Withdrawals | IB Rebate | Net`, TOTAL row on top, followed by
-grouped deposit/withdrawal bars with values drawn on them, rendered as a PNG and
-published exactly as the Deal Match charts are (`publishChartImages`).
 
 ### Section 5 -- Money Movement by PSP
 
@@ -111,25 +117,49 @@ historical lookups and does not use `userFtd` — see §10.
 Fields consumed: `type`, `psp`, `processedAmount`, `requestedAmount`,
 `processedCurrency`, `fromUserId`, `fromLoginSid`, `processedAt`, `status`.
 
-### Read-only calls for the glance
+### Read-only call for the glance
 
-- `DealMatch/Run` with **`lite=true`** — gross/net revenue.
-- `ClientVolume/Run` — realized traded lots.
-- `SlippageReport/Run` — total LP slippage.
+`DealMatch/Run` with **`lite=true`** — Total Revenue only, computed with the
+same maths the Deal Match report uses, so a discrepancy can only come from
+timing, never from method. Its timeout is 180s: a week of deals exceeded the
+original 45s and Total Revenue rendered as a dash on the first live send.
 
-Each figure is computed with the **same helper the source report uses**, so a
-discrepancy can only ever come from timing, never from method.
+Traded Lots and LP Slippage tiles were dropped, and the `ClientVolume/Run` and
+`SlippageReport/Run` calls went with them. Both figures have their own weekly
+report.
 
 ---
 
 ## 4. Classification rules
 
-**Direction.** A transaction is an outflow when its `type` contains the word
-`withdrawal` (covers `withdrawal`, `ib withdrawal`, `cashback withdrawal`);
-everything else counts as an inflow. Chosen over an explicit allow-list because
-the CRM doc enumerates withdrawal types but not deposit types, and the live
-system already uses at least one type absent from the doc
-(`ib transfer to account`).
+**Direction.** An explicit type table, not substring matching. The first live
+send printed the real vocabulary, which the CRM doc does not describe:
+`credit`, `deposit`, `ib transfer to account`, `ib transfer to account out`,
+`ib withdrawal`, `transfer in`, `transfer out`, `withdrawal`.
+
+| kind | types | counted in |
+|---|---|---|
+| `deposit` | `deposit` | Deposits |
+| `withdrawal` | `withdrawal`, `cashback withdrawal` | Withdrawals |
+| `ib` | `ib withdrawal`, `ib transfer to account` | IB Rebate |
+| `ib-mirror` | `ib transfer to account out` | excluded — second leg |
+| `internal` | `transfer in`, `transfer out` | excluded — nets to zero |
+| `credit` | `credit` | excluded — not cash |
+
+Substring matching was wrong and materially so: `transfer out` contains no
+"withdrawal", so money leaving was counted as money arriving. The Unattributed
+PSP showed $1,282,007.61 of deposits against $0.00 of withdrawals over 56 rows,
+and Net Flow came out at $1,777,152.83 against a true $497,074.14.
+
+`ib transfer to account` and `ib transfer to account out` each totalled
+$1,928.92 in that same week — the same payout booked on both legs. Only one is
+counted.
+
+Excluded money is **reported in the footer** with amounts and row counts, so the
+totals always reconcile. An unrecognised type is still counted (falling back to
+outflow if it contains `withdrawal` or ends in ` out`, inflow otherwise) and is
+named in the footer with how it was treated, so a new type cannot hide the way
+these did.
 
 **Amounts.** Use `processedAmount`, falling back to `requestedAmount`, and
 always take `Math.abs()`. Direction comes from the type, never from the sign.
