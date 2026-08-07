@@ -35,12 +35,51 @@ const TX_STATUSES = parseRecipients(process.env.SUMMARY_TX_STATUSES || "approved
 const num = (v) => Number(v) || 0;
 
 // ── transaction classification ──────────────────────────────────────────────
-// The CRM doc enumerates withdrawal types (withdrawal / ib withdrawal /
-// cashback withdrawal) but no deposit types, and the live system already uses
-// at least one type absent from the doc ("ib transfer to account"). Matching on
-// the word therefore beats an allow-list, which would silently drop money.
+// The first live send printed the real vocabulary, which is nothing like the
+// doc's: credit, deposit, ib transfer to account, ib transfer to account out,
+// ib withdrawal, transfer in, transfer out, withdrawal.
+//
+// Substring matching on "withdrawal" got this badly wrong: "transfer out" does
+// not contain the word, so money LEAVING was counted as money arriving, and the
+// Unattributed PSP showed $1,282,007.61 of deposits against $0.00 of
+// withdrawals across 56 rows. Hence an explicit table.
+//
+//   deposit    external client money in
+//   withdrawal external client money out
+//   ib         IB commission (a cost)
+//   ib-mirror  the SECOND leg of an IB transfer - same money, ignored
+//   internal   client moving money between their own accounts - nets to zero
+//   credit     bonus/credit, not cash
+const TX_KINDS = new Map([
+  ["deposit", "deposit"],
+  ["withdrawal", "withdrawal"],
+  ["cashback withdrawal", "withdrawal"],
+  ["ib withdrawal", "ib"],
+  ["ib transfer to account", "ib"],
+  // Booked against the IB wallet for the same event as the line above; both
+  // totalled $1,928.92 in the first live send. Counting both doubled the rebate.
+  ["ib transfer to account out", "ib-mirror"],
+  ["transfer in", "internal"],
+  ["transfer out", "internal"],
+  ["credit", "credit"],
+]);
+
+export function classifyTx(type) {
+  const t = String(type || "").trim().toLowerCase();
+  if (!t) return "unknown";
+  if (TX_KINDS.has(t)) return TX_KINDS.get(t);
+  // An unrecognised type is still classified so its money is never dropped, but
+  // it is named in the footer so a new type cannot hide the way these did.
+  if (t.includes("withdrawal") || t.endsWith(" out")) return "withdrawal";
+  return "deposit";
+}
+
+export function isKnownTxType(type) {
+  return TX_KINDS.has(String(type || "").trim().toLowerCase());
+}
+
 export function isWithdrawal(type) {
-  return String(type || "").toLowerCase().includes("withdrawal");
+  return classifyTx(type) === "withdrawal";
 }
 
 // Direction comes from the type, never from the sign. A signed-negative amount
@@ -58,8 +97,7 @@ export function txAmount(row) {
 // Matching the leading "ib" covers both without an allow-list that would go
 // stale the way the doc's type list already has.
 export function isIbMovement(type) {
-  const t = String(type || "").trim().toLowerCase();
-  return t === "ib" || t.startsWith("ib ");
+  return classifyTx(type) === "ib";
 }
 
 const txPsp = (row) => String(row?.psp || "").trim() || "Unattributed";
@@ -92,6 +130,8 @@ export function aggregate(transactions) {
   const typesSeen = new Set();
   const ibByType = new Map();
   const ibLegKeys = new Map();
+  const excluded = new Map();
+  const unknownTypes = new Map();
   let deposits = 0;
   let withdrawals = 0;
   let ibRebate = 0;
@@ -99,7 +139,22 @@ export function aggregate(transactions) {
 
   for (const row of transactions) {
     const amount = txAmount(row);
-    const out = isWithdrawal(row?.type);
+    const kind = classifyTx(row?.type);
+    if (!isKnownTxType(row?.type)) {
+      const label = String(row?.type || "(blank)").toLowerCase();
+      unknownTypes.set(label, { type: label, treatedAs: kind, amount: (unknownTypes.get(label)?.amount || 0) + amount });
+    }
+    // Excluded from the money-movement figures, but never discarded silently:
+    // both are reported in the footer so the totals can be reconciled.
+    if (kind === "internal" || kind === "credit" || kind === "ib-mirror") {
+      const bucket = excluded.get(kind) || { kind, amount: 0, count: 0 };
+      bucket.amount += amount;
+      bucket.count += 1;
+      excluded.set(kind, bucket);
+      typesSeen.add(String(row?.type || "unknown"));
+      continue;
+    }
+    const out = kind === "withdrawal";
     const psp = txPsp(row);
     const clientKey = txClientKey(row);
     const day = String(row?.processedAt || "").slice(0, 10);
@@ -109,7 +164,7 @@ export function aggregate(transactions) {
     // IB commission is its own bucket, kept OUT of deposits/withdrawals. It has
     // to be: the per-account Net subtracts the rebate, and an "ib withdrawal"
     // counted in both Withdrawals and IB Rebate would be deducted twice.
-    const isIb = isIbMovement(row?.type);
+    const isIb = kind === "ib";
 
     if (isIb) {
       ibRebate += amount;
@@ -214,6 +269,8 @@ export function aggregate(transactions) {
     // Client+day+amount groups seen more than once: the fingerprint of a
     // transfer counted on both legs.
     ibSuspectedDoubleCount: [...ibLegKeys.values()].filter((n) => n > 1).length,
+    excluded: [...excluded.values()].sort((a, b) => b.amount - a.amount),
+    unknownTypes: [...unknownTypes.values()].sort((a, b) => b.amount - a.amount),
     currencies: [...currencies],
   };
 }
@@ -424,6 +481,12 @@ const ACCOUNT_HEADERS = [
   { label: "Net", width: "14%" },
 ];
 
+const EXCLUDED_LABELS = {
+  internal: "internal transfers between a client's own accounts",
+  credit: "credit / bonus",
+  "ib-mirror": "second leg of IB transfers",
+};
+
 const dash = "&mdash;";
 const orDash = (value, fmt) => (value === null || value === undefined ? dash : fmt(value));
 const signCls = (v) => (num(v) > 0 ? "pos" : num(v) < 0 ? "neg" : "");
@@ -586,6 +649,20 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
         ? agg.ibByType.map((t) => `${escapeHtml(t.type)} ${money(t.amount)}`).join(" &middot; ")
         : "none"
     }.`,
+    ...(agg.excluded.length
+      ? [
+          `Excluded from the figures above (not client money in or out): ${agg.excluded
+            .map((e) => `${escapeHtml(EXCLUDED_LABELS[e.kind] || e.kind)} ${money(e.amount)} over ${fmtNum(e.count, 0)} row(s)`)
+            .join(" &middot; ")}.`,
+        ]
+      : []),
+    ...(agg.unknownTypes.length
+      ? [
+          `<strong>Unrecognised transaction type(s):</strong> ${agg.unknownTypes
+            .map((u) => `${escapeHtml(u.type)} ${money(u.amount)} counted as a ${escapeHtml(u.treatedAs)}`)
+            .join(" &middot; ")}. Confirm this is right.`,
+        ]
+      : []),
     ...(agg.ibSuspectedDoubleCount
       ? [
           `<strong>Check:</strong> ${fmtNum(agg.ibSuspectedDoubleCount, 0)} IB amount(s) appear more than once for the same client on the same day. If those are the two legs of one transfer, IB Rebate is overstated and needs a one-leg rule.`,
