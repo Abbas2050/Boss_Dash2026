@@ -343,10 +343,10 @@ export async function attachClientNames(rows) {
   return names.size;
 }
 
-// Each glance figure is fetched independently: one source being down renders
-// that tile as a dash rather than losing the whole report.
-async function fetchGlance(week, fromYmd, toYmd) {
-  const glance = { totalRevenue: null, tradedLots: null, lpSlippage: null };
+// The glance's trading headline. Fetched in its own try so a backend outage
+// renders the tile as a dash rather than losing the whole report.
+async function fetchGlance(week) {
+  const glance = { totalRevenue: null };
   // A dash with no explanation is indistinguishable from a genuine zero. Every
   // failure here is surfaced in the footer.
   const failures = [];
@@ -354,9 +354,8 @@ async function fetchGlance(week, fromYmd, toYmd) {
 
   try {
     const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "true" });
-    // DealMatch is the heavy one -- a week of deals took longer than the 45s the
-    // other two need, which is why Total Revenue came back empty on the first
-    // live send while Traded Lots and LP Slippage populated.
+    // A week of deals took longer than the original 45s, which is why Total
+    // Revenue came back empty on the first live send.
     const resp = await fetch(`${BACKEND_BASE_URL}/DealMatch/Run?${params}`, { signal: AbortSignal.timeout(180_000) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const report = await resp.json();
@@ -373,28 +372,9 @@ async function fetchGlance(week, fromYmd, toYmd) {
     failures.push(`DealMatch unavailable: ${error?.message || error}`);
   }
 
-  try {
-    const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
-    const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/Run?${params}`, { signal: AbortSignal.timeout(45_000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const raw = await resp.json();
-    glance.tradedLots = num(raw?.totalLots);
-  } catch (error) {
-    console.warn("[WeeklySummary] ClientVolume lookup failed:", error?.message || error);
-    failures.push(`ClientVolume unavailable: ${error?.message || error}`);
-  }
-
-  try {
-    const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
-    const resp = await fetch(`${BACKEND_BASE_URL}/SlippageReport/Run?${params}`, { signal: AbortSignal.timeout(45_000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const raw = await resp.json();
-    const rows = Array.isArray(raw?.rows) ? raw.rows : [];
-    glance.lpSlippage = rows.reduce((sum, r) => sum + num(r.lpPlImpact), 0);
-  } catch (error) {
-    console.warn("[WeeklySummary] SlippageReport lookup failed:", error?.message || error);
-    failures.push(`SlippageReport unavailable: ${error?.message || error}`);
-  }
+  // ClientVolume/Run and SlippageReport/Run used to be called here for the
+  // Traded Lots and LP Slippage tiles. Those tiles were dropped, so the calls
+  // went with them -- both figures still have their own dedicated weekly report.
 
   return { glance, failures };
 }
@@ -512,8 +492,6 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
     { label: "Total Revenue", value: orDash(glance.totalRevenue, money) },
     { label: "IB Rebate", value: money(agg.ibRebate), cls: "cost" },
     { label: "Net Revenue", value: orDash(netRevenue, money), cls: signCls(netRevenue), note: "Total Revenue less IB Rebate" },
-    { label: "Traded Lots (realized)", value: orDash(glance.tradedLots, (v) => fmtNum(v, 2)) },
-    { label: "LP Slippage", value: orDash(glance.lpSlippage, money), cls: signCls(glance.lpSlippage) },
     { label: "Large Depositors", value: fmtNum(agg.largeDepositors.length, 0), note: `over ${money(LARGE_DEPOSIT_THRESHOLD)}` },
   ]);
 
@@ -706,7 +684,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const transactions = await fetchTransactions(fromYmd, toYmd);
   const agg = aggregate(transactions);
   await attachClientNames(agg.depositors);
-  const { glance, failures } = await fetchGlance(week, fromYmd, toYmd);
+  const { glance, failures } = await fetchGlance(week);
 
   const notices = [...failures];
   // A full segment almost certainly means the window was truncated; say so

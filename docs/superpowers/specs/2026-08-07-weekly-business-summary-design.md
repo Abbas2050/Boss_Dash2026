@@ -44,8 +44,6 @@ assumes them rather than repeating them.
 | Total Revenue | `DealMatch/Run` |
 | IB Rebate | this report |
 | Net Revenue | Total Revenue less IB Rebate |
-| Traded Lots (realized) | `ClientVolume/Run` |
-| LP Slippage | `SlippageReport/Run` |
 | Active Accounts | this report |
 
 ### Section 2 -- Account Activity
