@@ -63,7 +63,25 @@ export function isIbMovement(type) {
 }
 
 const txPsp = (row) => String(row?.psp || "").trim() || "Unattributed";
-const txLogin = (row) => String(row?.fromLoginSid || row?.fromUserId || "").trim();
+
+// `fromLoginSid` is a COMPOSITE ACCOUNT id, not a login: the CRM doc gives the
+// pattern \d+-[\w-]+ with example "2-154439". One client owns several of these
+// (a trading account and a wallet), so keying rows on it splits one person into
+// several rows -- the "1-43" / "2-101939" entries seen in the first live send.
+// Group on the CRM user instead.
+export function txUserId(row) {
+  const value = Number(row?.fromUserId);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+// Falls back to the account id only so money is never dropped from the totals
+// when a row has no user attached.
+export function txClientKey(row) {
+  const userId = txUserId(row);
+  if (userId !== null) return String(userId);
+  const sid = String(row?.fromLoginSid || "").trim();
+  return sid ? `sid:${sid}` : "";
+}
 
 // ── aggregation ─────────────────────────────────────────────────────────────
 
@@ -72,6 +90,8 @@ export function aggregate(transactions) {
   const byAccount = new Map();
   const byDay = new Map();
   const typesSeen = new Set();
+  const ibByType = new Map();
+  const ibLegKeys = new Map();
   let deposits = 0;
   let withdrawals = 0;
   let ibRebate = 0;
@@ -81,7 +101,7 @@ export function aggregate(transactions) {
     const amount = txAmount(row);
     const out = isWithdrawal(row?.type);
     const psp = txPsp(row);
-    const login = txLogin(row);
+    const clientKey = txClientKey(row);
     const day = String(row?.processedAt || "").slice(0, 10);
     typesSeen.add(String(row?.type || "unknown"));
     if (row?.processedCurrency) currencies.add(String(row.processedCurrency));
@@ -91,8 +111,18 @@ export function aggregate(transactions) {
     // counted in both Withdrawals and IB Rebate would be deducted twice.
     const isIb = isIbMovement(row?.type);
 
-    if (isIb) ibRebate += amount;
-    else if (out) withdrawals += amount;
+    if (isIb) {
+      ibRebate += amount;
+      const key = String(row?.type || "unknown").toLowerCase();
+      ibByType.set(key, (ibByType.get(key) || 0) + amount);
+      // A transfer booked on BOTH legs (out of the wallet, into the trading
+      // account) would appear as two rows of identical value for one client and
+      // double the rebate. Same amount + same day + same client is the
+      // signature; it is reported, never silently corrected, because two real
+      // payouts can legitimately coincide.
+      const legKey = `${clientKey}|${day}|${amount.toFixed(2)}`;
+      ibLegKeys.set(legKey, (ibLegKeys.get(legKey) || 0) + 1);
+    } else if (out) withdrawals += amount;
     else deposits += amount;
 
     if (!byPsp.has(psp)) byPsp.set(psp, { psp, deposits: 0, withdrawals: 0, ibRebate: 0, count: 0 });
@@ -102,12 +132,23 @@ export function aggregate(transactions) {
     else if (out) p.withdrawals += amount;
     else p.deposits += amount;
 
-    if (login) {
-      if (!byAccount.has(login)) {
-        byAccount.set(login, { login, name: String(row?.name || ""), deposits: 0, withdrawals: 0, ibRebate: 0, depositCount: 0, psps: new Set(), lastDate: "" });
+    if (clientKey) {
+      if (!byAccount.has(clientKey)) {
+        // TransactionDefinition carries NO name field, so the name is resolved
+        // separately from /rest/users and filled in afterwards.
+        byAccount.set(clientKey, {
+          key: clientKey,
+          userId: txUserId(row),
+          name: "",
+          deposits: 0,
+          withdrawals: 0,
+          ibRebate: 0,
+          depositCount: 0,
+          psps: new Set(),
+          lastDate: "",
+        });
       }
-      const a = byAccount.get(login);
-      if (!a.name && row?.name) a.name = String(row.name);
+      const a = byAccount.get(clientKey);
       if (isIb) {
         a.ibRebate += amount;
       } else if (out) {
@@ -139,7 +180,8 @@ export function aggregate(transactions) {
   const depositors = [...byAccount.values()]
     .filter((a) => a.deposits > 0 || a.ibRebate > 0)
     .map((a) => ({
-      login: a.login,
+      key: a.key,
+      userId: a.userId,
       name: a.name,
       deposits: a.deposits,
       withdrawals: a.withdrawals,
@@ -168,6 +210,10 @@ export function aggregate(transactions) {
     depositors,
     largeDepositors,
     typesSeen: [...typesSeen].sort(),
+    ibByType: [...ibByType.entries()].map(([type, amount]) => ({ type, amount })).sort((a, b) => b.amount - a.amount),
+    // Client+day+amount groups seen more than once: the fingerprint of a
+    // transfer counted on both legs.
+    ibSuspectedDoubleCount: [...ibLegKeys.values()].filter((n) => n > 1).length,
     currencies: [...currencies],
   };
 }
@@ -177,22 +223,84 @@ export function aggregate(transactions) {
 const TX_SEGMENT_LIMIT = 5000;
 
 async function fetchTransactions(fromYmd, toYmd) {
-  return crmPost("transactions", {
+  const rows = await crmPost("transactions", {
     processedAt: { begin: `${fromYmd} 00:00:00`, end: `${toYmd} 23:59:59` },
     statuses: TX_STATUSES,
     segment: { limit: TX_SEGMENT_LIMIT, offset: 0 },
   });
+  return dedupeById(rows);
+}
+
+// A transaction returned twice (once per leg of a transfer) would be counted
+// twice. Rows without an id are kept as-is rather than collapsed together.
+export function dedupeById(rows) {
+  const seen = new Set();
+  const out = [];
+  let dropped = 0;
+  for (const row of rows) {
+    const id = row?.id;
+    if (id === null || id === undefined) {
+      out.push(row);
+      continue;
+    }
+    const key = String(id);
+    if (seen.has(key)) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(key);
+    out.push(row);
+  }
+  if (dropped) console.warn(`[WeeklySummary] dropped ${dropped} duplicate transaction id(s)`);
+  return out;
+}
+
+// Transactions carry only fromUserId, so names come from /rest/users. Batched:
+// one call per 200 clients rather than one per client.
+const USER_BATCH = 200;
+
+export async function attachClientNames(rows) {
+  const ids = [...new Set(rows.map((r) => r.userId).filter((v) => Number.isFinite(v) && v > 0))];
+  const names = new Map();
+
+  for (let i = 0; i < ids.length; i += USER_BATCH) {
+    const batch = ids.slice(i, i + USER_BATCH);
+    try {
+      const users = await crmPost("users", { ids: batch, segment: { limit: batch.length, offset: 0 } });
+      for (const user of users) {
+        const id = Number(user?.id);
+        const name = [user?.firstName, user?.lastName]
+          .map((part) => String(part || "").trim())
+          .filter(Boolean)
+          .join(" ");
+        if (Number.isFinite(id) && name) names.set(id, name);
+      }
+    } catch (error) {
+      console.warn("[WeeklySummary] user name lookup failed:", error?.message || error);
+    }
+  }
+
+  for (const row of rows) {
+    row.name = names.get(row.userId) || (row.userId ? `Client #${row.userId}` : "Unattached account");
+  }
+  return names.size;
 }
 
 // Each glance figure is fetched independently: one source being down renders
 // that tile as a dash rather than losing the whole report.
 async function fetchGlance(week, fromYmd, toYmd) {
   const glance = { totalRevenue: null, tradedLots: null, lpSlippage: null };
+  // A dash with no explanation is indistinguishable from a genuine zero. Every
+  // failure here is surfaced in the footer.
+  const failures = [];
   const { from, to } = toUnixRange(week.start, week.end);
 
   try {
     const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "true" });
-    const resp = await fetch(`${BACKEND_BASE_URL}/DealMatch/Run?${params}`, { signal: AbortSignal.timeout(45_000) });
+    // DealMatch is the heavy one -- a week of deals took longer than the 45s the
+    // other two need, which is why Total Revenue came back empty on the first
+    // live send while Traded Lots and LP Slippage populated.
+    const resp = await fetch(`${BACKEND_BASE_URL}/DealMatch/Run?${params}`, { signal: AbortSignal.timeout(180_000) });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const report = await resp.json();
     const rows = Array.isArray(report?.clientRevenueSummaries) ? report.clientRevenueSummaries : [];
@@ -205,6 +313,7 @@ async function fetchGlance(week, fromYmd, toYmd) {
     );
   } catch (error) {
     console.warn("[WeeklySummary] DealMatch lookup failed:", error?.message || error);
+    failures.push(`DealMatch unavailable: ${error?.message || error}`);
   }
 
   try {
@@ -215,6 +324,7 @@ async function fetchGlance(week, fromYmd, toYmd) {
     glance.tradedLots = num(raw?.totalLots);
   } catch (error) {
     console.warn("[WeeklySummary] ClientVolume lookup failed:", error?.message || error);
+    failures.push(`ClientVolume unavailable: ${error?.message || error}`);
   }
 
   try {
@@ -226,9 +336,10 @@ async function fetchGlance(week, fromYmd, toYmd) {
     glance.lpSlippage = rows.reduce((sum, r) => sum + num(r.lpPlImpact), 0);
   } catch (error) {
     console.warn("[WeeklySummary] SlippageReport lookup failed:", error?.message || error);
+    failures.push(`SlippageReport unavailable: ${error?.message || error}`);
   }
 
-  return glance;
+  return { glance, failures };
 }
 
 // ── chart ───────────────────────────────────────────────────────────────────
@@ -301,11 +412,14 @@ async function buildDailyChart(byDay, titleSuffix) {
 
 // ── email ───────────────────────────────────────────────────────────────────
 
+// One row per CRM client. The composite fromLoginSid ("1-43", "2-101939") is
+// deliberately not shown: those are per-account wallet/trading ids belonging to
+// a client, not separate customers.
 const ACCOUNT_HEADERS = [
-  { label: "Login", width: "14%" },
-  { label: "Name", width: "30%" },
-  { label: "Deposits", width: "14%" },
-  { label: "Withdrawals", width: "14%" },
+  { label: "Client", width: "32%" },
+  { label: "Client ID", width: "10%" },
+  { label: "Deposits", width: "15%" },
+  { label: "Withdrawals", width: "15%" },
   { label: "IB Rebate", width: "14%" },
   { label: "Net", width: "14%" },
 ];
@@ -388,8 +502,8 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
     rows
       .map(
         (r) => `<tr>
-        ${dataCell("Login", escapeHtml(r.login), { nowrap: true })}
-        ${dataCell("Name", escapeHtml(r.name))}
+        ${dataCell("Client", escapeHtml(r.name))}
+        ${dataCell("Client ID", r.userId ? escapeHtml(String(r.userId)) : dash, { nowrap: true })}
         ${accountRow(r, { bold: true })}
       </tr>`,
       )
@@ -467,6 +581,16 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice &mdash; an <em>ib withdrawal</em> sits in IB Rebate, not in Withdrawals.",
     `IB Rebate is the ${escapeHtml("ib transfer to account")} and ${escapeHtml("ib withdrawal")} settled this week. The Deal Match report derives IB commission from <em>current</em> CRM wallet balances instead, so the two can differ &mdash; this one is fixed for a closed week, that one drifts between runs.`,
     `Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.`,
+    `IB Rebate by type: ${
+      agg.ibByType.length
+        ? agg.ibByType.map((t) => `${escapeHtml(t.type)} ${money(t.amount)}`).join(" &middot; ")
+        : "none"
+    }.`,
+    ...(agg.ibSuspectedDoubleCount
+      ? [
+          `<strong>Check:</strong> ${fmtNum(agg.ibSuspectedDoubleCount, 0)} IB amount(s) appear more than once for the same client on the same day. If those are the two legs of one transfer, IB Rebate is overstated and needs a one-leg rule.`,
+        ]
+      : []),
     ...notices.map((n) => escapeHtml(n)),
     `Transaction types seen this week: ${escapeHtml(agg.typesSeen.join(", ") || "none")}.`,
   ];
@@ -504,9 +628,10 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   const transactions = await fetchTransactions(fromYmd, toYmd);
   const agg = aggregate(transactions);
-  const glance = await fetchGlance(week, fromYmd, toYmd);
+  await attachClientNames(agg.depositors);
+  const { glance, failures } = await fetchGlance(week, fromYmd, toYmd);
 
-  const notices = [];
+  const notices = [...failures];
   // A full segment almost certainly means the window was truncated; say so
   // rather than quietly under-reporting.
   if (transactions.length >= TX_SEGMENT_LIMIT) {
