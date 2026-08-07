@@ -158,19 +158,29 @@ export async function mapWithConcurrency(items, worker, limit = 8) {
   return results;
 }
 
-export function previousFullWeekUtc() {
-  const now = new Date();
-  // Monday=1 ... Sunday=0 in JS getUTCDay terms
-  const day = now.getUTCDay();
-  const daysSinceMonday = (day + 6) % 7;
-  const currentMonday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  currentMonday.setUTCDate(currentMonday.getUTCDate() - daysSinceMonday);
+// The last COMPLETE Saturday-to-Friday week, in UTC. Shared by all three weekly
+// reports so they always describe an identical period.
+//
+// Saturday->Friday, not Monday->Sunday, because the reports go out Saturday
+// morning Dubai: the forex week closes Friday night, so a Sat-Fri window is
+// finished and roughly 13 hours old when the email lands. A Sun-Sat window
+// would still have 14 hours to run at that point, and waiting for it would make
+// every report six days stale.
+//
+// `now` is injectable so the boundaries can be tested without freezing a clock.
+export function previousFullWeekUtc(now = new Date()) {
+  // Sunday=0 ... Saturday=6 in getUTCDay terms.
+  const daysSinceSaturday = (now.getUTCDay() + 1) % 7;
 
-  const start = new Date(currentMonday);
+  // Start of the week currently in progress; it is deliberately excluded.
+  const currentSaturday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  currentSaturday.setUTCDate(currentSaturday.getUTCDate() - daysSinceSaturday);
+
+  const start = new Date(currentSaturday);
   start.setUTCDate(start.getUTCDate() - 7);
   start.setUTCHours(0, 0, 0, 0);
 
-  const end = new Date(currentMonday);
+  const end = new Date(currentSaturday);
   end.setUTCDate(end.getUTCDate() - 1);
   end.setUTCHours(23, 59, 59, 0);
 

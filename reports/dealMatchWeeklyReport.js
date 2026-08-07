@@ -14,7 +14,7 @@ import {
   publishChartImages,
 } from "./reportShared.js";
 
-const DEFAULT_SCHEDULE = "0 20 * * 5"; // 20:00 every Friday (UAE time)
+const DEFAULT_SCHEDULE = "0 9 * * 6"; // 09:00 every Saturday (UAE time)
 const DEFAULT_TIMEZONE = "Asia/Dubai";
 const CRM_API_VERSION = String(process.env.VITE_API_VERSION || "1.0.0");
 const CRM_API_TOKEN = String(process.env.VITE_API_TOKEN || process.env.API_TOKEN || "").trim();

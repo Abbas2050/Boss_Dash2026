@@ -11,7 +11,7 @@ import {
   renderChartBuffer,
 } from "./reportShared.js";
 
-const DEFAULT_SCHEDULE = "30 20 * * 5"; // 20:30 every Friday (UAE time)
+const DEFAULT_SCHEDULE = "30 9 * * 6"; // 09:30 every Saturday (UAE time)
 const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 // ── aggregation (mirrors src/pages/departments/dealing/SlippageReportTab.tsx) ──

@@ -24,9 +24,10 @@ import {
 // strip that also carries the trading headline. Design:
 // docs/superpowers/specs/2026-08-07-weekly-business-summary-design.md
 //
-// Sent AFTER Deal Match (20:00) and Slippage (20:30) so the glance is never
-// computed before the reports it summarises.
-const DEFAULT_SCHEDULE = "45 20 * * 5";
+// Sent Saturday 10:00 Dubai, AFTER Deal Match (09:00) and Slippage (09:30), so
+// the glance is never computed before the reports it summarises. The week is
+// Saturday->Friday, closed the previous night -- see previousFullWeekUtc().
+const DEFAULT_SCHEDULE = "0 10 * * 6"; // 10:00 every Saturday (UAE time)
 const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 const LARGE_DEPOSIT_THRESHOLD = Number(process.env.SUMMARY_LARGE_DEPOSIT_THRESHOLD || 1000);

@@ -180,17 +180,24 @@ scope.
 | Env var | Default |
 |---|---|
 | `WEEKLY_SUMMARY_ENABLED` | `true` |
-| `WEEKLY_SUMMARY_CRON` | `45 20 * * 5` |
+| `WEEKLY_SUMMARY_CRON` | `0 10 * * 6` |
 | `WEEKLY_SUMMARY_TIMEZONE` | `Asia/Dubai` |
 | `WEEKLY_SUMMARY_RUN_ON_START` | `false` |
 | `SUMMARY_ALERT_RECIPIENTS` | — |
 | `SUMMARY_LARGE_DEPOSIT_THRESHOLD` | `1000` |
 | `SUMMARY_TX_STATUSES` | `approved` |
 
-**Schedule rationale.** 20:45 Dubai on Friday — deliberately *after* Deal Match
-(20:00) and Slippage (20:30), so the glance is never computed before the reports
-it summarises. Same `previousFullWeekUtc()` window as both, so all three
-describe an identical period.
+**Schedule rationale.** 10:00 Dubai on Saturday — deliberately *after* Deal
+Match (09:00) and Slippage (09:30), so the glance is never computed before the
+reports it summarises.
+
+The reporting week is **Saturday → Friday**, shared by all three via
+`previousFullWeekUtc()`, so they always describe an identical period. Saturday →
+Friday rather than Sunday → Saturday because the forex week closes Friday night:
+a Sat–Fri window is complete and about 13 hours old when Saturday's email lands.
+A Sun–Sat window would still have 14 hours left to run at that moment, and
+waiting for it to close would make every report six days stale. Consecutive
+weeks abut exactly, so no day is counted twice or skipped.
 
 ---
 
