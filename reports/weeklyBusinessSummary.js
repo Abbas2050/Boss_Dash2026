@@ -588,17 +588,8 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
           <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
           ${glanceCards}
 
-          <p class="section-title">Account Activity</p>
-          <p class="note">Every account that moved money during the week, largest deposit first. Net = Deposits &minus; Withdrawals &minus; IB Rebate.</p>
-          ${dataTable({
-            headers: ACCOUNT_HEADERS,
-            totalRow: agg.depositors.length ? depositorTotalRow : "",
-            bodyRows: depositorRows,
-            emptyText: "No deposits this week.",
-          })}
-
           <p class="section-title">Large Depositors</p>
-          <p class="note">The subset above that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week.</p>
+          <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week &mdash; the subset of Account Activity below.</p>
           ${dataTable({
             headers: ACCOUNT_HEADERS,
             totalRow: agg.largeDepositors.length ? largeTotalRow : "",
@@ -621,6 +612,15 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
             narrow: true,
           })}
           ${chartUrl ? `<div class="ch-img"><img src="${chartUrl}" alt="Daily money movement" width="100%" /></div>` : ""}
+
+          <p class="section-title">Account Activity</p>
+          <p class="note">Every account that moved money during the week, largest deposit first. Net = Deposits &minus; Withdrawals &minus; IB Rebate.</p>
+          ${dataTable({
+            headers: ACCOUNT_HEADERS,
+            totalRow: agg.depositors.length ? depositorTotalRow : "",
+            bodyRows: depositorRows,
+            emptyText: "No deposits this week.",
+          })}
 
           <p class="section-title">Money Movement by PSP</p>
           <p class="note">Every settled transaction grouped by payment provider. IB movements carry no PSP and group under <em>Unattributed</em>.</p>
