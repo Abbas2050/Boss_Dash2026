@@ -19,6 +19,9 @@ export interface WalletBalancesResponse {
     difference_between_actual_and_expected?: number;
     net_all_current_balance?: number;
     net_balance_after_expected_funds?: number;
+    // Returned by walletMonitor.js and already read by both dashboards; it was
+    // simply missing from this type.
+    credit_by_lps?: number;
   };
   error?: string;
 }
