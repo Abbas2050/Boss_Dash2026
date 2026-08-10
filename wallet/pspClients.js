@@ -171,20 +171,28 @@ export class LetKnowPayClient {
 // Returns: USDT TRC20 (divide by 1,000,000 for 6 decimals)
 // Cache: 5-minute in-memory TTL
 // ─────────────────────────────────────────────────────────
+// Keyed by address and held at MODULE level, not on the instance. walletMonitor
+// builds a fresh OwnBitClient on every poll, so an instance-level cache was
+// always empty and every request hit Tronscan live. With two wallets that
+// doubled the call rate and Tronscan started returning HTTP 429, which surfaced
+// as both OwnBit rows reading $0.00 in the Closing Balance Report.
+const TRON_CACHE = new Map();
+const TRON_CACHE_TTL = 5 * 60 * 1000;
+// A 429 must not silently understate the report: a failed wallet contributes
+// $0 to the total rather than being left out, so a transient outage looks like
+// money having vanished. Last known good is served for up to an hour instead.
+const TRON_STALE_MAX = 60 * 60 * 1000;
+
 export class OwnBitClient {
-  // Takes an address so several TRON wallets can be tracked separately. The
-  // cache is per instance, so each wallet keeps its own 5-minute window and one
-  // wallet's data can never be served for another.
+  // Takes an address so several TRON wallets can be tracked separately.
   constructor(walletAddress = process.env.TRON_WALLET_ADDRESS || '') {
     this.walletAddress = walletAddress;
-    this._cache = null;
-    this._cacheExpiry = 0;
-    this._cacheTTL = 5 * 60 * 1000; // 5 minutes
   }
 
   async _getTronAccountData() {
-    if (this._cache && Date.now() < this._cacheExpiry) {
-      return this._cache;
+    const cached = TRON_CACHE.get(this.walletAddress);
+    if (cached && Date.now() < cached.expiry) {
+      return cached.data;
     }
 
     const url = `https://apilist.tronscan.org/api/account?address=${encodeURIComponent(this.walletAddress)}`;
@@ -193,11 +201,25 @@ export class OwnBitClient {
       signal: AbortSignal.timeout(15000),
     });
 
-    if (!res.ok) throw new Error(`TRON Tronscan HTTP ${res.status}`);
+    if (!res.ok) {
+      // Rate limiting is the expected failure here, and it hits every TRON
+      // wallet at once because they share one host and one source IP. Fall
+      // back to the last good response rather than reporting $0.
+      if (cached && Date.now() - cached.fetchedAt < TRON_STALE_MAX) {
+        console.warn(
+          `[OwnBit] Tronscan HTTP ${res.status} for ${this.walletAddress}; serving cached balance from ${new Date(cached.fetchedAt).toISOString()}`,
+        );
+        return cached.data;
+      }
+      throw new Error(`TRON Tronscan HTTP ${res.status}`);
+    }
     const data = await res.json();
 
-    this._cache = data;
-    this._cacheExpiry = Date.now() + this._cacheTTL;
+    TRON_CACHE.set(this.walletAddress, {
+      data,
+      fetchedAt: Date.now(),
+      expiry: Date.now() + TRON_CACHE_TTL,
+    });
     return data;
   }
 
