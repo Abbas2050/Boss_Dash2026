@@ -5,6 +5,12 @@
 
 import { BitpaceClient, LetKnowPayClient, OwnBitClient, HeroPaymentClient, GoogleSheetsClient } from './pspClients.js';
 
+// Two separate TRON wallets, reported as two rows. The second address is
+// defaulted in code so the widget works without an env change; set
+// TRON_WALLET_ADDRESS_2 to point it elsewhere.
+const OWNBIT_ADDRESS = process.env.TRON_WALLET_ADDRESS || '';
+const OWNBIT_NEW_ADDRESS = process.env.TRON_WALLET_ADDRESS_2 || 'TNteGan1r99nW3PoEb6PxQtnLFQ38vmnV5';
+
 /**
  * Fetch all PSP balances and return the standard response shape:
  * {
@@ -68,7 +74,7 @@ export async function checkAllBalances() {
     })(),
     (async () => {
       try {
-        const result = await new OwnBitClient().getBalance();
+        const result = await new OwnBitClient(OWNBIT_ADDRESS).getBalance();
         return {
           entries: [['ownbit', { name: 'OwnBit', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
           totalDelta: result.balance,
@@ -78,6 +84,22 @@ export async function checkAllBalances() {
         console.error('[WalletMonitor] OwnBit error:', message);
         return {
           entries: [['ownbit', { name: 'OwnBit', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          totalDelta: 0,
+        };
+      }
+    })(),
+    (async () => {
+      try {
+        const result = await new OwnBitClient(OWNBIT_NEW_ADDRESS).getBalance();
+        return {
+          entries: [['ownbitnew', { name: 'OwnBit New', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          totalDelta: result.balance,
+        };
+      } catch (e) {
+        const message = e?.message || String(e);
+        console.error('[WalletMonitor] OwnBit New error:', message);
+        return {
+          entries: [['ownbitnew', { name: 'OwnBit New', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
           totalDelta: 0,
         };
       }

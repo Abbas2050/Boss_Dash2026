@@ -170,6 +170,28 @@ const isDealOut = (deal: any, mode: RebateCloseMode) => {
   return false;
 };
 
+// Row order for the Closing Balance Report, and the crypto/bank split that
+// drives the subtotal divider. Declared here rather than inline so the count
+// can be derived: a hardcoded `cryptoCount = 7` silently mis-grouped the rows
+// the moment an eighth crypto wallet was added.
+// NOTE: BackOfficeDepartment.tsx renders the same report and carries an
+// identical copy. Change one, change the other.
+const PSP_ORDER = [
+  { key: 'bitpace', label: 'Bitpace', group: 'crypto' },
+  { key: 'letknowpay', label: 'LetKnow Pay', group: 'crypto' },
+  { key: 'ownbit', label: 'OwnBit', group: 'crypto' },
+  { key: 'ownbitnew', label: 'OwnBit New', group: 'crypto' },
+  { key: 'heropayment', label: 'HeroPayment', group: 'crypto' },
+  { key: 'googlesheets_match2pay', label: 'Match2Pay', group: 'crypto' },
+  { key: 'googlesheets_deusxpay', label: 'DeusXpay', group: 'crypto' },
+  { key: 'googlesheets_openpayed', label: 'OpenPayed', group: 'crypto' },
+  { key: 'googlesheets_goldsouq', label: 'Gold Souq', group: 'bank' },
+  { key: 'googlesheets_fab', label: 'FAB Bank', group: 'bank' },
+  { key: 'googlesheets_mbme', label: 'MBME', group: 'bank' },
+] as const;
+
+const CRYPTO_PSP_COUNT = PSP_ORDER.filter((p) => p.group === 'crypto').length;
+
 export function BackOfficeDepartment({
   selectedEntity,
   fromDate,
@@ -1437,18 +1459,7 @@ export function BackOfficeDepartment({
       setWalletError(null);
       const widgets = response.data.widgets;
       const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
-      const order = [
-        { key: 'bitpace', label: 'Bitpace' },
-        { key: 'letknowpay', label: 'LetKnow Pay' },
-        { key: 'ownbit', label: 'OwnBit' },
-        { key: 'heropayment', label: 'HeroPayment' },
-        { key: 'googlesheets_match2pay', label: 'Match2Pay' },
-        { key: 'googlesheets_deusxpay', label: 'DeusXpay' },
-        { key: 'googlesheets_openpayed', label: 'OpenPayed' },
-        { key: 'googlesheets_goldsouq', label: 'Gold Souq' },
-        { key: 'googlesheets_fab', label: 'FAB Bank' },
-        { key: 'googlesheets_mbme', label: 'MBME' },
-      ];
+      const order = PSP_ORDER;
 
       const mapped = order.map(({ key, label }) => {
         const entry = widgetMap.get(key);
@@ -1912,7 +1923,7 @@ export function BackOfficeDepartment({
               {walletError && <div className="text-[11px] text-destructive">{walletError}</div>}
               {pspBalances.length === 0 && !isLoading && !walletError && <div className="text-[11px] text-muted-foreground">No wallet data available.</div>}
               {pspBalances.map((psp, index) => {
-                const cryptoCount = 7;
+                const cryptoCount = CRYPTO_PSP_COUNT;
                 const cryptoSubtotal = pspBalances.slice(0, cryptoCount).reduce((sum, item) => sum + item.balance, 0);
 
                 return (

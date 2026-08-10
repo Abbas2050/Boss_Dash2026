@@ -3,7 +3,7 @@
  * Sends daily balance reports via Brevo (email) and Telegram Bot.
  */
 
-const CRYPTO_WIDGETS = ['bitpace', 'letknowpay', 'ownbit', 'heropayment', 'googlesheets_match2pay', 'googlesheets_deusxpay', 'googlesheets_openpayed'];
+const CRYPTO_WIDGETS = ['bitpace', 'letknowpay', 'ownbit', 'ownbitnew', 'heropayment', 'googlesheets_match2pay', 'googlesheets_deusxpay', 'googlesheets_openpayed'];
 const BANK_WIDGETS   = ['googlesheets_goldsouq', 'googlesheets_fab', 'googlesheets_mbme'];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,6 +170,7 @@ function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceiv
     bitpace: 'Bitpace',
     letknowpay: 'LetKnow',
     ownbit: 'OwnBit',
+    ownbitnew: 'OwnBitNew',
     heropayment: 'Hero',
     googlesheets_match2pay: 'M2P',
     googlesheets_deusxpay: 'DeusX',

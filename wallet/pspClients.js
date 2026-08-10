@@ -172,8 +172,11 @@ export class LetKnowPayClient {
 // Cache: 5-minute in-memory TTL
 // ─────────────────────────────────────────────────────────
 export class OwnBitClient {
-  constructor() {
-    this.walletAddress = process.env.TRON_WALLET_ADDRESS || '';
+  // Takes an address so several TRON wallets can be tracked separately. The
+  // cache is per instance, so each wallet keeps its own 5-minute window and one
+  // wallet's data can never be served for another.
+  constructor(walletAddress = process.env.TRON_WALLET_ADDRESS || '') {
+    this.walletAddress = walletAddress;
     this._cache = null;
     this._cacheExpiry = 0;
     this._cacheTTL = 5 * 60 * 1000; // 5 minutes
@@ -199,7 +202,7 @@ export class OwnBitClient {
   }
 
   async getBalance() {
-    if (!this.walletAddress) throw new Error('TRON_WALLET_ADDRESS not configured');
+    if (!this.walletAddress) throw new Error('TRON wallet address not configured');
     const data = await this._getTronAccountData();
 
     let usdtBalance = 0;
