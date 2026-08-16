@@ -747,6 +747,17 @@ export function startWeeklyBusinessSummaryScheduler() {
 
   console.log(`[WeeklySummary] scheduled with expression "${schedule}" (${timezone})`);
 
+  // A missing recipient list is otherwise invisible: the schedule fires, one
+  // warning goes to the log a week later, and nothing is sent. Say so at BOOT,
+  // while someone is watching. The test-send route takes its recipients from
+  // the request body, so it keeps working and hides the problem completely.
+  if (!parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
+    console.error(
+      "[WeeklySummary] WILL NOT SEND: SUMMARY_ALERT_RECIPIENTS is not set. " +
+        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
+    );
+  }
+
   if (String(process.env.WEEKLY_SUMMARY_RUN_ON_START || "false").toLowerCase() === "true") {
     runWeeklyBusinessSummary().catch((error) => {
       console.error("[WeeklySummary] startup run failed:", error?.message || error);

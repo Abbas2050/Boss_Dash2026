@@ -788,8 +788,10 @@ function parseTestRecipients(body) {
   return rawList.map((e) => String(e).trim()).filter(Boolean);
 }
 
-// On-demand test send of the weekly Slippage email (admin-only). Sends to the
-// recipients in the body (falls back to the configured SLIPPAGE_ALERT_RECIPIENTS).
+// On-demand test send of the weekly Slippage email (admin-only). Recipients
+// come from the request body and there is NO fallback to
+// SLIPPAGE_ALERT_RECIPIENTS -- an empty body is a 400. That is why a test send
+// can succeed while the scheduled run silently sends nothing.
 app.post('/api/reports/slippage-weekly/test', authRequired, async (req, res) => {
   if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
   const recipients = parseTestRecipients(req.body);
@@ -816,7 +818,7 @@ app.post('/api/reports/summary-weekly/test', authRequired, async (req, res) => {
 });
 
 // On-demand test send of the weekly Deal Match email (admin-only). Mirrors the
-// slippage test route; recipients in the body override DEALMATCH_ALERT_RECIPIENTS.
+// slippage test route: body recipients only, no env fallback.
 app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) => {
   if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
   const recipients = parseTestRecipients(req.body);

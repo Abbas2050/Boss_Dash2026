@@ -1236,6 +1236,15 @@ export function startWeeklyDealMatchScheduler() {
 
   console.log(`[DealMatchWeekly] scheduled with expression "${schedule}" (${timezone})`);
 
+  // See the note in weeklyBusinessSummary.js: an unset recipient list fails
+  // silently on schedule while test sends keep working.
+  if (!parseRecipients(process.env.DEALMATCH_ALERT_RECIPIENTS || "").length) {
+    console.error(
+      "[DealMatchWeekly] WILL NOT SEND: DEALMATCH_ALERT_RECIPIENTS is not set. " +
+        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
+    );
+  }
+
   if (String(process.env.WEEKLY_DEALMATCH_RUN_ON_START || "false").toLowerCase() === "true") {
     runWeeklyDealMatchEmailReport().catch((error) => {
       console.error("[DealMatchWeekly] startup run failed:", error?.message || error);

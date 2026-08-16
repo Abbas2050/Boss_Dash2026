@@ -510,6 +510,15 @@ export function startWeeklySlippageScheduler() {
 
   console.log(`[SlippageWeekly] scheduled with expression "${schedule}" (${timezone})`);
 
+  // See the note in weeklyBusinessSummary.js: an unset recipient list fails
+  // silently on schedule while test sends keep working.
+  if (!parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "").length) {
+    console.error(
+      "[SlippageWeekly] WILL NOT SEND: SLIPPAGE_ALERT_RECIPIENTS is not set. " +
+        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
+    );
+  }
+
   if (String(process.env.WEEKLY_SLIPPAGE_RUN_ON_START || "false").toLowerCase() === "true") {
     runWeeklySlippageEmailReport().catch((error) => {
       console.error("[SlippageWeekly] startup run failed:", error?.message || error);
