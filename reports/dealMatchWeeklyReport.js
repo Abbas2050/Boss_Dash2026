@@ -103,100 +103,76 @@ async function getIbApprovedTransfersAndWithdrawals(crmUserId, period) {
   }, 0);
 }
 
-// ── IB commission, per CLIENT, for the week ─────────────────────────────────
-// Two faults were found in the previous version, both visible in the sent
-// report as an identical $8,646.00 on two of Dawei Huang's logins:
+// ── client identity and IB rebate ───────────────────────────────────────────
+// The rebate is looked up ONCE PER CRM CLIENT. An earlier version cached per
+// MT5 login while looking the value up per user, so a client with two accounts
+// had their whole rebate charged to each one: Dawei Huang's 8,646 was billed as
+// 17,292. Grouping first removes the need to split anything.
 //
-//   1. The cache was keyed by MT5 login while the value was looked up per CRM
-//      user, so a client with two trading accounts had their whole commission
-//      charged to EACH one. His true $8,646 was billed as $17,292.
-//   2. It added getIbWalletUsdBalance() -- the accumulated, still-unpaid wallet
-//      balance read at the moment the report ran. That is not a cost incurred
-//      in the reporting week, it dwarfed the revenue it was subtracted from,
-//      and it is why the same closed week produced a different Net Revenue on
-//      every run.
-//
-// Now: one lookup per CRM user, counting only the IB transfers and withdrawals
-// SETTLED INSIDE the week, then split across that client's rows in proportion
-// to lots so each row carries its share and the total is charged exactly once.
-// This also makes Deal Match agree with the Business Summary, which has always
-// counted the week's settled transactions.
-export async function attachIbCommissions(rows, period) {
-  const logins = [...new Set(rows.map((r) => String(r.login || "").trim()).filter(Boolean))];
-  const failures = new Set();
+// It counts only the approved IB transfers and withdrawals SETTLED INSIDE the
+// week. The IB wallet balance is deliberately excluded -- it is accumulated,
+// still-unpaid commission read at the instant the report runs, so it is not a
+// cost of this week, and including it made the same closed week produce a
+// different Net Revenue on every run.
+export async function resolveClientIds(logins) {
+  const userIdByLogin = new Map();
 
   if (!CRM_API_TOKEN) {
-    for (const row of rows) row.ibCommission = 0;
-    return { rows, failed: logins.length, clients: 0, unresolved: logins.length };
+    for (const login of logins) userIdByLogin.set(login, null);
+    return { userIdByLogin, unresolved: logins.length };
   }
 
-  // login -> CRM user
-  const userIdByLogin = new Map();
   await mapWithConcurrency(
     logins,
     async (login) => {
       try {
-        userIdByLogin.set(login, await getCrmUserIdByMt5Login(login));
+        const userId = await getCrmUserIdByMt5Login(login);
+        userIdByLogin.set(login, Number.isFinite(userId) && userId > 0 ? userId : null);
       } catch (error) {
         console.warn(`[DealMatchWeekly] CRM user lookup failed for login=${login}:`, error?.message || error);
         userIdByLogin.set(login, null);
-        failures.add(login);
       }
     },
     6,
   );
-
-  // One lookup per client, not per account.
-  const commissionByUser = new Map();
-  const userIds = [...new Set([...userIdByLogin.values()].filter((v) => Number.isFinite(v) && v > 0))];
-  await mapWithConcurrency(
-    userIds,
-    async (userId) => {
-      try {
-        if (!(await isIbUser(userId))) {
-          commissionByUser.set(userId, 0);
-          return;
-        }
-        commissionByUser.set(userId, await getIbApprovedTransfersAndWithdrawals(userId, period));
-      } catch (error) {
-        console.warn(`[DealMatchWeekly] IB commission lookup failed for user=${userId}:`, error?.message || error);
-        commissionByUser.set(userId, null); // unknown, not zero
-        failures.add(String(userId));
-      }
-    },
-    6,
-  );
-
-  // Lots per client, so the split is proportional.
-  const lotsByUser = new Map();
-  for (const row of rows) {
-    const userId = userIdByLogin.get(String(row.login || "").trim());
-    if (!Number.isFinite(userId) || userId <= 0) continue;
-    lotsByUser.set(userId, (lotsByUser.get(userId) || 0) + (Number(row.lots) || 0));
-  }
 
   let unresolved = 0;
-  for (const row of rows) {
-    const userId = userIdByLogin.get(String(row.login || "").trim());
-    const total = Number.isFinite(userId) ? commissionByUser.get(userId) : undefined;
-    if (total === null || total === undefined) {
-      // Either the lookup failed or the login never resolved. Zero is the only
-      // safe value, but it UNDERSTATES the cost, so it is reported in the
-      // footer rather than passing silently as a real figure.
-      row.ibCommission = 0;
-      if (Number.isFinite(userId) && userId > 0) unresolved += 1;
-      continue;
-    }
-    const userLots = lotsByUser.get(userId) || 0;
-    const siblings = rows.filter((r) => userIdByLogin.get(String(r.login || "").trim()) === userId);
-    // Equal split when a client's rows carry no lots at all, so the total is
-    // still charged exactly once.
-    row.ibCommission = userLots > 0
-      ? total * ((Number(row.lots) || 0) / userLots)
-      : total / Math.max(1, siblings.length);
+  for (const login of logins) {
+    if (userIdByLogin.get(login) === null) unresolved += 1;
+  }
+  return { userIdByLogin, unresolved };
+}
+
+export async function attachRebateWithdrawn(clientRows, period) {
+  const withUser = clientRows.filter((row) => Number.isFinite(row.userId) && row.userId > 0);
+  let failed = 0;
+
+  if (!CRM_API_TOKEN) {
+    for (const row of clientRows) row.rebateWithdrawn = 0;
+    return { failed: withUser.length, clients: withUser.length };
   }
 
-  return { rows, failed: failures.size, clients: userIds.length, unresolved };
+  await mapWithConcurrency(
+    withUser,
+    async (row) => {
+      try {
+        if (!(await isIbUser(row.userId))) {
+          row.rebateWithdrawn = 0;
+          return;
+        }
+        row.rebateWithdrawn = await getIbApprovedTransfersAndWithdrawals(row.userId, period);
+      } catch (error) {
+        console.warn(`[DealMatchWeekly] rebate lookup failed for client=${row.userId}:`, error?.message || error);
+        // Zero UNDERSTATES the cost and so overstates Net Revenue. It is counted
+        // here and named in the footer rather than passing as a real figure.
+        row.rebateWithdrawn = 0;
+        failed += 1;
+      }
+    },
+    6,
+  );
+
+  return { failed, clients: withUser.length };
 }
 
 // ── client volume (Equity vs CFD, per day) ───────────────────────────────────
