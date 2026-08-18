@@ -279,14 +279,27 @@ function deriveClientRevenueRows(report) {
 // so this function does no I/O and is cheap to test.
 export function groupRowsByClient(rows, userIdByLogin) {
   const byClient = new Map();
+  let blankLoginCount = 0;
 
-  for (const row of rows) {
+  rows.forEach((row, index) => {
     const login = String(row.login || "").trim();
-    const userId = userIdByLogin.get(login);
-    const resolved = Number.isFinite(userId) && userId > 0 ? userId : null;
-    // An unresolved login cannot be merged without inventing a relationship the
-    // CRM does not assert, so it stands alone under its own key.
-    const clientKey = resolved === null ? `login:${login}` : `user:${resolved}`;
+    let clientKey;
+    let resolved = null;
+    if (login) {
+      const userId = userIdByLogin.get(login);
+      resolved = Number.isFinite(userId) && userId > 0 ? userId : null;
+      // An unresolved login cannot be merged without inventing a relationship
+      // the CRM does not assert, so it stands alone under its own key.
+      clientKey = resolved === null ? `login:${login}` : `user:${resolved}`;
+    } else {
+      // A blank login is not "the same client" as any other blank login --
+      // they are unrelated accounts that merely share an absent login. Keying
+      // them all as `login:` collapsed several unrelated accounts' figures
+      // into one fabricated row and hid them from the unresolved count, so
+      // each blank login gets its own key by position instead.
+      blankLoginCount += 1;
+      clientKey = `login:#${index}`;
+    }
 
     let client = byClient.get(clientKey);
     if (!client) {
@@ -322,18 +335,22 @@ export function groupRowsByClient(rows, userIdByLogin) {
       client.name = name;
       client._nameLots = lots;
     }
-  }
+  });
 
-  return [...byClient.values()]
+  const result = [...byClient.values()]
     .map(({ _nameLots, ...client }) => ({ ...client, accounts: client.accounts.sort() }))
     .sort((a, b) => b.lots - a.lots);
+  // Non-enumerable so it rides along on the array without breaking the
+  // existing array-shaped return contract the tests rely on.
+  Object.defineProperty(result, "blankLoginCount", { value: blankLoginCount, enumerable: false });
+  return result;
 }
 
 // Shared by both call sites below: resolve logins to CRM clients, fold the
 // per-account rows into one row per client, attach the rebate, and compute
 // netRev. Kept as one helper rather than pasted twice — the two call sites
 // differ only in which of { rows, unresolved, rebateResult } they need.
-async function buildClientRows(baseRows, week) {
+export async function buildClientRows(baseRows, week) {
   const logins = [...new Set(baseRows.map((r) => String(r.login || "").trim()).filter(Boolean))];
   const { userIdByLogin, unresolved } = await resolveClientIds(logins);
   const clientRows = groupRowsByClient(baseRows, userIdByLogin);
@@ -343,7 +360,9 @@ async function buildClientRows(baseRows, week) {
     ...row,
     netRev: (row.markup + row.clientComm) - (row.lpComm + row.rebateWithdrawn),
   }));
-  return { rows, unresolved, rebateResult };
+  // Blank-login rows can never be matched to a CRM client either, so they
+  // belong in the same "could not be matched" count the footer already shows.
+  return { rows, unresolved: unresolved + (clientRows.blankLoginCount || 0), rebateResult };
 }
 
 // Builds one table cell carrying its own visible row label. The label span is
@@ -485,7 +504,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byNet.map((r) => String(r.name || r.accounts?.[0] || "")),
+        labels: byNet.map((r) => String(r.name || r.accounts?.[0] || "").slice(0, 18)),
         datasets: [
           {
             label: "Net revenue",
@@ -517,7 +536,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byTotal.map((r) => String(r.name || r.accounts?.[0] || "")),
+        labels: byTotal.map((r) => String(r.name || r.accounts?.[0] || "").slice(0, 18)),
         datasets: [
           { label: "Gross revenue", data: byTotal.map((r) => Number(r.totalRev) || 0), backgroundColor: CH.gross, borderRadius: 4 },
           { label: "Net revenue", data: byTotal.map((r) => Number(r.netRev) || 0), backgroundColor: CH.net, borderRadius: 4 },
@@ -544,7 +563,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byLots.map((r) => String(r.name || r.accounts?.[0] || "")),
+        labels: byLots.map((r) => String(r.name || r.accounts?.[0] || "").slice(0, 18)),
         datasets: [
           { type: "bar", label: "Lots", yAxisID: "yLots", data: byLots.map((r) => Number(r.lots) || 0), backgroundColor: "rgba(8,145,178,0.55)", borderRadius: 4 },
           { type: "line", label: "Net revenue", yAxisID: "yRev", data: byLots.map((r) => Number(r.netRev) || 0), borderColor: CH.net, backgroundColor: CH.net, borderWidth: 3, tension: 0.3, pointRadius: 4 },
@@ -878,8 +897,9 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
     <style>
       /* ── Mobile-first base: stacked & fluid so it stays responsive even in
          clients that honor <style> but strip @media (Gmail app for non-Google
-         accounts, several webmail clients). Desktop layout is restored in the
-         @media (min-width) block below. ── */
+         accounts, several webmail clients). This is the ONLY layout -- Zoho
+         strips @media entirely, so there is no desktop breakpoint to switch to;
+         see the "Single layout, NO @media" note further down. ── */
       body { margin:0; padding:0; background:#f3f7fb; color:#0f172a; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
       /* box-sizing on the layout wrappers: without it, width:100% + padding
          overflows the viewport and the whole email scrolls sideways. */
@@ -931,14 +951,13 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
       .kpi-value { font-size:16px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
       .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
-      /* The full table needs ~860px to stay legible. On a desktop-width email it
-         simply fills the width; on a phone the wrapper scrolls sideways rather
-         than crushing nine columns into 375px, which is what mangled the
-         figures. Numeric cells never wrap. */
-      /* BASE = the real table. Zoho ignores @media (verified in production from
-         both directions), so there is no breakpoint to switch on — the table has
-         to be the default or a desktop reader never gets one. The wrapper keeps
-         a phone usable: it scrolls sideways instead of crushing 9 columns. */
+      /* The full table needs ~860px to stay legible. table.data thead is hidden
+         below, which makes every <th width="..."> here inert -- it survives only
+         as inline documentation of each column's intended share. Each <td>
+         becomes an inline-block cell capped at max-width:156px instead, so on a
+         desktop-width email the cells line up in columns across the row, and on
+         a phone they wrap and stack one per line. No @media, no scrolling.
+         Numeric cells never wrap. */
       /* Cells flow instead of scrolling. Zoho strips overscroll-behavior and
          touch-action, so a horizontally scrolling table could not be made
          safe on Android -- the swipe chained out and flipped to the next
@@ -1274,7 +1293,7 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  const { rows: enriched } = await buildClientRows(baseRows, week);
+  const { rows: enriched, unresolved, rebateResult } = await buildClientRows(baseRows, week);
 
   const hardLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 100;
   const rows = enriched.slice(0, hardLimit);
@@ -1283,6 +1302,8 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     toYmd: toYmdUtc(week.end),
     rows,
     totalAvailable: enriched.length,
+    unresolved,
+    rebateResult,
   };
 }
 

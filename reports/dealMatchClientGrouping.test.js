@@ -13,7 +13,7 @@ import { describe, it, expect } from "vitest";
 // path. Hence the dynamic import.
 process.env.API_TOKEN = "stub";
 const mod = await import("./dealMatchWeeklyReport.js");
-const { groupRowsByClient } = mod;
+const { groupRowsByClient, buildClientRows } = mod;
 
 // Shaped like clientRevenueSummaries[]: one entry per MT5 account.
 const ROWS = [
@@ -95,7 +95,7 @@ describe("groupRowsByClient", () => {
 import { afterEach } from "vitest";
 
 // Reuses the module namespace imported at the top of the file, which was loaded
-// after VITE_API_TOKEN was set. Do NOT add a static import here.
+// after API_TOKEN was set. Do NOT add a static import here.
 const { resolveClientIds, attachRebateWithdrawn } = mod;
 
 const PERIOD = { from: new Date("2026-08-08T00:00:00Z"), to: new Date("2026-08-14T23:59:59Z") };
@@ -185,13 +185,55 @@ describe("attachRebateWithdrawn", () => {
   });
 });
 
-describe("net revenue on grouped rows", () => {
-  it("subtracts the rebate once per client", () => {
-    const rows = groupRowsByClient(ROWS, IDS);
+describe("buildClientRows", () => {
+  it("computes netRev via the production formula, not a hand-rolled one", async () => {
+    stubCrm();
+    const week = { start: new Date("2026-08-08T00:00:00Z"), end: new Date("2026-08-14T23:59:59Z") };
+    const { rows, unresolved, rebateResult } = await buildClientRows(ROWS, week);
     const dawei = rows.find((r) => r.userId === 9001);
-    dawei.rebateWithdrawn = 646;
-    const netRev = (dawei.markup + dawei.clientComm) - (dawei.lpComm + dawei.rebateWithdrawn);
-    // 995.50 + 0 - (12.50 + 646) = 337.00
-    expect(netRev).toBeCloseTo(337, 10);
+    // markup 995.50 + clientComm 0 - (lpComm 12.50 + rebateWithdrawn 646) = 337.00
+    expect(dawei.rebateWithdrawn).toBeCloseTo(646, 10);
+    expect(dawei.netRev).toBeCloseTo(337, 10);
+    expect(unresolved).toBe(1); // 109999 has no CRM user
+    expect(rebateResult.failed).toBe(0);
+  });
+
+  it("counts blank-login rows in unresolved so the footer covers them too", async () => {
+    stubCrm();
+    const week = { start: new Date("2026-08-08T00:00:00Z"), end: new Date("2026-08-14T23:59:59Z") };
+    const rowsWithBlanks = [
+      ...ROWS,
+      { login: "", name: "Ghost A", lots: 5, markup: 50, clientComm: 0, lpComm: 1, totalRev: 49 },
+      { login: "", name: "Ghost B", lots: 3, markup: 30, clientComm: 0, lpComm: 1, totalRev: 29 },
+    ];
+    const { rows, unresolved } = await buildClientRows(rowsWithBlanks, week);
+    // 1 CRM-unresolved login (109999) + 2 blank logins that cannot be grouped.
+    expect(unresolved).toBe(3);
+    const blankRows = rows.filter((r) => r.clientKey.startsWith("login:#"));
+    expect(blankRows).toHaveLength(2);
+  });
+});
+
+describe("groupRowsByClient blank logins", () => {
+  it("keeps two blank-login rows separate instead of merging their figures", () => {
+    const rows = [
+      { login: "", name: "Ghost A", lots: 5, markup: 50, clientComm: 0, lpComm: 1, totalRev: 49 },
+      { login: "  ", name: "Ghost B", lots: 3, markup: 30, clientComm: 0, lpComm: 1, totalRev: 29 },
+    ];
+    const out = groupRowsByClient(rows, new Map());
+
+    expect(out).toHaveLength(2);
+    const keys = out.map((r) => r.clientKey);
+    expect(new Set(keys).size).toBe(2);
+    for (const r of out) {
+      expect(r.userId).toBeNull();
+      expect(r.accounts).toEqual([]);
+    }
+    // Each row's own figures must survive untouched, not summed together.
+    const ghostA = out.find((r) => r.markup === 50);
+    const ghostB = out.find((r) => r.markup === 30);
+    expect(ghostA.lots).toBeCloseTo(5, 10);
+    expect(ghostB.lots).toBeCloseTo(3, 10);
+    expect(out.blankLoginCount).toBe(2);
   });
 });

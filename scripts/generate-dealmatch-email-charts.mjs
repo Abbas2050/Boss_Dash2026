@@ -142,6 +142,21 @@ async function makeSummaryBanner(rows, outFile) {
 async function main() {
   const dataset = await getWeeklyDealMatchDataset({ limit: 100 });
   const rows = dataset.rows || [];
+
+  // The email footer names these failures so a reader knows a figure is
+  // suspect; this script renders the same numbers into charts and must not
+  // let a CRM outage pass silently as a chart full of zeros.
+  if (dataset.rebateResult?.failed || dataset.unresolved) {
+    const parts = [];
+    if (dataset.rebateResult?.failed) {
+      parts.push(`rebate could not be read for ${dataset.rebateResult.failed} of ${dataset.rebateResult.clients} client(s)`);
+    }
+    if (dataset.unresolved) {
+      parts.push(`${dataset.unresolved} login(s) could not be matched to a CRM client`);
+    }
+    console.warn(`[generate-dealmatch-email-charts] WARNING: ${parts.join("; ")} -- charts below may understate costs.`);
+  }
+
   const outDir = path.join(process.cwd(), "storage", "reports", "dealmatch-email-charts");
   await fs.mkdir(outDir, { recursive: true });
 
