@@ -159,8 +159,16 @@ fixed, all verified against the Deal Performance tab:
    63,405.11 while the Deal Performance tab shows **65,571.75**, which is
    `markup + clientComm − lpComm`. Recompute; do not trust that field.
 
-IB commission itself is computed in this repo (CRM wallet balance + approved IB
-transfers/withdrawals), so it is the one revenue input that is auditable here.
+Rebate Withdrawn is computed in this repo, so it is the one revenue input that
+is auditable here. It is looked up **once per CRM client** and counts only the
+approved IB transfers and withdrawals settled inside the week.
+
+It used to add `getIbWalletUsdBalance()`, the running IB wallet balance, and to
+cache per MT5 login while looking the value up per user. Both were wrong. A
+client with two accounts had their whole rebate charged to each one -- $8,646
+billed as $17,292 -- and $8,000 of that $8,646 was wallet balance rather than a
+cost of the week, which is why the same closed week produced a different Net
+Revenue on every run. Do not reintroduce either.
 
 ---
 
@@ -169,8 +177,19 @@ transfers/withdrawals), so it is the one revenue input that is auditable here.
 - **Zoho strips `@media` entirely.** Verified from both directions in
   production: a `max-width` query did not fire on a phone, and a `min-width`
   query did not fire on desktop. One layout must therefore serve both screens.
-  The data tables are real tables by default, inside a horizontally scrollable
-  wrapper so a phone swipes rather than crushing the columns.
+- **Zoho ships a 29-property CSS allow-list.** Taken from a real delivered
+  message: it keeps `display`, `width`, `max-width`, `min-width`,
+  `white-space`, `box-sizing`, `overflow-x`, `table-layout`, `padding`,
+  `vertical-align` and similar, and silently drops everything else --
+  `-webkit-overflow-scrolling`, `overflow-wrap` and `word-break` were all
+  stripped from a rule we sent.
+- **Tables must not scroll horizontally.** A scrollable wrapper chained the
+  swipe out to the mail app on Android and flipped Zoho to the next email.
+  `overscroll-behavior` and `touch-action` would contain it but are not on the
+  allow-list, so they never arrive. Instead every cell is an `inline-block`
+  with a fixed `max-width` -- the same construction as the KPI cards, which are
+  proven to work in Zoho. Cells line up in columns on a wide screen and stack
+  on a phone, with no media query and nothing to swipe.
 - **Mail clients strip CSS pseudo-elements.** Row labels must be real DOM text
   (`<span class="lbl">`), never `td:before { content: attr(data-label) }`.
 - **`box-sizing: border-box`** on the layout wrappers, or `width:100%` plus
