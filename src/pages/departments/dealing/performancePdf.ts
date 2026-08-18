@@ -99,7 +99,7 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
   const kpis: Array<[string, string]> = [
     ["Total Revenue", fmtMoney(data.totals.totalRev)],
     ["Net Revenue", fmtMoney(data.totals.netRevenue)],
-    ["IB Commission", fmtMoney(data.totals.ibComm)],
+    ["Rebate Withdrawn", fmtMoney(data.totals.ibComm)],
     ["LP Commission", fmtMoney(data.totals.lpComm)],
     ["Total Lots", Math.round(data.totals.lots).toLocaleString()],
   ];
@@ -122,7 +122,7 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
   // Charts
   const labels = data.months.map((m) => m.label);
   const netUrl = await renderMonthlyBarChart({ title: "Net Revenue by Month", labels, values: data.months.map((m) => m.netRevenue), baseColor: COLORS.blue });
-  const ibUrl = await renderMonthlyBarChart({ title: "IB Commission by Month", labels, values: data.months.map((m) => m.ibComm), baseColor: COLORS.red });
+  const ibUrl = await renderMonthlyBarChart({ title: "Rebate Withdrawn by Month", labels, values: data.months.map((m) => m.ibComm), baseColor: COLORS.red });
   const lpUrl = await renderMonthlyBarChart({ title: "LP Commission by Month", labels, values: data.months.map((m) => m.lpComm), baseColor: COLORS.gold });
 
   const chartW = pageW - margin * 2;
@@ -143,7 +143,7 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
   // Monthly breakdown table
   autoTable(doc, {
     startY: y + 4,
-    head: [["Month", "Lots", "Total Rev", "Net Rev", "IB Comm", "LP Comm"]],
+    head: [["Month", "Lots", "Total Rev", "Net Rev", "Rebate", "LP Comm"]],
     body: data.months.map((m) => [
       m.label,
       Math.round(m.lots).toLocaleString(),
@@ -160,7 +160,7 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
 
   // Top clients table
   autoTable(doc, {
-    head: [["Login", "Name", "Lots", "Total Rev", "IB Comm", "Net Rev"]],
+    head: [["Accounts", "Client", "Lots", "Total Rev", "Rebate", "Net Rev"]],
     body: data.topClients.map((c) => [
       c.login,
       c.name || "-",
@@ -184,13 +184,13 @@ export async function generatePerformancePdf(data: ReportData): Promise<void> {
     doc.text(`Warnings: ${data.warnings.join("; ")}`, margin, yW);
   }
 
-  // Footnote clarifying the IB Commission basis
+  // Footnote clarifying the Rebate Withdrawn basis
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const footY = ((doc as any).lastAutoTable?.finalY || y) + (data.warnings.length ? 28 : 14);
   doc.setFontSize(7);
   doc.setTextColor(148, 163, 184);
   doc.text(
-    "Monthly IB Commission = period IB transactions (transfers & withdrawals). The IB Commission KPI/total also includes current IB wallet balance.",
+    "Rebate Withdrawn = IB transfers and withdrawals settled inside the period, counted once per client. It excludes the running IB wallet balance, which is accumulated unpaid commission rather than a cost of the period. Rows are one per client; Accounts lists the MT5 logins that rolled up.",
     margin,
     footY,
   );
