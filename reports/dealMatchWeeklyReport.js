@@ -329,6 +329,23 @@ export function groupRowsByClient(rows, userIdByLogin) {
     .sort((a, b) => b.lots - a.lots);
 }
 
+// Shared by both call sites below: resolve logins to CRM clients, fold the
+// per-account rows into one row per client, attach the rebate, and compute
+// netRev. Kept as one helper rather than pasted twice — the two call sites
+// differ only in which of { rows, unresolved, rebateResult } they need.
+async function buildClientRows(baseRows, week) {
+  const logins = [...new Set(baseRows.map((r) => String(r.login || "").trim()).filter(Boolean))];
+  const { userIdByLogin, unresolved } = await resolveClientIds(logins);
+  const clientRows = groupRowsByClient(baseRows, userIdByLogin);
+  const rebateResult = await attachRebateWithdrawn(clientRows, { from: week.start, to: week.end });
+
+  const rows = clientRows.map((row) => ({
+    ...row,
+    netRev: (row.markup + row.clientComm) - (row.lpComm + row.rebateWithdrawn),
+  }));
+  return { rows, unresolved, rebateResult };
+}
+
 // Builds one table cell carrying its own visible row label. The label span is
 // hidden at the desktop breakpoint, where the real <thead> takes over.
 // Right-aligned cells are numeric and get `num` (never wraps); `nowrap` marks a
@@ -468,7 +485,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byNet.map((r) => String(r.login)),
+        labels: byNet.map((r) => String(r.name || r.accounts?.[0] || "")),
         datasets: [
           {
             label: "Net revenue",
@@ -500,7 +517,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byTotal.map((r) => String(r.login)),
+        labels: byTotal.map((r) => String(r.name || r.accounts?.[0] || "")),
         datasets: [
           { label: "Gross revenue", data: byTotal.map((r) => Number(r.totalRev) || 0), backgroundColor: CH.gross, borderRadius: 4 },
           { label: "Net revenue", data: byTotal.map((r) => Number(r.netRev) || 0), backgroundColor: CH.net, borderRadius: 4 },
@@ -514,7 +531,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
           x: { ticks: { color: CH.axis }, grid: { display: false } },
           y: { ticks: { color: CH.axis, callback: (v) => shortMoney(v) }, grid: { color: CH.grid } },
         },
-        plugins: chartTitle(`Gross vs Net Revenue ${titleSuffix}`, "the gap between the pair is LP + IB commission"),
+        plugins: chartTitle(`Gross vs Net Revenue ${titleSuffix}`, "the gap between the pair is LP Comm + Rebate Withdrawn"),
       },
       plugins: [valueLabels((v) => shortMoney(v))],
     },
@@ -527,7 +544,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "bar",
       data: {
-        labels: byLots.map((r) => String(r.login)),
+        labels: byLots.map((r) => String(r.name || r.accounts?.[0] || "")),
         datasets: [
           { type: "bar", label: "Lots", yAxisID: "yLots", data: byLots.map((r) => Number(r.lots) || 0), backgroundColor: "rgba(8,145,178,0.55)", borderRadius: 4 },
           { type: "line", label: "Net revenue", yAxisID: "yRev", data: byLots.map((r) => Number(r.netRev) || 0), borderColor: CH.net, backgroundColor: CH.net, borderWidth: 3, tension: 0.3, pointRadius: 4 },
@@ -555,10 +572,10 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "doughnut",
       data: {
-        labels: ["Markup", "Client commission", "LP commission", "IB commission", "Net revenue"],
+        labels: ["Markup", "Client commission", "LP commission", "Rebate withdrawn", "Net revenue"],
         datasets: [
           {
-            data: [totals.markup, totals.clientComm, totals.lpComm, totals.ibCommission, Math.abs(totals.netRev)],
+            data: [totals.markup, totals.clientComm, totals.lpComm, totals.rebateWithdrawn, Math.abs(totals.netRev)],
             backgroundColor: [CH.markup, CH.clientComm, CH.lpComm, CH.ibComm, CH.net],
             borderColor: "#ffffff",
             borderWidth: 2,
@@ -824,25 +841,25 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
       acc.markup += Number(row.markup) || 0;
       acc.clientComm += Number(row.clientComm) || 0;
       acc.lpComm += Number(row.lpComm) || 0;
-      acc.ibCommission += Number(row.ibCommission) || 0;
+      acc.rebateWithdrawn += Number(row.rebateWithdrawn) || 0;
       acc.totalRev += Number(row.totalRev) || 0;
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { lots: 0, markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, totalRev: 0, netRev: 0 },
+    { lots: 0, markup: 0, clientComm: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
   );
 
   const bodyRows = rows
     .map(
       (row) => `<tr>
-        ${dataCell("Login", escapeHtml(row.login), { nowrap: true })}
-        ${dataCell("Name", escapeHtml(row.name))}
+        ${dataCell("Client", escapeHtml(row.name || "(unnamed)"))}
+        ${dataCell("Accounts", escapeHtml(row.accounts.join(", ")), { nowrap: true })}
         ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
         ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
         ${dataCell("Total Rev", money(row.totalRev), { align: "right", bold: true })}
-        ${dataCell("IB Commission", money(row.ibCommission), { align: "right" })}
+        ${dataCell("Rebate Withdrawn", money(row.rebateWithdrawn), { align: "right" })}
         ${dataCell("Net Revenue", money(row.netRev), { align: "right", bold: true })}
       </tr>`,
     )
@@ -1012,7 +1029,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
 
           <div class="kpi-note">
             Top Net Revenue Client:
-            <strong>${topClient ? `${escapeHtml(topClient.name || topClient.login)} (${escapeHtml(topClient.login)})` : "-"}</strong>
+            <strong>${topClient ? `${escapeHtml(topClient.name || "(unnamed)")} (${escapeHtml(topClient.accounts.join(", "))})` : "-"}</strong>
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
@@ -1023,14 +1040,14 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
           <table class="data">
             <thead>
               <tr>
-                <th width="8%">Login</th>
-                <th width="20%">Name</th>
-                <th width="9%">Lots</th>
+                <th width="22%">Client</th>
+                <th width="14%">Accounts</th>
+                <th width="8%">Lots</th>
                 <th width="9%">Markup</th>
                 <th width="10%">Client Comm</th>
-                <th width="9%">LP Comm</th>
-                <th width="10%">Total Rev</th>
-                <th width="11%">IB Commission</th>
+                <th width="8%">LP Comm</th>
+                <th width="9%">Total Rev</th>
+                <th width="10%">Rebate Withdrawn</th>
                 <th width="10%">Net Revenue</th>
               </tr>
             </thead>
@@ -1042,7 +1059,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
                 ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
                 ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
                 ${dataCell("Total Rev", money(totals.totalRev), { align: "right", cls: "money-pos" })}
-                ${dataCell("IB Commission", money(totals.ibCommission), { align: "right", cls: "money-cost" })}
+                ${dataCell("Rebate Withdrawn", money(totals.rebateWithdrawn), { align: "right", cls: "money-cost" })}
                 ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
               </tr>
               ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
@@ -1057,7 +1074,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               .sort((a, b) => (Number(b.netRev) || 0) - (Number(a.netRev) || 0))
               .slice(0, 10)
               .map((r) => ({
-                label: `${r.login} ${String(r.name || "").slice(0, 18)}`.trim(),
+                label: `${String(r.name || r.accounts?.[0] || "").slice(0, 18)}`.trim(),
                 value: r.netRev,
                 display: money(r.netRev),
                 color: (Number(r.netRev) || 0) < 0 ? "#b91c1c" : "#0f766e",
@@ -1066,7 +1083,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
 
           ${charts ? chartImg(charts, "gross-vs-net.png", "Gross versus net revenue by client") : buildGroupedChart(
             "Gross vs Net Revenue",
-            "top 10 by total revenue &mdash; the gap is LP + IB commission",
+            "top 10 by total revenue &mdash; the gap is LP Comm + Rebate Withdrawn",
             [
               { key: "totalRev", label: "Gross", color: "#1d4ed8" },
               { key: "netRev", label: "Net", color: "#15803d" },
@@ -1075,7 +1092,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               .sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0))
               .slice(0, 10)
               .map((r) => ({
-                label: `${r.login} ${String(r.name || "").slice(0, 10)}`.trim(),
+                label: `${String(r.name || r.accounts?.[0] || "").slice(0, 10)}`.trim(),
                 values: { totalRev: r.totalRev, netRev: r.netRev },
                 displays: { totalRev: money(r.totalRev), netRev: money(r.netRev) },
               })),
@@ -1092,7 +1109,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0))
               .slice(0, 12)
               .map((r) => ({
-                label: `${r.login} ${String(r.name || "").slice(0, 10)}`.trim(),
+                label: `${String(r.name || r.accounts?.[0] || "").slice(0, 10)}`.trim(),
                 values: { lots: r.lots, netRev: r.netRev },
                 displays: { lots: fmtNum(r.lots, 2), netRev: money(r.netRev) },
               })),
@@ -1106,15 +1123,15 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               { label: "Markup", value: totals.markup, display: money(totals.markup), color: "#0891b2" },
               { label: "Client Comm", value: totals.clientComm, display: money(totals.clientComm), color: "#0f766e" },
               { label: "LP Comm", value: totals.lpComm, display: money(totals.lpComm), color: "#b45309" },
-              { label: "IB Commission", value: totals.ibCommission, display: money(totals.ibCommission), color: "#be123c" },
+              { label: "Rebate Withdrawn", value: totals.rebateWithdrawn, display: money(totals.rebateWithdrawn), color: "#be123c" },
               { label: "Net Revenue", value: totals.netRev, display: money(totals.netRev), color: "#15803d" },
             ],
             totals.markup + totals.clientComm,
           )}
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
-            Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
-            IB Commission counts the <em>approved IB transfers and withdrawals settled inside this week</em>, looked up once per client and split across that client's logins in proportion to lots. It no longer includes the running IB wallet balance, so the figure is fixed for a closed week and agrees with the Weekly Business Summary.<br/>
+            Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + Rebate Withdrawn)<br/>
+            Rebate Withdrawn is the approved IB transfers and withdrawals <em>settled inside this week</em>, looked up once per client. It is money that left the IB wallet during the week and may have been earned earlier, so it is a cash figure rather than earnings. The running IB wallet balance is not included.<br/>
             ${ibNotice ? `<strong>Check:</strong> ${escapeHtml(ibNotice)}<br/>` : ""}
             ${chartError ? `Chart images unavailable: ${escapeHtml(chartError)} &mdash; showing built-in bar charts instead.<br/>` : ""}
             Traded Lots (realized) come from ClientVolume/Run &mdash; the dashboard's Dealing (LP) volume tile. Total Lots (deals) count every MT5 deal, so a round trip appears twice; realized equity + CFD reconciles the two.
@@ -1164,21 +1181,7 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  const ibResult = await attachIbCommissions(baseRows, { from: week.start, to: week.end });
-  const rows = baseRows.map((row) => {
-      const ibCommission = Number(row.ibCommission) || 0;
-      const markup = Number(row.markup) || 0;
-      const clientComm = Number(row.clientComm) || 0;
-      const lpComm = Number(row.lpComm) || 0;
-      const totalRev = Number(row.totalRev) || 0;
-      const netRev = (markup + clientComm) - (lpComm + ibCommission);
-      return {
-        ...row,
-        totalRev,
-        ibCommission,
-        netRev,
-      };
-  });
+  const { rows, unresolved, rebateResult } = await buildClientRows(baseRows, week);
 
   const fromYmd = toYmdUtc(week.start);
   const toYmd = toYmdUtc(week.end);
@@ -1207,11 +1210,11 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
       acc.markup += Number(row.markup) || 0;
       acc.clientComm += Number(row.clientComm) || 0;
       acc.lpComm += Number(row.lpComm) || 0;
-      acc.ibCommission += Number(row.ibCommission) || 0;
+      acc.rebateWithdrawn += Number(row.rebateWithdrawn) || 0;
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { markup: 0, clientComm: 0, lpComm: 0, ibCommission: 0, netRev: 0 },
+    { markup: 0, clientComm: 0, lpComm: 0, rebateWithdrawn: 0, netRev: 0 },
   );
 
   let chartUrls = null;
@@ -1227,12 +1230,17 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   }
 
   const subject = `Weekly Deal Match Analysis (${fromYmd} to ${toYmd})`;
-  // A failed CRM lookup records the client's IB commission as 0, which
-  // UNDERSTATES the cost and overstates Net Revenue. Say so rather than let a
-  // wrong figure pass as a real one.
-  const ibNotice = ibResult && (ibResult.failed || ibResult.unresolved)
-    ? `IB commission could not be read for ${ibResult.failed + ibResult.unresolved} of ${ibResult.clients} client(s); those rows show $0.00 IB Commission, so their Net Revenue is overstated.`
-    : null;
+  // A zero rebate understates the cost and so overstates Net Revenue; an
+  // unresolved login cannot be grouped. Both are named rather than left to look
+  // like ordinary rows.
+  const noticeParts = [];
+  if (rebateResult.failed) {
+    noticeParts.push(`rebate could not be read for ${rebateResult.failed} of ${rebateResult.clients} client(s), so their Net Revenue is overstated`);
+  }
+  if (unresolved) {
+    noticeParts.push(`${unresolved} login(s) could not be matched to a CRM client and appear as their own rows`);
+  }
+  const ibNotice = noticeParts.length ? noticeParts.join("; ") : null;
   const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
@@ -1266,16 +1274,7 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  await attachIbCommissions(baseRows, { from: week.start, to: week.end });
-  const enriched = baseRows.map((row) => {
-    const ibCommission = Number(row.ibCommission) || 0;
-    const markup = Number(row.markup) || 0;
-    const clientComm = Number(row.clientComm) || 0;
-    const lpComm = Number(row.lpComm) || 0;
-    const totalRev = Number(row.totalRev) || 0;
-    const netRev = (markup + clientComm) - (lpComm + ibCommission);
-    return { ...row, totalRev, ibCommission, netRev };
-  });
+  const { rows: enriched } = await buildClientRows(baseRows, week);
 
   const hardLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 100;
   const rows = enriched.slice(0, hardLimit);

@@ -1,6 +1,6 @@
 # Deal Match: group revenue by client, report rebate as withdrawn — design
 
-**Status:** approved, not yet implemented
+**Status:** implemented
 **Date:** 2026-08-16
 **Touches:** `reports/dealMatchWeeklyReport.js` only
 

@@ -184,3 +184,14 @@ describe("attachRebateWithdrawn", () => {
     expect(calls.length).toBe(0);
   });
 });
+
+describe("net revenue on grouped rows", () => {
+  it("subtracts the rebate once per client", () => {
+    const rows = groupRowsByClient(ROWS, IDS);
+    const dawei = rows.find((r) => r.userId === 9001);
+    dawei.rebateWithdrawn = 646;
+    const netRev = (dawei.markup + dawei.clientComm) - (dawei.lpComm + dawei.rebateWithdrawn);
+    // 995.50 + 0 - (12.50 + 646) = 337.00
+    expect(netRev).toBeCloseTo(337, 10);
+  });
+});
