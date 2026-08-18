@@ -19,8 +19,6 @@ import {
 } from "recharts";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import {
-  CRM_API_TOKEN,
-  CRM_API_VERSION,
   deriveBaseRows,
   fetchCrmUserIdByLogin,
   fetchDealMatch,
@@ -119,21 +117,95 @@ const takeTableSnapshot = ({ filePrefix, title, headers, rows }: SnapshotInput) 
   a.click();
 };
 
-async function fetchIbWalletBalance(crmId: number): Promise<number> {
-  const resp = await fetch(`/rest/accounts?version=${encodeURIComponent(CRM_API_VERSION)}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
-    },
-    body: JSON.stringify({ userId: crmId, segment: { limit: 500, offset: 0 } }),
+/**
+ * One row per CRM client rather than per MT5 account. A client commonly holds
+ * several trading accounts, and grouping per login charged their whole rebate
+ * once per account. Mirrors groupRowsByClient() in reports/dealMatchWeeklyReport.js
+ * so this tab and the weekly email report the same Net Revenue for a period.
+ */
+type ClientRevenueRow = {
+  clientKey: string;
+  crmId: number | null;
+  name: string;
+  accounts: string[];
+  lots: number;
+  markup: number;
+  clientComm: number;
+  lpComm: number;
+  totalRev: number;
+  /** Rebate Withdrawn — IB transactions settled inside the period, never the wallet balance. */
+  ibCommission: number;
+  netRevenue: number;
+};
+
+/** Chart-friendly view of a client row: recharts needs a single string field to label an axis. */
+type ChartClientRow = ClientRevenueRow & { label: string };
+
+const clientLabel = (row: ClientRevenueRow) => row.name || row.accounts[0] || "-";
+
+/**
+ * Folds per-login rows into one row per CRM client. Pure: the login → CRM user
+ * map is resolved by the caller and passed in.
+ */
+function groupRowsByClient(rows: DealMatchRevenueRow[], crmIdByLogin: Map<string, number | null>): ClientRevenueRow[] {
+  const byClient = new Map<string, ClientRevenueRow & { nameLots: number }>();
+
+  rows.forEach((row, index) => {
+    const login = String(row.login || "").trim();
+    let clientKey: string;
+    let crmId: number | null = null;
+    if (login) {
+      const resolved = crmIdByLogin.get(login);
+      crmId = Number.isFinite(resolved) && (resolved as number) > 0 ? (resolved as number) : null;
+      // An unresolved login cannot be merged into a client without inventing a
+      // relationship the CRM does not assert, so it stands alone under its own key.
+      clientKey = crmId === null ? `login:${login}` : `user:${crmId}`;
+    } else {
+      // Blank logins are unrelated accounts that merely share an absent login;
+      // keying them all the same would fabricate one combined row.
+      clientKey = `login:#${index}`;
+    }
+
+    let client = byClient.get(clientKey);
+    if (!client) {
+      client = {
+        clientKey,
+        crmId,
+        name: "",
+        accounts: [],
+        lots: 0,
+        markup: 0,
+        clientComm: 0,
+        lpComm: 0,
+        totalRev: 0,
+        ibCommission: 0,
+        netRevenue: 0,
+        nameLots: -1,
+      };
+      byClient.set(clientKey, client);
+    }
+
+    if (login) client.accounts.push(login);
+    client.lots += num(row.lots);
+    client.markup += num(row.markup);
+    client.clientComm += num(row.clientComm);
+    client.lpComm += num(row.lpComm);
+    client.totalRev += num(row.totalRev);
+
+    // Name comes from the largest account, so the choice is deterministic instead
+    // of depending on the order the API happened to return.
+    const name = String(row.name || "").trim();
+    if (name && name !== "-" && num(row.lots) > client.nameLots) {
+      client.name = name;
+      client.nameLots = num(row.lots);
+    }
   });
-  if (!resp.ok) return 0;
-  const rows = (await resp.json()) as Array<{ groupName?: string; balance?: number }>;
-  return (Array.isArray(rows) ? rows : [])
-    .filter((r) => String(r.groupName || "").toUpperCase() === "IB-WALLET-USD")
-    .reduce((sum, r) => sum + num(r.balance), 0);
+
+  return [...byClient.values()].map(({ nameLots: _nameLots, ...client }) => ({
+    ...client,
+    accounts: [...client.accounts].sort(),
+    netRevenue: client.totalRev,
+  }));
 }
 
 export function DealPerformanceTab({
@@ -153,7 +225,7 @@ export function DealPerformanceTab({
 }) {
   const fromDateYmd = useMemo(() => toYmd(fromDate), [fromDate]);
   const toDateYmd = useMemo(() => toYmd(toDate), [toDate]);
-  const [rows, setRows] = useState<DealMatchRevenueRow[]>([]);
+  const [rows, setRows] = useState<ClientRevenueRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -227,27 +299,54 @@ export function DealPerformanceTab({
       );
 
       const baseRows = Array.from(byLogin.values());
-      setProgressLabel(`Resolving IB commissions 0/${baseRows.length}`);
 
-      // IB commission = current wallet balance + IB transactions over the range. The
-      // transactions are fetched per month too, so large ranges don't 500.
-      const ibCache = new Map<string, number>();
+      // Resolve every MT5 login to its CRM client first, so the per-account rows can
+      // be folded into one row per client before anything is charged to them.
+      const logins = [...new Set(baseRows.map((r) => String(r.login || "").trim()).filter(Boolean))];
+      setProgressLabel(`Resolving clients 0/${logins.length}`);
+      const crmIdByLogin = new Map<string, number | null>();
+      let identified = 0;
+      await mapWithConcurrency(
+        logins,
+        async (login) => {
+          try {
+            crmIdByLogin.set(login, await fetchCrmUserIdByLogin(login));
+          } catch {
+            crmIdByLogin.set(login, null);
+          } finally {
+            identified++;
+            setProgress(Math.min(70, 40 + Math.round((identified / Math.max(1, logins.length)) * 30)));
+            setProgressLabel(`Resolving clients ${identified}/${logins.length}`);
+          }
+        },
+        6,
+      );
+
+      const clientRows = groupRowsByClient(baseRows, crmIdByLogin);
+      setProgressLabel(`Resolving rebates 0/${clientRows.length}`);
+
+      // Rebate Withdrawn counts ONLY the IB transactions settled inside the period.
+      // The IB wallet balance is deliberately excluded: it is accumulated, still
+      // unpaid commission read at the instant the page loads, so it is not a cost of
+      // the period, and including it made the same closed period produce a different
+      // Net Revenue on every reload. Matches reports/dealMatchWeeklyReport.js.
+      // Cached by crmId — never by login — so a client with several accounts is
+      // charged once, not once per account.
+      const ibCache = new Map<number, number>();
       const ibByMonth = new Map<string, number>();
       let resolved = 0;
       const enriched = await mapWithConcurrency(
-        baseRows,
+        clientRows,
         async (row) => {
           try {
-            if (!row.login) return row;
-            if (ibCache.has(row.login)) {
-              const ibCommission = ibCache.get(row.login) || 0;
-              return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
-            }
-            const crmId = await fetchCrmUserIdByLogin(row.login);
+            const crmId = row.crmId;
             if (!crmId) return row;
-            const ib = await isIb(crmId);
-            if (!ib) return row;
-            const wallet = await fetchIbWalletBalance(crmId);
+            const cached = ibCache.get(crmId);
+            if (cached !== undefined) {
+              return { ...row, ibCommission: cached, netRevenue: (row.markup + row.clientComm) - (row.lpComm + cached) };
+            }
+            if (!(await isIb(crmId))) return row;
+            // Transactions are fetched per month too, so large ranges don't 500.
             let tx = 0;
             for (const mb of months) {
               try {
@@ -258,13 +357,12 @@ export function DealPerformanceTab({
                 /* ignore a single month's IB transaction failure */
               }
             }
-            const ibCommission = wallet + tx;
-            ibCache.set(row.login, ibCommission);
-            return { ...row, ibCommission, netRevenue: (row.markup + row.clientComm) - (row.lpComm + ibCommission) };
+            ibCache.set(crmId, tx);
+            return { ...row, ibCommission: tx, netRevenue: (row.markup + row.clientComm) - (row.lpComm + tx) };
           } finally {
             resolved++;
-            setProgress(Math.min(99, 40 + Math.round((resolved / baseRows.length) * 60)));
-            setProgressLabel(`Resolving IB commissions ${resolved}/${baseRows.length}`);
+            setProgress(Math.min(99, 70 + Math.round((resolved / Math.max(1, clientRows.length)) * 29)));
+            setProgressLabel(`Resolving rebates ${resolved}/${clientRows.length}`);
           }
         },
         6,
@@ -321,8 +419,14 @@ export function DealPerformanceTab({
     onStatusChange?.(text);
   }, [meta.from, meta.to, meta.loadedAt, onStatusChange]);
 
-  const topNet = useMemo(() => rows.slice(0, 10), [rows]);
-  const topTotal = useMemo(() => [...rows].sort((a, b) => b.totalRev - a.totalRev).slice(0, 10), [rows]);
+  const topNet = useMemo<ChartClientRow[]>(
+    () => rows.slice(0, 10).map((r) => ({ ...r, label: clientLabel(r) })),
+    [rows],
+  );
+  const topTotal = useMemo<ChartClientRow[]>(
+    () => [...rows].sort((a, b) => b.totalRev - a.totalRev).slice(0, 10).map((r) => ({ ...r, label: clientLabel(r) })),
+    [rows],
+  );
   const totals = useMemo(
     () =>
       rows.reduce(
@@ -344,7 +448,7 @@ export function DealPerformanceTab({
       { name: "Markup", value: rows.reduce((s, r) => s + r.markup, 0), color: colors.cyan },
       { name: "Client Comm", value: rows.reduce((s, r) => s + r.clientComm, 0), color: colors.teal },
       { name: "LP Comm", value: rows.reduce((s, r) => s + r.lpComm, 0), color: colors.gold },
-      { name: "IB Commission", value: rows.reduce((s, r) => s + r.ibCommission, 0), color: colors.red },
+      { name: "Rebate Withdrawn", value: rows.reduce((s, r) => s + r.ibCommission, 0), color: colors.red },
       { name: "Net Revenue", value: rows.reduce((s, r) => s + r.netRevenue, 0), color: colors.green },
     ],
     [rows],
@@ -355,7 +459,8 @@ export function DealPerformanceTab({
       .sort((a, b) => b.lots - a.lots)
       .slice(0, 12)
       .map((r) => ({
-        login: r.login,
+        clientKey: r.clientKey,
+        label: clientLabel(r),
         name: r.name,
         lots: r.lots,
         netRevenue: r.netRevenue,
@@ -363,16 +468,22 @@ export function DealPerformanceTab({
       }));
   }, [rows]);
 
-  const columns = useMemo<SortableTableColumn<DealMatchRevenueRow>[]>(
+  const columns = useMemo<SortableTableColumn<ClientRevenueRow>[]>(
     () => [
-      { key: "login", label: "Login", sortValue: (r) => r.login, render: (r) => <span className="font-mono">{r.login}</span> },
-      { key: "name", label: "Name", sortValue: (r) => r.name, searchValue: (r) => `${r.name} ${r.login}`, render: (r) => r.name || "-" },
+      {
+        key: "accounts",
+        label: "Accounts",
+        sortValue: (r) => r.accounts.join(", "),
+        searchValue: (r) => r.accounts.join(" "),
+        render: (r) => <span className="font-mono">{r.accounts.join(", ") || "-"}</span>,
+      },
+      { key: "name", label: "Name", sortValue: (r) => r.name, searchValue: (r) => `${r.name} ${r.accounts.join(" ")}`, render: (r) => r.name || "-" },
       { key: "lots", label: "Lots", sortValue: (r) => r.lots, headerClassName: "text-right", cellClassName: "text-right", render: (r) => r.lots.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) },
       { key: "markup", label: "Markup", sortValue: (r) => r.markup, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.markup) },
       { key: "clientComm", label: "Client Comm", sortValue: (r) => r.clientComm, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.clientComm) },
       { key: "lpComm", label: "LP Comm", sortValue: (r) => r.lpComm, headerClassName: "text-right", cellClassName: "text-right", render: (r) => <span className="text-amber-700 dark:text-amber-300">{money(r.lpComm)}</span> },
       { key: "totalRev", label: "Total Rev", sortValue: (r) => r.totalRev, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.totalRev) },
-      { key: "ibCommission", label: "IB Commission", sortValue: (r) => r.ibCommission, headerClassName: "text-right", cellClassName: "text-right", render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.ibCommission)}</span> },
+      { key: "ibCommission", label: "Rebate Withdrawn", sortValue: (r) => r.ibCommission, headerClassName: "text-right", cellClassName: "text-right", render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.ibCommission)}</span> },
       {
         key: "netRevenue",
         label: "Net Revenue",
@@ -418,7 +529,7 @@ export function DealPerformanceTab({
         topClients: [...rows]
           .sort((a, b) => b.netRevenue - a.netRevenue)
           .slice(0, 20)
-          .map((r) => ({ login: r.login, name: r.name, lots: r.lots, totalRev: r.totalRev, ibComm: r.ibCommission, netRevenue: r.netRevenue })),
+          .map((r) => ({ login: r.accounts.join(", "), name: r.name, lots: r.lots, totalRev: r.totalRev, ibComm: r.ibCommission, netRevenue: r.netRevenue })),
         warnings: [],
       };
       await generatePerformancePdf(data);
@@ -436,9 +547,9 @@ export function DealPerformanceTab({
     if (!rows.length) return;
     setSnapshotting(true);
     try {
-      const headers = ["Login", "Name", "Lots", "Markup", "Client Comm", "LP Comm", "Total Rev", "IB Commission", "Net Revenue"];
+      const headers = ["Accounts", "Name", "Lots", "Markup", "Client Comm", "LP Comm", "Total Rev", "Rebate Withdrawn", "Net Revenue"];
       const snapshotRows = rows.map((r) => [
-        r.login,
+        r.accounts.join(", "),
         r.name || "-",
         r.lots.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
         money(r.markup),
@@ -545,11 +656,11 @@ export function DealPerformanceTab({
               <BarChart data={topNet} layout="vertical" margin={{ left: 8, right: 20, top: 10, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                 <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Math.round(v / 1000)}k`} />
-                <YAxis type="category" dataKey="login" width={70} tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="label" width={110} tick={{ fontSize: 11 }} />
                 <Tooltip formatter={(value: number) => money(num(value))} />
                 <Bar dataKey="netRevenue" radius={[0, 6, 6, 0]} isAnimationActive animationDuration={900}>
                   {topNet.map((row, idx) => (
-                    <Cell key={row.login} fill={idx < 3 ? colors.gold : row.netRevenue >= 0 ? colors.teal : colors.red} />
+                    <Cell key={row.clientKey} fill={idx < 3 ? colors.gold : row.netRevenue >= 0 ? colors.teal : colors.red} />
                   ))}
                 </Bar>
               </BarChart>
@@ -563,7 +674,7 @@ export function DealPerformanceTab({
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={topTotal} margin={{ left: 8, right: 20, top: 10, bottom: 30 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="login" angle={-30} textAnchor="end" interval={0} height={50} tick={{ fontSize: 10 }} />
+                <XAxis dataKey="label" angle={-30} textAnchor="end" interval={0} height={50} tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Math.round(v / 1000)}k`} />
                 <Tooltip formatter={(value: number) => money(num(value))} />
                 <Legend />
@@ -582,7 +693,7 @@ export function DealPerformanceTab({
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={lotsVsNetByClient} margin={{ left: 8, right: 20, top: 10, bottom: 28 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="login" tick={{ fontSize: 10 }} angle={-20} textAnchor="end" interval={0} height={48} />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} angle={-20} textAnchor="end" interval={0} height={48} />
                 <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
                 <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Math.round(v / 1000)}k`} />
                 <Tooltip
