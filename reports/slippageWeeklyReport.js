@@ -241,7 +241,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
          both directions), so there is no breakpoint to switch on — the table has
          to be the default or a desktop reader never gets one. The wrapper keeps
          a phone usable: it scrolls sideways instead of crushing 10 columns. */
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
       table.data { border-collapse:collapse; width:100%; min-width:1020px; font-size:12px; table-layout:fixed; }
       table.data th, table.data td { border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
       table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }

@@ -840,7 +840,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
          both directions), so there is no breakpoint to switch on — the table has
          to be the default or a desktop reader never gets one. The wrapper keeps
          a phone usable: it scrolls sideways instead of crushing 9 columns. */
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
       table.data { border-collapse:collapse; width:100%; min-width:860px; font-size:12px; table-layout:fixed; }
       table.data.narrow { min-width:0; font-size:11px; }
       table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 8px; text-align:left; vertical-align:top; }

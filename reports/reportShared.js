@@ -371,7 +371,7 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:${t.muted}; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:${t.kpiValue}; margin:0; white-space:nowrap; }
       .kpi-note-sm { font-size:10px; color:${t.muted}; margin:4px 0 0; }
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 16px; }
+      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
       table.data { border-collapse:collapse; width:100%; min-width:760px; font-size:12px; table-layout:fixed; }
       table.data.narrow { min-width:0; font-size:11px; margin:0 0 16px; }
       table.data th, table.data td { border:1px solid ${t.line}; padding:7px 8px; text-align:left; vertical-align:top; }
