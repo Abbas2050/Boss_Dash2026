@@ -139,8 +139,13 @@ KPI "cost per lot" flips the sign for display.
 
 ```
 Total Revenue = (Markup + Client Comm) − LP Comm
-Net Revenue   = (Markup + Client Comm) − (LP Comm + IB Commission)
+Net Revenue   = (Markup + Client Comm) − (LP Comm + Rebate Withdrawn)
 ```
+
+Rebate Withdrawn is the IB commission actually withdrawn or transferred out
+during the reporting week — it excludes the running IB wallet balance. The
+Deal Match Client Revenue Table is grouped one row per CRM client, not per
+MT5 account; a client with several MT5 accounts is rolled up into a single row.
 
 Three things the weekly email gets wrong if you are not careful — all previously
 fixed, all verified against the Deal Performance tab:

@@ -20,6 +20,10 @@ const fmtMoney = (v) =>
   `${v < 0 ? "-" : ""}$${Math.abs(Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 const fmtNum = (v, d = 2) => (Number(v) || 0).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 
+// Client label: name falls back to the first MT5 account, then to "" — same
+// precedence reports/dealMatchWeeklyReport.js uses for its own chart labels.
+const clientLabel = (r) => String(r?.name || r?.accounts?.[0] || "");
+
 function baseOptions(title, subtitle) {
   return {
     responsive: false,
@@ -81,7 +85,7 @@ async function makeSummaryBanner(rows, outFile) {
   const bannerValues = [totalClients, totals.lots, totals.totalRev, totals.netRev, avgNet];
   const maxVal = Math.max(...bannerValues.map((v) => Math.abs(v || 0)), 1);
   const scaled = bannerValues.map((v) => (Number(v) || 0) / maxVal);
-  const topLabel = top ? `${top.login} - ${top.name}` : "-";
+  const topLabel = top ? clientLabel(top) : "-";
 
   await renderChart(
     {
@@ -141,7 +145,7 @@ async function main() {
   const outDir = path.join(process.cwd(), "storage", "reports", "dealmatch-email-charts");
   await fs.mkdir(outDir, { recursive: true });
 
-  const label = (r) => `${r.login}`;
+  const label = (r) => clientLabel(r);
   const byNet = topN(rows, "netRev", 10);
   const byTotal = topN(rows, "totalRev", 10);
 
@@ -238,7 +242,7 @@ async function main() {
       a.markup += Number(r.markup) || 0;
       a.client += Number(r.clientComm) || 0;
       a.lp += Math.abs(Number(r.lpComm) || 0);
-      a.ib += Math.abs(Number(r.ibCommission) || 0);
+      a.ib += Math.abs(Number(r.rebateWithdrawn) || 0);
       a.net += Math.abs(Number(r.netRev) || 0);
       return a;
     },
@@ -249,7 +253,7 @@ async function main() {
     {
       type: "doughnut",
       data: {
-        labels: ["Markup", "Client Comm", "LP Comm", "IB Commission", "Net Revenue"],
+        labels: ["Markup", "Client Comm", "LP Comm", "Rebate Withdrawn", "Net Revenue"],
         datasets: [{ data: [totals.markup, totals.client, totals.lp, totals.ib, totals.net], backgroundColor: ["#0ea5e9", "#14b8a6", "#f59e0b", "#ef4444", "#16a34a"] }],
       },
       options: {
@@ -299,14 +303,14 @@ async function main() {
 
   const totalRev = rows.reduce((s, r) => s + (Number(r.totalRev) || 0), 0);
   const lpCost = rows.reduce((s, r) => s + Math.abs(Number(r.lpComm) || 0), 0);
-  const ibCost = rows.reduce((s, r) => s + Math.abs(Number(r.ibCommission) || 0), 0);
+  const ibCost = rows.reduce((s, r) => s + Math.abs(Number(r.rebateWithdrawn) || 0), 0);
   const netRevenue = rows.reduce((s, r) => s + (Number(r.netRev) || 0), 0);
 
   await renderChart(
     {
       type: "bar",
       data: {
-        labels: ["Start Total Rev", "- LP Comm", "- IB Commission", "End Net Revenue"],
+        labels: ["Start Total Rev", "- LP Comm", "- Rebate Withdrawn", "End Net Revenue"],
         datasets: [
           {
             label: "Revenue Walk",
@@ -317,8 +321,8 @@ async function main() {
         ],
       },
       options: {
-        ...baseOptions("IB Commission Impact (Waterfall Style)", "How gross revenue converts to net revenue"),
-        plugins: { ...baseOptions().plugins, legend: { display: false }, title: baseOptions("IB Commission Impact (Waterfall Style)").plugins.title, subtitle: baseOptions("", "How gross revenue converts to net revenue").plugins.subtitle },
+        ...baseOptions("Rebate Withdrawn Impact (Waterfall Style)", "How gross revenue converts to net revenue"),
+        plugins: { ...baseOptions().plugins, legend: { display: false }, title: baseOptions("Rebate Withdrawn Impact (Waterfall Style)").plugins.title, subtitle: baseOptions("", "How gross revenue converts to net revenue").plugins.subtitle },
         scales: {
           x: { ticks: { color: C.slate }, grid: { display: false } },
           y: { ticks: { color: C.slate, callback: (v) => fmtMoney(v) }, grid: { color: C.grid } },
