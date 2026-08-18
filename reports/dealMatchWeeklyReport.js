@@ -294,6 +294,65 @@ function deriveClientRevenueRows(report) {
   }));
 }
 
+// One row per CRM client rather than per MT5 account. A client commonly holds
+// several trading accounts -- 10 did in the week of 8-14 Aug, one of them four
+// -- which made the table hard to read and, before this, caused their IB rebate
+// to be charged once per account.
+//
+// Pure: the login-to-user map is resolved by resolveClientIds() and passed in,
+// so this function does no I/O and is cheap to test.
+export function groupRowsByClient(rows, userIdByLogin) {
+  const byClient = new Map();
+
+  for (const row of rows) {
+    const login = String(row.login || "").trim();
+    const userId = userIdByLogin.get(login);
+    const resolved = Number.isFinite(userId) && userId > 0 ? userId : null;
+    // An unresolved login cannot be merged without inventing a relationship the
+    // CRM does not assert, so it stands alone under its own key.
+    const clientKey = resolved === null ? `login:${login}` : `user:${resolved}`;
+
+    let client = byClient.get(clientKey);
+    if (!client) {
+      client = {
+        clientKey,
+        userId: resolved,
+        name: "",
+        accounts: [],
+        lots: 0,
+        markup: 0,
+        clientComm: 0,
+        lpComm: 0,
+        totalRev: 0,
+        rebateWithdrawn: 0,
+        netRev: 0,
+        _nameLots: -1,
+      };
+      byClient.set(clientKey, client);
+    }
+
+    if (login) client.accounts.push(login);
+    client.lots += Number(row.lots) || 0;
+    client.markup += Number(row.markup) || 0;
+    client.clientComm += Number(row.clientComm) || 0;
+    client.lpComm += Number(row.lpComm) || 0;
+    client.totalRev += Number(row.totalRev) || 0;
+
+    // Name comes from the largest account, so the choice is deterministic
+    // instead of depending on the order the API happened to return.
+    const lots = Number(row.lots) || 0;
+    const name = String(row.name || "").trim();
+    if (name && lots > client._nameLots) {
+      client.name = name;
+      client._nameLots = lots;
+    }
+  }
+
+  return [...byClient.values()]
+    .map(({ _nameLots, ...client }) => ({ ...client, accounts: client.accounts.sort() }))
+    .sort((a, b) => b.lots - a.lots);
+}
+
 // Builds one table cell carrying its own visible row label. The label span is
 // hidden at the desktop breakpoint, where the real <thead> takes over.
 // Right-aligned cells are numeric and get `num` (never wraps); `nowrap` marks a
