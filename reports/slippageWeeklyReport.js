@@ -241,20 +241,23 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
          both directions), so there is no breakpoint to switch on — the table has
          to be the default or a desktop reader never gets one. The wrapper keeps
          a phone usable: it scrolls sideways instead of crushing 10 columns. */
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; min-width:1020px; font-size:12px; table-layout:fixed; }
-      table.data th, table.data td { border:1px solid #223255; padding:7px 8px; text-align:left; vertical-align:top; }
-      table.data th { background:#16233f; color:#cfe0fb; font-weight:700; font-size:11px; }
-      table.data td.num { text-align:right; white-space:nowrap; }
-      table.data td.key { white-space:nowrap; }
-      table.data td.txt { overflow-wrap:break-word; }
+      /* Cells flow instead of scrolling. Zoho strips overscroll-behavior and
+         touch-action, so a horizontally scrolling table could not be made
+         safe on Android -- the swipe chained out and flipped to the next
+         email. inline-block cells line up in columns on a wide screen and
+         stack on a phone, with no media query. See reportShared.js. */
+      .tscroll { width:100%; overflow-x:auto; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; font-size:12px; }
+      table.data thead { display:none; }
+      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid #223255; padding:4px 0; }
       table.data tbody tr:nth-child(even) { background:#101c33; }
-      /* TOTAL sits at the TOP of the body, not in a <tfoot>, so the headline
-         figures are visible without scrolling past every LP. Declared after the
-         zebra rule so the stripe never overrides its fill. */
-      table.data tr.total-row td { font-weight:700; background:#16233f; color:#e2e8f0; }
-      table.data td .lbl { display:none; }
-      table.data td .val { display:inline; }
+      table.data tr.total-row { background:#16233f; }
+      table.data tr.total-row td { font-weight:700; color:#e2e8f0; }
+      table.data td, table.data th { display:inline-block; box-sizing:border-box; width:100%; max-width:156px; vertical-align:top; border:0; padding:4px 8px; text-align:left; }
+      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; color:#8ea4c6; }
+      table.data td .val { display:block; font-size:12px; }
+      table.data td.num .val { white-space:nowrap; }
+      table.data td.key .val { white-space:nowrap; }
       .muted-key { font-style:italic; color:#7186a8; }
       .pos { color:#34d399; font-weight:700; }
       .neg { color:#f87171; font-weight:700; }

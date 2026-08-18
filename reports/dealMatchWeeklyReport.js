@@ -840,21 +840,24 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
          both directions), so there is no breakpoint to switch on — the table has
          to be the default or a desktop reader never gets one. The wrapper keeps
          a phone usable: it scrolls sideways instead of crushing 9 columns. */
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; min-width:860px; font-size:12px; table-layout:fixed; }
-      table.data.narrow { min-width:0; font-size:11px; }
-      table.data th, table.data td { border:1px solid #e2e8f0; padding:7px 8px; text-align:left; vertical-align:top; }
-      table.data th { background:#0f2d4f; color:#f8fafc; font-weight:700; font-size:11px; }
-      table.data td.num { text-align:right; white-space:nowrap; }
-      table.data td.key { white-space:nowrap; }
-      table.data td.txt { overflow-wrap:break-word; }
+      /* Cells flow instead of scrolling. Zoho strips overscroll-behavior and
+         touch-action, so a horizontally scrolling table could not be made
+         safe on Android -- the swipe chained out and flipped to the next
+         email. inline-block cells line up in columns on a wide screen and
+         stack on a phone, with no media query. See reportShared.js. */
+      .tscroll { width:100%; overflow-x:auto; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; font-size:12px; }
+      table.data.narrow { font-size:11px; }
+      table.data thead { display:none; }
+      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid #e2e8f0; padding:4px 0; }
       table.data tbody tr:nth-child(even) { background:#f9fcff; }
-      /* TOTAL sits at the TOP of the body, not in a <tfoot>, so the headline
-         figures are visible without scrolling past every client. Declared after
-         the zebra rule so the stripe never overrides its fill. */
-      table.data tr.total-row td { font-weight:700; background:#eff6ff; color:#0f2d4f; }
-      table.data td .lbl { display:none; }
-      table.data td .val { display:inline; }
+      table.data tr.total-row { background:#eff6ff; }
+      table.data tr.total-row td { font-weight:700; color:#0f2d4f; }
+      table.data td, table.data th { display:inline-block; box-sizing:border-box; width:100%; max-width:156px; vertical-align:top; border:0; padding:4px 8px; text-align:left; }
+      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; color:#64748b; }
+      table.data td .val { display:block; font-size:12px; }
+      table.data td.num .val { white-space:nowrap; }
+      table.data td.key .val { white-space:nowrap; }
 
       /* Inline charts: bars are nested tables with a background colour, which
          renders even when the client blocks images. Values sit in their own

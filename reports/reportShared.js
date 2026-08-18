@@ -371,18 +371,34 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:${t.muted}; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:${t.kpiValue}; margin:0; white-space:nowrap; }
       .kpi-note-sm { font-size:10px; color:${t.muted}; margin:4px 0 0; }
-      .tscroll { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; overscroll-behavior-x:contain; overscroll-behavior:contain; touch-action:pan-x pan-y; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; min-width:760px; font-size:12px; table-layout:fixed; }
-      table.data.narrow { min-width:0; font-size:11px; margin:0 0 16px; }
-      table.data th, table.data td { border:1px solid ${t.line}; padding:7px 8px; text-align:left; vertical-align:top; }
-      table.data th { background:${t.thBg}; color:${t.thFg}; font-weight:700; font-size:11px; }
-      table.data td.num { text-align:right; white-space:nowrap; }
-      table.data td.key { white-space:nowrap; }
-      table.data td.txt { overflow-wrap:break-word; }
+      /* ── cells flow, they never scroll ──────────────────────────────────
+         Zoho ships a 29-property allow-list. It KEEPS display / width /
+         max-width / white-space / box-sizing, and DROPS
+         -webkit-overflow-scrolling, overflow-wrap, word-break -- and with them
+         overscroll-behavior and touch-action. So a horizontally scrolling
+         table could not be made safe: on Android the swipe chained out of the
+         table and Zoho flipped to the next email.
+
+         Instead each cell is an inline-block of fixed width, exactly the way
+         the KPI cards already behave in Zoho today. Wide screen: cells sit
+         side by side and the columns line up. Phone: each takes the full width
+         and the row becomes a stack. No media query, no scrolling, nothing
+         Zoho strips.
+
+         The header row is hidden because every cell carries its own label. */
+      .tscroll { width:100%; overflow-x:auto; margin:0 0 16px; }
+      table.data { border-collapse:collapse; width:100%; font-size:12px; }
+      table.data.narrow { font-size:11px; margin:0 0 16px; }
+      table.data thead { display:none; }
+      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid ${t.line}; padding:4px 0; }
       table.data tbody tr:nth-child(even) { background:${t.zebra}; }
-      table.data tr.total-row td { font-weight:700; background:${t.totalBg}; color:${t.totalFg}; }
-      table.data td .lbl { display:none; }
-      table.data td .val { display:inline; }
+      table.data tr.total-row { background:${t.totalBg}; }
+      table.data tr.total-row td { font-weight:700; color:${t.totalFg}; }
+      table.data td, table.data th { display:inline-block; box-sizing:border-box; width:100%; max-width:156px; vertical-align:top; border:0; padding:4px 8px; text-align:left; }
+      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; color:${t.muted}; }
+      table.data td .val { display:block; font-size:12px; }
+      table.data td.num .val { white-space:nowrap; }
+      table.data td.key .val { white-space:nowrap; }
       .ch-img { margin:0 0 16px; }
       .ch-img img { display:block; width:100%; max-width:100%; height:auto; border:1px solid ${t.line}; border-radius:8px; }
       .pos { color:#15803d; font-weight:700; }
