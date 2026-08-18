@@ -369,23 +369,27 @@ async function fetchClientVolume(fromYmd, toYmd) {
 }
 
 // ── first-time depositors ───────────────────────────────────────────────────
-// The CRM maintains firstDepositId / firstDepositDate on every user record, and
-// /rest/users returns them. Since names are already fetched from there, a
-// client's first-deposit date arrives at NO extra cost and is the CRM's own
-// answer rather than something inferred here.
+// TWO independent sources must agree before a client is called first-time.
 //
-// Deliberately NOT the userFtd flag: that is documented only as "Transaction
-// list by first time deposit", reads either as "this transaction IS a first
-// deposit" or "any transaction of a user who HAS one", and once put a
-// long-standing client under a "first ever deposit" heading. firstDepositDate
-// is a plain date-time field with one meaning.
+//   1. The CRM's own firstDepositDate, already on the user record fetched for
+//      names, so it costs nothing. Anyone whose first deposit predates the week
+//      is dropped here and never queried again.
+//   2. That client's actual transaction history, read back to the beginning and
+//      checked for any earlier deposit.
+//
+// Stage 1 narrows tens of depositors to a handful, so stage 2 is a few calls
+// rather than one per depositor. Where the two disagree the client is NOT
+// listed and the disagreement is reported -- that is the signal that the CRM
+// field cannot be trusted on its own.
+//
+// Deliberately not the userFtd flag: documented only as "Transaction list by
+// first time deposit", it reads two ways and once put a long-standing client
+// under a "first ever deposit" heading.
 const HISTORY_LOOKUP_LIMIT = 1000;
 
-// Falls back to reading the client's own history, but only for clients whose
-// firstDepositDate is absent -- normally none, so normally zero extra calls.
-async function firstDepositMissingCheck(candidate, weekStartYmd) {
+async function hasNoDepositBefore(userId, weekStartYmd) {
   const prior = await crmPost("transactions", {
-    fromUserId: Number(candidate.userId),
+    fromUserId: Number(userId),
     statuses: TX_STATUSES,
     processedAt: { begin: "1970-01-01 00:00:00", end: `${weekStartYmd} 00:00:00` },
     segment: { limit: HISTORY_LOOKUP_LIMIT, offset: 0 },
@@ -398,37 +402,49 @@ async function firstDepositMissingCheck(candidate, weekStartYmd) {
 export async function findFirstTimeDepositors(depositors, fromYmd, toYmd) {
   const candidates = depositors.filter((d) => d.deposits > 0 && Number.isFinite(d.userId) && d.userId > 0);
 
-  const withDate = candidates.filter((d) => d.firstDepositDate);
-  const withoutDate = candidates.filter((d) => !d.firstDepositDate);
+  // Stage 1 — the CRM field, free.
+  const shortlist = [];
+  let excludedByCrm = 0;
+  for (const c of candidates) {
+    const crmDay = c.firstDepositDate ? String(c.firstDepositDate).slice(0, 10) : null;
+    if (crmDay && (crmDay < fromYmd || crmDay > toYmd)) {
+      excludedByCrm += 1;
+      continue;
+    }
+    shortlist.push({ ...c, crmDay });
+  }
 
-  const fromDate = withDate.map((d) => {
-    // firstDepositDate is ISO ("2026-02-05T08:56:02.263Z"); the reporting week
-    // is UTC, so comparing the date part is exact.
-    const day = String(d.firstDepositDate).slice(0, 10);
-    return { ...d, firstTime: day >= fromYmd && day <= toYmd, verified: true, basis: "crm" };
-  });
-
-  const scanned = await mapWithConcurrency(
-    withoutDate,
-    async (candidate) => {
+  // Stage 2 — confirm each survivor against its own transactions.
+  const checked = await mapWithConcurrency(
+    shortlist,
+    async (c) => {
       try {
-        return { ...candidate, firstTime: await firstDepositMissingCheck(candidate, fromYmd), verified: true, basis: "history" };
+        const confirmed = await hasNoDepositBefore(c.userId, fromYmd);
+        return {
+          ...c,
+          firstTime: confirmed,
+          verified: true,
+          // CRM said this week; the ledger disagrees.
+          conflict: Boolean(c.crmDay) && !confirmed,
+        };
       } catch (error) {
-        console.warn(`[WeeklySummary] history lookup failed for client ${candidate.userId}:`, error?.message || error);
-        // Unverified is NOT reported as first-time: claiming a long-standing
-        // client is new is the exact failure this replaced.
-        return { ...candidate, firstTime: false, verified: false, basis: "failed" };
+        console.warn(`[WeeklySummary] history lookup failed for client ${c.userId}:`, error?.message || error);
+        // Unconfirmed is never listed: claiming a long-standing client is new
+        // is the exact failure this design exists to prevent.
+        return { ...c, firstTime: false, verified: false, conflict: false };
       }
     },
     5,
   );
 
-  const checked = [...fromDate, ...scanned];
   return {
     rows: checked.filter((c) => c.firstTime).sort((a, b) => b.deposits - a.deposits),
     unverified: checked.filter((c) => !c.verified).length,
-    scannedCount: scanned.length,
-    checked: checked.length,
+    conflicts: checked.filter((c) => c.conflict).length,
+    noCrmDate: shortlist.filter((c) => !c.crmDay).length,
+    shortlisted: shortlist.length,
+    excludedByCrm,
+    checked: candidates.length,
   };
 }
 
@@ -744,7 +760,7 @@ export function buildSummaryEmailHtml({
           })}
 
           <p class="section-title">First-Time Depositors</p>
-          <p class="note">Accounts whose <strong>first ever deposit</strong> landed this week, taken from the CRM&rsquo;s own <em>firstDepositDate</em> on each client record &mdash; not inferred from a flag. Where that field is empty the client&rsquo;s transaction history before ${escapeHtml(fromYmd)} is read back instead.</p>
+          <p class="note">Accounts whose <strong>first ever deposit</strong> landed this week. Confirmed twice: the CRM&rsquo;s own <em>firstDepositDate</em> on the client record, <em>and</em> that client&rsquo;s transaction history before ${escapeHtml(fromYmd)} containing no earlier deposit. A client is listed only when both agree.</p>
           ${dataTable({
             headers: [
               { label: "Client", width: "34%" },
@@ -891,14 +907,19 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   let firstTimers = { rows: [], unverified: 0, checked: 0 };
   try {
     firstTimers = await findFirstTimeDepositors(agg.depositors, fromYmd, toYmd);
-    if (firstTimers.scannedCount) {
+    if (firstTimers.conflicts) {
       notices.push(
-        `${firstTimers.scannedCount} of ${firstTimers.checked} depositing clients had no firstDepositDate on their CRM record; their own transaction history was read back instead.`,
+        `${firstTimers.conflicts} client(s) the CRM dated as first depositing this week were found to have an earlier deposit in their own transaction history. They are excluded from First-Time Depositors; the CRM firstDepositDate field disagrees with the ledger and is worth investigating.`,
+      );
+    }
+    if (firstTimers.noCrmDate) {
+      notices.push(
+        `${firstTimers.noCrmDate} depositing client(s) had no firstDepositDate on their CRM record; those were decided on transaction history alone.`,
       );
     }
     if (firstTimers.unverified) {
       notices.push(
-        `${firstTimers.unverified} deposit histories could not be read; those accounts are left out of First-Time Depositors rather than guessed at.`,
+        `${firstTimers.unverified} deposit history/histories could not be read; those accounts are left out of First-Time Depositors rather than guessed at.`,
       );
     }
   } catch (error) {
