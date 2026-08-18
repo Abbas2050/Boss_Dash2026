@@ -70,22 +70,6 @@ async function isIbUser(crmUserId) {
   return Array.isArray(rows) && rows.length > 0;
 }
 
-async function getIbWalletUsdBalance(crmUserId) {
-  const url = `${CRM_REST_BASE}/rest/accounts?version=${encodeURIComponent(CRM_API_VERSION)}`;
-  const payload = {
-    userId: Number(crmUserId),
-    segment: { limit: 500, offset: 0 },
-  };
-  const rows = await crmFetchJson(url, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  const list = Array.isArray(rows) ? rows : [];
-  return list
-    .filter((row) => String(row?.groupName || "").toUpperCase() === "IB-WALLET-USD")
-    .reduce((sum, row) => sum + (Number(row?.balance) || 0), 0);
-}
-
 async function getIbApprovedTransfersAndWithdrawals(crmUserId, period) {
   const url = `${CRM_REST_BASE}/rest/transactions?version=${encodeURIComponent(CRM_API_VERSION)}`;
   const processedAt =
@@ -119,37 +103,100 @@ async function getIbApprovedTransfersAndWithdrawals(crmUserId, period) {
   }, 0);
 }
 
-async function getIbCommissionForLogin(login, cache, period) {
-  const key = String(login || "").trim();
-  if (!key) return 0;
-  if (cache.has(key)) return cache.get(key);
+// ── IB commission, per CLIENT, for the week ─────────────────────────────────
+// Two faults were found in the previous version, both visible in the sent
+// report as an identical $8,646.00 on two of Dawei Huang's logins:
+//
+//   1. The cache was keyed by MT5 login while the value was looked up per CRM
+//      user, so a client with two trading accounts had their whole commission
+//      charged to EACH one. His true $8,646 was billed as $17,292.
+//   2. It added getIbWalletUsdBalance() -- the accumulated, still-unpaid wallet
+//      balance read at the moment the report ran. That is not a cost incurred
+//      in the reporting week, it dwarfed the revenue it was subtracted from,
+//      and it is why the same closed week produced a different Net Revenue on
+//      every run.
+//
+// Now: one lookup per CRM user, counting only the IB transfers and withdrawals
+// SETTLED INSIDE the week, then split across that client's rows in proportion
+// to lots so each row carries its share and the total is charged exactly once.
+// This also makes Deal Match agree with the Business Summary, which has always
+// counted the week's settled transactions.
+export async function attachIbCommissions(rows, period) {
+  const logins = [...new Set(rows.map((r) => String(r.login || "").trim()).filter(Boolean))];
+  const failures = new Set();
+
   if (!CRM_API_TOKEN) {
-    cache.set(key, 0);
-    return 0;
+    for (const row of rows) row.ibCommission = 0;
+    return { rows, failed: logins.length, clients: 0, unresolved: logins.length };
   }
-  try {
-    const crmUserId = await getCrmUserIdByMt5Login(key);
-    if (!crmUserId) {
-      cache.set(key, 0);
-      return 0;
-    }
-    const ib = await isIbUser(crmUserId);
-    if (!ib) {
-      cache.set(key, 0);
-      return 0;
-    }
-    const [walletBalance, txTotal] = await Promise.all([
-      getIbWalletUsdBalance(crmUserId),
-      getIbApprovedTransfersAndWithdrawals(crmUserId, period),
-    ]);
-    const ibCommission = (Number(walletBalance) || 0) + (Number(txTotal) || 0);
-    cache.set(key, ibCommission);
-    return ibCommission;
-  } catch (error) {
-    console.warn(`[DealMatchWeekly] IB commission lookup failed for login=${key}:`, error?.message || error);
-    cache.set(key, 0);
-    return 0;
+
+  // login -> CRM user
+  const userIdByLogin = new Map();
+  await mapWithConcurrency(
+    logins,
+    async (login) => {
+      try {
+        userIdByLogin.set(login, await getCrmUserIdByMt5Login(login));
+      } catch (error) {
+        console.warn(`[DealMatchWeekly] CRM user lookup failed for login=${login}:`, error?.message || error);
+        userIdByLogin.set(login, null);
+        failures.add(login);
+      }
+    },
+    6,
+  );
+
+  // One lookup per client, not per account.
+  const commissionByUser = new Map();
+  const userIds = [...new Set([...userIdByLogin.values()].filter((v) => Number.isFinite(v) && v > 0))];
+  await mapWithConcurrency(
+    userIds,
+    async (userId) => {
+      try {
+        if (!(await isIbUser(userId))) {
+          commissionByUser.set(userId, 0);
+          return;
+        }
+        commissionByUser.set(userId, await getIbApprovedTransfersAndWithdrawals(userId, period));
+      } catch (error) {
+        console.warn(`[DealMatchWeekly] IB commission lookup failed for user=${userId}:`, error?.message || error);
+        commissionByUser.set(userId, null); // unknown, not zero
+        failures.add(String(userId));
+      }
+    },
+    6,
+  );
+
+  // Lots per client, so the split is proportional.
+  const lotsByUser = new Map();
+  for (const row of rows) {
+    const userId = userIdByLogin.get(String(row.login || "").trim());
+    if (!Number.isFinite(userId) || userId <= 0) continue;
+    lotsByUser.set(userId, (lotsByUser.get(userId) || 0) + (Number(row.lots) || 0));
   }
+
+  let unresolved = 0;
+  for (const row of rows) {
+    const userId = userIdByLogin.get(String(row.login || "").trim());
+    const total = Number.isFinite(userId) ? commissionByUser.get(userId) : undefined;
+    if (total === null || total === undefined) {
+      // Either the lookup failed or the login never resolved. Zero is the only
+      // safe value, but it UNDERSTATES the cost, so it is reported in the
+      // footer rather than passing silently as a real figure.
+      row.ibCommission = 0;
+      if (Number.isFinite(userId) && userId > 0) unresolved += 1;
+      continue;
+    }
+    const userLots = lotsByUser.get(userId) || 0;
+    const siblings = rows.filter((r) => userIdByLogin.get(String(r.login || "").trim()) === userId);
+    // Equal split when a client's rows carry no lots at all, so the total is
+    // still charged exactly once.
+    row.ibCommission = userLots > 0
+      ? total * ((Number(row.lots) || 0) / userLots)
+      : total / Math.max(1, siblings.length);
+  }
+
+  return { rows, failed: failures.size, clients: userIds.length, unresolved };
 }
 
 // ── client volume (Equity vs CFD, per day) ───────────────────────────────────
@@ -735,7 +782,7 @@ function buildVolumeSection(volume, charts, volumeStats) {
           )}`;
 }
 
-function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, charts = null, chartError = null }) {
+function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, charts = null, chartError = null, ibNotice = null }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -1032,6 +1079,8 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
             Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + IB Commission)<br/>
+            IB Commission counts the <em>approved IB transfers and withdrawals settled inside this week</em>, looked up once per client and split across that client's logins in proportion to lots. It no longer includes the running IB wallet balance, so the figure is fixed for a closed week and agrees with the Weekly Business Summary.<br/>
+            ${ibNotice ? `<strong>Check:</strong> ${escapeHtml(ibNotice)}<br/>` : ""}
             ${chartError ? `Chart images unavailable: ${escapeHtml(chartError)} &mdash; showing built-in bar charts instead.<br/>` : ""}
             Traded Lots (realized) come from ClientVolume/Run &mdash; the dashboard's Dealing (LP) volume tile. Total Lots (deals) count every MT5 deal, so a round trip appears twice; realized equity + CFD reconciles the two.
           </div>
@@ -1080,14 +1129,9 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  const ibCache = new Map();
-  const rows = await mapWithConcurrency(
-    baseRows,
-    async (row) => {
-      const ibCommission = await getIbCommissionForLogin(row.login, ibCache, {
-        from: week.start,
-        to: week.end,
-      });
+  const ibResult = await attachIbCommissions(baseRows, { from: week.start, to: week.end });
+  const rows = baseRows.map((row) => {
+      const ibCommission = Number(row.ibCommission) || 0;
       const markup = Number(row.markup) || 0;
       const clientComm = Number(row.clientComm) || 0;
       const lpComm = Number(row.lpComm) || 0;
@@ -1099,9 +1143,7 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
         ibCommission,
         netRev,
       };
-    },
-    8,
-  );
+  });
 
   const fromYmd = toYmdUtc(week.start);
   const toYmd = toYmdUtc(week.end);
@@ -1150,7 +1192,13 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   }
 
   const subject = `Weekly Deal Match Analysis (${fromYmd} to ${toYmd})`;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError });
+  // A failed CRM lookup records the client's IB commission as 0, which
+  // UNDERSTATES the cost and overstates Net Revenue. Say so rather than let a
+  // wrong figure pass as a real one.
+  const ibNotice = ibResult && (ibResult.failed || ibResult.unresolved)
+    ? `IB commission could not be read for ${ibResult.failed + ibResult.unresolved} of ${ibResult.clients} client(s); those rows show $0.00 IB Commission, so their Net Revenue is overstated.`
+    : null;
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
 
@@ -1183,23 +1231,16 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  const ibCache = new Map();
-  const enriched = await mapWithConcurrency(
-    baseRows,
-    async (row) => {
-      const ibCommission = await getIbCommissionForLogin(row.login, ibCache, {
-        from: week.start,
-        to: week.end,
-      });
-      const markup = Number(row.markup) || 0;
-      const clientComm = Number(row.clientComm) || 0;
-      const lpComm = Number(row.lpComm) || 0;
-      const totalRev = Number(row.totalRev) || 0;
-      const netRev = (markup + clientComm) - (lpComm + ibCommission);
-      return { ...row, totalRev, ibCommission, netRev };
-    },
-    8,
-  );
+  await attachIbCommissions(baseRows, { from: week.start, to: week.end });
+  const enriched = baseRows.map((row) => {
+    const ibCommission = Number(row.ibCommission) || 0;
+    const markup = Number(row.markup) || 0;
+    const clientComm = Number(row.clientComm) || 0;
+    const lpComm = Number(row.lpComm) || 0;
+    const totalRev = Number(row.totalRev) || 0;
+    const netRev = (markup + clientComm) - (lpComm + ibCommission);
+    return { ...row, totalRev, ibCommission, netRev };
+  });
 
   const hardLimit = Number.isFinite(Number(limit)) ? Math.max(1, Number(limit)) : 100;
   const rows = enriched.slice(0, hardLimit);
