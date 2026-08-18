@@ -853,7 +853,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
     .map(
       (row) => `<tr>
         ${dataCell("Client", escapeHtml(row.name || "(unnamed)"))}
-        ${dataCell("Accounts", escapeHtml(row.accounts.join(", ")), { nowrap: true })}
+        ${dataCell("Accounts", escapeHtml(row.accounts.join(", ")))}
         ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
@@ -1029,7 +1029,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
 
           <div class="kpi-note">
             Top Net Revenue Client:
-            <strong>${topClient ? `${escapeHtml(topClient.name || "(unnamed)")} (${escapeHtml(topClient.accounts.join(", "))})` : "-"}</strong>
+            <strong>${topClient ? `${escapeHtml(topClient.name || "(unnamed)")}${topClient.accounts.length ? ` (${escapeHtml(topClient.accounts.join(", "))})` : ""}` : "-"}</strong>
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
@@ -1092,7 +1092,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               .sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0))
               .slice(0, 10)
               .map((r) => ({
-                label: `${String(r.name || r.accounts?.[0] || "").slice(0, 10)}`.trim(),
+                label: String(r.name || r.accounts[0] || "").slice(0, 18),
                 values: { totalRev: r.totalRev, netRev: r.netRev },
                 displays: { totalRev: money(r.totalRev), netRev: money(r.netRev) },
               })),
@@ -1109,7 +1109,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
               .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0))
               .slice(0, 12)
               .map((r) => ({
-                label: `${String(r.name || r.accounts?.[0] || "").slice(0, 10)}`.trim(),
+                label: String(r.name || r.accounts[0] || "").slice(0, 18),
                 values: { lots: r.lots, netRev: r.netRev },
                 displays: { lots: fmtNum(r.lots, 2), netRev: money(r.netRev) },
               })),
