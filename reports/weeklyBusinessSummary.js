@@ -4,6 +4,7 @@ import {
   toYmdUtc,
   toUnixRange,
   parseRecipients,
+  mapWithConcurrency,
   previousFullWeekUtc,
   fmtNum,
   money,
@@ -313,6 +314,104 @@ export function dedupeById(rows) {
   return out;
 }
 
+// ── top trading instruments ─────────────────────────────────────────────────
+// ClientVolume/Run returns byClientSymbol[] = { login, name, symbol, lots }.
+// Symbols carry a group/route suffix (XAUUSD.s, XAUUSD.d, XAUUSD.g5 ...), so
+// the same instrument arrives split across several rows. Everything before the
+// first dot is the instrument; the suffix is which book it was routed through.
+export function baseSymbol(symbol) {
+  const s = String(symbol || "").trim();
+  if (!s) return "(unknown)";
+  const dot = s.indexOf(".");
+  return dot > 0 ? s.slice(0, dot) : s;
+}
+
+export function topInstruments(byClientSymbol, limit = 10) {
+  const map = new Map();
+  let totalLots = 0;
+
+  for (const row of byClientSymbol || []) {
+    const lots = Number(row?.lots) || 0;
+    if (lots <= 0) continue;
+    const key = baseSymbol(row?.symbol);
+    totalLots += lots;
+    let agg = map.get(key);
+    if (!agg) {
+      agg = { symbol: key, lots: 0, clients: new Set(), variants: new Set() };
+      map.set(key, agg);
+    }
+    agg.lots += lots;
+    if (row?.login !== undefined && row?.login !== null) agg.clients.add(String(row.login));
+    agg.variants.add(String(row?.symbol || ""));
+  }
+
+  const all = [...map.values()]
+    .map((a) => ({
+      symbol: a.symbol,
+      lots: a.lots,
+      clients: a.clients.size,
+      variants: a.variants.size,
+      share: totalLots > 0 ? (a.lots / totalLots) * 100 : 0,
+    }))
+    .sort((a, b) => b.lots - a.lots);
+
+  return { rows: all.slice(0, limit), totalLots, instrumentCount: all.length };
+}
+
+async function fetchClientVolume(fromYmd, toYmd) {
+  const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
+  const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/Run?${params}`, {
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const raw = await resp.json();
+  return Array.isArray(raw?.byClientSymbol) ? raw.byClientSymbol : [];
+}
+
+// ── first-time depositors ───────────────────────────────────────────────────
+// Determined from each candidate's OWN history, never from the CRM's userFtd
+// flag. That flag is documented only as "Transaction list by first time
+// deposit", which reads either as "this transaction IS a first deposit" or "any
+// transaction of a user who HAS one" -- and a long-standing client once showed
+// up under a "first ever deposit" heading because of it.
+//
+// One extra CRM call per client who deposited this week. Concurrency-limited.
+const HISTORY_LOOKUP_LIMIT = 1000;
+
+export async function findFirstTimeDepositors(depositors, weekStartYmd) {
+  const candidates = depositors.filter((d) => d.deposits > 0 && Number.isFinite(d.userId) && d.userId > 0);
+
+  const checked = await mapWithConcurrency(
+    candidates,
+    async (candidate) => {
+      try {
+        const prior = await crmPost("transactions", {
+          fromUserId: Number(candidate.userId),
+          statuses: TX_STATUSES,
+          processedAt: { begin: "1970-01-01 00:00:00", end: `${weekStartYmd} 00:00:00` },
+          segment: { limit: HISTORY_LOOKUP_LIMIT, offset: 0 },
+        });
+        // Only a real deposit disqualifies. An earlier withdrawal, internal
+        // transfer or credit does not make this week's deposit their second.
+        const hadDepositBefore = dedupeById(prior).some((row) => classifyTx(row?.type) === "deposit");
+        return { ...candidate, firstTime: !hadDepositBefore, verified: true };
+      } catch (error) {
+        console.warn(`[WeeklySummary] history lookup failed for client ${candidate.userId}:`, error?.message || error);
+        // Unverified is NOT reported as first-time: claiming a long-standing
+        // client is new is the exact failure this replaced.
+        return { ...candidate, firstTime: false, verified: false };
+      }
+    },
+    5,
+  );
+
+  return {
+    rows: checked.filter((c) => c.firstTime).sort((a, b) => b.deposits - a.deposits),
+    unverified: checked.filter((c) => !c.verified).length,
+    checked: checked.length,
+  };
+}
+
 // Transactions carry only fromUserId, so names come from /rest/users. Batched:
 // one call per 200 clients rather than one per client.
 const USER_BATCH = 200;
@@ -472,7 +571,12 @@ const dash = "&mdash;";
 const orDash = (value, fmt) => (value === null || value === undefined ? dash : fmt(value));
 const signCls = (v) => (num(v) > 0 ? "pos" : num(v) < 0 ? "neg" : "");
 
-export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = null, notices = [] }) {
+export function buildSummaryEmailHtml({
+  fromYmd, toYmd, agg, glance,
+  firstTimers = { rows: [], unverified: 0, checked: 0 },
+  instruments = { rows: [], totalLots: 0, instrumentCount: 0 },
+  chartUrl = null, notices = [],
+}) {
   const netRevenue = glance.totalRevenue === null || glance.totalRevenue === undefined
     ? null
     : glance.totalRevenue - agg.ibRebate;
@@ -563,6 +667,44 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
     )
     .join("");
 
+  const firstTimerTotal = firstTimers.rows.reduce((s, r) => s + num(r.deposits), 0);
+  const firstTimerCount = firstTimers.rows.reduce((s, r) => s + num(r.depositCount), 0);
+  const firstTimerTotalRow =
+    spanCell(`TOTAL (${fmtNum(firstTimers.rows.length, 0)})`, { colspan: 2 }) +
+    dataCell("Deposits", money(firstTimerTotal), { align: "right", cls: "pos" }) +
+    dataCell("Deposits #", fmtNum(firstTimerCount, 0), { align: "right" }) +
+    spanCell("");
+
+  const firstTimerRows = firstTimers.rows
+    .map(
+      (r) => `<tr>
+        ${dataCell("Client", escapeHtml(r.name))}
+        ${dataCell("Client ID", r.userId ? escapeHtml(String(r.userId)) : dash, { nowrap: true })}
+        ${dataCell("Deposits", money(r.deposits), { align: "right", bold: true, cls: "pos" })}
+        ${dataCell("Deposits #", fmtNum(r.depositCount, 0), { align: "right" })}
+        ${dataCell("First Seen", escapeHtml(r.lastDate || ""), { nowrap: true })}
+      </tr>`,
+    )
+    .join("");
+
+  const instrumentTotalRow =
+    spanCell(`TOTAL (${fmtNum(instruments.instrumentCount, 0)})`) +
+    dataCell("Lots", fmtNum(instruments.totalLots, 2), { align: "right" }) +
+    dataCell("Share", "100.0%", { align: "right" }) +
+    spanCell("", { colspan: 2 });
+
+  const instrumentRows = instruments.rows
+    .map(
+      (r) => `<tr>
+        ${dataCell("Instrument", escapeHtml(r.symbol), { nowrap: true })}
+        ${dataCell("Lots", fmtNum(r.lots, 2), { align: "right", bold: true })}
+        ${dataCell("Share", `${r.share.toFixed(1)}%`, { align: "right" })}
+        ${dataCell("Clients", fmtNum(r.clients, 0), { align: "right" })}
+        ${dataCell("Symbols", fmtNum(r.variants, 0), { align: "right" })}
+      </tr>`,
+    )
+    .join("");
+
   const body = `
           <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
           ${glanceCards}
@@ -574,6 +716,36 @@ export function buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl = 
             totalRow: agg.largeDepositors.length ? largeTotalRow : "",
             bodyRows: largeRows,
             emptyText: `No accounts deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week.`,
+          })}
+
+          <p class="section-title">First-Time Depositors</p>
+          <p class="note">Accounts whose <strong>first ever deposit</strong> landed this week. Each one is confirmed by reading that client&rsquo;s own transaction history before ${escapeHtml(fromYmd)} &mdash; not inferred from a flag.</p>
+          ${dataTable({
+            headers: [
+              { label: "Client", width: "34%" },
+              { label: "Client ID", width: "12%" },
+              { label: "Deposits", width: "18%" },
+              { label: "Deposits #", width: "12%" },
+              { label: "First Seen", width: "24%" },
+            ],
+            totalRow: firstTimers.rows.length ? firstTimerTotalRow : "",
+            bodyRows: firstTimerRows,
+            emptyText: "No first-time depositors this week.",
+          })}
+
+          <p class="section-title">Top Trading Instruments</p>
+          <p class="note">Realized lots by instrument. Symbols are grouped by the part before the dot, so <em>XAUUSD.s</em>, <em>XAUUSD.d</em> and <em>XAUUSD.g5</em> count as one instrument routed through different books.</p>
+          ${dataTable({
+            headers: [
+              { label: "Instrument", width: "26%" },
+              { label: "Lots", width: "18%" },
+              { label: "Share", width: "18%" },
+              { label: "Clients", width: "18%" },
+              { label: "Symbols", width: "20%" },
+            ],
+            totalRow: instruments.rows.length ? instrumentTotalRow : "",
+            bodyRows: instrumentRows,
+            emptyText: "No traded volume this week.",
           })}
 
           <p class="section-title">Daily Flow</p>
@@ -688,6 +860,29 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const { glance, failures } = await fetchGlance(week);
 
   const notices = [...failures];
+
+  // One CRM call per client who deposited. Its own try: a history lookup
+  // failing must not cost the whole report.
+  let firstTimers = { rows: [], unverified: 0, checked: 0 };
+  try {
+    firstTimers = await findFirstTimeDepositors(agg.depositors, fromYmd);
+    if (firstTimers.unverified) {
+      notices.push(
+        `${firstTimers.unverified} of ${firstTimers.checked} deposit histories could not be read; those accounts are left out of First-Time Depositors rather than guessed at.`,
+      );
+    }
+  } catch (error) {
+    console.warn("[WeeklySummary] first-time depositor check failed:", error?.message || error);
+    notices.push(`First-Time Depositors unavailable: ${error?.message || error}`);
+  }
+
+  let instruments = { rows: [], totalLots: 0, instrumentCount: 0 };
+  try {
+    instruments = topInstruments(await fetchClientVolume(fromYmd, toYmd));
+  } catch (error) {
+    console.warn("[WeeklySummary] ClientVolume lookup failed:", error?.message || error);
+    notices.push(`Top Trading Instruments unavailable: ${error?.message || error}`);
+  }
   // A full segment almost certainly means the window was truncated; say so
   // rather than quietly under-reporting.
   if (transactions.length >= TX_SEGMENT_LIMIT) {
@@ -710,13 +905,13 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   }
 
   const subject = `Weekly Business Summary (${fromYmd} to ${toYmd})`;
-  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, chartUrl, notices });
+  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
 
   console.log(
-    `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | period=${fromYmd}..${toYmd}`,
+    `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | firstTime=${firstTimers.rows.length} | instruments=${instruments.instrumentCount} | period=${fromYmd}..${toYmd}`,
   );
-  return { ok: true, psps: agg.byPsp.length, depositors: agg.depositors.length, fromYmd, toYmd };
+  return { ok: true, psps: agg.byPsp.length, depositors: agg.depositors.length, firstTime: firstTimers.rows.length, instruments: instruments.instrumentCount, fromYmd, toYmd };
 }
 
 export function startWeeklyBusinessSummaryScheduler() {
