@@ -289,6 +289,17 @@ type EquitySummaryData = {
   difference: number;
 };
 
+// Equity INCLUDING credit, the gross counterpart to EquitySummaryData above.
+// Verified against EquityOverview/dashboard: for both sides, the per-account
+// `equity` minus `credit` equals the withdrawable figure, so `equity` is the
+// credit-inclusive number. Both sides come from that one payload so the
+// difference is taken across a single snapshot.
+type GrossEquityData = {
+  lpEquity: number;
+  clientEquity: number;
+  difference: number;
+};
+
 const coerceMetricsItem = (raw: any): MetricsItem => ({
   lp: String(raw?.lp ?? raw?.LP ?? "-"),
   login: raw?.login ?? raw?.Login ?? "-",
@@ -927,6 +938,7 @@ export function DealingDepartmentPage() {
   const dealingRootRef = useRef<HTMLDivElement | null>(null);
   const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
   const [metricsEquitySummary, setMetricsEquitySummary] = useState<EquitySummaryData | null>(null);
+  const [metricsGrossEquity, setMetricsGrossEquity] = useState<GrossEquityData | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
@@ -1846,6 +1858,30 @@ export function DealingDepartmentPage() {
         });
         setMetricsLastUpdated(new Date());
         setMetricsError(null);
+
+        // Credit-inclusive equity lives on a different endpoint. Its own try:
+        // if it fails the three gross cards show a dash, while the withdrawable
+        // cards above them keep working. A dash is honest; a zero would read as
+        // a real figure.
+        try {
+          const grossResp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`);
+          if (!grossResp.ok) throw new Error(describeRateLimit(grossResp, "Equity overview"));
+          const gross = (await grossResp.json()) as {
+            clients?: { items?: { equity?: unknown }[] };
+            lps?: { items?: { equity?: unknown }[] };
+          };
+          if (cancelled) return;
+          const sumEquity = (group?: { items?: { equity?: unknown }[] }) =>
+            (Array.isArray(group?.items) ? group.items : []).reduce(
+              (total, item) => total + (Number(item?.equity) || 0),
+              0,
+            );
+          const lpEquity = sumEquity(gross.lps);
+          const clientEquity = sumEquity(gross.clients);
+          setMetricsGrossEquity({ lpEquity, clientEquity, difference: lpEquity - clientEquity });
+        } catch {
+          if (!cancelled) setMetricsGrossEquity(null);
+        }
       } catch (e: any) {
         if (!cancelled) setMetricsError(e?.message || "Failed to load LP metrics.");
       } finally {
@@ -4186,6 +4222,9 @@ export function DealingDepartmentPage() {
                     ["LP Withdrawable Equity", "", String(metricsEquitySummary?.lpWithdrawableEquity || 0), "", "", "", "", "", ""],
                     ["Client Withdrawable Equity", "", String(metricsEquitySummary?.clientWithdrawableEquity || 0), "", "", "", "", "", ""],
                     ["LP-Client WD Equity Difference", "", String(metricsEquitySummary?.difference || 0), "", "", "", "", "", ""],
+                    ["LP Equity (incl. credit)", "", String(metricsGrossEquity?.lpEquity ?? ""), "", "", "", "", "", ""],
+                    ["Client Equity (incl. credit)", "", String(metricsGrossEquity?.clientEquity ?? ""), "", "", "", "", "", ""],
+                    ["LP-Client Equity Difference", "", String(metricsGrossEquity?.difference ?? ""), "", "", "", "", "", ""],
                   ]}
                   emptyText="No LP accounts found."
                 />
@@ -4225,6 +4264,36 @@ export function DealingDepartmentPage() {
                     }`}
                   >
                     {formatDollar(metricsEquitySummary?.difference || 0)}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-900/50">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">LP Equity (incl. credit)</div>
+                  <div className="mt-2 text-xl font-semibold">
+                    {metricsGrossEquity ? formatDollar(metricsGrossEquity.lpEquity) : "-"}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-900/50">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">Client Equity (incl. credit)</div>
+                  <div className="mt-2 text-xl font-semibold">
+                    {metricsGrossEquity ? formatDollar(metricsGrossEquity.clientEquity) : "-"}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-900/50">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">LP-Client Equity Difference</div>
+                  <div
+                    className={`mt-2 text-xl font-semibold ${
+                      !metricsGrossEquity
+                        ? "text-slate-500"
+                        : metricsGrossEquity.difference === 0
+                          ? "text-slate-500"
+                          : metricsGrossEquity.difference > 0
+                            ? "text-emerald-700 dark:text-emerald-300"
+                            : "text-rose-700 dark:text-rose-300"
+                    }`}
+                  >
+                    {metricsGrossEquity ? formatDollar(metricsGrossEquity.difference) : "-"}
                   </div>
                 </div>
               </div>
