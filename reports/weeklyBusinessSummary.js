@@ -891,31 +891,34 @@ export function buildSummaryEmailHtml({
       ])
     : "";
 
-  // Closing balance rows. Ordered as the dashboard shows them: what is coming
-  // in, what is going out, then the net position.
+  // Closing balance as tiles, matching every other section. Ordered as the
+  // dashboard shows them: what is coming in, what is going out, then the net
+  // position. The two LP tiles name their rail in the label rather than only in
+  // the note -- stacked on a phone, two identical labels read as a fault.
+  // Labels are plain text; kpiGrid escapes them, so an HTML entity written here
+  // would render literally.
   const cb = closingBalance;
-  const cbRow = (label, value, note, cls) =>
-    `<tr>
-        ${dataCell("Item", escapeHtml(label) + (note ? ` <span style="font-weight:400;opacity:0.75;">${note}</span>` : ""))}
-        ${dataCell("Amount", money(value), { align: "right", bold: true, cls: cls || "" })}
-      </tr>`;
-  const closingBalanceRows = cb
-    ? [
-        cbRow("To be received in BANK", cb.bankReceivable, "", "pos"),
-        cbRow("To be received in CRYPTO", cb.cryptoReceivable, "", "pos"),
-        cbRow("To be deposited into LPs (Bank – USD)", cb.toLpsBank, "", "cost"),
-        cbRow("To be deposited into LPs (Crypto USDT)", cb.toLpsCrypto, "", "cost"),
-        cbRow("Net all Current Balance", cb.netAllCurrentBalance, "&mdash; live PSP balances, not the sheet"),
-        cbRow("Net Balance after expected funds", cb.netAfterExpectedFunds, ""),
-        cbRow(
-          "Difference between actual and expected",
-          cb.differenceActualVsExpected,
-          "",
-          signCls(cb.differenceActualVsExpected),
-        ),
-        cbRow("Credit by LPs", cb.creditByLps, ""),
-      ].join("")
+  const closingBalanceCards = cb
+    ? kpiGrid([
+        { label: "To be received in BANK", value: money(cb.bankReceivable), cls: "pos" },
+        { label: "To be received in CRYPTO", value: money(cb.cryptoReceivable), cls: "pos" },
+        { label: "To be deposited into LPs (Bank)", value: money(cb.toLpsBank), cls: "cost", note: "USD" },
+        { label: "To be deposited into LPs (Crypto)", value: money(cb.toLpsCrypto), cls: "cost", note: "USDT" },
+        {
+          label: "Net all Current Balance",
+          value: money(cb.netAllCurrentBalance),
+          note: "summed from live PSP balances, not the sheet",
+        },
+        { label: "Net Balance after expected funds", value: money(cb.netAfterExpectedFunds) },
+        {
+          label: "Difference actual vs expected",
+          value: money(cb.differenceActualVsExpected),
+          cls: signCls(cb.differenceActualVsExpected),
+        },
+        { label: "Credit by LPs", value: money(cb.creditByLps) },
+      ])
     : "";
+
 
   const body = `
           <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
@@ -928,16 +931,7 @@ export function buildSummaryEmailHtml({
 
           <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
           <p class="note">Money owed to us, money due out to the LPs, and the net position. These come from the finance Google Sheet via the cell mapping in Settings &rsaquo; Google Sheet Mapping, so they are only as current as the sheet.</p>
-          ${closingBalanceRows
-            ? dataTable({
-                headers: [
-                  { label: "Item", width: "62%" },
-                  { label: "Amount", width: "38%" },
-                ],
-                bodyRows: closingBalanceRows,
-                emptyText: "No closing balance figures.",
-              })
-            : `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}
+          ${closingBalanceCards || `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}
 
           <p class="section-title">Large Depositors</p>
           <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week &mdash; the subset of Account Activity below.</p>
