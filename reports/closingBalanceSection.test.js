@@ -34,33 +34,62 @@ const render = (closingBalance) =>
     closingBalance,
   });
 
-// Pulls the Amount cell for a labelled row inside the Closing Balance table.
-function amountFor(html, label) {
+// Reads a KPI tile from the Closing Balance section by its label. Bounded to
+// that section so a label reused elsewhere cannot be picked up by mistake, and
+// bounded at the tile's own </td> so a tile with no note cannot borrow the next
+// tile's note.
+function tile(html, label, occurrence = 0) {
   const section = html.slice(
     html.indexOf('<p class="section-title">Closing Balance'),
     html.indexOf('<p class="section-title">Large Depositors'),
   );
-  const at = section.indexOf(label);
-  if (at === -1) return null;
-  const row = section.slice(at, section.indexOf("</tr>", at));
-  const amountCell = row.indexOf('data-label="Amount"');
-  if (amountCell === -1) return null;
-  const valueStart = row.indexOf('class="val', amountCell);
-  const open = row.indexOf(">", valueStart);
-  return row.slice(open + 1, row.indexOf("<", open)).trim();
+  const marker = '<p class="kpi-label">' + label + "</p>";
+  let start = -1;
+  for (let i = 0; i <= occurrence; i += 1) {
+    start = section.indexOf(marker, start + 1);
+    if (start === -1) return null;
+  }
+  const seg = section.slice(start, section.indexOf("</td>", start));
+  const between = (needle) => {
+    const at = seg.indexOf(needle);
+    if (at === -1) return null;
+    const open = seg.indexOf(">", at);
+    return seg.slice(open + 1, seg.indexOf("<", open)).trim();
+  };
+  return { value: between("kpi-value"), note: between("kpi-note-sm") };
 }
+const amountFor = (html, label, occurrence = 0) => tile(html, label, occurrence)?.value ?? null;
 
 describe("Closing Balance section", () => {
   const html = render(CLOSING);
 
+  // Stacked on a phone, two tiles with the same label look like a bug.
+  it("gives every tile a distinct label", () => {
+    const section = html.slice(
+      html.indexOf('<p class="section-title">Closing Balance'),
+      html.indexOf('<p class="section-title">Large Depositors'),
+    );
+    const labels = [...section.matchAll(/kpi-label">([^<]*)</g)].map((m) => m[1]);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("renders as tiles, like every other section", () => {
+    const section = html.slice(
+      html.indexOf('<p class="section-title">Closing Balance'),
+      html.indexOf('<p class="section-title">Large Depositors'),
+    );
+    expect(section).toContain('class="kpis"');
+    expect((section.match(/class="kpi-label"/g) || []).length).toBe(8);
+  });
+
   it("shows every figure from the dashboard's closing balance", () => {
     expect(amountFor(html, "To be received in BANK")).toBe("$1,150,000.00");
     expect(amountFor(html, "To be received in CRYPTO")).toBe("$150,000.00");
-    expect(amountFor(html, "To be deposited into LPs (Bank – USD)")).toBe("$0.00");
-    expect(amountFor(html, "To be deposited into LPs (Crypto USDT)")).toBe("$0.00");
+    expect(tile(html, "To be deposited into LPs (Bank)")).toEqual({ value: "$0.00", note: "USD" });
+    expect(tile(html, "To be deposited into LPs (Crypto)")).toEqual({ value: "$0.00", note: "USDT" });
     expect(amountFor(html, "Net all Current Balance")).toBe("$500,452.32");
     expect(amountFor(html, "Net Balance after expected funds")).toBe("$1,800,452.32");
-    expect(amountFor(html, "Difference between actual and expected")).toBe("-$1,300,000.00");
+    expect(amountFor(html, "Difference actual vs expected")).toBe("-$1,300,000.00");
     expect(amountFor(html, "Credit by LPs")).toBe("$0.00");
   });
 
@@ -70,7 +99,7 @@ describe("Closing Balance section", () => {
   });
 
   it("says Net all Current Balance is not from the sheet", () => {
-    expect(html).toContain("live PSP balances, not the sheet");
+    expect(tile(html, "Net all Current Balance").note).toBe("summed from live PSP balances, not the sheet");
   });
 
   it("points at where the figures are maintained", () => {
