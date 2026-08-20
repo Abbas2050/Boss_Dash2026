@@ -72,13 +72,16 @@ type RevenueRow = {
   grossRevenueUsd: number;
   lpCommissionUsd: number;
   totalRevenueUsd: number;
-  /** Notional traded, in millions USD. The denominator behind LP Comm / $M. */
+  /** Client-side notional traded, in USD millions. */
   clientMillionsUsd: number;
-  /** The MODELLED rate: a volume-weighted blend of the contracted rates of the
-   *  LPs this client's flow was covered by, so it is rarely a round number.
-   *  lpCommissionUsd is what was actually allocated; the two diverge, which is
-   *  the whole reason the column is worth showing. */
+  /** Weighted-average per-million rate across this client's LP allocations.
+   *  Flow with no coverage LP resolved is priced at the $10/M default. */
   lpCommPerMillionRateUsd: number;
+  /** clientMillionsUsd x lpCommPerMillionRateUsd. Net Revenue is Gross less
+   *  THIS, not less lpCommissionUsd -- verified on 78 of 78 rows against
+   *  DealMatch/Run. lpCommissionUsd is the coverage-attributed cost and is
+   *  routinely smaller. */
+  lpCommPerMillionUsd: number;
 };
 
 type CoverageLpRow = {
@@ -401,26 +404,36 @@ const clientRevenueColumns: SortableTableColumn<RevenueRow>[] = [
     render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</span>,
   },
   {
-    key: "lpCommPerMillionUsd",
-    label: "LP Comm / $M",
+    key: "clientMillionsUsd",
+    label: "Notional (M USD)",
     headerClassName: "text-right",
     cellClassName: "text-right",
-    // Unknown notional sorts below every real rate rather than sorting as 0,
-    // which would rank it alongside genuinely commission-free coverage.
-    sortValue: (r) => lpCommPerMillion(num(r.lpCommissionUsd), num(r.clientMillionsUsd)) ?? -1,
+    sortValue: (r) => num(r.clientMillionsUsd),
+    render: (r) => fmtNum(r.clientMillionsUsd),
+  },
+  {
+    key: "lpCommPerMillionRateUsd",
+    label: "Per M Rate ($/M)",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpCommPerMillionRateUsd),
+    render: (r) => <span className="text-slate-500 dark:text-slate-400">{money(r.lpCommPerMillionRateUsd)}</span>,
+  },
+  {
+    key: "lpCommPerMillionUsd",
+    label: "LP Comm (Per M)",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    sortValue: (r) => num(r.lpCommPerMillionUsd),
+    // Notional x Per M Rate, and the figure Net Revenue is actually built from.
+    // A wide gap against LP Commission means flow that resolved to no coverage
+    // LP and was priced at the $10/M default.
     render: (r) => {
-      const millions = num(r.clientMillionsUsd);
-      const rate = lpCommPerMillion(num(r.lpCommissionUsd), millions);
-      if (rate === null) return <span className="text-slate-400 dark:text-slate-500">-</span>;
-      const configured = num(r.lpCommPerMillionRateUsd);
-      // A charge above the contracted rate is the reason to look at this column
-      // at all, so it is called out rather than left to the reader to spot.
-      const overContract = configured > 0 && rate > configured + 0.005;
-      const detail = `${money(r.lpCommissionUsd)} over ${fmtNum(millions)}M notional${configured > 0 ? ` - contracted ${money(configured)}/M` : ""}`;
+      const gap = num(r.lpCommPerMillionUsd) - num(r.lpCommissionUsd);
+      const detail = `Notional x Per M Rate. Net Revenue is Gross less this figure. Coverage-attributed LP Commission is ${money(r.lpCommissionUsd)}, a gap of ${money(gap)}.`;
       return (
-        <span className={overContract ? "font-semibold text-rose-700 dark:text-rose-300" : "text-rose-700 dark:text-rose-300"} title={detail}>
-          {money(rate)}
-          {overContract && <span title={detail}> !</span>}
+        <span className="text-rose-700 dark:text-rose-300" title={detail}>
+          {money(r.lpCommPerMillionUsd)}
         </span>
       );
     },
@@ -1184,6 +1197,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
       grossRevenueUsd: clientRevenueRows.reduce((s, r) => s + num(r.grossRevenueUsd), 0),
       lpCommissionUsd: clientRevenueRows.reduce((s, r) => s + num(r.lpCommissionUsd), 0),
       clientMillionsUsd: clientRevenueRows.reduce((s, r) => s + num(r.clientMillionsUsd), 0),
+      lpCommPerMillionUsd: clientRevenueRows.reduce((s, r) => s + num(r.lpCommPerMillionUsd), 0),
       totalRevenueUsd: clientRevenueRows.reduce((s, r) => s + num(r.totalRevenueUsd), 0),
     }),
     [clientRevenueRows],
@@ -1366,14 +1380,16 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                         { label: "Gross", value: money(clientRevenueTotals.grossRevenueUsd) },
                         { label: "LP Comm", value: money(clientRevenueTotals.lpCommissionUsd) },
                         {
-                          label: "LP Comm / $M",
-                          // Summed both sides then divided once: a volume-weighted
-                          // blended rate, not a mean of the per-client rates.
+                          label: "Per M Rate",
+                          // Re-derived from the aggregates rather than summed --
+                          // a rate column has no meaningful sum. Mirrors
+                          // computeClientRevenueTotals() in the reference page.
                           value: (() => {
-                            const rate = lpCommPerMillion(clientRevenueTotals.lpCommissionUsd, clientRevenueTotals.clientMillionsUsd);
+                            const rate = lpCommPerMillion(clientRevenueTotals.lpCommPerMillionUsd, clientRevenueTotals.clientMillionsUsd);
                             return rate === null ? "-" : money(rate);
                           })(),
                         },
+                        { label: "LP Comm (Per M)", value: money(clientRevenueTotals.lpCommPerMillionUsd) },
                         { label: "Net Revenue", value: money(clientRevenueTotals.totalRevenueUsd) },
                       ]}
                     />
