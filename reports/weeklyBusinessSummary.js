@@ -584,6 +584,36 @@ export async function fetchEquityPosition() {
   return position;
 }
 
+// ── closing balance ─────────────────────────────────────────────────────────
+// The treasury figures from the Closing Balance Report on the dashboard: what
+// is still owed to us, what is due to go out to the LPs, and the net position.
+// Another SNAPSHOT, not a figure for the reporting week.
+//
+// Most of these come from the finance Google Sheet through the cell mapping in
+// wallet/googleSheetsMappingConfig.js, so they are only as current as the sheet.
+// The exception is Net all Current Balance, which walletMonitor derives from the
+// live PSP balances rather than the sheet -- see the note beside it below.
+//
+// Imported dynamically: the report and the wallet monitor run in the same
+// process, so this avoids an HTTP call to our own server, and a resolution
+// failure lands in the same catch as any other error rather than breaking the
+// module for tests that never need it.
+export async function fetchClosingBalance() {
+  const { checkAllBalances } = await import("../wallet/walletMonitor.js");
+  const report = await checkAllBalances();
+  const d = report?.data || {};
+  return {
+    bankReceivable: num(d.bank_receivable),
+    cryptoReceivable: num(d.crypto_receivable),
+    toLpsBank: num(d.to_be_deposited_into_lps_k20),
+    toLpsCrypto: num(d.to_be_deposited_into_lps_k21),
+    netAllCurrentBalance: num(d.net_all_current_balance),
+    netAfterExpectedFunds: num(d.net_balance_after_expected_funds),
+    differenceActualVsExpected: num(d.difference_between_actual_and_expected),
+    creditByLps: num(d.credit_by_lps),
+  };
+}
+
 // ── chart ───────────────────────────────────────────────────────────────────
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -681,6 +711,7 @@ export function buildSummaryEmailHtml({
   firstTimers = { rows: [], unverified: 0, checked: 0 },
   instruments = { rows: [], totalLots: 0, instrumentCount: 0 },
   equity = { withdrawable: null, gross: null },
+  closingBalance = null,
   chartUrl = null, notices = [],
 }) {
   const netRevenue = glance.totalRevenue === null || glance.totalRevenue === undefined
@@ -860,6 +891,32 @@ export function buildSummaryEmailHtml({
       ])
     : "";
 
+  // Closing balance rows. Ordered as the dashboard shows them: what is coming
+  // in, what is going out, then the net position.
+  const cb = closingBalance;
+  const cbRow = (label, value, note, cls) =>
+    `<tr>
+        ${dataCell("Item", escapeHtml(label) + (note ? ` <span style="font-weight:400;opacity:0.75;">${note}</span>` : ""))}
+        ${dataCell("Amount", money(value), { align: "right", bold: true, cls: cls || "" })}
+      </tr>`;
+  const closingBalanceRows = cb
+    ? [
+        cbRow("To be received in BANK", cb.bankReceivable, "", "pos"),
+        cbRow("To be received in CRYPTO", cb.cryptoReceivable, "", "pos"),
+        cbRow("To be deposited into LPs (Bank – USD)", cb.toLpsBank, "", "cost"),
+        cbRow("To be deposited into LPs (Crypto USDT)", cb.toLpsCrypto, "", "cost"),
+        cbRow("Net all Current Balance", cb.netAllCurrentBalance, "&mdash; live PSP balances, not the sheet"),
+        cbRow("Net Balance after expected funds", cb.netAfterExpectedFunds, ""),
+        cbRow(
+          "Difference between actual and expected",
+          cb.differenceActualVsExpected,
+          "",
+          signCls(cb.differenceActualVsExpected),
+        ),
+        cbRow("Credit by LPs", cb.creditByLps, ""),
+      ].join("")
+    : "";
+
   const body = `
           <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
           ${glanceCards}
@@ -868,6 +925,19 @@ export function buildSummaryEmailHtml({
           <p class="note">Credit is the non-withdrawable part of an account. Withdrawable equity is equity with credit removed, which is why the difference can change sign between the two rows. Mirrors the Dealing &rsaquo; Metrics tab.</p>
           ${equityRowOne || `<p class="note">Withdrawable equity unavailable &mdash; Metrics/dashboard did not respond.</p>`}
           ${equityRowTwo || `<p class="note">Credit-inclusive equity unavailable &mdash; EquityOverview/dashboard did not respond.</p>`}
+
+          <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
+          <p class="note">Money owed to us, money due out to the LPs, and the net position. These come from the finance Google Sheet via the cell mapping in Settings &rsaquo; Google Sheet Mapping, so they are only as current as the sheet.</p>
+          ${closingBalanceRows
+            ? dataTable({
+                headers: [
+                  { label: "Item", width: "62%" },
+                  { label: "Amount", width: "38%" },
+                ],
+                bodyRows: closingBalanceRows,
+                emptyText: "No closing balance figures.",
+              })
+            : `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}
 
           <p class="section-title">Large Depositors</p>
           <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week &mdash; the subset of Account Activity below.</p>
@@ -955,6 +1025,7 @@ export function buildSummaryEmailHtml({
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice &mdash; an <em>ib withdrawal</em> sits in IB Rebate, not in Withdrawals.",
     `IB Rebate is the ${escapeHtml("ib transfer to account")} and ${escapeHtml("ib withdrawal")} settled this week. The Deal Match report derives IB commission from <em>current</em> CRM wallet balances instead, so the two can differ &mdash; this one is fixed for a closed week, that one drifts between runs.`,
     `Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.`,
+    "Closing Balance is a snapshot too, and most of its figures are read from the finance Google Sheet, so they are only as current as that sheet. Net all Current Balance is the exception: it is summed from the live PSP balances.",
     "Equity Position is a snapshot taken when this email was built, not a figure for the reporting week. The withdrawable row comes from <code>Metrics/dashboard</code> and the credit-inclusive row from <code>EquityOverview/dashboard</code>, so the two are fetched moments apart and can differ by a little price movement.",
     `IB Rebate by type: ${
       agg.ibByType.length
@@ -1062,6 +1133,16 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   // Its own await: a dead equity endpoint costs that section, not the report.
   const equity = await fetchEquityPosition();
+
+  // Same treatment. checkAllBalances polls every PSP, so a single provider being
+  // slow or down must not take the whole report with it.
+  let closingBalance = null;
+  try {
+    closingBalance = await fetchClosingBalance();
+  } catch (error) {
+    console.warn("[WeeklySummary] closing balance lookup failed:", error?.message || error);
+    notices.push(`Closing Balance unavailable: ${error?.message || error}`);
+  }
   if (!equity.withdrawable && !equity.gross) {
     notices.push("Equity Position unavailable: neither Metrics/dashboard nor EquityOverview/dashboard responded.");
   }
@@ -1095,7 +1176,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   }
 
   const subject = `Weekly Business Summary (${fromYmd} to ${toYmd})`;
-  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, equity, chartUrl, notices });
+  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, equity, closingBalance, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
 
   if (isScheduledRun) await recordSentFor("summary", windowKey);
