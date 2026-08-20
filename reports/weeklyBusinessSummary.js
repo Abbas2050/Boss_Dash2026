@@ -4,6 +4,8 @@ import {
   toYmdUtc,
   toUnixRange,
   parseRecipients,
+  alreadySentFor,
+  recordSentFor,
   mapWithConcurrency,
   previousFullWeekUtc,
   fmtNum,
@@ -884,12 +886,25 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const fromYmd = toYmdUtc(week.start);
   const toYmd = toYmdUtc(week.end);
 
+  // An explicit recipient list means the on-demand test button, which must
+  // always send. Everything else is the cron or a RUN_ON_START boot, and a
+  // window that already went out must not go again -- an app pool that
+  // recycles nightly would otherwise mail this every morning.
+  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
+
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
     : parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "");
   if (!recipients.length) {
     console.warn("[WeeklySummary] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
+  }
+
+  // Same window, already sent: this is a restart, not a new week.
+  const windowKey = `${fromYmd}..${toYmd}`;
+  if (isScheduledRun && (await alreadySentFor("summary", windowKey))) {
+    console.log(`[WeeklySummary] ${windowKey} already sent; skipping (restart, not a new week).`);
+    return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
   if (!crmConfigured()) {
     throw new Error("CRM API token not configured (VITE_API_TOKEN / API_TOKEN)");
@@ -958,6 +973,8 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const subject = `Weekly Business Summary (${fromYmd} to ${toYmd})`;
   const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
+
+  if (isScheduledRun) await recordSentFor("summary", windowKey);
 
   console.log(
     `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | firstTime=${firstTimers.rows.length} | instruments=${instruments.instrumentCount} | period=${fromYmd}..${toYmd}`,

@@ -3,6 +3,8 @@ import {
   BACKEND_BASE_URL,
   toYmdUtc,
   parseRecipients,
+  alreadySentFor,
+  recordSentFor,
   fmtNum,
   money,
   escapeHtml,
@@ -1205,12 +1207,25 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   const fromYmd = toYmdUtc(week.start);
   const toYmd = toYmdUtc(week.end);
   // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
+  // An explicit recipient list means the on-demand test button, which must
+  // always send. Everything else is the cron or a RUN_ON_START boot, and a
+  // window that already went out must not go again -- an app pool that
+  // recycles nightly would otherwise mail this every morning.
+  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
+
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
     : parseRecipients(process.env.DEALMATCH_ALERT_RECIPIENTS || "");
   if (!recipients.length) {
     console.warn("[DealMatchWeekly] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", rows: rows.length, fromYmd, toYmd };
+  }
+
+  // Same window, already sent: this is a restart, not a new week.
+  const windowKey = `${fromYmd}..${toYmd}`;
+  if (isScheduledRun && (await alreadySentFor("dealmatch", windowKey))) {
+    console.log(`[DealMatchWeekly] ${windowKey} already sent; skipping (restart, not a new week).`);
+    return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
   // Volume is supplementary — a ClientVolume outage must not block the revenue
   // report, so fall back to rendering the section as unavailable.
@@ -1263,6 +1278,8 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
+
+  if (isScheduledRun) await recordSentFor("dealmatch", windowKey);
 
   console.log(`[DealMatchWeekly] Sent to ${recipients.join(", ")} | rows=${rows.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, rows: rows.length, fromYmd, toYmd };

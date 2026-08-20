@@ -1,5 +1,5 @@
 import { ChartJSNodeCanvas } from "chartjs-node-canvas";
-import { mkdir, writeFile, readdir, rm, stat } from "fs/promises";
+import { mkdir, writeFile, readFile, readdir, rm, stat, open } from "fs/promises";
 import { fileURLToPath } from "url";
 import os from "os";
 import path from "path";
@@ -101,6 +101,77 @@ export async function pruneChartImages() {
     }
   }
   return removed;
+}
+
+// ── one send per reporting window ───────────────────────────────────────────
+// WEEKLY_*_RUN_ON_START fires a report every time the process boots. That is
+// fine for a one-off check, but a server that recycles its app pool overnight
+// turns it into a daily mailshot -- which is exactly what happened with the
+// Business Summary. The same guard also stops a cron run duplicating a window a
+// startup run already sent.
+//
+// Only SCHEDULED runs consult and update this. The on-demand test route passes
+// explicit recipients and must always send, so it never touches the log.
+const SEND_LOG_NAME = "weekly_report_sends.json";
+let resolvedSendLog = null;
+
+async function getSendLogFile() {
+  if (resolvedSendLog) return resolvedSendLog;
+  const candidates = [
+    process.env.WEEKLY_REPORT_STATE_FILE,
+    path.join(REPO_ROOT, "storage", SEND_LOG_NAME),
+    path.join(os.tmpdir(), `boss_dash_${SEND_LOG_NAME}`),
+  ].filter(Boolean);
+
+  for (const file of candidates) {
+    try {
+      await mkdir(path.dirname(file), { recursive: true });
+      const handle = await open(file, "a");
+      await handle.close();
+      if (file !== candidates[0]) console.warn(`[reports] send log not writable higher up; using ${file}`);
+      resolvedSendLog = file;
+      return file;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null; // no writable location: the guard disables itself, see below
+}
+
+async function readSendLog() {
+  const file = await getSendLogFile();
+  if (!file) return {};
+  try {
+    return JSON.parse(await readFile(file, "utf8")) || {};
+  } catch {
+    return {}; // absent or corrupt: treat as nothing sent yet
+  }
+}
+
+// `reportKey` names the report ("summary"), `windowKey` names the period
+// ("2026-08-08..2026-08-14"). A report is re-sent when the window changes.
+export async function alreadySentFor(reportKey, windowKey) {
+  const log = await readSendLog();
+  return log?.[reportKey]?.window === windowKey;
+}
+
+export async function recordSentFor(reportKey, windowKey) {
+  const file = await getSendLogFile();
+  // Failing to record must never block a send that already succeeded; the cost
+  // is a possible duplicate on the next boot, which beats losing the report.
+  if (!file) {
+    console.warn("[reports] no writable send log; cannot guard against a repeat send");
+    return false;
+  }
+  try {
+    const log = await readSendLog();
+    log[reportKey] = { window: windowKey, sentAt: new Date().toISOString() };
+    await writeFile(file, JSON.stringify(log, null, 2), "utf8");
+    return true;
+  } catch (error) {
+    console.warn("[reports] could not record send:", error?.message || error);
+    return false;
+  }
 }
 
 export function toYmdUtc(date) {

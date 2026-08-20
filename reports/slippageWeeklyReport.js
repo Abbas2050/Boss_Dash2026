@@ -3,6 +3,8 @@ import {
   BACKEND_BASE_URL,
   toYmdUtc,
   parseRecipients,
+  alreadySentFor,
+  recordSentFor,
   fmtNum,
   money,
   escapeHtml,
@@ -456,6 +458,12 @@ export async function runWeeklySlippageEmailReport({ fromDate, toDate, recipient
   const kpis = computeKpis(buckets, rows);
 
   // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
+  // An explicit recipient list means the on-demand test button, which must
+  // always send. Everything else is the cron or a RUN_ON_START boot, and a
+  // window that already went out must not go again -- an app pool that
+  // recycles nightly would otherwise mail this every morning.
+  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
+
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
     : parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "");
@@ -464,10 +472,19 @@ export async function runWeeklySlippageEmailReport({ fromDate, toDate, recipient
     return { ok: false, reason: "no-recipients", lps: buckets.length, fromYmd, toYmd };
   }
 
+  // Same window, already sent: this is a restart, not a new week.
+  const windowKey = `${fromYmd}..${toYmd}`;
+  if (isScheduledRun && (await alreadySentFor("slippage", windowKey))) {
+    console.log(`[SlippageWeekly] ${windowKey} already sent; skipping (restart, not a new week).`);
+    return { ok: false, reason: "already-sent", fromYmd, toYmd };
+  }
+
   const subject = `Weekly Slippage Report (${fromYmd} to ${toYmd})`;
   const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis });
   const attachments = await buildSlippageChartAttachments(buckets, fromYmd, toYmd);
   await sendBrevoEmail({ subject, html, recipients, attachments, senderName: "Slippage Reporter" });
+
+  if (isScheduledRun) await recordSentFor("slippage", windowKey);
 
   console.log(`[SlippageWeekly] Sent to ${recipients.join(", ")} | lps=${buckets.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, lps: buckets.length, fromYmd, toYmd };
