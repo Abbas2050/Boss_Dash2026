@@ -907,7 +907,7 @@ export function buildSummaryEmailHtml({
         {
           label: "Net all Current Balance",
           value: money(cb.netAllCurrentBalance),
-          note: "summed from live PSP balances, not the sheet",
+          note: "summed from live PSP balances",
         },
         { label: "Net Balance after expected funds", value: money(cb.netAfterExpectedFunds) },
         {
@@ -930,7 +930,6 @@ export function buildSummaryEmailHtml({
           ${equityRowTwo || `<p class="note">Credit-inclusive equity unavailable &mdash; EquityOverview/dashboard did not respond.</p>`}
 
           <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
-          <p class="note">Money owed to us, money due out to the LPs, and the net position. These come from the finance Google Sheet via the cell mapping in Settings &rsaquo; Google Sheet Mapping, so they are only as current as the sheet.</p>
           ${closingBalanceCards || `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}
 
           <p class="section-title">Large Depositors</p>

@@ -99,11 +99,7 @@ describe("Closing Balance section", () => {
   });
 
   it("says Net all Current Balance is not from the sheet", () => {
-    expect(tile(html, "Net all Current Balance").note).toBe("summed from live PSP balances, not the sheet");
-  });
-
-  it("points at where the figures are maintained", () => {
-    expect(html).toContain("Google Sheet Mapping");
+    expect(tile(html, "Net all Current Balance").note).toBe("summed from live PSP balances");
   });
 
   it("never renders an object into the copy", () => {
