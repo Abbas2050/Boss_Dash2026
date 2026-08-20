@@ -527,6 +527,63 @@ async function fetchGlance(week) {
   return { glance, failures };
 }
 
+// ── equity position ─────────────────────────────────────────────────────────
+// A SNAPSHOT taken when the email is built, not a figure for the reporting
+// week. Everything else in this report covers Sat->Fri; these six do not, and
+// the section says so, because a reader will otherwise assume they match.
+//
+// Two endpoints, mirroring the dealing Metrics tab exactly so the email and the
+// dashboard cannot disagree:
+//   Metrics/dashboard        the withdrawable trio, ready-made by the backend.
+//                            Its totals also carry LP equity and LP credit, so
+//                            the LP line reconciles within this payload:
+//                            totals.equity - totals.credit == lpWithdrawableEquity.
+//                            It reports no client credit.
+//   EquityOverview/dashboard the credit-inclusive trio, the only source with
+//                            credit for clients as well as LPs.
+// They are separate fetches, so the two rows are snapshots seconds apart.
+export async function fetchEquityPosition() {
+  const position = { withdrawable: null, gross: null };
+
+  try {
+    const resp = await fetch(`${BACKEND_BASE_URL}/Metrics/dashboard`, { signal: AbortSignal.timeout(45_000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const raw = await resp.json();
+    position.withdrawable = {
+      lpEquity: num(raw?.totals?.equity),
+      lpCredit: num(raw?.totals?.credit),
+      lpWithdrawable: num(raw?.lpWithdrawableEquity),
+      clientWithdrawable: num(raw?.clientWithdrawableEquity),
+      difference: num(raw?.difference),
+    };
+  } catch (error) {
+    console.warn("[WeeklySummary] Metrics/dashboard lookup failed:", error?.message || error);
+  }
+
+  try {
+    const resp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`, { signal: AbortSignal.timeout(60_000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const raw = await resp.json();
+    const sum = (group, field) =>
+      (Array.isArray(group?.items) ? group.items : []).reduce((total, item) => total + num(item?.[field]), 0);
+    const lpEquity = sum(raw?.lps, "equity");
+    const clientEquity = sum(raw?.clients, "equity");
+    position.gross = {
+      lpEquity,
+      lpCredit: sum(raw?.lps, "credit"),
+      lpWithdrawable: sum(raw?.lps, "withdrawableEquity"),
+      clientEquity,
+      clientCredit: sum(raw?.clients, "credit"),
+      clientWithdrawable: sum(raw?.clients, "withdrawableEquity"),
+      difference: lpEquity - clientEquity,
+    };
+  } catch (error) {
+    console.warn("[WeeklySummary] EquityOverview/dashboard lookup failed:", error?.message || error);
+  }
+
+  return position;
+}
+
 // ── chart ───────────────────────────────────────────────────────────────────
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -623,6 +680,7 @@ export function buildSummaryEmailHtml({
   fromYmd, toYmd, agg, glance,
   firstTimers = { rows: [], unverified: 0, checked: 0 },
   instruments = { rows: [], totalLots: 0, instrumentCount: 0 },
+  equity = { withdrawable: null, gross: null },
   chartUrl = null, notices = [],
 }) {
   const netRevenue = glance.totalRevenue === null || glance.totalRevenue === undefined
@@ -755,9 +813,59 @@ export function buildSummaryEmailHtml({
     )
     .join("");
 
+  // Six equity tiles. An email has no hover, so each formula sits in the tile's
+  // note where the dashboard puts it in a tooltip.
+  const wd = equity.withdrawable;
+  const gr = equity.gross;
+  const equityRowOne = wd
+    ? kpiGrid([
+        {
+          label: "LP Withdrawable Equity",
+          value: money(wd.lpWithdrawable),
+          note: `${money(wd.lpEquity)} equity less ${money(wd.lpCredit)} credit`,
+        },
+        {
+          label: "Client Withdrawable Equity",
+          value: money(wd.clientWithdrawable),
+          note: "client equity with credit taken out",
+        },
+        {
+          label: "LP-Client WD Difference",
+          value: money(wd.difference),
+          cls: signCls(wd.difference),
+          note: "negative means clients could withdraw more than the LPs hold",
+        },
+      ])
+    : "";
+  const equityRowTwo = gr
+    ? kpiGrid([
+        {
+          label: "LP Equity (incl. credit)",
+          value: money(gr.lpEquity),
+          note: `includes ${money(gr.lpCredit)} credit`,
+        },
+        {
+          label: "Client Equity (incl. credit)",
+          value: money(gr.clientEquity),
+          note: `includes ${money(gr.clientCredit)} credit`,
+        },
+        {
+          label: "LP-Client Equity Difference",
+          value: money(gr.difference),
+          cls: signCls(gr.difference),
+          note: "same comparison, counting credit on both sides",
+        },
+      ])
+    : "";
+
   const body = `
           <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
           ${glanceCards}
+
+          <p class="section-title">Equity Position <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
+          <p class="note">Credit is the non-withdrawable part of an account. Withdrawable equity is equity with credit removed, which is why the difference can change sign between the two rows. Mirrors the Dealing &rsaquo; Metrics tab.</p>
+          ${equityRowOne || `<p class="note">Withdrawable equity unavailable &mdash; Metrics/dashboard did not respond.</p>`}
+          ${equityRowTwo || `<p class="note">Credit-inclusive equity unavailable &mdash; EquityOverview/dashboard did not respond.</p>`}
 
           <p class="section-title">Large Depositors</p>
           <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week &mdash; the subset of Account Activity below.</p>
@@ -845,6 +953,7 @@ export function buildSummaryEmailHtml({
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice &mdash; an <em>ib withdrawal</em> sits in IB Rebate, not in Withdrawals.",
     `IB Rebate is the ${escapeHtml("ib transfer to account")} and ${escapeHtml("ib withdrawal")} settled this week. The Deal Match report derives IB commission from <em>current</em> CRM wallet balances instead, so the two can differ &mdash; this one is fixed for a closed week, that one drifts between runs.`,
     `Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.`,
+    "Equity Position is a snapshot taken when this email was built, not a figure for the reporting week. The withdrawable row comes from <code>Metrics/dashboard</code> and the credit-inclusive row from <code>EquityOverview/dashboard</code>, so the two are fetched moments apart and can differ by a little price movement.",
     `IB Rebate by type: ${
       agg.ibByType.length
         ? agg.ibByType.map((t) => `${escapeHtml(t.type)} ${money(t.amount)}`).join(" &middot; ")
@@ -949,6 +1058,12 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
     notices.push(`First-Time Depositors unavailable: ${error?.message || error}`);
   }
 
+  // Its own await: a dead equity endpoint costs that section, not the report.
+  const equity = await fetchEquityPosition();
+  if (!equity.withdrawable && !equity.gross) {
+    notices.push("Equity Position unavailable: neither Metrics/dashboard nor EquityOverview/dashboard responded.");
+  }
+
   let instruments = { rows: [], totalLots: 0, instrumentCount: 0 };
   try {
     instruments = topInstruments(await fetchClientVolume(fromYmd, toYmd));
@@ -978,7 +1093,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   }
 
   const subject = `Weekly Business Summary (${fromYmd} to ${toYmd})`;
-  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, chartUrl, notices });
+  const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, equity, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
 
   if (isScheduledRun) await recordSentFor("summary", windowKey);
