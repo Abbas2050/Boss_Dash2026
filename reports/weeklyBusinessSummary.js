@@ -139,6 +139,7 @@ export function aggregate(transactions) {
   let deposits = 0;
   let withdrawals = 0;
   let ibRebate = 0;
+  let depositCount = 0;
   const currencies = new Set();
 
   for (const row of transactions) {
@@ -169,6 +170,8 @@ export function aggregate(transactions) {
     // to be: the per-account Net subtracts the rebate, and an "ib withdrawal"
     // counted in both Withdrawals and IB Rebate would be deducted twice.
     const isIb = kind === "ib";
+
+    if (kind === "deposit") depositCount += 1;
 
     if (isIb) {
       ibRebate += amount;
@@ -261,6 +264,8 @@ export function aggregate(transactions) {
     // the chain Deposits - Withdrawals - IB Rebate = Net holds at every level.
     netFlow: deposits - withdrawals - ibRebate,
     ibRebate,
+    // How many deposit transactions, not how many depositing clients.
+    depositCount,
     txCount: transactions.length,
     byPsp: [...byPsp.values()]
       .map((p) => ({ ...p, net: p.deposits - p.withdrawals - p.ibRebate }))
@@ -632,15 +637,19 @@ export function buildSummaryEmailHtml({
     dataCell("IB Rebate", money(d.ibRebate), { align: "right", cls: num(d.ibRebate) > 0 ? "cost" : "" }) +
     dataCell("Net", money(net), { align: "right", bold: true, cls: signCls(net) });
 
+  const firstTimerTotal = firstTimers.rows.reduce((s, r) => s + num(r.deposits), 0);
+  const firstTimerCount = firstTimers.rows.reduce((s, r) => s + num(r.depositCount), 0);
+
   const glanceCards = kpiGrid([
     { label: "Net Flow", value: money(agg.netFlow), cls: signCls(agg.netFlow) },
-    { label: "Deposits", value: money(agg.deposits), cls: "pos" },
+    { label: "Deposits", value: money(agg.deposits), cls: "pos", note: `across ${fmtNum(agg.depositCount, 0)} deposit${agg.depositCount === 1 ? "" : "s"}` },
     { label: "Withdrawals", value: money(agg.withdrawals), cls: "cost" },
     { label: "Active Accounts", value: fmtNum(agg.depositors.length, 0), note: "deposited or received rebate" },
     { label: "Total Revenue", value: orDash(glance.totalRevenue, money) },
     { label: "IB Rebate", value: money(agg.ibRebate), cls: "cost" },
     { label: "Net Revenue", value: orDash(netRevenue, money), cls: signCls(netRevenue), note: "Total Revenue less IB Rebate" },
     { label: "Large Depositors", value: fmtNum(agg.largeDepositors.length, 0), note: `over ${money(LARGE_DEPOSIT_THRESHOLD)}` },
+    { label: "First-Time Depositors", value: fmtNum(firstTimers.rows.length, 0), cls: "pos", note: `${money(firstTimerTotal)} over ${fmtNum(firstTimerCount, 0)} deposit${firstTimerCount === 1 ? "" : "s"}` },
   ]);
 
   const pspTotalRow =
@@ -710,8 +719,6 @@ export function buildSummaryEmailHtml({
     )
     .join("");
 
-  const firstTimerTotal = firstTimers.rows.reduce((s, r) => s + num(r.deposits), 0);
-  const firstTimerCount = firstTimers.rows.reduce((s, r) => s + num(r.depositCount), 0);
   const firstTimerTotalRow =
     spanCell(`TOTAL (${fmtNum(firstTimers.rows.length, 0)})`, { colspan: 2 }) +
     dataCell("Deposits", money(firstTimerTotal), { align: "right", cls: "pos" }) +
