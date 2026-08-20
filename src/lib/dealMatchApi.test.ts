@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toYmd, toUnixRange, num, deriveBaseRows } from "@/lib/dealMatchApi";
+import { toYmd, toUnixRange, num, deriveBaseRows, lpCommPerMillion, type DealMatchResponse } from "@/lib/dealMatchApi";
 
 describe("dealMatchApi helpers", () => {
   it("toYmd formats a date as YYYY-MM-DD", () => {
@@ -43,5 +43,46 @@ describe("dealMatchApi helpers", () => {
     expect(rows[0].lpComm).toBe(3); // abs(-2) + abs(-1)
     expect(rows[0].totalRev).toBe(57); // (30+20) + (6+4) - 3
     expect(rows[0].netRevenue).toBe(57);
+  });
+});
+
+describe("lpCommPerMillion", () => {
+  it("divides commission by notional", () => {
+    expect(lpCommPerMillion(1539.55, 166.2371)).toBeCloseTo(9.26, 2);
+  });
+
+  // A client with no notional is not a client charged $0.00 per million.
+  it("returns null when notional is unknown, so the cell can say so", () => {
+    expect(lpCommPerMillion(100, 0)).toBeNull();
+    expect(lpCommPerMillion(100, NaN)).toBeNull();
+    expect(lpCommPerMillion(100, -5)).toBeNull();
+  });
+
+  it("reports a genuine zero rate as 0, not as unknown", () => {
+    // Infinox traded $47.6M and was billed nothing. That is a real 0.00/M.
+    expect(lpCommPerMillion(0, 47.6)).toBe(0);
+  });
+});
+
+describe("deriveBaseRows carries notional", () => {
+  it("reads clientMillionsUsd from the summaries", () => {
+    const report: DealMatchResponse = {
+      clientRevenueSummaries: [
+        { login: 102226, name: "A", lots: 378.42, markupRevenueUsd: 5621.44, clientCommissionUsd: 0, lpCommissionUsd: 1539.55, totalRevenueUsd: 3959.07, clientMillionsUsd: 166.2371 },
+      ],
+    };
+    const [row] = deriveBaseRows(report);
+    expect(row.millionsUsd).toBeCloseTo(166.2371, 4);
+    expect(lpCommPerMillion(row.lpComm, row.millionsUsd)).toBeCloseTo(9.26, 2);
+  });
+
+  // The matches fallback has no notional field at all. It must not invent one.
+  it("leaves notional at zero on the matches fallback, so the rate reads unknown", () => {
+    const report: DealMatchResponse = {
+      matches: [{ clientLogin: 500, clientName: "B", clientVolume: 10, spreadRevenueUsd: 50, clientCommission: 0, lpCommission: -20 }],
+    };
+    const [row] = deriveBaseRows(report);
+    expect(row.millionsUsd).toBe(0);
+    expect(lpCommPerMillion(row.lpComm, row.millionsUsd)).toBeNull();
   });
 });
