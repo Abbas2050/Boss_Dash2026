@@ -290,27 +290,33 @@ type EquitySummaryData = {
   difference: number;
 };
 
-// Every figure behind the six equity cards, from ONE EquityOverview/dashboard
-// payload so the arithmetic on screen ties out exactly.
-//
-// The backend returns equity, credit AND withdrawableEquity per account; none
-// of it is derived here. On live data, summed equity minus summed credit equals
-// summed withdrawableEquity on both sides, which is what makes the tooltips
-// safe to state as formulas.
-//
-// Sourcing all six here rather than taking the withdrawable trio from
-// Metrics/dashboard: that endpoint has no client credit, and its figures come
-// from a separate fetch, so the two rows disagreed by a few hundred dollars and
-// a displayed formula would not have reconciled.
-type MetricsEquityBreakdown = {
+// The withdrawable row, straight from Metrics/dashboard. lpEquity and lpCredit
+// are its `totals` and are carried only so the LP tooltip can show a formula
+// that reconciles: on live data totals.equity - totals.credit equals
+// lpWithdrawableEquity exactly. That endpoint reports no client credit, so the
+// client tooltip states the definition without a formula rather than borrowing
+// a credit figure from elsewhere.
+type MetricsWithdrawableData = {
+  lpEquity: number;
+  lpCredit: number;
+  lpWithdrawable: number;
+  clientWithdrawable: number;
+  difference: number;
+};
+
+// The credit-inclusive row, from EquityOverview/dashboard, which is the only
+// endpoint carrying credit for clients as well as LPs. Kept whole so each of
+// its tooltips reconciles within this payload; it is a separate fetch from the
+// row above, so the two rows are snapshots seconds apart and small differences
+// between them are timing, not disagreement.
+type MetricsGrossEquityData = {
   lpEquity: number;
   lpCredit: number;
   lpWithdrawable: number;
   clientEquity: number;
   clientCredit: number;
   clientWithdrawable: number;
-  withdrawableDifference: number;
-  equityDifference: number;
+  difference: number;
 };
 
 const coerceMetricsItem = (raw: any): MetricsItem => ({
@@ -1015,7 +1021,8 @@ export function DealingDepartmentPage() {
   const coverageSignalRRef = useRef<SignalRConnectionManager | null>(null);
   const dealingRootRef = useRef<HTMLDivElement | null>(null);
   const [metricsData, setMetricsData] = useState<MetricsData | null>(null);
-  const [metricsEquity, setMetricsEquity] = useState<MetricsEquityBreakdown | null>(null);
+  const [metricsWithdrawable, setMetricsWithdrawable] = useState<MetricsWithdrawableData | null>(null);
+  const [metricsGross, setMetricsGross] = useState<MetricsGrossEquityData | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError] = useState<string | null>(null);
   const [metricsLastUpdated, setMetricsLastUpdated] = useState<Date | null>(null);
@@ -1928,12 +1935,19 @@ export function DealingDepartmentPage() {
             freeMargin: Number(dashboard.totals?.freeMargin) || 0,
           },
         });
+        setMetricsWithdrawable({
+          lpEquity: Number(dashboard.totals?.equity) || 0,
+          lpCredit: Number(dashboard.totals?.credit) || 0,
+          lpWithdrawable: Number(dashboard.lpWithdrawableEquity) || 0,
+          clientWithdrawable: Number(dashboard.clientWithdrawableEquity) || 0,
+          difference: Number(dashboard.difference) || 0,
+        });
         setMetricsLastUpdated(new Date());
         setMetricsError(null);
 
-        // All six equity cards come from here, in one snapshot. Its own try:
-        // if it fails they show a dash while the LP table above keeps working.
-        // A dash is honest; a zero would read as a real figure.
+        // The credit-inclusive row only. Its own try: if it fails those three
+        // show a dash while the withdrawable row above keeps working. A dash is
+        // honest; a zero would read as a real figure.
         try {
           const equityResp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`);
           if (!equityResp.ok) throw new Error(describeRateLimit(equityResp, "Equity overview"));
@@ -1954,18 +1968,17 @@ export function DealingDepartmentPage() {
           const clientEquity = sum(payload.clients, "equity");
           const clientCredit = sum(payload.clients, "credit");
           const clientWithdrawable = sum(payload.clients, "withdrawableEquity");
-          setMetricsEquity({
+          setMetricsGross({
             lpEquity,
             lpCredit,
             lpWithdrawable,
             clientEquity,
             clientCredit,
             clientWithdrawable,
-            withdrawableDifference: lpWithdrawable - clientWithdrawable,
-            equityDifference: lpEquity - clientEquity,
+            difference: lpEquity - clientEquity,
           });
         } catch {
-          if (!cancelled) setMetricsEquity(null);
+          if (!cancelled) setMetricsGross(null);
         }
       } catch (e: any) {
         if (!cancelled) setMetricsError(e?.message || "Failed to load LP metrics.");
@@ -4304,14 +4317,14 @@ export function DealingDepartmentPage() {
                     ["Both (RE)", "", String(metricsRealEquityByBucket.Both), "", "", "", "", "", ""],
                     ["Crypto (RE)", "", String(metricsRealEquityByBucket.Crypto), "", "", "", "", "", ""],
                     ["", "", "", "", "", "", "", "", ""],
-                    ["LP Withdrawable Equity", "", String(metricsEquity?.lpWithdrawable ?? ""), "", "", "", "", "", ""],
-                    ["Client Withdrawable Equity", "", String(metricsEquity?.clientWithdrawable ?? ""), "", "", "", "", "", ""],
-                    ["LP-Client WD Equity Difference", "", String(metricsEquity?.withdrawableDifference ?? ""), "", "", "", "", "", ""],
-                    ["LP Equity (incl. credit)", "", String(metricsEquity?.lpEquity ?? ""), "", "", "", "", "", ""],
-                    ["LP Credit", "", String(metricsEquity?.lpCredit ?? ""), "", "", "", "", "", ""],
-                    ["Client Equity (incl. credit)", "", String(metricsEquity?.clientEquity ?? ""), "", "", "", "", "", ""],
-                    ["Client Credit", "", String(metricsEquity?.clientCredit ?? ""), "", "", "", "", "", ""],
-                    ["LP-Client Equity Difference", "", String(metricsEquity?.equityDifference ?? ""), "", "", "", "", "", ""],
+                    ["LP Withdrawable Equity", "", String(metricsWithdrawable?.lpWithdrawable ?? ""), "", "", "", "", "", ""],
+                    ["Client Withdrawable Equity", "", String(metricsWithdrawable?.clientWithdrawable ?? ""), "", "", "", "", "", ""],
+                    ["LP-Client WD Equity Difference", "", String(metricsWithdrawable?.difference ?? ""), "", "", "", "", "", ""],
+                    ["LP Equity (incl. credit)", "", String(metricsGross?.lpEquity ?? ""), "", "", "", "", "", ""],
+                    ["LP Credit", "", String(metricsGross?.lpCredit ?? ""), "", "", "", "", "", ""],
+                    ["Client Equity (incl. credit)", "", String(metricsGross?.clientEquity ?? ""), "", "", "", "", "", ""],
+                    ["Client Credit", "", String(metricsGross?.clientCredit ?? ""), "", "", "", "", "", ""],
+                    ["LP-Client Equity Difference", "", String(metricsGross?.difference ?? ""), "", "", "", "", "", ""],
                   ]}
                   emptyText="No LP accounts found."
                 />
@@ -4334,31 +4347,31 @@ export function DealingDepartmentPage() {
                 <EquityCard
                   label="LP Withdrawable Equity"
                   tone="cyan"
-                  value={metricsEquity?.lpWithdrawable}
-                  explain={metricsEquity && [
+                  value={metricsWithdrawable?.lpWithdrawable}
+                  explain={metricsWithdrawable && [
                     "What the LPs hold that could actually be withdrawn.",
-                    `LP equity ${formatDollar(metricsEquity.lpEquity)} - credit ${formatDollar(metricsEquity.lpCredit)} = ${formatDollar(metricsEquity.lpWithdrawable)}`,
-                    "Credit is the non-withdrawable portion of an account, reported per account by the backend. 9 of the 34 LP accounts carry it.",
+                    `LP equity ${formatDollar(metricsWithdrawable.lpEquity)} - credit ${formatDollar(metricsWithdrawable.lpCredit)} = ${formatDollar(metricsWithdrawable.lpWithdrawable)}`,
+                    "Credit is the non-withdrawable part of an account, reported per account by the backend. 9 of the 34 LP accounts carry it.",
                   ]}
                 />
                 <EquityCard
                   label="Client Withdrawable Equity"
                   tone="cyan"
-                  value={metricsEquity?.clientWithdrawable}
-                  explain={metricsEquity && [
-                    "What clients hold that they could actually withdraw.",
-                    `Client equity ${formatDollar(metricsEquity.clientEquity)} - credit ${formatDollar(metricsEquity.clientCredit)} = ${formatDollar(metricsEquity.clientWithdrawable)}`,
+                  value={metricsWithdrawable?.clientWithdrawable}
+                  explain={metricsWithdrawable && [
+                    "What clients hold that they could actually withdraw: their equity with credit taken out.",
                     "Client credit is bonus or credit granted to an account and cannot be withdrawn.",
+                    "This endpoint reports the client figure already net of credit and does not break out the credit itself. The card below shows the credit-inclusive total.",
                   ]}
                 />
                 <EquityCard
                   label="LP-Client WD Equity Difference"
                   tone="cyan"
                   signed
-                  value={metricsEquity?.withdrawableDifference}
-                  explain={metricsEquity && [
-                    "Withdrawable cover: how much real money the LPs hold against what clients could withdraw.",
-                    `LP ${formatDollar(metricsEquity.lpWithdrawable)} - client ${formatDollar(metricsEquity.clientWithdrawable)} = ${formatDollar(metricsEquity.withdrawableDifference)}`,
+                  value={metricsWithdrawable?.difference}
+                  explain={metricsWithdrawable && [
+                    "Withdrawable cover: real money the LPs hold against what clients could withdraw.",
+                    `LP ${formatDollar(metricsWithdrawable.lpWithdrawable)} - client ${formatDollar(metricsWithdrawable.clientWithdrawable)} = ${formatDollar(metricsWithdrawable.difference)}`,
                     "Negative means clients could withdraw more than the LPs hold in real funds.",
                   ]}
                 />
@@ -4367,32 +4380,32 @@ export function DealingDepartmentPage() {
                 <EquityCard
                   label="LP Equity (incl. credit)"
                   tone="amber"
-                  value={metricsEquity?.lpEquity}
-                  explain={metricsEquity && [
+                  value={metricsGross?.lpEquity}
+                  explain={metricsGross && [
                     "Everything sitting in the LP accounts, credit included.",
-                    `Sum of equity across all LP accounts = ${formatDollar(metricsEquity.lpEquity)}`,
-                    `Of which ${formatDollar(metricsEquity.lpCredit)} is credit, so ${formatDollar(metricsEquity.lpWithdrawable)} is withdrawable.`,
+                    `Sum of equity across all LP accounts = ${formatDollar(metricsGross.lpEquity)}`,
+                    `Of which ${formatDollar(metricsGross.lpCredit)} is credit, leaving ${formatDollar(metricsGross.lpWithdrawable)} withdrawable. This row is a separate fetch from the one above, so it may differ by a few hundred dollars of price movement.`,
                   ]}
                 />
                 <EquityCard
                   label="Client Equity (incl. credit)"
                   tone="amber"
-                  value={metricsEquity?.clientEquity}
-                  explain={metricsEquity && [
+                  value={metricsGross?.clientEquity}
+                  explain={metricsGross && [
                     "Everything sitting in client accounts, credit included.",
-                    `Sum of equity across all client accounts = ${formatDollar(metricsEquity.clientEquity)}`,
-                    `Of which ${formatDollar(metricsEquity.clientCredit)} is credit, so ${formatDollar(metricsEquity.clientWithdrawable)} is withdrawable.`,
+                    `Sum of equity across all client accounts = ${formatDollar(metricsGross.clientEquity)}`,
+                    `Of which ${formatDollar(metricsGross.clientCredit)} is credit, leaving ${formatDollar(metricsGross.clientWithdrawable)} withdrawable.`,
                   ]}
                 />
                 <EquityCard
                   label="LP-Client Equity Difference"
                   tone="amber"
                   signed
-                  value={metricsEquity?.equityDifference}
-                  explain={metricsEquity && [
-                    "The same comparison as above, but counting credit on both sides.",
-                    `LP ${formatDollar(metricsEquity.lpEquity)} - client ${formatDollar(metricsEquity.clientEquity)} = ${formatDollar(metricsEquity.equityDifference)}`,
-                    `The sign can differ from the withdrawable row because the LPs carry ${formatDollar(metricsEquity.lpCredit)} of credit against the clients' ${formatDollar(metricsEquity.clientCredit)}.`,
+                  value={metricsGross?.difference}
+                  explain={metricsGross && [
+                    "The same comparison as the row above, but counting credit on both sides.",
+                    `LP ${formatDollar(metricsGross.lpEquity)} - client ${formatDollar(metricsGross.clientEquity)} = ${formatDollar(metricsGross.difference)}`,
+                    `The sign can differ from the withdrawable row because the LPs carry ${formatDollar(metricsGross.lpCredit)} of credit against the clients' ${formatDollar(metricsGross.clientCredit)}.`,
                   ]}
                 />
               </div>
