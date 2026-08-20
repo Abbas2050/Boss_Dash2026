@@ -217,7 +217,7 @@ async function fetchClientVolume(fromYmd, toYmd) {
   };
 }
 
-function deriveClientRevenueRows(report) {
+export function deriveClientRevenueRows(report) {
   const list = Array.isArray(report?.clientRevenueSummaries) ? report.clientRevenueSummaries : [];
   if (list.length) {
     return list.map((row) => {
@@ -227,11 +227,21 @@ function deriveClientRevenueRows(report) {
       // a cost, so subtract its magnitude — without abs() the minus sign flips it
       // into revenue. Mirrors deriveBaseRows() in src/lib/dealMatchApi.ts.
       const lpComm = Math.abs(Number(row.lpCommissionUsd) || 0);
-      // Deliberately NOT using the backend's totalRevenueUsd: for 13-19 Jul it
-      // sums to 63,405.11 while the Deal Performance tab shows 65,571.75, which
-      // is markup + clientComm - lpComm. Recomputing keeps the email and the
-      // tab in agreement. Verified against DealMatch/Run on 2026-07-27.
-      const totalRev = markup + clientComm - lpComm;
+      // The cost that actually reduces revenue is the PER-MILLION commission
+      // (notional x the weighted rate), not the coverage-attributed
+      // lpCommissionUsd. Checked against DealMatch/Run for 2026-08-08..14:
+      // gross - lpCommPerMillionUsd reproduced totalRevenueUsd on 78 of 78
+      // rows, gross - lpCommissionUsd on 0 of 78.
+      //
+      // This email previously recomputed gross - lpCommissionUsd so it would
+      // agree with the Deal Performance tab. That made both agree on the wrong
+      // subtrahend and overstated Total Revenue by 0.2-3.5% a week. The
+      // reference page (temporay_for_reference_pages/deal-matching 7.html)
+      // shows totalRevenueUsd directly, so this now does too.
+      const lpCommPerM = Math.abs(Number(row.lpCommPerMillionUsd) || 0);
+      const apiTotal = Number(row.totalRevenueUsd);
+      const totalRev =
+        Number.isFinite(apiTotal) && apiTotal !== 0 ? apiTotal : markup + clientComm - (lpCommPerM || lpComm);
       return {
         login: String(row.login ?? ""),
         name: String(row.name ?? ""),
@@ -239,6 +249,9 @@ function deriveClientRevenueRows(report) {
         markup,
         clientComm,
         lpComm,
+        /** Notional x weighted per-million rate. The figure Net Revenue is built from. */
+        lpCommPerM,
+        millionsUsd: Number(row.clientMillionsUsd) || 0,
         totalRev,
       };
     });
@@ -266,8 +279,13 @@ function deriveClientRevenueRows(report) {
     row.lpComm += Math.abs(Number(match?.lpCommission) || 0);
   }
 
+  // The matches array carries no notional and no per-million commission, so
+  // this fallback can only subtract the coverage-attributed cost. It runs when
+  // clientRevenueSummaries is empty, and the footer notes the degraded source.
   return Array.from(byLogin.values()).map((row) => ({
     ...row,
+    lpCommPerM: 0,
+    millionsUsd: 0,
     totalRev: row.markup + row.clientComm - row.lpComm,
   }));
 }
@@ -314,6 +332,8 @@ export function groupRowsByClient(rows, userIdByLogin) {
         markup: 0,
         clientComm: 0,
         lpComm: 0,
+        lpCommPerM: 0,
+        millionsUsd: 0,
         totalRev: 0,
         rebateWithdrawn: 0,
         netRev: 0,
@@ -327,6 +347,8 @@ export function groupRowsByClient(rows, userIdByLogin) {
     client.markup += Number(row.markup) || 0;
     client.clientComm += Number(row.clientComm) || 0;
     client.lpComm += Number(row.lpComm) || 0;
+    client.lpCommPerM += Number(row.lpCommPerM) || 0;
+    client.millionsUsd += Number(row.millionsUsd) || 0;
     client.totalRev += Number(row.totalRev) || 0;
 
     // Name comes from the largest account, so the choice is deterministic

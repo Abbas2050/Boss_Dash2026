@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toYmd, toUnixRange, num, deriveBaseRows, lpCommPerMillion, type DealMatchResponse } from "@/lib/dealMatchApi";
+import { toYmd, toUnixRange, num, deriveBaseRows, lpCommPerMillion } from "@/lib/dealMatchApi";
 
 describe("dealMatchApi helpers", () => {
   it("toYmd formats a date as YYYY-MM-DD", () => {
@@ -48,41 +48,76 @@ describe("dealMatchApi helpers", () => {
 
 describe("lpCommPerMillion", () => {
   it("divides commission by notional", () => {
-    expect(lpCommPerMillion(1539.55, 166.2371)).toBeCloseTo(9.26, 2);
+    expect(lpCommPerMillion(18316.26, 1884.5)).toBeCloseTo(9.72, 2);
   });
 
-  // A client with no notional is not a client charged $0.00 per million.
-  it("returns null when notional is unknown, so the cell can say so", () => {
+  // A TOTAL with no notional is not a TOTAL charged $0.00 per million.
+  it("returns null when notional is unknown, so the caller can say so", () => {
     expect(lpCommPerMillion(100, 0)).toBeNull();
     expect(lpCommPerMillion(100, NaN)).toBeNull();
     expect(lpCommPerMillion(100, -5)).toBeNull();
   });
 
   it("reports a genuine zero rate as 0, not as unknown", () => {
-    // Infinox traded $47.6M and was billed nothing. That is a real 0.00/M.
     expect(lpCommPerMillion(0, 47.6)).toBe(0);
   });
 });
 
-describe("deriveBaseRows carries notional", () => {
-  it("reads clientMillionsUsd from the summaries", () => {
-    const report: DealMatchResponse = {
-      clientRevenueSummaries: [
-        { login: 102226, name: "A", lots: 378.42, markupRevenueUsd: 5621.44, clientCommissionUsd: 0, lpCommissionUsd: 1539.55, totalRevenueUsd: 3959.07, clientMillionsUsd: 166.2371 },
-      ],
-    };
-    const [row] = deriveBaseRows(report);
+// The bug this file exists to pin down: Net Revenue is Gross less the
+// PER-MILLION commission, not less the coverage-attributed lpCommissionUsd.
+// Checked against DealMatch/Run for 2026-08-08..14 -- the per-million identity
+// held on 78 of 78 rows and the lpCommissionUsd one on 0 of 78. Subtracting
+// lpCommissionUsd overstated the weekly email's Total Revenue by 0.2-3.5%.
+describe("deriveBaseRows revenue", () => {
+  // A real row from that week: login 102226, Bilal Tahir Malik.
+  const LIVE = {
+    login: 102226,
+    name: "Bilal Tahir Malik",
+    lots: 378.42,
+    markupRevenueUsd: 5621.44,
+    clientCommissionUsd: 0,
+    lpCommissionUsd: 1539.55,
+    totalRevenueUsd: 3959.07,
+    clientMillionsUsd: 166.2371,
+    lpCommPerMillionRateUsd: 10,
+    lpCommPerMillionUsd: 1662.37,
+  };
+
+  it("carries notional and the per-million cost", () => {
+    const [row] = deriveBaseRows({ clientRevenueSummaries: [LIVE] });
     expect(row.millionsUsd).toBeCloseTo(166.2371, 4);
-    expect(lpCommPerMillion(row.lpComm, row.millionsUsd)).toBeCloseTo(9.26, 2);
+    expect(row.lpCommPerM).toBeCloseTo(1662.37, 2);
+    expect(row.lpComm).toBeCloseTo(1539.55, 2);
   });
 
-  // The matches fallback has no notional field at all. It must not invent one.
-  it("leaves notional at zero on the matches fallback, so the rate reads unknown", () => {
-    const report: DealMatchResponse = {
+  it("prefers the backend's own Net Revenue", () => {
+    const [row] = deriveBaseRows({ clientRevenueSummaries: [LIVE] });
+    expect(row.totalRev).toBeCloseTo(3959.07, 2);
+  });
+
+  it("falls back to gross less the per-million cost, not less LP Commission", () => {
+    const [row] = deriveBaseRows({ clientRevenueSummaries: [{ ...LIVE, totalRevenueUsd: 0 }] });
+    // gross 5621.44 - perM 1662.37 = 3959.07, which is what the backend reports.
+    expect(row.totalRev).toBeCloseTo(3959.07, 2);
+    // The old behaviour subtracted lpCommissionUsd and read 4081.89 -- $122.82
+    // high on this client alone.
+    expect(row.totalRev).not.toBeCloseTo(4081.89, 2);
+  });
+
+  it("subtracts LP Commission only when no per-million figure exists", () => {
+    const [row] = deriveBaseRows({
+      clientRevenueSummaries: [{ ...LIVE, totalRevenueUsd: 0, lpCommPerMillionUsd: 0 }],
+    });
+    expect(row.totalRev).toBeCloseTo(4081.89, 2);
+  });
+
+  // The matches fallback carries no notional and no per-million commission.
+  it("leaves notional and per-million cost at zero on the matches fallback", () => {
+    const [row] = deriveBaseRows({
       matches: [{ clientLogin: 500, clientName: "B", clientVolume: 10, spreadRevenueUsd: 50, clientCommission: 0, lpCommission: -20 }],
-    };
-    const [row] = deriveBaseRows(report);
+    });
     expect(row.millionsUsd).toBe(0);
-    expect(lpCommPerMillion(row.lpComm, row.millionsUsd)).toBeNull();
+    expect(row.lpCommPerM).toBe(0);
+    expect(row.totalRev).toBeCloseTo(30, 2);
   });
 });

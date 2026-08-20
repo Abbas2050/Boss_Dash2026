@@ -9,9 +9,12 @@ export type DealMatchRevenueRow = {
   clientComm: number;
   lpComm: number;
   /** Notional traded, in millions USD. Only the clientRevenueSummaries branch
-   *  reports it; the matches fallback has no equivalent, so it stays 0 there
-   *  and the per-million rate renders as unavailable rather than as zero. */
+   *  reports it; the matches fallback has no equivalent and leaves it 0. */
   millionsUsd: number;
+  /** Notional x the weighted per-million rate. This -- not lpComm -- is what
+   *  Net Revenue is built from; see lpCommPerMillion() below. 0 on the matches
+   *  fallback, which carries no per-million data. */
+  lpCommPerM: number;
   totalRev: number;
   ibCommission: number;
   netRevenue: number;
@@ -105,7 +108,14 @@ export function deriveBaseRows(report: DealMatchResponse): DealMatchRevenueRow[]
       const markup = num(row.markupRevenueUsd);
       const clientComm = num(row.clientCommissionUsd);
       const lpComm = Math.abs(num(row.lpCommissionUsd));
-      const totalRev = Number.isFinite(num(row.totalRevenueUsd)) && num(row.totalRevenueUsd) !== 0 ? num(row.totalRevenueUsd) : markup + clientComm - lpComm;
+      const lpCommPerM = Math.abs(num(row.lpCommPerMillionUsd));
+      // Gross less the PER-MILLION commission, not less the coverage-attributed
+      // lpCommissionUsd -- that identity holds on 78 of 78 rows against
+      // DealMatch/Run, and lpCommissionUsd holds on none of them.
+      const totalRev =
+        Number.isFinite(num(row.totalRevenueUsd)) && num(row.totalRevenueUsd) !== 0
+          ? num(row.totalRevenueUsd)
+          : markup + clientComm - (lpCommPerM || lpComm);
       return {
         login: String(row.login ?? ""),
         name: String(row.name ?? "-"),
@@ -114,6 +124,7 @@ export function deriveBaseRows(report: DealMatchResponse): DealMatchRevenueRow[]
         clientComm,
         lpComm,
         millionsUsd: num(row.clientMillionsUsd),
+        lpCommPerM,
         totalRev,
         ibCommission: 0,
         netRevenue: totalRev,
@@ -133,6 +144,7 @@ export function deriveBaseRows(report: DealMatchResponse): DealMatchRevenueRow[]
       clientComm: 0,
       lpComm: 0,
       millionsUsd: 0,
+      lpCommPerM: 0,
       totalRev: 0,
       ibCommission: 0,
       netRevenue: 0,

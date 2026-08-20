@@ -22,7 +22,6 @@ import {
   deriveBaseRows,
   fetchCrmUserIdByLogin,
   fetchDealMatch,
-  lpCommPerMillion,
   fetchIbPeriodTransactions,
   isIb,
   mapWithConcurrency,
@@ -133,9 +132,7 @@ type ClientRevenueRow = {
   markup: number;
   clientComm: number;
   lpComm: number;
-  /** Notional in millions USD, summed across the client's accounts. Dividing
-   *  the summed commission by the summed notional gives a correctly weighted
-   *  rate for the client; averaging the per-account rates would not. */
+  /** Notional in millions USD, summed across the client's accounts. */
   millionsUsd: number;
   totalRev: number;
   /** Rebate Withdrawn — IB transactions settled inside the period, never the wallet balance. */
@@ -490,24 +487,6 @@ export function DealPerformanceTab({
       { key: "markup", label: "Markup", sortValue: (r) => r.markup, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.markup) },
       { key: "clientComm", label: "Client Comm", sortValue: (r) => r.clientComm, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.clientComm) },
       { key: "lpComm", label: "LP Comm", sortValue: (r) => r.lpComm, headerClassName: "text-right", cellClassName: "text-right", render: (r) => <span className="text-amber-700 dark:text-amber-300">{money(r.lpComm)}</span> },
-      {
-        key: "lpCommPerMillion",
-        label: "LP Comm / $M",
-        // Unknown notional sorts below every real rate rather than sorting as 0,
-        // which would rank it alongside genuinely free coverage.
-        sortValue: (r) => lpCommPerMillion(r.lpComm, r.millionsUsd) ?? -1,
-        headerClassName: "text-right",
-        cellClassName: "text-right",
-        render: (r) => {
-          const rate = lpCommPerMillion(r.lpComm, r.millionsUsd);
-          if (rate === null) return <span className="text-slate-400 dark:text-slate-500">-</span>;
-          return (
-            <span className="text-amber-700 dark:text-amber-300" title={`${money(r.lpComm)} over ${r.millionsUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}M notional`}>
-              {money(rate)}
-            </span>
-          );
-        },
-      },
       { key: "totalRev", label: "Total Rev", sortValue: (r) => r.totalRev, headerClassName: "text-right", cellClassName: "text-right", render: (r) => money(r.totalRev) },
       { key: "ibCommission", label: "Rebate Withdrawn", sortValue: (r) => r.ibCommission, headerClassName: "text-right", cellClassName: "text-right", render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.ibCommission)}</span> },
       {
@@ -573,7 +552,7 @@ export function DealPerformanceTab({
     if (!rows.length) return;
     setSnapshotting(true);
     try {
-      const headers = ["Accounts", "Name", "Lots", "Markup", "Client Comm", "LP Comm", "LP Comm / $M", "Total Rev", "Rebate Withdrawn", "Net Revenue"];
+      const headers = ["Accounts", "Name", "Lots", "Markup", "Client Comm", "LP Comm", "Total Rev", "Rebate Withdrawn", "Net Revenue"];
       const snapshotRows = rows.map((r) => [
         r.accounts.join(", "),
         r.name || "-",
@@ -581,7 +560,6 @@ export function DealPerformanceTab({
         money(r.markup),
         money(r.clientComm),
         money(r.lpComm),
-        (() => { const rate = lpCommPerMillion(r.lpComm, r.millionsUsd); return rate === null ? "-" : money(rate); })(),
         money(r.totalRev),
         money(r.ibCommission),
         money(r.netRevenue),
