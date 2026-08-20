@@ -707,7 +707,9 @@ export function buildSummaryEmailHtml({
     { label: "IB Rebate", value: money(agg.ibRebate), cls: "cost" },
     { label: "Net Revenue", value: orDash(netRevenue, money), cls: signCls(netRevenue), note: "Total Revenue less IB Rebate" },
     { label: "Large Depositors", value: fmtNum(agg.largeDepositors.length, 0), note: `over ${money(LARGE_DEPOSIT_THRESHOLD)}` },
-    { label: "First-Time Depositors", value: fmtNum(firstTimers.rows.length, 0), cls: "pos", note: `${money(firstTimerTotal)} over ${fmtNum(firstTimerCount, 0)} deposit${firstTimerCount === 1 ? "" : "s"}` },
+    // The money is the headline; how many clients and deposits it came from is
+    // the supporting detail.
+    { label: "First-Time Depositors", value: money(firstTimerTotal), cls: "pos", note: `${fmtNum(firstTimers.rows.length, 0)} client${firstTimers.rows.length === 1 ? "" : "s"} over ${fmtNum(firstTimerCount, 0)} deposit${firstTimerCount === 1 ? "" : "s"}` },
   ]);
 
   const pspTotalRow =

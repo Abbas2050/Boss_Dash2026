@@ -74,8 +74,11 @@ describe("glance tiles", () => {
     expect(tile(html, "Deposits")).toEqual({ value: "$4,300.00", note: "across 4 deposits" });
   });
 
-  it("First-Time Depositors shows the count, their amount and their deposit count", () => {
-    expect(tile(html, "First-Time Depositors")).toEqual({ value: "2", note: "$4,300.00 over 4 deposits" });
+  it("First-Time Depositors leads with the amount, not the count", () => {
+    expect(tile(html, "First-Time Depositors")).toEqual({
+      value: "$4,300.00",
+      note: "2 clients over 4 deposits",
+    });
   });
 
   it("leaves the other tiles alone", () => {
@@ -98,7 +101,7 @@ describe("glance tiles", () => {
       instruments: { rows: [], totalLots: 0, instrumentCount: 0 },
     });
     expect(tile(h, "Deposits").note).toBe("across 1 deposit");
-    expect(tile(h, "First-Time Depositors").note).toBe("$250.00 over 1 deposit");
+    expect(tile(h, "First-Time Depositors")).toEqual({ value: "$250.00", note: "1 client over 1 deposit" });
   });
 
   it("renders zero first-time depositors without breaking", () => {
@@ -109,6 +112,6 @@ describe("glance tiles", () => {
       glance: { totalRevenue: null },
       instruments: { rows: [], totalLots: 0, instrumentCount: 0 },
     });
-    expect(tile(h, "First-Time Depositors")).toEqual({ value: "0", note: "$0.00 over 0 deposits" });
+    expect(tile(h, "First-Time Depositors")).toEqual({ value: "$0.00", note: "0 clients over 0 deposits" });
   });
 });
