@@ -651,6 +651,15 @@ const formatPctClass = (value: number) => {
   return "text-rose-700 dark:text-rose-300";
 };
 
+// formatDollar returns a coloured <span>, which is what the cards want but
+// stringifies to "[object Object]" inside a template literal. Anything building
+// a STRING -- tooltip copy, exports, aria labels -- needs this instead.
+const formatDollarText = (value: number) =>
+  `${value < 0 ? "-" : ""}$${Math.abs(value).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
 const formatDollar = (value: number) => {
   const abs = Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   if (value === 0) return <span className="text-slate-500">$0.00</span>;
@@ -4350,7 +4359,7 @@ export function DealingDepartmentPage() {
                   value={metricsWithdrawable?.lpWithdrawable}
                   explain={metricsWithdrawable && [
                     "What the LPs hold that could actually be withdrawn.",
-                    `LP equity ${formatDollar(metricsWithdrawable.lpEquity)} - credit ${formatDollar(metricsWithdrawable.lpCredit)} = ${formatDollar(metricsWithdrawable.lpWithdrawable)}`,
+                    `LP equity ${formatDollarText(metricsWithdrawable.lpEquity)} - credit ${formatDollarText(metricsWithdrawable.lpCredit)} = ${formatDollarText(metricsWithdrawable.lpWithdrawable)}`,
                     "Credit is the non-withdrawable part of an account, reported per account by the backend. 9 of the 34 LP accounts carry it.",
                   ]}
                 />
@@ -4371,7 +4380,7 @@ export function DealingDepartmentPage() {
                   value={metricsWithdrawable?.difference}
                   explain={metricsWithdrawable && [
                     "Withdrawable cover: real money the LPs hold against what clients could withdraw.",
-                    `LP ${formatDollar(metricsWithdrawable.lpWithdrawable)} - client ${formatDollar(metricsWithdrawable.clientWithdrawable)} = ${formatDollar(metricsWithdrawable.difference)}`,
+                    `LP ${formatDollarText(metricsWithdrawable.lpWithdrawable)} - client ${formatDollarText(metricsWithdrawable.clientWithdrawable)} = ${formatDollarText(metricsWithdrawable.difference)}`,
                     "Negative means clients could withdraw more than the LPs hold in real funds.",
                   ]}
                 />
@@ -4383,8 +4392,8 @@ export function DealingDepartmentPage() {
                   value={metricsGross?.lpEquity}
                   explain={metricsGross && [
                     "Everything sitting in the LP accounts, credit included.",
-                    `Sum of equity across all LP accounts = ${formatDollar(metricsGross.lpEquity)}`,
-                    `Of which ${formatDollar(metricsGross.lpCredit)} is credit, leaving ${formatDollar(metricsGross.lpWithdrawable)} withdrawable. This row is a separate fetch from the one above, so it may differ by a few hundred dollars of price movement.`,
+                    `Sum of equity across all LP accounts = ${formatDollarText(metricsGross.lpEquity)}`,
+                    `Of which ${formatDollarText(metricsGross.lpCredit)} is credit, leaving ${formatDollarText(metricsGross.lpWithdrawable)} withdrawable. This row is a separate fetch from the one above, so it may differ by a few hundred dollars of price movement.`,
                   ]}
                 />
                 <EquityCard
@@ -4393,8 +4402,8 @@ export function DealingDepartmentPage() {
                   value={metricsGross?.clientEquity}
                   explain={metricsGross && [
                     "Everything sitting in client accounts, credit included.",
-                    `Sum of equity across all client accounts = ${formatDollar(metricsGross.clientEquity)}`,
-                    `Of which ${formatDollar(metricsGross.clientCredit)} is credit, leaving ${formatDollar(metricsGross.clientWithdrawable)} withdrawable.`,
+                    `Sum of equity across all client accounts = ${formatDollarText(metricsGross.clientEquity)}`,
+                    `Of which ${formatDollarText(metricsGross.clientCredit)} is credit, leaving ${formatDollarText(metricsGross.clientWithdrawable)} withdrawable.`,
                   ]}
                 />
                 <EquityCard
@@ -4404,8 +4413,8 @@ export function DealingDepartmentPage() {
                   value={metricsGross?.difference}
                   explain={metricsGross && [
                     "The same comparison as the row above, but counting credit on both sides.",
-                    `LP ${formatDollar(metricsGross.lpEquity)} - client ${formatDollar(metricsGross.clientEquity)} = ${formatDollar(metricsGross.difference)}`,
-                    `The sign can differ from the withdrawable row because the LPs carry ${formatDollar(metricsGross.lpCredit)} of credit against the clients' ${formatDollar(metricsGross.clientCredit)}.`,
+                    `LP ${formatDollarText(metricsGross.lpEquity)} - client ${formatDollarText(metricsGross.clientEquity)} = ${formatDollarText(metricsGross.difference)}`,
+                    `The sign can differ from the withdrawable row because the LPs carry ${formatDollarText(metricsGross.lpCredit)} of credit against the clients' ${formatDollarText(metricsGross.clientCredit)}.`,
                   ]}
                 />
               </div>
@@ -4507,8 +4516,8 @@ export function DealingDepartmentPage() {
                 {/* KPI grid */}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                   {[
-                    { label: "Client Equity", value: formatDollar(clientEquity), sub: `Bal ${formatDollar(Number(bonusEquityClient.totalBalance) || 0)}`, accent: "text-violet-600 dark:text-violet-300" },
-                    { label: "LP Equity (XTB)", value: formatDollar(lpEquity), sub: `Free ${formatDollar(Number(bonusEquityLp.freeMargin) || 0)}`, accent: "text-indigo-600 dark:text-indigo-300" },
+                    { label: "Client Equity", value: formatDollar(clientEquity), sub: `Bal ${formatDollarText(Number(bonusEquityClient.totalBalance) || 0)}`, accent: "text-violet-600 dark:text-violet-300" },
+                    { label: "LP Equity (XTB)", value: formatDollar(lpEquity), sub: `Free ${formatDollarText(Number(bonusEquityLp.freeMargin) || 0)}`, accent: "text-indigo-600 dark:text-indigo-300" },
                     { label: "Equity Diff (LP−Client)", value: formatDollar(equityDiff), sub: equityDiff >= 0 ? "LP surplus" : "Client surplus", accent: equityDiff >= 0 ? "text-emerald-600 dark:text-emerald-300" : "text-rose-600 dark:text-rose-300" },
                     { label: "Uncovered Exposure", value: `${bonusRiskTotalUncoveredAbs.toFixed(2)} lots`, sub: `${bonusRiskUncoveredSymbols} symbol${bonusRiskUncoveredSymbols !== 1 ? "s" : ""}`, accent: bonusRiskTotalUncoveredAbs > 0 ? "text-rose-600 dark:text-rose-300" : "text-emerald-600 dark:text-emerald-300" },
                   ].map((kpi) => (
