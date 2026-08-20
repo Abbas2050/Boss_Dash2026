@@ -27,8 +27,9 @@ export type DealMatchResponse = {
     lpCommissionUsd?: number;
     totalRevenueUsd?: number;
     clientMillionsUsd?: number;
-    /** The contracted rate, typically 8/10/12. Not the rate actually paid --
-     *  divide lpCommissionUsd by clientMillionsUsd for that. */
+    /** The modelled rate: a volume-weighted blend of the contracted rates of
+     *  the LPs covering this client, so rarely a round number. Not what was
+     *  actually paid -- divide lpCommissionUsd by clientMillionsUsd for that. */
     lpCommPerMillionRateUsd?: number;
     lpCommPerMillionUsd?: number;
   }>;
@@ -88,8 +89,8 @@ export async function fetchDealMatch(baseUrl: string, startYmd: string, endYmd: 
 /**
  * LP commission per million USD of notional, derived from what was actually
  * charged rather than read from a rate field. The payload's own
- * lpCommPerMillionRateUsd is the *contracted* rate (8/10/12) and routinely
- * differs from what the LP billed. Returns null when notional is unknown or
+ * lpCommPerMillionRateUsd is a *modelled* rate blended from the contracts of
+ * the LPs covering that client, and routinely differs from what was billed. Returns null when notional is unknown or
  * zero, so callers show "no data" instead of a misleading $0.00.
  */
 export function lpCommPerMillion(lpComm: number, millionsUsd: number): number | null {
