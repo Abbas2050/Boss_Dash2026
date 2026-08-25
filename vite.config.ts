@@ -20,48 +20,51 @@ export default defineConfig(({ mode }) => ({
       overlay: false,
     },
     proxy: {
+      // /rest/* goes through our own server (server.js), not straight to the
+      // CRM: that is where the API token is attached now. Pointing dev at
+      // portal.skylinkscapital.com would send an unauthenticated request.
       '/rest/transactions': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/trades': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/users': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/accounts': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/ib/tree': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/help-desk': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/documents': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest/user/documents': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },
       '/rest': {
-        target: 'https://portal.skylinkscapital.com',
+        target: 'http://localhost:3001',
         changeOrigin: true,
         rewrite: (path) => path,
       },

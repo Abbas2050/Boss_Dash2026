@@ -1,3 +1,4 @@
+import { CRM_API_VERSION } from "./crmConfig";
 // src/lib/api.ts
 
 export interface TransactionRequest {
@@ -149,8 +150,7 @@ export interface Transaction {
 
 export async function fetchTransactions(body: TransactionRequest): Promise<Transaction[]> {
   const baseUrl = '/rest/transactions';
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   try {
     const res = await fetch(url, {
@@ -158,7 +158,6 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(body),
     });
@@ -190,8 +189,7 @@ export async function fetchAllTransactions(body: Omit<TransactionRequest, 'segme
 
 export async function fetchUsers(body: UserRequest): Promise<User[]> {
   const baseUrl = '/rest/users';
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   try {
     const res = await fetch(url, {
@@ -199,7 +197,6 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(body),
     });
@@ -231,15 +228,13 @@ export async function fetchAllUsers(body: Omit<UserRequest, 'segment'>): Promise
 
 export async function updateUserManager(body: UpdateUserManagerRequest): Promise<User> {
   const baseUrl = '/rest/users/update';
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
-      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify(body),
   });
@@ -254,8 +249,7 @@ export async function updateUserManager(body: UpdateUserManagerRequest): Promise
 
 export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
   const baseUrl = '/rest/accounts';
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   try {
     const res = await fetch(url, {
@@ -263,7 +257,6 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(body),
     });
@@ -282,8 +275,7 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
 
 export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
   const baseUrl = '/rest/trades';
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   try {
     const res = await fetch(url, {
@@ -291,7 +283,6 @@ export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(body),
     });
@@ -317,8 +308,7 @@ export async function updateAccountLeverage(
 ): Promise<AccountUpdateResponse> {
   const baseUrl = '/rest/accounts';
   const accountId = `${request.serverId}-${request.login}`;
-  const url = `${baseUrl}/${accountId}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}/${accountId}?version=${CRM_API_VERSION}`;
 
   try {
     const res = await fetch(url, {
@@ -326,7 +316,6 @@ export async function updateAccountLeverage(
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify({ leverage: request.leverage }),
     });

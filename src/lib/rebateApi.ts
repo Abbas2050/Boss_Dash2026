@@ -33,8 +33,8 @@ type Mt5Deal = {
   Action?: number | string;
 };
 
-const API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
-const API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
+import { CRM_API_VERSION as API_VERSION } from "./crmConfig";
+// Sent with no credential: the /rest proxy attaches the CRM token server-side.
 const API_URL = (import.meta as any).env?.VITE_API_URL || "";
 const BACKEND_BASE_URL = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
 
@@ -57,7 +57,6 @@ const getRestBase = () => {
 const getAuthHeaders = () => ({
   "Content-Type": "application/json",
   Accept: "application/json",
-  ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
 });
 
 export async function fetchIbTree(ibId: number): Promise<IbTreeNode[]> {
@@ -71,7 +70,6 @@ export async function fetchIbTree(ibId: number): Promise<IbTreeNode[]> {
     method: "GET",
     headers: {
       Accept: "application/json",
-      ...(API_TOKEN ? { Authorization: `Bearer ${API_TOKEN}` } : {}),
     },
   });
   if (!res.ok) {

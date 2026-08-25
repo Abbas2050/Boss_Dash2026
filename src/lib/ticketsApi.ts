@@ -64,8 +64,8 @@ type CrmAccount = {
   serverId?: number;
 };
 
-const API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
-const API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
+import { CRM_API_VERSION as API_VERSION } from "./crmConfig";
+// Sent with no credential: the /rest proxy attaches the CRM token server-side.
 const DEFAULT_TICKET_STATUS = "pending support";
 
 const MANAGER_EMAIL_TO_ID: Record<string, number> = {
@@ -82,14 +82,10 @@ function crmHeaders() {
   return {
     "Content-Type": "application/json",
     Accept: "application/json",
-    Authorization: `Bearer ${API_TOKEN}`,
   };
 }
 
 function requireApiToken() {
-  if (!API_TOKEN) {
-    throw new Error("VITE_API_TOKEN is missing. Please set it in .env.");
-  }
 }
 
 export function resolveCrmManagerIdFromSession(): number {
