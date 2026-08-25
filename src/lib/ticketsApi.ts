@@ -1,4 +1,4 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, authHeaders } from "@/lib/auth";
 
 export type TicketAttachment = {
   name: string;
