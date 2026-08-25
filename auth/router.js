@@ -1,5 +1,6 @@
 import express from "express";
 import bcrypt from "bcryptjs";
+import { createRateLimiter } from "./rateLimit.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import mysql from "mysql2/promise";
@@ -293,7 +294,11 @@ async function logAuthEvent(actorUserId, action, targetUserId, metadata) {
   }
 }
 
-router.post("/login", async (req, res) => {
+// Ten attempts per IP per fifteen minutes. Enough that a person mistyping a
+// password is never blocked; far too few to guess one.
+const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+
+router.post("/login", loginLimiter, async (req, res) => {
   try {
     await ensureInitialized();
     const email = String(req.body?.email || "").trim().toLowerCase();
