@@ -1,3 +1,4 @@
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
 import { useEffect, useState } from 'react';
 import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
@@ -474,10 +475,10 @@ export function AccountsDepartment({
         const fromTs = Math.floor(startDate.getTime() / 1000);
         const toTs = Math.floor(endDate.getTime() / 1000);
 
-        const coverageEndpoint = backendBaseUrl ? `${backendBaseUrl}/Coverage/position-match-table` : '/Coverage/position-match-table';
-        const metricsEndpoint = backendBaseUrl ? `${backendBaseUrl}/Metrics/lp` : '/Metrics/lp';
-        const swapEndpoint = backendBaseUrl ? `${backendBaseUrl}/Swap/positions` : '/Swap/positions';
-        const historyEndpoint = backendBaseUrl ? `${backendBaseUrl}/History/aggregate?from=${fromTs}&to=${toTs}` : `/History/aggregate?from=${fromTs}&to=${toTs}`;
+        const coverageEndpoint = `${BACKEND_BASE_URL}/Coverage/position-match-table`;
+        const metricsEndpoint = `${BACKEND_BASE_URL}/Metrics/lp`;
+        const swapEndpoint = `${BACKEND_BASE_URL}/Swap/positions`;
+        const historyEndpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${fromTs}&to=${toTs}`;
 
         const [coverageResp, metricsResp, swapResp, historyResp] = await Promise.allSettled([
           fetch(coverageEndpoint),

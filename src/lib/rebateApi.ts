@@ -1,3 +1,4 @@
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
 import { authHeaders } from "@/lib/auth";
 type IbTreeNode = {
   ibId: number;
@@ -37,7 +38,8 @@ type Mt5Deal = {
 import { CRM_API_VERSION as API_VERSION } from "./crmConfig";
 // Sent with no credential: the /rest proxy attaches the CRM token server-side.
 const API_URL = (import.meta as any).env?.VITE_API_URL || "";
-const BACKEND_BASE_URL = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
+// Shared so the fallback cannot drift: an empty base collapsed these to a
+// relative path against this dashboard, which does not host the trading API.
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value);
@@ -113,9 +115,7 @@ export async function fetchAccountsByUserId(userId: number): Promise<CrmAccount[
 }
 
 export async function fetchPositionsByLogin(login: string | number): Promise<Mt5Position[]> {
-  const endpoint = BACKEND_BASE_URL
-    ? `${String(BACKEND_BASE_URL).replace(/\/+$/, "")}/Position/GetPositionsByLogin`
-    : "/Position/GetPositionsByLogin";
+  const endpoint = `${BACKEND_BASE_URL}/Position/GetPositionsByLogin`;
   const url = new URL(endpoint, window.location.origin);
   url.searchParams.set("login", String(login));
 
@@ -139,9 +139,7 @@ export async function fetchPositionsByLogin(login: string | number): Promise<Mt5
 }
 
 export async function fetchDealsByLogin(params: { login: string | number; from: Date; to: Date }): Promise<Mt5Deal[]> {
-  const endpoint = BACKEND_BASE_URL
-    ? `${String(BACKEND_BASE_URL).replace(/\/+$/, "")}/Deal/GetDealsByLogin`
-    : "/Deal/GetDealsByLogin";
+  const endpoint = `${BACKEND_BASE_URL}/Deal/GetDealsByLogin`;
   const url = new URL(endpoint, window.location.origin);
   url.searchParams.set("login", String(params.login));
   url.searchParams.set("from", formatDateAsDDMMYYYY(params.from));

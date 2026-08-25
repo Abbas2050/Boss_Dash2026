@@ -1,3 +1,4 @@
+import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
 import { useEffect } from "react";
 import { toast } from "@/hooks/use-toast";
 
@@ -14,7 +15,7 @@ export function useLiveTransactionAlerts() {
   useEffect(() => {
     // Connect to SignalR (adapt URL as needed)
     const connection = new (window as any).signalR.HubConnectionBuilder()
-      .withUrl("/ws/dashboard")
+      .withUrl(DASHBOARD_HUB_URL)
       .withAutomaticReconnect([0, 2000, 5000, 10000])
       .build();
 

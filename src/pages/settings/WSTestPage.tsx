@@ -1,9 +1,6 @@
+import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
-// /api/signalr/token sits behind requireSession (server.js denies every /api
-// and /rest route by default); the token fetch below must carry the session
-// bearer or it 401s the moment the deny-by-default gate is live.
-import { authHeaders } from "@/lib/auth";
 
 type StreamEvent = {
   id: string;
@@ -36,26 +33,15 @@ export const WSTestPage: React.FC = () => {
 
   const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
   const hubUrl = backendBaseUrl
-    ? `${String(backendBaseUrl).replace(/\/+$/, "")}/ws/dashboard`
-    : "/ws/dashboard";
+DASHBOARD_HUB_URL;
 
   useEffect(() => {
     const manager = new SignalRConnectionManager({
       hubUrl,
       trackedEvents: TRACKED_EVENTS,
-      accessTokenFactory: async () => {
-        try {
-          const tokenUrl = backendBaseUrl
-            ? `${String(backendBaseUrl).replace(/\/+$/, "")}/api/signalr/token`
-            : "/api/signalr/token";
-          const res = await fetch(tokenUrl, { headers: { ...authHeaders() } });
-          if (!res.ok) return null;
-          const json = await res.json();
-          return json.token || null;
-        } catch {
-          return null;
-        }
-      },
+      // No accessTokenFactory: the backend hub's negotiate endpoint answers
+      // unauthenticated. The old factory fetched /api/signalr/token, which
+      // exists only on this dashboard's own server and always returned 404.
     });
     managerRef.current = manager;
 

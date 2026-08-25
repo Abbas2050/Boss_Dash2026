@@ -1,3 +1,4 @@
+import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/components/ui/sonner";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
@@ -125,7 +126,7 @@ function getHubAndTokenUrls() {
   const base = String(backendBaseUrl).replace(/\/+$/, "");
   const tokenBase = String(explicitTokenUrl).trim();
   return {
-    hubUrl: base ? `${base}/ws/dashboard` : "/ws/dashboard",
+    hubUrl: DASHBOARD_HUB_URL,
     tokenUrls: tokenBase
       ? [tokenBase]
       : [],

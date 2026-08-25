@@ -1,3 +1,4 @@
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
 import React, { useEffect, useState } from "react";
 
 type Row = any;
@@ -14,7 +15,7 @@ export const CoveragePage: React.FC = () => {
 
   async function refreshFromApi() {
     try {
-      const resp = await fetch("/Coverage/position-match-table");
+      const resp = await fetch(`${BACKEND_BASE_URL}/Coverage/position-match-table`);
       const json = await resp.json();
       setData(json);
       setStatus({ connected: true, last: new Date().toLocaleTimeString() });

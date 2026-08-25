@@ -117,3 +117,26 @@ describe("route coverage", () => {
     expect(PUBLIC_API_ROUTES.size).toBeLessThanOrEqual(6);
   });
 });
+
+// The twelve bare backend proxy prefixes sit OUTSIDE /api and /rest, so
+// requireSession never sees them. They were relaying the trading backend
+// unauthenticated: GET /EquityOverview/dashboard returned every client's login,
+// equity, balance and margin to anyone. They carry authRequired directly.
+describe("bare backend proxy prefixes", () => {
+  const forEachBlock = SERVER.slice(
+    SERVER.lastIndexOf("[", SERVER.indexOf("'/EquityOverview'")),
+    SERVER.indexOf("});", SERVER.indexOf("'/EquityOverview'")) + 3,
+  );
+
+  it("finds the block it is meant to be checking", () => {
+    expect(forEachBlock).toContain("'/EquityOverview'");
+    expect(forEachBlock).toContain(".forEach(");
+  });
+
+  it("guards every prefix with authRequired", () => {
+    expect(
+      forEachBlock,
+      "a bare proxy prefix is mounted without authRequired, so this server relays the trading backend to anonymous callers",
+    ).toMatch(/app\.use\(prefix,\s*authRequired\s*,/);
+  });
+});
