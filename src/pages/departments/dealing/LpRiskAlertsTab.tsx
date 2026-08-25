@@ -281,16 +281,9 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
     const manager = new SignalRConnectionManager({
       hubUrl: `${BACKEND_BASE_URL}/ws/dashboard`,
       trackedEvents: ["LpRiskAlerts"],
-      accessTokenFactory: async () => {
-        try {
-          const res = await fetch(`${BACKEND_BASE_URL}/api/signalr/token`);
-          if (!res.ok) return null;
-          const json = await res.json();
-          return json.token || null;
-        } catch {
-          return null;
-        }
-      },
+      // No accessTokenFactory: the backend hub's negotiate endpoint answers
+      // unauthenticated. The old factory fetched /api/signalr/token, which
+      // exists only on this dashboard's own server and always returned 404.
     });
 
     const unsubStatus = manager.onStatusChange((next) => setWsStatus(next));

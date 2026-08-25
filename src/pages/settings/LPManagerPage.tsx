@@ -1,3 +1,4 @@
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronRight, Layers3, PlusCircle, RefreshCw, Server, ShieldCheck, Wifi } from "lucide-react";
 import { SortableTable, type SortableTableColumn } from "../../components/ui/SortableTable";
@@ -112,7 +113,10 @@ const inputClass =
   "rounded border border-border bg-background/70 p-2 text-sm transition outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20";
 
 export const LPManagerPage: React.FC = () => {
-  const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+  // Shared so the fallback cannot drift: an empty base collapsed these calls
+  // to a relative path against this dashboard, which does not host the
+  // trading API.
+  const backendBaseUrl = BACKEND_BASE_URL;
   const apiUrl = (path: string) => (backendBaseUrl ? `${backendBaseUrl}${path}` : path);
 
   const [accounts, setAccounts] = useState<LPAccount[]>([]);

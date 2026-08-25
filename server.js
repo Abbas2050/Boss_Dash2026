@@ -771,7 +771,15 @@ app.use('/api/wallet', (req, res) =>
   '/ContractSize',
   '/api/ContractSize',
 ].forEach((prefix) => {
-  app.use(prefix, (req, res) => proxyHttp(req, res, { targetBase: BACKEND_API_TARGET }));
+  // authRequired, not requireSession: these prefixes are not under /api or
+  // /rest, so the deny-by-default gate never sees them. Ungated, this server
+  // was an open relay -- GET /EquityOverview/dashboard returned every client's
+  // login, equity, balance and margin to anyone who asked.
+  //
+  // This closes the RELAY, not the data. api.skylinkscapital.com serves the
+  // same endpoints unauthenticated, so the exposure only ends when that
+  // backend requires auth too.
+  app.use(prefix, authRequired, (req, res) => proxyHttp(req, res, { targetBase: BACKEND_API_TARGET }));
 });
 
 // Simple SSE mock for development to emit sample alerts (mounted under /api so Vite proxy works)
@@ -850,13 +858,6 @@ app.post('/api/mock/alerts/trigger', (req, res) => {
 // GET number of currently connected SSE clients (for debugging)
 app.get('/api/mock/alerts/clients', (req, res) => {
   res.json({ clients: sseClients.size });
-});
-
-// Simple helper to return a SignalR access token from env for local dev
-app.get('/api/signalr/token', (req, res) => {
-  const token = process.env.SIGNALR_TOKEN || null;
-  if (!token) return res.status(404).json({ error: 'no-signalr-token-configured' });
-  res.json({ token });
 });
 
 // Central alarm config (served by our Node server). GET is open to the app; PUT is admin-only.
