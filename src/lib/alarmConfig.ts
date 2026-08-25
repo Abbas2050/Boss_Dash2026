@@ -9,8 +9,11 @@ export type AlarmConfig = {
 export const DEFAULT_ALARM_CONFIG: AlarmConfig = { enabled: true, recipientUserIds: [], durationSec: 10 };
 
 // /api/alarm-config is served by our own Node server (same-origin / Vite-proxied), like /api/auth/*.
+// It also sits behind requireSession (server.js denies every /api and /rest
+// route by default), so the GET below needs the session bearer -- same as the
+// PUT further down -- or it 401s the moment the deny-by-default gate is live.
 export async function getAlarmConfig(): Promise<AlarmConfig> {
-  const res = await fetch("/api/alarm-config", { headers: { Accept: "application/json" } });
+  const res = await fetch("/api/alarm-config", { headers: { Accept: "application/json", ...authHeaders() } });
   if (!res.ok) throw new Error(`alarm-config ${res.status}`);
   const raw = await res.json();
   return {

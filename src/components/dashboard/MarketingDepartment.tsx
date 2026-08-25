@@ -17,6 +17,10 @@ import {
 } from "recharts";
 import { DepartmentCard } from "./DepartmentCard";
 import { useIsMobile } from "@/hooks/use-mobile";
+// The relative /api/marketing-insights candidate sits behind requireSession
+// (server.js denies every /api and /rest route by default); it needs the
+// session bearer or it 401s the moment the deny-by-default gate is live.
+import { authHeaders } from "@/lib/auth";
 
 type MarketingProps = {
   selectedEntity: string;
@@ -325,7 +329,15 @@ export function MarketingDepartment({ selectedEntity: _selectedEntity, fromDate,
 
         for (const url of candidateUrls) {
           try {
-            const res = await fetch(url, { signal: controller.signal });
+            // Our session JWT belongs only on the same-origin candidate. The
+            // fallback points at VITE_MARKETING_API_BASE_URL, a different
+            // service, and sending a bearer token there hands our credential
+            // to a third party that has no use for it.
+            const sameOrigin = url.startsWith("/");
+            const res = await fetch(url, {
+              signal: controller.signal,
+              headers: sameOrigin ? { ...authHeaders() } : {},
+            });
             if (!res.ok) {
               const text = await res.text().catch(() => "<no body>");
               lastError = `Marketing API ${res.status}: ${text}`;

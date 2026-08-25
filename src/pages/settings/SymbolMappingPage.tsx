@@ -1,4 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
+// /api/SymbolMapping sits behind requireSession (server.js denies every /api
+// and /rest route by default); every call here must carry the session bearer
+// token or it 401s the moment the deny-by-default gate is live, even though
+// apiUrl() targets this same origin.
+import { authHeaders } from "@/lib/auth";
 
 type Mapping = { id?: number; rawSymbol: string; mappedSymbol: string };
 
@@ -48,7 +53,7 @@ export const SymbolMappingPage: React.FC = () => {
   async function loadMappings() {
     setLoading(true);
     try {
-      const resp = await fetch(apiUrl("/api/SymbolMapping"));
+      const resp = await fetch(apiUrl("/api/SymbolMapping"), { headers: { ...authHeaders() } });
       const data = await readJsonOrThrow(resp, "Load symbol mappings");
       setMappings(data || []);
     } catch (e: any) {
@@ -79,7 +84,7 @@ export const SymbolMappingPage: React.FC = () => {
       setSubmitting(true);
       const resp = await fetch(apiUrl("/api/SymbolMapping"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ rawSymbol, mappedSymbol }),
       });
       if (resp.ok) {
@@ -103,7 +108,7 @@ export const SymbolMappingPage: React.FC = () => {
     if (!confirm(`Delete mapping for '${name}'?`)) return;
     try {
       setDeletingId(id);
-      const resp = await fetch(apiUrl(`/api/SymbolMapping/${id}`), { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/SymbolMapping/${id}`), { method: "DELETE", headers: { ...authHeaders() } });
       if (resp.ok) {
         setMsg({ text: `Mapping deleted: ${name}`, ok: true });
         await loadMappings();

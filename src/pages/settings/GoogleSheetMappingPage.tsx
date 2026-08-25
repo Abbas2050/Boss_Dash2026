@@ -1,4 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
+// /api/wallet/google-sheet-mapping sits behind requireSession (server.js
+// denies every /api and /rest route by default); every call here must carry
+// the session bearer token or it 401s the moment the deny-by-default gate is
+// live, even in the same-origin branch apiUrl() takes when isLocalhost/host
+// checks fall through.
+import { authHeaders } from "@/lib/auth";
 
 type MappingField = {
   key: string;
@@ -86,7 +92,7 @@ export const GoogleSheetMappingPage: React.FC = () => {
   async function loadConfig() {
     setLoading(true);
     try {
-      const resp = await fetch(apiUrl("/api/wallet/google-sheet-mapping"));
+      const resp = await fetch(apiUrl("/api/wallet/google-sheet-mapping"), { headers: { ...authHeaders() } });
       const data = (await readJsonOrThrow(resp, "Load mapping config")) as MappingResponse;
       setFields(Array.isArray(data.fields) ? data.fields : []);
       setUpdatedAt(data.updatedAt || null);
@@ -144,7 +150,7 @@ export const GoogleSheetMappingPage: React.FC = () => {
 
       const resp = await fetch(apiUrl("/api/wallet/google-sheet-mapping"), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
       const data = (await readJsonOrThrow(resp, "Save mapping config")) as MappingResponse;
@@ -163,7 +169,7 @@ export const GoogleSheetMappingPage: React.FC = () => {
   async function resetConfig() {
     if (!window.confirm("Reset mapping to defaults?")) return;
     try {
-      const resp = await fetch(apiUrl("/api/wallet/google-sheet-mapping/reset"), { method: "POST" });
+      const resp = await fetch(apiUrl("/api/wallet/google-sheet-mapping/reset"), { method: "POST", headers: { ...authHeaders() } });
       const data = (await readJsonOrThrow(resp, "Reset mapping config")) as MappingResponse;
       setFields(Array.isArray(data.fields) ? data.fields : []);
       setUpdatedAt(data.updatedAt || null);

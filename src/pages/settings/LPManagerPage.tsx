@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ChevronDown, ChevronRight, Layers3, PlusCircle, RefreshCw, Server, ShieldCheck, Wifi } from "lucide-react";
 import { SortableTable, type SortableTableColumn } from "../../components/ui/SortableTable";
+// /api/LpAccount, /api/TerminalPosition and /api/ManagerStatus sit behind
+// requireSession (server.js denies every /api and /rest route by default);
+// every call here must carry the session bearer token or it 401s the moment
+// the deny-by-default gate is live, even though apiUrl() targets this origin.
+import { authHeaders } from "@/lib/auth";
 
 type LPSource = "Manager" | "Terminal" | "Api";
 
@@ -182,7 +187,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadAccounts() {
     try {
-      const resp = await fetch(apiUrl(`/api/LpAccount?all=true`), { headers: { Accept: "application/json" } });
+      const resp = await fetch(apiUrl(`/api/LpAccount?all=true`), { headers: { Accept: "application/json", ...authHeaders() } });
       const data = await readJsonOrThrow<LPAccount[]>(resp, "Load accounts");
       setAccounts(Array.isArray(data) ? data : []);
     } catch (e: any) {
@@ -206,7 +211,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadTerminalStatus() {
     try {
-      const resp = await fetch(apiUrl(`/api/TerminalPosition/status`), { headers: { Accept: "application/json" } });
+      const resp = await fetch(apiUrl(`/api/TerminalPosition/status`), { headers: { Accept: "application/json", ...authHeaders() } });
       const data = await readJsonOrThrow<TerminalStatusItem[]>(resp, "Load terminal status");
       setTerminalRows(Array.isArray(data) ? data : []);
     } catch {
@@ -216,7 +221,7 @@ export const LPManagerPage: React.FC = () => {
 
   async function loadManagerStatus() {
     try {
-      const resp = await fetch(apiUrl(`/api/ManagerStatus`), { headers: { Accept: "application/json" } });
+      const resp = await fetch(apiUrl(`/api/ManagerStatus`), { headers: { Accept: "application/json", ...authHeaders() } });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = await readJsonOrThrow<any[]>(resp, "Load manager status");
       setManagerStatus(Array.isArray(data) ? (data as ManagerStatusItem[]) : []);
@@ -443,7 +448,7 @@ export const LPManagerPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl(`/api/LpAccount/${editId}`), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
       if (resp.ok) {
@@ -505,7 +510,7 @@ export const LPManagerPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl(`/api/LpAccount`), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
       if (resp.ok) {
@@ -526,7 +531,7 @@ export const LPManagerPage: React.FC = () => {
   async function deactivate(id: number) {
     if (!confirm("Deactivate this LP account? It will stop tracking positions.")) return;
     try {
-      const resp = await fetch(apiUrl(`/api/LpAccount/${id}`), { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/LpAccount/${id}`), { method: "DELETE", headers: { ...authHeaders() } });
       if (resp.ok) {
         setMsg({ text: "Account deactivated", ok: true });
         loadAccounts();
@@ -543,7 +548,7 @@ export const LPManagerPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl(`/api/LpAccount/${id}`), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ isActive: true }),
       });
       if (resp.ok) {
@@ -561,7 +566,7 @@ export const LPManagerPage: React.FC = () => {
   async function removeAccount(id: number, name: string) {
     if (!confirm(`Permanently remove LP account "${name}" (#${id})? This cannot be undone.`)) return;
     try {
-      const resp = await fetch(apiUrl(`/api/LpAccount/${id}?permanent=true`), { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/LpAccount/${id}?permanent=true`), { method: "DELETE", headers: { ...authHeaders() } });
       if (resp.ok) {
         setMsg({ text: `Account "${name}" permanently removed`, ok: true });
         loadAccounts();
@@ -581,7 +586,7 @@ export const LPManagerPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl(`/api/lpaccount/bulk-update`), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ ids, patch }),
       });
       if (resp.ok) {
@@ -605,7 +610,7 @@ export const LPManagerPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl(`/api/lpaccount/bulk-delete`), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ ids, permanent: false }),
       });
       if (resp.ok) {

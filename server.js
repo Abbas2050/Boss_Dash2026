@@ -22,6 +22,7 @@ import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
 import { startHubWatcher } from './alerts/hubWatcher.js';
 import { authRequired, canManageUsers } from './auth/router.js';
+import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient } from './wallet/pspClients.js';
 import {
@@ -191,10 +192,21 @@ async function ensureLpEquityStore() {
 app.set('trust proxy', true);
 
 app.disable('x-powered-by');
+// Reflecting the caller's Origin header is dangerous. Combined with
+// credentials: true that lets any website a signed-in user visits call this API
+// as them. The default is now same-origin; set CORS_ORIGIN to widen it.
+const CORS_ALLOWED = String(process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((s) => s.trim())
+  .map((s) => s.replace(/\/$/, '')) // Strip trailing slash so https://foo.com/ matches Origin: https://foo.com
+  .filter(Boolean);
 app.use(cors({
-  origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()) : true,
+  origin: CORS_ALLOWED.length ? CORS_ALLOWED : false,
   credentials: true,
 }));
+if (!CORS_ALLOWED.length) {
+  console.log('[CORS] No CORS_ORIGIN set; cross-origin requests will be blocked by the browser (same-origin only).');
+}
 app.use(express.json({
   limit: '1mb',
   // DocuSign Connect signs the RAW request bytes; keep them for that route only.
@@ -211,6 +223,15 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+// Deny by default. Every /api and /rest route needs a session unless it is on
+// the allow-list in auth/requireSession.js. Seventeen routes shipped without
+// authentication -- including the treasury report and six write endpoints --
+// because the default was open and nothing made the omission visible.
+//
+// This must stay ABOVE every route definition below; mounted after them it
+// would silently protect nothing.
+app.use(requireSession);
 
 app.get('/api/lp-equity-snapshots', async (req, res) => {
   if (!hasLpEquityDbConfig()) {

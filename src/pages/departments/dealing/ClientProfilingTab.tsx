@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RefreshCw, X, ChevronRight, TrendingUp, BarChart2, Activity, DollarSign } from "lucide-react";
+// /api/ClientProfile sits behind requireSession (server.js denies every /api
+// and /rest route by default); both calls below need the session bearer or
+// they 401 the moment the deny-by-default gate is live.
+import { authHeaders } from "@/lib/auth";
 
 // ─── API Types ───────────────────────────────────────────────────────────────
 
@@ -300,7 +304,7 @@ export function ClientProfilingTab({
       const params = new URLSearchParams({ count });
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
-      const res = await fetch(`/api/ClientProfile/top-clients?${params.toString()}`);
+      const res = await fetch(`/api/ClientProfile/top-clients?${params.toString()}`, { headers: { ...authHeaders() } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
@@ -323,7 +327,7 @@ export function ClientProfilingTab({
       setDetailError(null);
       setDetail(null);
       try {
-        const res = await fetch(`/api/ClientProfile/${client.login}/detail?days=${period}`);
+        const res = await fetch(`/api/ClientProfile/${client.login}/detail?days=${period}`, { headers: { ...authHeaders() } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const contentType = res.headers.get("content-type") || "";
         if (!contentType.includes("application/json")) {

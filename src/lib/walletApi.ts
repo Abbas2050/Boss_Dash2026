@@ -1,3 +1,8 @@
+// /api/closing-balance-report sits behind requireSession (server.js denies
+// every /api and /rest route by default), so this fetch needs the session
+// bearer or it 401s the moment the deny-by-default gate is live.
+import { authHeaders } from "@/lib/auth";
+
 export interface WalletWidgetEntry {
   id: string;
   name: string;
@@ -33,6 +38,7 @@ export async function fetchWalletBalances(): Promise<WalletBalancesResponse | nu
       headers: {
         'cache-control': 'no-cache',
         pragma: 'no-cache',
+        ...authHeaders(),
       },
     });
     if (!response.ok) {

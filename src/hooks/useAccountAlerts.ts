@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { SignalRConnectionManager, SignalRStatus } from '@/lib/signalRConnectionManager';
+// /api/signalr/token sits behind requireSession (server.js denies every /api
+// and /rest route by default); the token fetch below must carry the session
+// bearer or it 401s the moment the deny-by-default gate is live.
+import { authHeaders } from '@/lib/auth';
 
 export type UserChangeEvent = any;
 export type AccountAlertEvent = any;
@@ -101,7 +105,7 @@ export function useAccountAlerts() {
           const tokenUrl = backendBaseUrl
             ? `${String(backendBaseUrl).replace(/\/+$/, '')}/api/signalr/token`
             : '/api/signalr/token';
-          const res = await fetch(tokenUrl);
+          const res = await fetch(tokenUrl, { headers: { ...authHeaders() } });
           if (!res.ok) return null;
           const json = await res.json();
           return json.token || null;
