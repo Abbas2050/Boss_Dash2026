@@ -279,13 +279,14 @@ export function DealPerformanceTab({
             monthRows.forEach((r) => {
                 const cur =
                   byLogin.get(r.login) ||
-                  { login: r.login, name: r.name, lots: 0, markup: 0, clientComm: 0, lpComm: 0, millionsUsd: 0, totalRev: 0, ibCommission: 0, netRevenue: 0 };
+                  { login: r.login, name: r.name, lots: 0, markup: 0, clientComm: 0, lpComm: 0, millionsUsd: 0, lpCommPerM: 0, totalRev: 0, ibCommission: 0, netRevenue: 0 };
                 if ((!cur.name || cur.name === "-") && r.name) cur.name = r.name;
                 cur.lots += r.lots;
                 cur.markup += r.markup;
                 cur.clientComm += r.clientComm;
                 cur.lpComm += r.lpComm;
                 cur.millionsUsd += r.millionsUsd;
+                cur.lpCommPerM += r.lpCommPerM;
                 cur.totalRev = cur.markup + cur.clientComm - cur.lpComm;
                 cur.netRevenue = cur.totalRev; // default for non-IB clients; overridden below if IB
                 byLogin.set(r.login, cur);
