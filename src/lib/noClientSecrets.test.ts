@@ -59,6 +59,24 @@ describe("browser code holds no credentials", () => {
     expect(code).not.toMatch(/TOKEN|SECRET|Authorization/i);
   });
 
+  // The app's OWN session JWT also travels in the Authorization header, and the
+  // /rest proxy is behind authRequired. Stripping the CRM credential without
+  // keeping the session header took the dashboard down with 401 missing_token
+  // on 2026-08-21, so both halves are pinned: no literal credential below, and
+  // authHeaders() present.
+  it("still sends the app session header to the guarded /rest proxy", () => {
+    const libs = ["api", "applicationsApi", "dealMatchApi", "lpAccounts", "rebateApi", "ticketsApi"];
+    const missing = libs.filter(
+      (lib) => !readFileSync(path.resolve(`src/lib/${lib}.ts`), "utf8").includes("authHeaders()"),
+    );
+    expect(
+      missing,
+      missing.length
+        ? `/rest is behind authRequired, so these must spread ...authHeaders() into their request headers or every call 401s: ${missing.join(", ")}`
+        : "",
+    ).toEqual([]);
+  });
+
   // The six CRM client libraries must send no Authorization header of their own;
   // the proxy attaches one upstream.
   it("sends no Authorization header from the CRM client libraries", () => {

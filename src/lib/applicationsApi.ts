@@ -109,11 +109,11 @@ function apiHeaders() {
   return {
     "Content-Type": "application/json",
     Accept: "application/json",
+    // The app session JWT. The CRM credential is attached by the /rest proxy.
+    ...authHeaders(),
   };
 }
 
-function requireApiToken() {
-}
 
 async function fetchWithFallback(paths: string[], init: RequestInit): Promise<Response> {
   let lastResponse: Response | null = null;
@@ -416,7 +416,6 @@ export function getCurrentActorEmail(): string {
 }
 
 export async function createCrmApplication(input: ApplicationDraft): Promise<ApplicationRecord> {
-  requireApiToken();
   const dataPayload: Record<string, unknown> = input.data ?? {};
   const createdByEmail = String(input.createdBy || "").trim().toLowerCase();
   const configId = Number(input.configId);
@@ -473,7 +472,6 @@ function toApplicationConfigDefinition(raw: any): ApplicationConfigDefinition {
 }
 
 export async function getCrmApplicationConfig(configId: number): Promise<ApplicationConfigDefinition> {
-  requireApiToken();
   const response = await fetchWithFallback(
     [
       `/rest/documents/config/${encodeURIComponent(String(configId))}?version=${encodeURIComponent(API_VERSION)}`,
@@ -515,7 +513,6 @@ export async function getCrmApplicationConfig(configId: number): Promise<Applica
 }
 
 async function postApplicationsSearch(body: Record<string, unknown>): Promise<ApplicationRecord[]> {
-  requireApiToken();
   const response = await fetchWithFallback(
     [
       `/rest/documents?version=${encodeURIComponent(API_VERSION)}`,
@@ -634,7 +631,6 @@ export async function listCrmApplicationsForActor(input: {
 }
 
 export async function approveCrmApplication(applicationId: number, managerId?: number | null): Promise<ApplicationRecord> {
-  requireApiToken();
   const id = Number(applicationId);
   if (!Number.isFinite(id) || id <= 0) {
     throw new Error("Invalid application id.");
@@ -700,7 +696,6 @@ export async function updateCrmApplicationStatus(
   status: string,
   managerId?: number | null,
 ): Promise<ApplicationRecord> {
-  requireApiToken();
   const id = Number(applicationId);
   if (!Number.isFinite(id) || id <= 0) throw new Error("Invalid application id.");
   const nextStatusRaw = String(status || "").trim();
@@ -799,7 +794,6 @@ export async function declineCrmApplication(
   managerId?: number | null,
   declineReason = "Declined from dashboard alert"
 ): Promise<ApplicationRecord> {
-  requireApiToken();
   const id = Number(applicationId);
   if (!Number.isFinite(id) || id <= 0) {
     throw new Error("Invalid application id.");
@@ -877,7 +871,6 @@ export async function updateCrmApplicationRouting(input: {
   finalApproverId: number;
   reason: string;
 }): Promise<ApplicationRecord> {
-  requireApiToken();
   const id = Number(input.applicationId);
   const firstApproverId = Number(input.firstApproverId);
   const finalApproverId = Number(input.finalApproverId);

@@ -1,3 +1,4 @@
+import { authHeaders } from "@/lib/auth";
 export { CRM_API_VERSION } from "./crmConfig";
 import { CRM_API_VERSION } from "./crmConfig";
 // Sent with no credential: the /rest proxy attaches the CRM token server-side.
@@ -168,6 +169,7 @@ export async function fetchCrmUserIdByLogin(login: string): Promise<number | nul
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
+      ...authHeaders(),
     },
     body: JSON.stringify({ login, segment: { limit: 1, offset: 0 } }),
   });
@@ -181,6 +183,7 @@ export async function isIb(crmId: number): Promise<boolean> {
   const resp = await fetch(`/rest/ib/tree?version=${encodeURIComponent(CRM_API_VERSION)}&ibId=${encodeURIComponent(String(crmId))}`, {
     headers: {
       Accept: "application/json",
+      ...authHeaders(),
     },
   });
   if (!resp.ok) return false;
@@ -194,6 +197,7 @@ export async function fetchIbPeriodTransactions(crmId: number, fromDate: string,
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
+      ...authHeaders(),
     },
     body: JSON.stringify({
       fromUserId: crmId,

@@ -1,3 +1,4 @@
+import { authHeaders } from "@/lib/auth";
 import { CRM_API_VERSION } from "./crmConfig";
 // src/lib/api.ts
 
@@ -158,6 +159,7 @@ export async function fetchTransactions(body: TransactionRequest): Promise<Trans
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });
@@ -197,6 +199,7 @@ export async function fetchUsers(body: UserRequest): Promise<User[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });
@@ -235,6 +238,7 @@ export async function updateUserManager(body: UpdateUserManagerRequest): Promise
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+        ...authHeaders(),
     },
     body: JSON.stringify(body),
   });
@@ -257,6 +261,7 @@ export async function fetchAccounts(body: AccountRequest): Promise<Account[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });
@@ -283,6 +288,7 @@ export async function fetchTrades(body: TradeRequest): Promise<Trade[]> {
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });
@@ -316,6 +322,7 @@ export async function updateAccountLeverage(
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify({ leverage: request.leverage }),
     });
