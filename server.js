@@ -49,10 +49,18 @@ const REST_PROXY_TARGET = process.env.REST_PROXY_TARGET || 'https://portal.skyli
 //
 // VITE_-prefixed names are accepted as a fallback so a server that has not had
 // its .env updated yet keeps working; drop them once production is migrated.
-const CRM_API_TOKEN = process.env.API_TOKEN || process.env.VITE_API_TOKEN || '';
-const CRM_API_VERSION = process.env.API_VERSION || process.env.VITE_API_VERSION || '1.0.0';
+// .trim() matters: a .env edited on Windows can leave a trailing CR byte on the
+// value, which makes the CRM reject the bearer token with a 403 that says
+// nothing about whitespace. reports/reportShared.js has always trimmed.
+const CRM_API_TOKEN = String(process.env.API_TOKEN || process.env.VITE_API_TOKEN || '').trim();
+const CRM_API_VERSION = String(process.env.API_VERSION || process.env.VITE_API_VERSION || '1.0.0').trim();
 if (!CRM_API_TOKEN) {
-  console.warn('[CRM proxy] No API_TOKEN set -- every /rest request will fail upstream with 401.');
+  console.error(
+    '[CRM proxy] API_TOKEN is not set. Every /rest request will be refused with 503 ' +
+      'crm_token_not_configured. Set API_TOKEN (no VITE_ prefix) in .env and restart.',
+  );
+} else {
+  console.log(`[CRM proxy] CRM token loaded (${CRM_API_TOKEN.length} chars), version ${CRM_API_VERSION}.`);
 }
 const WALLET_PROXY_TARGET = process.env.WALLET_PROXY_TARGET || 'https://crm.skylinkscapital.com';
 const BACKEND_API_TARGET =
@@ -659,6 +667,15 @@ function buildProxyBody(req) {
 }
 
 async function proxyHttp(req, res, options) {
+  if (options.requiresCrmToken && !CRM_API_TOKEN) {
+    return res.status(503).json({
+      error: 'crm_token_not_configured',
+      message:
+        'The server has no API_TOKEN, so it cannot authenticate to the CRM. Set API_TOKEN ' +
+        '(without the VITE_ prefix) in the server .env and restart. Proxying without it ' +
+        'returns a 403 invalid_grant from the CRM that looks unrelated to configuration.',
+    });
+  }
   try {
     const incomingPath = req.originalUrl;
     const rewrittenPath = options.stripPrefix
@@ -684,6 +701,16 @@ async function proxyHttp(req, res, options) {
     });
 
     const buffer = Buffer.from(await upstream.arrayBuffer());
+    // An upstream rejection on the CRM proxy is almost always a credential
+    // problem, and the browser only sees the CRM's own wording. Log enough to
+    // tell config from data -- never the token itself.
+    if (options.injectAuth && upstream.status >= 400) {
+      console.error(
+        `[CRM proxy] ${req.method} ${finalPath} -> HTTP ${upstream.status}. ` +
+          `Token ${CRM_API_TOKEN ? `present (${CRM_API_TOKEN.length} chars)` : 'MISSING'}. ` +
+          `Upstream said: ${buffer.toString('utf8').slice(0, 200)}`,
+      );
+    }
     res.send(buffer);
   } catch (error) {
     res.status(502).json({
@@ -697,13 +724,13 @@ async function proxyHttp(req, res, options) {
 // so without a session check it is an open relay into the CRM for anyone who
 // can reach the host.
 app.use('/rest/applications', authRequired, (req, res) =>
-  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN })
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN, requiresCrmToken: true })
 );
 app.use('/rest', authRequired, (req, res) =>
   proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN })
 );
 app.use('/api/rest', authRequired, (req, res) =>
-  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api', injectAuth: CRM_API_TOKEN })
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api', injectAuth: CRM_API_TOKEN, requiresCrmToken: true })
 );
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
@@ -815,6 +842,48 @@ app.get('/api/signalr/token', (req, res) => {
 app.get('/api/alarm-config', (req, res) => {
   res.json(readAlarmConfig());
 });
+// Says whether the server can talk to the CRM, and why not when it cannot.
+// Exists because a missing or whitespace-damaged token surfaces in the browser
+// as the CRM's own "403 invalid_grant", which reads like an upstream outage
+// rather than a config problem. Never returns the token -- only its length.
+app.get('/api/crm-health', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const result = {
+    tokenConfigured: Boolean(CRM_API_TOKEN),
+    tokenLength: CRM_API_TOKEN.length,
+    tokenHasEdgeWhitespace: false,
+    version: CRM_API_VERSION,
+    target: REST_PROXY_TARGET,
+    source: process.env.API_TOKEN ? 'API_TOKEN' : process.env.VITE_API_TOKEN ? 'VITE_API_TOKEN (legacy)' : 'none',
+  };
+  const untrimmed = String(process.env.API_TOKEN || process.env.VITE_API_TOKEN || '');
+  result.tokenHasEdgeWhitespace = untrimmed !== untrimmed.trim();
+  if (!CRM_API_TOKEN) {
+    return res.status(503).json({ ...result, ok: false, error: 'crm_token_not_configured' });
+  }
+  try {
+    const probe = await fetch(`${REST_PROXY_TARGET}/rest/users?version=${encodeURIComponent(CRM_API_VERSION)}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${CRM_API_TOKEN}`,
+      },
+      body: JSON.stringify({ segment: { limit: 1, offset: 0 } }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const body = await probe.text().catch(() => '');
+    res.status(probe.ok ? 200 : 502).json({
+      ...result,
+      ok: probe.ok,
+      upstreamStatus: probe.status,
+      upstreamBody: probe.ok ? undefined : body.slice(0, 300),
+    });
+  } catch (e) {
+    res.status(502).json({ ...result, ok: false, error: 'probe_failed', message: e?.message || String(e) });
+  }
+});
+
 app.put('/api/alarm-config', authRequired, (req, res) => {
   if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
   try {
