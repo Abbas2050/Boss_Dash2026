@@ -82,11 +82,11 @@ function crmHeaders() {
   return {
     "Content-Type": "application/json",
     Accept: "application/json",
+    // The app session JWT. The CRM credential is attached by the /rest proxy.
+    ...authHeaders(),
   };
 }
 
-function requireApiToken() {
-}
 
 export function resolveCrmManagerIdFromSession(): number {
   const currentUser = getCurrentUser();
@@ -99,7 +99,6 @@ export function resolveCrmManagerIdFromSession(): number {
 }
 
 export async function resolveUserIdByAccountNumber(accountNumber: string): Promise<number | null> {
-  requireApiToken();
   const login = String(accountNumber || "").trim();
   if (!login) return null;
 
@@ -138,7 +137,6 @@ function toAccountSuggestion(raw: any): CrmAccountSuggestion | null {
 }
 
 export async function searchAccountsByLogin(input: string): Promise<CrmAccountSuggestion[]> {
-  requireApiToken();
   const value = String(input || "").trim();
   if (!value) return [];
 
@@ -192,7 +190,6 @@ function toSuggestion(raw: any): CrmClientSuggestion | null {
 }
 
 export async function searchClientsByClientId(clientId: string): Promise<CrmClientSuggestion[]> {
-  requireApiToken();
   const id = Number(String(clientId || "").trim());
   if (!Number.isFinite(id) || id <= 0) return [];
 
@@ -213,7 +210,6 @@ export async function searchClientsByClientId(clientId: string): Promise<CrmClie
 }
 
 export async function searchClientsByIbId(ibId: string): Promise<CrmClientSuggestion[]> {
-  requireApiToken();
   const val = String(ibId || "").trim();
   const num = Number(val);
   if (!val) return [];
@@ -245,7 +241,6 @@ export async function searchClientsByIbId(ibId: string): Promise<CrmClientSugges
 }
 
 export async function createCrmTicket(input: TicketDraft): Promise<TicketRecord> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets/new?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -271,7 +266,6 @@ export async function createCrmTicket(input: TicketDraft): Promise<TicketRecord>
 }
 
 async function postTicketSearch(body: Record<string, unknown>): Promise<TicketRecord[]> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -329,7 +323,6 @@ export async function listCrmTicketsForActor(input: { managerId?: number | null;
 }
 
 export async function listHelpDeskCategories(): Promise<HelpDeskCategory[]> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/categories?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -379,7 +372,6 @@ export async function listHelpDeskCategories(): Promise<HelpDeskCategory[]> {
 }
 
 export async function closeCrmTicket(ticketId: number): Promise<TicketRecord> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets/${encodeURIComponent(String(ticketId))}/close?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "POST",
@@ -397,7 +389,6 @@ export async function closeCrmTicket(ticketId: number): Promise<TicketRecord> {
 }
 
 export async function approveCrmTicket(ticketId: number): Promise<TicketRecord> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets/${encodeURIComponent(String(ticketId))}?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "PATCH",
@@ -419,7 +410,6 @@ export async function addCrmTicketComment(
   text: string,
   actor?: { manager?: number | null; user?: number | null }
 ): Promise<void> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets/${encodeURIComponent(String(ticketId))}/comments?version=${encodeURIComponent(API_VERSION)}`;
   const payload: Record<string, unknown> = { text };
   const manager = Number(actor?.manager);
@@ -440,7 +430,6 @@ export async function addCrmTicketComment(
 }
 
 export async function listCrmTicketComments(ticketId: number): Promise<TicketComment[]> {
-  requireApiToken();
   const endpoint = `/rest/help-desk/tickets/comments?version=${encodeURIComponent(API_VERSION)}`;
   const response = await fetch(endpoint, {
     method: "POST",

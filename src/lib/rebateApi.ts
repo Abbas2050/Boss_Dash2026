@@ -1,3 +1,4 @@
+import { authHeaders } from "@/lib/auth";
 type IbTreeNode = {
   ibId: number;
   level?: number;
@@ -57,6 +58,8 @@ const getRestBase = () => {
 const getAuthHeaders = () => ({
   "Content-Type": "application/json",
   Accept: "application/json",
+  // The app session JWT. The CRM credential is attached by the /rest proxy.
+  ...authHeaders(),
 });
 
 export async function fetchIbTree(ibId: number): Promise<IbTreeNode[]> {
@@ -70,6 +73,7 @@ export async function fetchIbTree(ibId: number): Promise<IbTreeNode[]> {
     method: "GET",
     headers: {
       Accept: "application/json",
+      ...authHeaders(),
     },
   });
   if (!res.ok) {

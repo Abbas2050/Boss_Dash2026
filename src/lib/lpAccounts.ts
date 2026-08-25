@@ -1,3 +1,4 @@
+import { authHeaders } from "@/lib/auth";
 import { CRM_API_VERSION } from "./crmConfig";
 import { useEffect, useState } from "react";
 
@@ -26,6 +27,7 @@ export async function fetchLPAccounts(): Promise<LPAccount[]> {
     method: "GET",
     headers: {
       "Accept": "application/json",
+      ...authHeaders(),
     },
   });
   if (!res.ok) throw new Error(`LP Accounts API error ${res.status}`);
@@ -42,6 +44,7 @@ export async function createLPAccount(body: LPAccountRequest): Promise<LPAccount
     headers: {
       "Content-Type": "application/json",
       "Accept": "application/json",
+      ...authHeaders(),
     },
     body: JSON.stringify(body),
   });
