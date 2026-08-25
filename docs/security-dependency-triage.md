@@ -18,8 +18,7 @@ of those were applied.
 
 ## Reachable at runtime
 
-None. All five remaining high/critical advisories are build-time only (see
-below).
+None (high/critical scope). The five high/critical advisories are all build-time only (see below). However, a moderate advisory does reach runtime: `react-router-dom` ^6.30.1 is shipped in the browser bundle and carries an open-redirect risk (listed under Accepted).
 
 ## Build-time only
 
