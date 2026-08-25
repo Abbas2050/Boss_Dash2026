@@ -945,10 +945,22 @@ app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) =>
   }
 });
 
-// Minimal SignalR-like negotiate + WebSocket mock for local dev
-// - negotiate: GET/POST /ws/dashboard/negotiate
-// - websocket endpoint: /ws/dashboard (expects SignalR JSON protocol with RS delimiters)
+// Minimal SignalR-like negotiate + WebSocket mock, FOR LOCAL DEV ONLY.
+//
+// It invents a MarginCallEnter or StopOutEnter every 3 seconds with random
+// equity, balance and margin, and fires the dashboard's audible alarm. Mounted
+// unconditionally it was doing that on production: any browser reaching
+// wss://<host>/ws/dashboard received fabricated margin calls, unauthenticated.
+//
+// It is now off unless ENABLE_MOCK_SIGNALR=true is set explicitly. Absent
+// alerts are recoverable; invented ones are acted on.
+const MOCK_SIGNALR = String(process.env.ENABLE_MOCK_SIGNALR || 'false').toLowerCase() === 'true';
+if (MOCK_SIGNALR) {
+  console.warn('[SignalR] MOCK HUB ENABLED -- alerts are fabricated. Never set ENABLE_MOCK_SIGNALR in production.');
+}
+
 app.all('/ws/dashboard/negotiate', (req, res) => {
+  if (!MOCK_SIGNALR) return res.status(404).json({ error: 'mock_signalr_disabled' });
   const connectionId = Math.random().toString(36).slice(2, 10);
   // Return a negotiate-like payload compatible with @microsoft/signalr client
   res.json({
@@ -1029,11 +1041,11 @@ app.get('/*splat', (req, res) => {
 // Create HTTP server and attach WebSocket mock
 const server = http.createServer(app);
 
-const wss = new WebSocketServer({ server, path: '/ws/dashboard' });
+const wss = MOCK_SIGNALR ? new WebSocketServer({ server, path: '/ws/dashboard' }) : null;
 
 const RS = String.fromCharCode(0x1e);
 
-wss.on('connection', (ws, req) => {
+wss?.on('connection', (ws, req) => {
   console.log('Mock SignalR WS: client connected', req.socket.remoteAddress);
 
   // Send SignalR handshake response (empty object) terminated by RS
