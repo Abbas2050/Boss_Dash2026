@@ -1,3 +1,4 @@
+import { CRM_API_VERSION } from "./crmConfig";
 import { useEffect, useState } from "react";
 
 export interface LPAccount {
@@ -19,14 +20,12 @@ export interface LPAccountRequest {
 export async function fetchLPAccounts(): Promise<LPAccount[]> {
   // TODO: Replace with real API endpoint
   const baseUrl = "/rest/lp-accounts";
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   const res = await fetch(url, {
     method: "GET",
     headers: {
       "Accept": "application/json",
-      "Authorization": `Bearer ${token}`,
     },
   });
   if (!res.ok) throw new Error(`LP Accounts API error ${res.status}`);
@@ -36,15 +35,13 @@ export async function fetchLPAccounts(): Promise<LPAccount[]> {
 export async function createLPAccount(body: LPAccountRequest): Promise<LPAccount> {
   // TODO: Replace with real API endpoint
   const baseUrl = "/rest/lp-accounts";
-  const url = `${baseUrl}?version=${import.meta.env.VITE_API_VERSION}`;
-  const token = import.meta.env.VITE_API_TOKEN;
+  const url = `${baseUrl}?version=${CRM_API_VERSION}`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Accept": "application/json",
-      "Authorization": `Bearer ${token}`,
     },
     body: JSON.stringify(body),
   });

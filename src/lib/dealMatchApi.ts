@@ -1,5 +1,6 @@
-export const CRM_API_VERSION = (import.meta as any).env?.VITE_API_VERSION || "1.0.0";
-export const CRM_API_TOKEN = (import.meta as any).env?.VITE_API_TOKEN || "";
+export { CRM_API_VERSION } from "./crmConfig";
+import { CRM_API_VERSION } from "./crmConfig";
+// Sent with no credential: the /rest proxy attaches the CRM token server-side.
 
 export type DealMatchRevenueRow = {
   login: string;
@@ -167,7 +168,6 @@ export async function fetchCrmUserIdByLogin(login: string): Promise<number | nul
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
     },
     body: JSON.stringify({ login, segment: { limit: 1, offset: 0 } }),
   });
@@ -181,7 +181,6 @@ export async function isIb(crmId: number): Promise<boolean> {
   const resp = await fetch(`/rest/ib/tree?version=${encodeURIComponent(CRM_API_VERSION)}&ibId=${encodeURIComponent(String(crmId))}`, {
     headers: {
       Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
     },
   });
   if (!resp.ok) return false;
@@ -195,7 +194,6 @@ export async function fetchIbPeriodTransactions(crmId: number, fromDate: string,
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      ...(CRM_API_TOKEN ? { Authorization: `Bearer ${CRM_API_TOKEN}` } : {}),
     },
     body: JSON.stringify({
       fromUserId: crmId,

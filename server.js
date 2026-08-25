@@ -40,6 +40,20 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const REST_PROXY_TARGET = process.env.REST_PROXY_TARGET || 'https://portal.skylinkscapital.com';
+
+// The CRM credential lives here and ONLY here. It used to be read in the
+// browser from VITE_API_TOKEN, which Vite compiles into the shipped bundle --
+// a build on 2026-08-21 put the value in 13 public files, 35 times over, where
+// any logged-in user could read it from devtools. The browser now calls our
+// own /rest proxy with no credential and this attaches it upstream.
+//
+// VITE_-prefixed names are accepted as a fallback so a server that has not had
+// its .env updated yet keeps working; drop them once production is migrated.
+const CRM_API_TOKEN = process.env.API_TOKEN || process.env.VITE_API_TOKEN || '';
+const CRM_API_VERSION = process.env.API_VERSION || process.env.VITE_API_VERSION || '1.0.0';
+if (!CRM_API_TOKEN) {
+  console.warn('[CRM proxy] No API_TOKEN set -- every /rest request will fail upstream with 401.');
+}
 const WALLET_PROXY_TARGET = process.env.WALLET_PROXY_TARGET || 'https://crm.skylinkscapital.com';
 const BACKEND_API_TARGET =
   process.env.BACKEND_API_BASE_URL ||
@@ -604,13 +618,36 @@ app.post('/api/wallet/google-sheet-mapping/reset', (_req, res) => {
   }
 });
 
-function buildProxyHeaders(req) {
+function buildProxyHeaders(req, options = {}) {
   const headers = { ...req.headers };
   delete headers.host;
   delete headers.connection;
   delete headers['content-length'];
   delete headers['accept-encoding'];
+  if (options.injectAuth) {
+    // Drop whatever the caller sent before setting ours. Without the delete a
+    // client could pin its own credential -- and header names are
+    // case-insensitive over the wire, so a stray "Authorization" would survive
+    // a plain assignment to the lowercase key and win.
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'authorization') delete headers[key];
+    }
+    headers.authorization = `Bearer ${options.injectAuth}`;
+  }
   return headers;
+}
+
+// The CRM rejects a request with no version, and the browser no longer knows
+// which one to ask for, so fill it in when it is absent or arrived as the
+// string "undefined" (what a template literal yields for a missing env var).
+function withCrmVersion(path) {
+  const [base, query = ''] = path.split('?');
+  const params = new URLSearchParams(query);
+  const current = params.get('version');
+  if (!current || current === 'undefined' || current === 'null') {
+    params.set('version', CRM_API_VERSION);
+  }
+  return `${base}?${params.toString()}`;
 }
 
 function buildProxyBody(req) {
@@ -627,11 +664,12 @@ async function proxyHttp(req, res, options) {
     const rewrittenPath = options.stripPrefix
       ? incomingPath.replace(new RegExp(`^${options.stripPrefix}`), '')
       : incomingPath;
-    const targetUrl = `${options.targetBase.replace(/\/+$/, '')}${rewrittenPath}`;
+    const finalPath = options.injectAuth ? withCrmVersion(rewrittenPath) : rewrittenPath;
+    const targetUrl = `${options.targetBase.replace(/\/+$/, '')}${finalPath}`;
 
     const upstream = await fetch(targetUrl, {
       method: req.method,
-      headers: buildProxyHeaders(req),
+      headers: buildProxyHeaders(req, options),
       body: buildProxyBody(req),
     });
 
@@ -655,10 +693,17 @@ async function proxyHttp(req, res, options) {
   }
 }
 
-app.use('/rest/applications', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
-app.use('/rest', (req, res) => proxyHttp(req, res, { targetBase: REST_PROXY_TARGET }));
-app.use('/api/rest', (req, res) =>
-  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api' })
+// authRequired is not optional here. The proxy now attaches our CRM credential,
+// so without a session check it is an open relay into the CRM for anyone who
+// can reach the host.
+app.use('/rest/applications', authRequired, (req, res) =>
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN })
+);
+app.use('/rest', authRequired, (req, res) =>
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN })
+);
+app.use('/api/rest', authRequired, (req, res) =>
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api', injectAuth: CRM_API_TOKEN })
 );
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
