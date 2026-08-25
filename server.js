@@ -687,6 +687,11 @@ function buildProxyBody(req) {
   return JSON.stringify(body);
 }
 
+// An unbounded upstream call ties up a worker until IIS times out and answers
+// 502 with no detail of its own. Failing at 45s with a named error is worse for
+// one request and far better for diagnosis.
+const PROXY_TIMEOUT_MS = Number(process.env.PROXY_TIMEOUT_MS || 45_000);
+
 async function proxyHttp(req, res, options) {
   if (options.requiresCrmToken && !CRM_API_TOKEN) {
     return res.status(503).json({
@@ -709,6 +714,7 @@ async function proxyHttp(req, res, options) {
       method: req.method,
       headers: buildProxyHeaders(req, options),
       body: buildProxyBody(req),
+      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
     });
 
     res.status(upstream.status);
@@ -734,23 +740,30 @@ async function proxyHttp(req, res, options) {
     }
     res.send(buffer);
   } catch (error) {
-    res.status(502).json({
-      error: 'proxy_error',
+    const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+    console.error(
+      `[proxy] ${req.method} ${req.originalUrl} -> ${options.targetBase} FAILED: ` +
+        `${error?.name || 'Error'}: ${error?.message || String(error)}${error?.cause ? ` (cause: ${error.cause})` : ''}`,
+    );
+    res.status(timedOut ? 504 : 502).json({
+      error: timedOut ? 'proxy_timeout' : 'proxy_error',
+      target: options.targetBase,
       message: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
-// authRequired is not optional here. The proxy now attaches our CRM credential,
-// so without a session check it is an open relay into the CRM for anyone who
-// can reach the host.
-app.use('/rest/applications', authRequired, (req, res) =>
+// No authRequired here: requireSession already gates everything under /api and
+// /rest, and it calls authRequired itself. Listing it again ran the JWT verify
+// AND a SELECT on users twice per request -- on a dashboard load that fires ~27
+// /rest calls, against a pool of 10 connections.
+app.use('/rest/applications', (req, res) =>
   proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN, requiresCrmToken: true })
 );
-app.use('/rest', authRequired, (req, res) =>
-  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN })
+app.use('/rest', (req, res) =>
+  proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, injectAuth: CRM_API_TOKEN, requiresCrmToken: true })
 );
-app.use('/api/rest', authRequired, (req, res) =>
+app.use('/api/rest', (req, res) =>
   proxyHttp(req, res, { targetBase: REST_PROXY_TARGET, stripPrefix: '/api', injectAuth: CRM_API_TOKEN, requiresCrmToken: true })
 );
 app.use('/api/wallet', (req, res) =>
