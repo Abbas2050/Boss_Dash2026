@@ -24,4 +24,12 @@ describe("CORS policy", () => {
   it("still sends credentials, so the origin list is what protects the API", () => {
     expect(SERVER).toMatch(/credentials:\s*true/);
   });
+
+  it("strips trailing slashes from origin entries to avoid silent mismatches", () => {
+    // Browsers send Origin: https://foo.com (no trailing slash), so
+    // https://foo.com/ in the config must be normalized or it never matches.
+    // This is a silent failure (the origin is blocked), not an error, so normalization
+    // prevents confusing outages when operators configure CORS_ORIGIN=https://foo.com/
+    expect(SERVER).toMatch(/\.replace\([^)]*\$[^)]*\)/);
+  });
 });

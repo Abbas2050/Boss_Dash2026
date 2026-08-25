@@ -198,13 +198,14 @@ app.disable('x-powered-by');
 const CORS_ALLOWED = String(process.env.CORS_ORIGIN || '')
   .split(',')
   .map((s) => s.trim())
+  .map((s) => s.replace(/\/$/, '')) // Strip trailing slash so https://foo.com/ matches Origin: https://foo.com
   .filter(Boolean);
 app.use(cors({
   origin: CORS_ALLOWED.length ? CORS_ALLOWED : false,
   credentials: true,
 }));
 if (!CORS_ALLOWED.length) {
-  console.log('[CORS] No CORS_ORIGIN set; cross-origin requests are refused (same-origin only).');
+  console.log('[CORS] No CORS_ORIGIN set; cross-origin requests will be blocked by the browser (same-origin only).');
 }
 app.use(express.json({
   limit: '1mb',
