@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "../../components/ui/SortableTable";
+// /api/LpInfo, /api/LpAccount and /api/LpCentroidAlias sit behind requireSession
+// (server.js denies every /api and /rest route by default); every call here
+// must carry the session bearer token or it 401s the moment the deny-by-default
+// gate is live, even though apiUrl() targets this same origin.
+import { authHeaders } from "@/lib/auth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -182,9 +187,9 @@ export const LpInfoPage: React.FC = () => {
     setLoading(true);
     try {
       const [accResp, infoResp, aliasResp] = await Promise.all([
-        fetch(apiUrl("/api/LpAccount?all=true"), { headers: { Accept: "application/json" } }),
-        fetch(apiUrl("/api/LpInfo"), { headers: { Accept: "application/json" } }),
-        fetch(apiUrl("/api/LpCentroidAlias"), { headers: { Accept: "application/json" } }),
+        fetch(apiUrl("/api/LpAccount?all=true"), { headers: { Accept: "application/json", ...authHeaders() } }),
+        fetch(apiUrl("/api/LpInfo"), { headers: { Accept: "application/json", ...authHeaders() } }),
+        fetch(apiUrl("/api/LpCentroidAlias"), { headers: { Accept: "application/json", ...authHeaders() } }),
       ]);
       const accounts: LpAccount[] = await accResp.json();
       const infos: LpInfo[] = await infoResp.json();
@@ -271,7 +276,7 @@ export const LpInfoPage: React.FC = () => {
     setAliasLoading(true);
     try {
       const resp = await fetch(apiUrl(`/api/LpCentroidAlias?lpInfoId=${infoId}`), {
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", ...authHeaders() },
       });
       const data: LpCentroidAlias[] = await resp.json();
       setAliases(data);
@@ -291,7 +296,7 @@ export const LpInfoPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl("/api/LpCentroidAlias"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ lpInfoId: infoId, alias }),
       });
       if (resp.ok) {
@@ -312,7 +317,7 @@ export const LpInfoPage: React.FC = () => {
     if (!confirm("Remove this alias?")) return;
     const infoId = modal.infoId;
     try {
-      const resp = await fetch(apiUrl(`/api/LpCentroidAlias/${id}`), { method: "DELETE" });
+      const resp = await fetch(apiUrl(`/api/LpCentroidAlias/${id}`), { method: "DELETE", headers: { ...authHeaders() } });
       if (resp.ok) {
         setAliasMsg({ text: "Removed", ok: true });
         if (infoId) loadAliases(infoId);
@@ -350,12 +355,12 @@ export const LpInfoPage: React.FC = () => {
       const resp = infoId
         ? await fetch(apiUrl(`/api/LpInfo/${infoId}`), {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify(body),
           })
         : await fetch(apiUrl("/api/LpInfo"), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify(body),
           });
       if (resp.ok) {
@@ -382,7 +387,7 @@ export const LpInfoPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl("/api/lpinfo/bulk-update"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ ids, patch }),
       });
       if (resp.ok) {
@@ -418,7 +423,7 @@ export const LpInfoPage: React.FC = () => {
     try {
       const resp = await fetch(apiUrl("/api/LpInfo/import"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ csvText: text }),
       });
       if (resp.ok) {

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useRef, useState } from "r
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
 import { newBreaches } from "@/lib/alertBreaches";
 import { playAlarm, primeAudio, stopAlarm } from "@/lib/alertSound";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, authHeaders } from "@/lib/auth";
 import {
   AlarmConfig,
   DEFAULT_ALARM_CONFIG,
@@ -112,7 +112,10 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       reconnectDelaysMs: [0, 2000, 5000], // ~3 attempts before "disconnected"
       accessTokenFactory: async () => {
         try {
-          const res = await fetch(apiUrl("/api/signalr/token"));
+          // /api/signalr/token sits behind requireSession (server.js denies every
+          // /api and /rest route by default), so it needs the session bearer or
+          // it 401s the moment the deny-by-default gate is live.
+          const res = await fetch(apiUrl("/api/signalr/token"), { headers: { ...authHeaders() } });
           if (!res.ok) return null;
           const json = await res.json();
           return json.token || null;

@@ -5,6 +5,10 @@ import { MetricRow } from './MetricRow';
 import { ForexTicker } from './ForexTicker';
 import { ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from '@/lib/dealingApi';
+// /api/dealing-client-lots-snapshots sits behind requireSession (server.js
+// denies every /api and /rest route by default); both calls below need the
+// session bearer or they 401 the moment the deny-by-default gate is live.
+import { authHeaders } from '@/lib/auth';
 
 interface DepartmentProps {
   selectedEntity: string;
@@ -135,7 +139,7 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
 
     const loadLiveLotsSeries = async () => {
       try {
-        const response = await fetch('/api/dealing-client-lots-snapshots?hours=72');
+        const response = await fetch('/api/dealing-client-lots-snapshots?hours=72', { headers: { ...authHeaders() } });
         if (!response.ok) return;
         const payload = await response.json();
         if (payload?.warning) {
@@ -166,7 +170,7 @@ export function DealingDepartment({ selectedEntity: _selectedEntity, fromDate, t
       try {
         const response = await fetch('/api/dealing-client-lots-snapshots', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
             snapshotTime: point.snapshotTime,
             totalLots: point.totalLots,

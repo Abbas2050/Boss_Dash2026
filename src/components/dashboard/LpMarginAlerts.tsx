@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAlertsHub, type LpMarginAlertRow } from "@/components/AlertsHubProvider";
 import { SignalRStatus } from "@/lib/signalRConnectionManager";
+// /api/AlertSettings sits behind requireSession (server.js denies every /api
+// and /rest route by default); every call here must carry the session bearer
+// token or it 401s the moment the deny-by-default gate is live, even though
+// apiUrl() targets this same origin.
+import { authHeaders } from "@/lib/auth";
 
 type AlertSettings = {
   marginAlertThreshold: number;
@@ -61,7 +66,7 @@ export const LpMarginAlerts: React.FC = () => {
     let active = true;
     (async () => {
       try {
-        const resp = await fetch(apiUrl("/api/AlertSettings"));
+        const resp = await fetch(apiUrl("/api/AlertSettings"), { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(await resp.text());
         const data = (await resp.json()) as AlertSettings;
         if (active) applySettings(data);
@@ -110,7 +115,7 @@ export const LpMarginAlerts: React.FC = () => {
     try {
       const resp = await fetch(apiUrl("/api/AlertSettings"), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ marginAlertThreshold: t, marginAlertIntervalSeconds: i }),
       });
       if (!resp.ok) {

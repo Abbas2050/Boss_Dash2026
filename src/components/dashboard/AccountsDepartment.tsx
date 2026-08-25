@@ -9,6 +9,10 @@ import { fetchWalletBalances } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { fetchClientVolume, resolveVolumeRange, type ClientVolumeSummary, type VolumeRangePreset } from '@/lib/clientVolumeApi';
+// /api/lp-equity-live-snapshots sits behind requireSession (server.js denies
+// every /api and /rest route by default); the fetch below needs the session
+// bearer or it 401s the moment the deny-by-default gate is live.
+import { authHeaders } from '@/lib/auth';
 
 interface PSPBalance {
   name: string;
@@ -418,7 +422,7 @@ export function AccountsDepartment({
       try {
         await fetch('/api/lp-equity-live-snapshots', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...authHeaders() },
           body: JSON.stringify({
             snapshotTime: point.snapshotKey,
             lpWithdrawableEquity: point.lpWithdrawableEquity,
