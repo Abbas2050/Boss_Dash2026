@@ -1,6 +1,5 @@
 import express from "express";
 import bcrypt from "bcryptjs";
-import { createRateLimiter } from "./rateLimit.js";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import mysql from "mysql2/promise";
@@ -40,6 +39,25 @@ const ALLOWED_ACCESS_ROOTS = new Set([
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_MAX_ATTEMPTS = 8;
 const loginAttempts = new Map();
+
+// Per-IP cap, alongside the per-email cap above. The per-email cap bounds
+// guesses against one address; it does nothing to bound an attacker who
+// sprays many different addresses from a single IP (account enumeration /
+// credential stuffing), since each address gets its own fresh budget. This
+// closes that gap by also counting failures per IP, independent of which
+// email they were aimed at.
+//
+// Threshold: 40 failures per IP per 15-minute window. Chosen so a shared
+// office NAT IP (~10 people) is never blocked by ordinary use -- a morning
+// login rush plus everyone re-authenticating after a network blip could
+// plausibly produce a handful of mistyped-password failures per person
+// (say, up to 3-4 each), which lands well under 40. An attacker spraying
+// many addresses from one IP, by contrast, is capped at 40 total guesses
+// across every address in the window -- far too few to make enumeration or
+// credential stuffing practical, and much tighter than the effectively
+// unlimited total the per-email-only cap allowed.
+const LOGIN_IP_MAX_ATTEMPTS = 40;
+const loginIpAttempts = new Map();
 
 let pool = null;
 let initPromise = null;
@@ -95,9 +113,15 @@ function getAttemptKey(req, email) {
   return `${String(req.ip || "unknown").trim()}|${String(email || "").trim().toLowerCase()}`;
 }
 
-function isRateLimited(req, email) {
+function getIpKey(req) {
+  return String(req.ip || "unknown").trim();
+}
+
+// `now` is injectable (defaults to Date.now) purely so tests can exercise
+// window expiry deterministically without a real 15-minute sleep; every
+// production call site uses the default.
+function isRateLimited(req, email, now = Date.now()) {
   const key = getAttemptKey(req, email);
-  const now = Date.now();
   const entry = loginAttempts.get(key);
   if (!entry) return false;
   if (now - entry.first > LOGIN_WINDOW_MS) {
@@ -107,9 +131,21 @@ function isRateLimited(req, email) {
   return entry.count >= LOGIN_MAX_ATTEMPTS;
 }
 
-function noteFailedLogin(req, email) {
+// Mirrors isRateLimited, but keyed on IP alone so it also catches an
+// attacker who never reuses the same email twice.
+function isIpRateLimited(req, now = Date.now()) {
+  const key = getIpKey(req);
+  const entry = loginIpAttempts.get(key);
+  if (!entry) return false;
+  if (now - entry.first > LOGIN_WINDOW_MS) {
+    loginIpAttempts.delete(key);
+    return false;
+  }
+  return entry.count >= LOGIN_IP_MAX_ATTEMPTS;
+}
+
+function noteFailedLoginForEmail(req, email, now) {
   const key = getAttemptKey(req, email);
-  const now = Date.now();
   const entry = loginAttempts.get(key);
   if (!entry || now - entry.first > LOGIN_WINDOW_MS) {
     loginAttempts.set(key, { count: 1, first: now });
@@ -118,8 +154,39 @@ function noteFailedLogin(req, email) {
   loginAttempts.set(key, { ...entry, count: entry.count + 1 });
 }
 
+function noteFailedLoginForIp(req, now) {
+  const key = getIpKey(req);
+  const entry = loginIpAttempts.get(key);
+  if (!entry || now - entry.first > LOGIN_WINDOW_MS) {
+    loginIpAttempts.set(key, { count: 1, first: now });
+    return;
+  }
+  loginIpAttempts.set(key, { ...entry, count: entry.count + 1 });
+}
+
+// A failed login counts against both caps: the address it was aimed at, and
+// the IP it came from. A success counts against neither -- proving you know
+// a password is not evidence of an attack, even if you needed a few tries
+// to type it correctly.
+function noteFailedLogin(req, email, now = Date.now()) {
+  noteFailedLoginForEmail(req, email, now);
+  noteFailedLoginForIp(req, now);
+}
+
+// Only the per-email entry is cleared on success. The per-IP counter is
+// deliberately left alone: if it were cleared too, an attacker spraying
+// many addresses from one IP could reset their own budget the moment any
+// one guess (e.g. their own throwaway account) happened to succeed.
 function clearFailedLogin(req, email) {
   loginAttempts.delete(getAttemptKey(req, email));
+}
+
+// Test-only: the two maps are process-lifetime singletons so unit tests
+// need a way to start each case from a clean slate without reaching for
+// module-reset hacks.
+function resetLoginRateLimitState() {
+  loginAttempts.clear();
+  loginIpAttempts.clear();
 }
 
 function toAuthUser(row) {
@@ -294,18 +361,25 @@ async function logAuthEvent(actorUserId, action, targetUserId, metadata) {
   }
 }
 
-// Ten attempts per IP per fifteen minutes. Enough that a person mistyping a
-// password is never blocked; far too few to guess one.
-const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
-
-router.post("/login", loginLimiter, async (req, res) => {
+router.post("/login", async (req, res) => {
   try {
     await ensureInitialized();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
     if (!email || !password) return res.status(400).json({ error: "email_password_required" });
-    if (isRateLimited(req, email)) {
-      await logAuthEvent(null, "auth.login.rate_limited", null, { email, ip: req.ip });
+    // Check the IP-wide cap first: it is the broader signal (a spray attack
+    // trips it while barely denting any single email's budget), so it is
+    // the more useful label when both caps happen to be tripped at once.
+    const ipLimited = isIpRateLimited(req);
+    const emailLimited = isRateLimited(req, email);
+    if (ipLimited || emailLimited) {
+      await logAuthEvent(null, "auth.login.rate_limited", null, {
+        email,
+        ip: req.ip,
+        // Lets an operator tell "one address under attack" (email) apart
+        // from "many addresses tried from one place" (ip) in the audit log.
+        scope: ipLimited ? "ip" : "email",
+      });
       return res.status(429).json({ error: "too_many_attempts", message: "Too many login attempts. Please try again later." });
     }
 
@@ -530,5 +604,17 @@ router.get("/audit-events", authRequired, async (req, res) => {
   }
 });
 
-export { authRequired, canManageUsers, hasAccessPermission };
+export {
+  authRequired,
+  canManageUsers,
+  hasAccessPermission,
+  isRateLimited,
+  isIpRateLimited,
+  noteFailedLogin,
+  clearFailedLogin,
+  resetLoginRateLimitState,
+  LOGIN_WINDOW_MS,
+  LOGIN_MAX_ATTEMPTS,
+  LOGIN_IP_MAX_ATTEMPTS,
+};
 export default router;
