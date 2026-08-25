@@ -1,9 +1,8 @@
 
 import { useEffect, useState } from 'react';
 import { TrendingUp, Users, DollarSign, Activity, UserPlus } from 'lucide-react';
-import { fetchAccounts, fetchTransactions, fetchTrades, fetchUsers, fetchAllUsers, Account, Transaction, Trade, type AccountRequest, type Account as AccountType } from '@/lib/api';
+import { fetchAccounts, fetchTransactions, fetchUsers, fetchAllUsers, Account, Transaction, type AccountRequest, type Account as AccountType } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate } from '@/lib/dubaiTime';
-import { getContractSize } from '@/lib/contractSizes';
 
 interface QuickStat {
   label: string;
@@ -46,11 +45,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
       statuses: ['approved'],
     };
     
-    const tradesBody: any = {
-      openDate: begin && end ? { begin, end } : undefined,
-      closeDate: begin && end ? { begin, end } : undefined,
-      ticketType: ['buy', 'sell'],
-    };
     const usersBody: any = {
       created: begin && end ? { begin, end } : undefined,
       customFields: selectedEntity && selectedEntity !== 'all' ? { custom_change_me_field: selectedEntity } : undefined,
@@ -58,7 +52,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
     
     // Remove undefined keys from request bodies
     Object.keys(baseBody).forEach(key => baseBody[key] === undefined && delete baseBody[key]);
-    Object.keys(tradesBody).forEach(key => tradesBody[key] === undefined && delete tradesBody[key]);
     Object.keys(usersBody).forEach(key => usersBody[key] === undefined && delete usersBody[key]);
 
     setIsLoading(true);
@@ -77,21 +70,18 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         fetchTransactions({ ...baseBody, transactionTypes: ['deposit'] }),
         fetchTransactions({ ...baseBody, transactionTypes: ['withdrawal'] }),
         fetchTransactions({ ...baseBody, transactionTypes: ['ib withdrawal'] }),
-        fetchTrades(tradesBody),
         fetchAllUsers({ ...usersBody, lead: false }),
         Promise.resolve(userIds) // Pass userIds through the promise chain
       ]);
     })
-      .then(async ([allDeposits, allWithdrawals, allIBWithdrawals, allTrades, newUsers, userIds]) => {
+      .then(async ([allDeposits, allWithdrawals, allIBWithdrawals, newUsers, userIds]) => {
         // Filter ALL data client-side by user IDs if entity filter is applied
         let deposits = allDeposits;
         let withdrawals = allWithdrawals;
         let ibWithdrawals = allIBWithdrawals;
-        let trades = allTrades;
         let accounts: Account[] = [];
         
         if (userIds && userIds.length > 0) {
-          trades = allTrades.filter((t: Trade) => userIds.includes(t.userId));
         }
 
         const entityUserIds = userIds && userIds.length > 0 ? userIds : undefined;
@@ -132,26 +122,6 @@ export function QuickStats({ selectedEntity, fromDate, toDate, refreshKey }: Qui
         // Withdrawals are stored as negative, so use absolute value for correct math
         let totalWithdrawal = Math.abs(withdrawals.reduce((sum, tx) => sum + tx.processedAmount, 0));
         let totalIBWithdrawal = Math.abs(ibWithdrawals.reduce((sum, tx) => sum + tx.processedAmount, 0));
-        
-        // Calculate volume from CRM trades (already filtered by entity)
-        const totalVolume = trades.reduce((sum, t: Trade) => sum + (t.volume || 0), 0);
-        
-        // Calculate million/yards for each trade
-        const tradeDetails = trades.map((t: Trade) => {
-          const volume = t.volume || 0;
-          const openPrice = Number(t.openPrice) || 0;
-          const contractSize = getContractSize(t.symbol);
-          const tradeMillionYards = volume * openPrice * contractSize;
-          return {
-            symbol: t.symbol,
-            volume,
-            openPrice,
-            contractSize,
-            millionYards: tradeMillionYards,
-          };
-        });
-        
-        const millionYards = tradeDetails.reduce((sum, t) => sum + t.millionYards, 0);
         
         const newMt5AccountsCount = accounts.length;
         const newUsersCount = newUsers.length;
