@@ -22,6 +22,7 @@ import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
 import { startHubWatcher } from './alerts/hubWatcher.js';
 import { authRequired, canManageUsers } from './auth/router.js';
+import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient } from './wallet/pspClients.js';
 import {
@@ -211,6 +212,15 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+// Deny by default. Every /api and /rest route needs a session unless it is on
+// the allow-list in auth/requireSession.js. Seventeen routes shipped without
+// authentication -- including the treasury report and six write endpoints --
+// because the default was open and nothing made the omission visible.
+//
+// This must stay ABOVE every route definition below; mounted after them it
+// would silently protect nothing.
+app.use(requireSession);
 
 app.get('/api/lp-equity-snapshots', async (req, res) => {
   if (!hasLpEquityDbConfig()) {
