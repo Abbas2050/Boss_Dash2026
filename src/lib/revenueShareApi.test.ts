@@ -178,3 +178,38 @@ describe("getJson error body (via the fetch* wrappers)", () => {
     }
   });
 });
+
+import { readFileSync } from "fs";
+import path from "path";
+
+// lpPL = realLpPL x ntpPercent / 100 is the backend's calculation, verified in
+// the live payload: 1,196,755.75 x 20% = 239,351.15. If this UI ever computes
+// it too, the two will drift and an LP gets paid the wrong number.
+describe("the revenue share is never recomputed here", () => {
+  const FILES = [
+    "src/lib/revenueShareApi.ts",
+    "src/pages/departments/dealing/RevenueShareTab.tsx",
+  ];
+
+  for (const file of FILES) {
+    it(`${file} does no arithmetic on ntpPercent or realLpPL`, () => {
+      let source: string;
+      try {
+        source = readFileSync(path.resolve(file), "utf8");
+      } catch {
+        return; // not created yet; Task 3 adds the component
+      }
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const offenders = [
+        /ntpPercent\s*[*/]/,
+        /[*/]\s*ntpPercent/,
+        /realLpPL\s*[*/]/,
+        /[*/]\s*realLpPL/,
+      ].filter((re) => re.test(code));
+      expect(
+        offenders.map(String),
+        "lpPL comes from the backend. Render it; do not derive it.",
+      ).toEqual([]);
+    });
+  }
+});
