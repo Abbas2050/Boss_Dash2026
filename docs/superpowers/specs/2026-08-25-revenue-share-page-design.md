@@ -63,16 +63,28 @@ A single date range drives all three. Views switch without refetching the others
 
 | View | Endpoint | Shape |
 | --- | --- | --- |
-| Revenue Share | `GET /History/aggregate?from=&to=` | bare array |
-| Deals | `GET /History/deals?login=&from=&to=` | **object**; rows are under `.deals` |
-| Volume | `GET /History/volume?from=&to=` | bare array |
+| Revenue Share | `GET /History/aggregate?from=&to=` | object; rows under `.items`, plus `totals` |
+| Deals | `GET /History/deals?login=&from=&to=` | object; rows under `.deals` |
+| Volume | `GET /History/volume?from=&to=` | object; rows under `.items` |
+
+**Every one of the three nests its rows.** An earlier draft of this spec called
+the first and third "bare arrays" — that was wrong, and it came from a probe
+script whose `d.items || d.rows || d.data` fallback unwrapped `.items` before
+the shape was ever inspected. Verified directly on 2026-08-25:
+`GET /History/aggregate` answers `{items, totals, fromTimestamp, toTimestamp}`.
+A helper that returns `[]` for a non-array payload renders an empty table with
+no error, which is why unwrapping must fail loudly instead.
+
+`POST /History/aggregate` with `{from, to, overrides}` returns the same shape and
+additionally accepts per-LP date overrides. The reference page uses POST for
+that reason. This page uses GET; overrides are out of scope.
 
 `from`/`to` are unix seconds. All three verified live on 2026-08-25 against
 1-24 Aug: HTTP 200, 9 rows each, under 1s.
 
-**The deals endpoint returns an object, not an array** — `{login, lpName,
-fromTimestamp, toTimestamp, totalDeals, deals[]}`. Treating it like the other two
-yields an empty grid with no error.
+`/History/deals` answers `{login, lpName, fromTimestamp, toTimestamp,
+totalDeals, deals[]}` — its rows are under `deals`, not `items`, so the three
+endpoints do not share one unwrap key.
 
 **Revenue Share columns** (all confirmed present in the live payload):
 `lpName`, `login`, `source`, `effectiveFrom`, `startEquity`, `endEquity`,
@@ -81,6 +93,12 @@ yields an empty grid with no error.
 
 `lpPL` is the answer the page exists to give and is styled as the result:
 emphasised, coloured by sign.
+
+**An LP on 0% is hidden**, unless it is an error row. The reference page does
+this (`if (!item.isError && item.ntpPercent === 0) return;`) and it is correct:
+an LP with no revenue-share agreement has no revenue share to report, and a
+screen of 0.00 rows buries the ones that matter. Nothing in the sampled data is
+currently on 0%, so this will not be visible until one is.
 
 **Volume columns** (confirmed): `lpName`, `login`, `source`, `tradeCount`,
 `totalLots`, `notionalUsd`, `volumeYards`.
