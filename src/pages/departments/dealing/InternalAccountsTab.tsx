@@ -59,7 +59,22 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
       const resp = await fetch(`${api}?all=true`);
       if (!resp.ok) throw new Error(`Internal accounts ${resp.status}`);
       const data = (await resp.json()) as InternalAccount[];
-      setRows(Array.isArray(data) ? data : []);
+      // Coerce with !! so a field the API doesn't send yet (excludeFromSwaps
+      // today; whichever one is next tomorrow) comes through as a real
+      // boolean instead of undefined. checked={undefined} in edit mode is an
+      // uncontrolled checkbox, and the user's first click on it hands React a
+      // real boolean via onChange -- an undefined -> defined transition that
+      // logs "changing an uncontrolled input to be controlled".
+      setRows(
+        Array.isArray(data)
+          ? data.map((row) => ({
+              ...row,
+              excludeFromEquity: !!row.excludeFromEquity,
+              excludeFromPositions: !!row.excludeFromPositions,
+              excludeFromSwaps: !!row.excludeFromSwaps,
+            }))
+          : [],
+      );
     } catch (e: any) {
       setError(e?.message || "Failed to load internal accounts.");
     } finally {

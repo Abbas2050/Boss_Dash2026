@@ -7,8 +7,8 @@
 // unverified. That is exactly why unwrapping throws instead of returning []:
 // when the Revenue Share page guessed a shape wrongly, the table rendered
 // empty with no error and nobody could tell why.
-import { describe, it, expect } from "vitest";
-import { unwrapSwapRows, readTotals } from "./swapsReportApi";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { unwrapSwapRows, readTotals, fetchSwapsReport } from "./swapsReportApi";
 
 const GOOD = {
   clients: [{ login: 101, name: "A", source: "Live", totalSwap: -12.5, dealVolume: 3, realizedVolume: 2 }],
@@ -37,6 +37,34 @@ describe("unwrapSwapRows", () => {
 
   it("names the key it was looking for, so the message says which half failed", () => {
     expect(() => unwrapSwapRows({ clients: [] }, "lps")).toThrow(/lps/);
+  });
+
+  // The envelope check (object with a "clients"/"lps" array) says nothing
+  // about what's inside each row. Before this guard existed, a row shaped
+  // like { swapTotal, clientName } instead of { totalSwap, login } passed
+  // straight through: money(undefined) renders "-", the name falls back to
+  // "-", and the table looks like a legitimate zero-swap period instead of a
+  // broken response. These tests are the row-shape half of the same
+  // loud-failure guarantee the envelope checks above already provide.
+  it("passes through a well-formed row unchanged", () => {
+    const row = { login: 101, name: "A", source: "Live", totalSwap: -12.5, dealVolume: 3, realizedVolume: 2 };
+    expect(unwrapSwapRows({ clients: [row] }, "clients")).toEqual([row]);
+  });
+
+  it("throws naming the field the backend actually sent, when totalSwap is renamed", () => {
+    const row = { login: 101, swapTotal: -12.5 };
+    expect(() => unwrapSwapRows({ clients: [row] }, "clients")).toThrow(/totalSwap/);
+    // The message should describe what IS on the row, not just what's missing.
+    expect(() => unwrapSwapRows({ clients: [row] }, "clients")).toThrow(/swapTotal/);
+  });
+
+  it("throws naming login when it is missing", () => {
+    const row = { totalSwap: 4 };
+    expect(() => unwrapSwapRows({ clients: [row] }, "clients")).toThrow(/login/);
+  });
+
+  it("still returns [] for a legitimately empty array without inspecting row shape", () => {
+    expect(unwrapSwapRows({ clients: [] }, "clients")).toEqual([]);
   });
 });
 
@@ -75,6 +103,33 @@ describe("readTotals", () => {
   it("rejects Infinity in totalSwap", () => {
     expect(readTotals({ clientTotals: { totalSwap: Infinity, accountCount: 1 } }, "clientTotals"))
       .toBeNull();
+  });
+});
+
+// If IIS answers a 200 with an HTML body (an SPA fallback, say) instead of
+// JSON, the res.ok check passes and res.json() is what actually fails. Left
+// unguarded, that throws a bare "Unexpected token '<'" that never names
+// /api/SwapsReport -- the same "which fetch broke" problem the row-shape
+// guard above exists to prevent, one step earlier in the pipeline.
+describe("fetchSwapsReport JSON parse guard", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("names the endpoint when the response body isn't valid JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected token '<', \"<!doctype \"... is not valid JSON");
+        },
+        text: async () => "<!doctype html>...",
+      }),
+    );
+
+    await expect(fetchSwapsReport("2026-08-01", "2026-08-07")).rejects.toThrow(/\/api\/SwapsReport/);
   });
 });
 
