@@ -1,4 +1,5 @@
 import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { RevenueShareTab } from "@/pages/departments/dealing/RevenueShareTab";
 import { useEffect, useState } from 'react';
 import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTriangle, X } from 'lucide-react';
 import { DepartmentCard } from './DepartmentCard';
@@ -955,6 +956,15 @@ export function AccountsDepartment({
           <div className="font-mono font-semibold text-sky-500">${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
+
+      <div className="space-y-2">
+        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Revenue Share</h2>
+        <p className="text-xs text-slate-500">
+          What each LP is owed for the period. Figures come from the backend's revenue-share
+          calculation; this panel does not recompute them.
+        </p>
+        <RevenueShareTab />
+      </div>
     </DepartmentCard>
   );
 }
