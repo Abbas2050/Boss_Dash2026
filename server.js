@@ -37,6 +37,7 @@ import { runDailyDigest } from './reports/dailyDigest.js';
 import { runMonthlyReview } from './reports/monthlyReview.js';
 import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
 import { startAllReportSchedulers } from './reports/schedulers.js';
+import { parseTestPeriod } from './reports/parseTestPeriod.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1006,6 +1007,42 @@ app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) =>
   try {
     const result = await runDealMatchEmailReport({ recipients });
     res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
+// Send a monthly for a period chosen by the caller. The four other test routes
+// always cover the current default period; these two exist because August's
+// monthlies were never sent -- the reports did not exist on 1 September -- and
+// the next automatic one is 1 October.
+//
+// parseTestPeriod itself lives in ./reports/parseTestPeriod.js (and is unit
+// tested there) rather than as a local function here, because importing
+// server.js triggers a real server.listen(...) and DB pool setup as a side
+// effect of module load -- unsafe to do from a test file.
+
+app.post('/api/reports/slippage-monthly/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  const period = parseTestPeriod(req.body);
+  if (period.error) return res.status(400).json({ error: 'bad_period', message: period.error });
+  try {
+    res.json(await runSlippageEmailReport({ cadence: 'monthly', recipients, ...period }));
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
+app.post('/api/reports/dealmatch-monthly/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  const period = parseTestPeriod(req.body);
+  if (period.error) return res.status(400).json({ error: 'bad_period', message: period.error });
+  try {
+    res.json(await runDealMatchEmailReport({ cadence: 'monthly', recipients, ...period }));
   } catch (e) {
     res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
   }
