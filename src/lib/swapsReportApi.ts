@@ -55,14 +55,18 @@ export function unwrapSwapRows(payload: unknown, key: "clients" | "lps"): SwapAc
  * The backend computes the totals. Returning null when they are missing lets the
  * UI say "unavailable"; summing the rows here would create a second answer to
  * what we paid in swaps.
+ *
+ * NaN and Infinity pass a typeof check but are not valid totals. Use Number.isFinite
+ * to reject them so the UI renders "unavailable" instead of silently rendering "-"
+ * or "NaN" while believing it has a genuine figure.
  */
 export function readTotals(payload: unknown, key: "clientTotals" | "lpTotals"): SwapTotals | null {
   if (!payload || typeof payload !== "object") return null;
   const totals = (payload as Record<string, unknown>)[key];
   if (!totals || typeof totals !== "object") return null;
   const t = totals as Record<string, unknown>;
-  if (typeof t.totalSwap !== "number" || typeof t.accountCount !== "number") return null;
-  return { totalSwap: t.totalSwap, accountCount: t.accountCount };
+  if (!Number.isFinite(t.totalSwap) || !Number.isFinite(t.accountCount)) return null;
+  return { totalSwap: t.totalSwap as number, accountCount: t.accountCount as number };
 }
 
 export async function fetchSwapsReport(fromYmd: string, toYmd: string): Promise<SwapsReport> {

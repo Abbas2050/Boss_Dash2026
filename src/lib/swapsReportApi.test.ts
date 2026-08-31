@@ -58,4 +58,22 @@ describe("readTotals", () => {
     expect(readTotals({ clientTotals: { totalSwap: 0, accountCount: 0 } }, "clientTotals"))
       .toEqual({ totalSwap: 0, accountCount: 0 });
   });
+
+  // NaN and Infinity are numbers in typeof terms, but not valid totals. The
+  // guard must reject them so the UI renders "unavailable" instead of silently
+  // claiming the figure is real and showing "-" or "NaN".
+  it("rejects NaN in totalSwap", () => {
+    expect(readTotals({ clientTotals: { totalSwap: NaN, accountCount: 1 } }, "clientTotals"))
+      .toBeNull();
+  });
+
+  it("rejects NaN in accountCount", () => {
+    expect(readTotals({ clientTotals: { totalSwap: 1, accountCount: NaN } }, "clientTotals"))
+      .toBeNull();
+  });
+
+  it("rejects Infinity in totalSwap", () => {
+    expect(readTotals({ clientTotals: { totalSwap: Infinity, accountCount: 1 } }, "clientTotals"))
+      .toBeNull();
+  });
 });
