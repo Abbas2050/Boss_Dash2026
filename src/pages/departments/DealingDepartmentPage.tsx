@@ -19,6 +19,7 @@ import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskSce
 import { LpRiskAlertsTab } from "@/pages/departments/dealing/LpRiskAlertsTab";
 import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
 import { SlippageReportTab } from "@/pages/departments/dealing/SlippageReportTab";
+import { RevenueShareTab } from "@/pages/departments/dealing/RevenueShareTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -94,6 +95,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "deal-performance": "Deal Performance",
   slippage: "Slippage Report",
   "slippage-report": "Slippage Report",
+  "revenue-share": "Revenue Share",
+  revshare: "Revenue Share",
   "client-volume": "Client Volume",
   clientvolume: "Client Volume",
   swap: "Swap Tracker",
@@ -4083,6 +4086,8 @@ export function DealingDepartmentPage() {
             <ClientRiskScenarioTab refreshKey={clientRiskScenarioRefreshKey} />
           ) : activeMenu === "Client Volume" ? (
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
+          ) : activeMenu === "Revenue Share" ? (
+            <RevenueShareTab />
           ) : activeMenu === "Slippage Report" ? (
             <SlippageReportTab refreshKey={slippageRefreshKey} />
           ) : activeMenu === "LP Risk Alerts" ? (
