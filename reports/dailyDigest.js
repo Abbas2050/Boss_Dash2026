@@ -15,7 +15,9 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
+import { SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
 import {
   ACCOUNT_HEADERS,
   LARGE_DEPOSIT_THRESHOLD,
@@ -265,7 +267,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.DAILY_DIGEST_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.daily);
   if (!recipients.length) {
     console.warn("[DailyDigest] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -273,7 +275,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
 
   // The covered date is the window key: one send per day, however many times
   // the process restarts.
-  if (isScheduledRun && (await alreadySentFor("daily", fromYmd))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.daily, fromYmd))) {
     console.log(`[DailyDigest] ${fromYmd} already sent; skipping (restart, not a new day).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -317,7 +319,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
   const html = buildDailyDigestHtml({ ymd: fromYmd, agg, glance, instruments, closingBalance, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Daily Digest" });
 
-  if (isScheduledRun) await recordSentFor("daily", fromYmd);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.daily, fromYmd);
 
   console.log(
     `[DailyDigest] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | large=${agg.largeDepositors.length} | lots=${instruments.totalLots} | day=${fromYmd}`,

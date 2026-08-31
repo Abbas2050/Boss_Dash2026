@@ -21,6 +21,7 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
 
 import {
@@ -56,6 +57,17 @@ import {
 // Saturday->Friday, closed the previous night -- see previousFullWeekUtc().
 const DEFAULT_SCHEDULE = "0 10 * * 6"; // 10:00 every Saturday (UAE time)
 const DEFAULT_TIMEZONE = "Asia/Dubai";
+
+// Unprefixed and inconsistent with slippage-* / dealmatch-* on purpose: these
+// three keys were recorded against real sends on 1 September 2026, and renaming
+// them would let those sends repeat on the next app-pool restart.
+export const SUMMARY_GUARD_KEYS = { daily: "daily", weekly: "summary", monthly: "monthly" };
+
+export const SUMMARY_RECIPIENT_VARS = {
+  daily: ["DAILY_DIGEST_RECIPIENTS", "SUMMARY_ALERT_RECIPIENTS"],
+  weekly: ["SUMMARY_ALERT_RECIPIENTS"],
+  monthly: ["MONTHLY_REVIEW_RECIPIENTS", "SUMMARY_ALERT_RECIPIENTS"],
+};
 
 export function buildSummaryEmailHtml({
   fromYmd, toYmd, agg, glance,
@@ -440,7 +452,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.weekly);
   if (!recipients.length) {
     console.warn("[WeeklySummary] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -448,7 +460,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   // Same window, already sent: this is a restart, not a new week.
   const windowKey = `${fromYmd}..${toYmd}`;
-  if (isScheduledRun && (await alreadySentFor("summary", windowKey))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.weekly, windowKey))) {
     console.log(`[WeeklySummary] ${windowKey} already sent; skipping (restart, not a new week).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -536,7 +548,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, equity, closingBalance, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
 
-  if (isScheduledRun) await recordSentFor("summary", windowKey);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.weekly, windowKey);
 
   console.log(
     `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | firstTime=${firstTimers.rows.length} | instruments=${instruments.instrumentCount} | period=${fromYmd}..${toYmd}`,

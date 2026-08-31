@@ -14,6 +14,7 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
 import {
   MONTH_NAMES,
@@ -32,7 +33,7 @@ import {
   signCls,
   topInstruments,
 } from "./summaryCore.js";
-import { buildSummaryEmailHtml } from "./weeklyBusinessSummary.js";
+import { buildSummaryEmailHtml, SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
 
 // Monthly review -- everything the weekly Business Summary carries, over a
 // calendar month, plus the two things only a month can show: how it compares
@@ -297,7 +298,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.MONTHLY_REVIEW_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.monthly);
   if (!recipients.length) {
     console.warn("[MonthlyReview] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -306,7 +307,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
   // YYYY-MM is the window key: one send per month, however many times the
   // process restarts on the 1st.
   const windowKey = fromYmd.slice(0, 7);
-  if (isScheduledRun && (await alreadySentFor("monthly", windowKey))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.monthly, windowKey))) {
     console.log(`[MonthlyReview] ${windowKey} already sent; skipping (restart, not a new month).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -396,7 +397,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
   });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Monthly Review" });
 
-  if (isScheduledRun) await recordSentFor("monthly", windowKey);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.monthly, windowKey);
 
   console.log(
     `[MonthlyReview] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | depositors=${agg.depositors.length} | weeks=${weekBuckets(agg.byDay).length} | prior=${prior ? prior.monthLabel : "unavailable"} | month=${monthLabel}`,
