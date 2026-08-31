@@ -4327,6 +4327,12 @@ export function DealingDepartmentPage() {
                 <SortableTable
                   tableId="dealing-metrics-table"
                   enableColumnVisibility
+                  // Lowest margin level first: below 100% is the danger zone, so
+                  // the accounts nearest a margin call are the ones a dealer
+                  // should see without scrolling. The reference page sorts this
+                  // descending, which buries them under the healthy accounts.
+                  defaultSortKey="marginLevel"
+                  defaultSortDirection="asc"
                   rows={metricsData?.items || []}
                   columns={metricsTableColumns}
                   exportFilePrefix="dealing-metrics"

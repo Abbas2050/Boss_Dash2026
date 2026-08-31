@@ -462,6 +462,16 @@ const clientRevenueDetailColumns: SortableTableColumn<Row>[] = [
     render: (r) => <span className="text-cyan-700 dark:text-cyan-300">{fmtNum(r.clientLotsPlaced)}</span>,
   },
   {
+    key: "clientMillionsUsd",
+    label: "Notional (M USD)",
+    headerClassName: "text-right",
+    cellClassName: "text-right",
+    headerTitle:
+      "Client-side notional traded on this LP, in USD millions. The basis for the per-million LP commission rate when the per-lot Actual figure is unavailable.",
+    sortValue: (r) => num(r.clientMillionsUsd),
+    render: (r) => fmtNum(r.clientMillionsUsd),
+  },
+  {
     key: "lpLotsSent",
     label: "LP Lots",
     headerClassName: "text-right",
@@ -1209,6 +1219,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     return {
       tradeCount: clientRevenueDetailRows.reduce((s, r) => s + num(r.tradeCount), 0),
       clientLotsPlaced: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientLotsPlaced), 0),
+      clientMillionsUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientMillionsUsd), 0),
       lpLotsSent: clientRevenueDetailRows.reduce((s, r) => s + num(r.lpLotsSent), 0),
       markupRevenueUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.markupRevenueUsd), 0),
       clientCommissionUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientCommissionUsd), 0),
@@ -1418,6 +1429,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                             items={[
                               { label: "Trades", value: fmtInt(clientRevenueDetailTotals.tradeCount) },
                               { label: "Client Lots", value: fmtNum(clientRevenueDetailTotals.clientLotsPlaced) },
+                              { label: "Notional (M USD)", value: fmtNum(clientRevenueDetailTotals.clientMillionsUsd) },
                               { label: "LP Lots", value: fmtNum(clientRevenueDetailTotals.lpLotsSent) },
                               { label: "Markup", value: money(clientRevenueDetailTotals.markupRevenueUsd) },
                               { label: "Client Comm", value: money(clientRevenueDetailTotals.clientCommissionUsd) },
