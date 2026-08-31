@@ -258,6 +258,31 @@ export function previousFullWeekUtc(now = new Date()) {
   return { start, end };
 }
 
+export function previousFullDayUtc(now = new Date()) {
+  // Yesterday, whole. The day in progress is excluded for the same reason the
+  // week in progress is: a figure that keeps moving is not a report.
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  start.setUTCDate(start.getUTCDate() - 1);
+  start.setUTCHours(0, 0, 0, 0);
+
+  const end = new Date(start);
+  end.setUTCHours(23, 59, 59, 0);
+
+  return { start, end };
+}
+
+export function previousFullMonthUtc(now = new Date()) {
+  // Day 0 of a month is the last day of the month before it, so the end date
+  // needs no table of month lengths and gets February right in a leap year.
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+  start.setUTCHours(0, 0, 0, 0);
+
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+  end.setUTCHours(23, 59, 59, 0);
+
+  return { start, end };
+}
+
 export function toUnixRange(fromDate, toDate) {
   const from = Math.floor(fromDate.getTime() / 1000);
   const to = Math.floor(toDate.getTime() / 1000);
