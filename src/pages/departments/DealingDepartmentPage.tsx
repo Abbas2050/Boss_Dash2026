@@ -1140,6 +1140,7 @@ export function DealingDepartmentPage() {
   const [clientVolumeRefreshKey, setClientVolumeRefreshKey] = useState(0);
   const [revenueShareRefreshKey, setRevenueShareRefreshKey] = useState(0);
   const [slippageRefreshKey, setSlippageRefreshKey] = useState(0);
+  const [swapsReportRefreshKey, setSwapsReportRefreshKey] = useState(0);
   const [lpRiskAlertsRefreshKey, setLpRiskAlertsRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
@@ -1383,6 +1384,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Slippage Report") {
       setSlippageRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Swaps Report") {
+      setSwapsReportRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "LP Risk Alerts") {
@@ -4095,7 +4100,7 @@ export function DealingDepartmentPage() {
           ) : activeMenu === "Client Volume" ? (
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
           ) : activeMenu === "Swaps Report" ? (
-            <SwapsReportTab />
+            <SwapsReportTab refreshKey={swapsReportRefreshKey} />
           ) : activeMenu === "Revenue Share" ? (
             <RevenueShareTab refreshKey={revenueShareRefreshKey} />
           ) : activeMenu === "Slippage Report" ? (
