@@ -11,10 +11,46 @@
 // the same. A genuinely empty result (the right key holding an empty array)
 // is not an error and must still return [].
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { unwrapDeals, unwrapItems, isErrorRow, hidesFromRevenueShare, fetchRevenueShare, fetchVolume, fetchDeals } from "./revenueShareApi";
+import { unwrapDeals, unwrapItems, isErrorRow, hidesFromRevenueShare, fetchRevenueShare, fetchVolume, fetchDeals, ymd } from "./revenueShareApi";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+// ymd() must format a Date using its LOCAL calendar day, not the UTC day
+// d.toISOString() reports. Every Date here is built from LOCAL components --
+// `new Date(2026, 0, 5)` is local midnight on 5 January, not a UTC instant --
+// so a `d.toISOString().slice(0, 10)` implementation is wrong whenever local
+// time sits ahead of UTC: local midnight there is still the *previous* day
+// in UTC. For `new Date(2026, 0, 5)` that's "2026-01-04", not "2026-01-05".
+//
+// This genuinely discriminates the two implementations, but only when the
+// test runner's own local timezone is EAST of UTC (a positive offset, e.g.
+// Asia/Dubai at UTC+4) -- that's what makes local midnight land on the
+// previous UTC day in the first place. At UTC itself, local midnight IS UTC
+// midnight, so both implementations agree. West of UTC (a negative offset,
+// e.g. US zones), local midnight falls later the *same* UTC day, so both
+// implementations still agree. In other words: this test is weaker --
+// unable to catch a toISOString() regression at all -- when CI's ambient
+// timezone is UTC or west of it. It is not a universal proof, only a real
+// assertion in zones ahead of UTC (which is where this codebase's users are).
+describe("ymd", () => {
+  it("formats single-digit month and day with zero-padding", () => {
+    expect(ymd(new Date(2026, 0, 5))).toBe("2026-01-05");
+  });
+
+  it("does not roll a month boundary back a month", () => {
+    // Local midnight on 1 March; a UTC-day-based implementation in a zone
+    // ahead of UTC would report the last day of February instead.
+    expect(ymd(new Date(2026, 2, 1))).toBe("2026-03-01");
+  });
+
+  it("does not roll a year boundary back a year", () => {
+    // Local midnight on 1 January; a UTC-day-based implementation in a zone
+    // ahead of UTC would report 31 December of the previous year instead.
+    expect(ymd(new Date(2026, 0, 1))).toBe("2026-01-01");
+    expect(ymd(new Date(2025, 11, 31))).toBe("2025-12-31");
+  });
 });
 
 describe("unwrapDeals", () => {
@@ -141,7 +177,11 @@ describe("hidesFromRevenueShare", () => {
   });
 
   it('shows a row whose ntpPercent is the string "0" (coerces to 0 but is not the number 0)', () => {
-    expect(hidesFromRevenueShare({ ntpPercent: "0" as unknown as number })).toBe(false);
+    // hidesFromRevenueShare's signature accepts `number | string | null` for
+    // ntpPercent precisely so this case type-checks for real -- no
+    // `as unknown as number` cast standing in for a value the declared type
+    // actually forbids.
+    expect(hidesFromRevenueShare({ ntpPercent: "0" })).toBe(false);
   });
 
   it("shows a row with a negative ntpPercent", () => {

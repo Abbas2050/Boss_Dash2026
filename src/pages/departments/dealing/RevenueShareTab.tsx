@@ -6,6 +6,7 @@ import {
   fetchVolume,
   hidesFromRevenueShare,
   isErrorRow,
+  ymd,
   type DealRow,
   type RevenueShareRow,
   type VolumeRow,
@@ -30,19 +31,6 @@ const num = (v: number | null | undefined, digits = 2) => {
 const signed = (v: number | null | undefined) => {
   const n = Number(v) || 0;
   return n > 0 ? "text-emerald-700 dark:text-emerald-300" : n < 0 ? "text-rose-700 dark:text-rose-300" : "";
-};
-
-// Local YYYY-MM-DD, not d.toISOString().slice(0, 10). toISOString() reports
-// the UTC calendar day, which for a UAE user (UTC+4) is the wrong day
-// between local midnight and 04:00 -- the "To" date would default to
-// yesterday, and at a month boundary monthStart could land a month early.
-// Deriving from getFullYear/getMonth/getDate keeps the default in the
-// user's own calendar day.
-export const ymd = (d: Date) => {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 };
 
 /**

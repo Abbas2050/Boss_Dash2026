@@ -132,13 +132,30 @@ export function isErrorRow(row: { isError?: boolean }): boolean {
  * comparison, not a coercion: `Number(null)` and `Number("0")` both equal 0
  * too, but a null or string "0" is missing/malformed data, not a zero
  * agreement, and hiding it would make the row vanish silently instead of
- * surfacing the problem. Error rows are always shown regardless of their
- * (meaningless) ntpPercent, so a failed fetch surfaces as an error, not a
- * silent disappearance.
+ * surfacing the problem. The signature accepts `string` alongside `number`
+ * specifically so that guard is real and type-checked -- ntpPercent arrives
+ * from a JSON payload we don't control, so a malformed response handing back
+ * the string "0" is a case this function actually has to defend against, not
+ * just a hypothetical exercised only via a cast in a test. Error rows are
+ * always shown regardless of their (meaningless) ntpPercent, so a failed
+ * fetch surfaces as an error, not a silent disappearance.
  */
-export function hidesFromRevenueShare(row: { ntpPercent?: number | null; isError?: boolean }): boolean {
+export function hidesFromRevenueShare(row: { ntpPercent?: number | string | null; isError?: boolean }): boolean {
   return !isErrorRow(row) && row.ntpPercent === 0;
 }
+
+// Local YYYY-MM-DD, not d.toISOString().slice(0, 10). toISOString() reports
+// the UTC calendar day, which for a UAE user (UTC+4) is the wrong day
+// between local midnight and 04:00 -- the "To" date would default to
+// yesterday, and at a month boundary monthStart could land a month early.
+// Deriving from getFullYear/getMonth/getDate keeps the default in the
+// user's own calendar day.
+export const ymd = (d: Date) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 // How much of a non-2xx response body to fold into the thrown Error. Enough
 // to show a real backend error message (a JSON {message: "..."} body, a
