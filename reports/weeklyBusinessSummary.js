@@ -64,6 +64,18 @@ export function buildSummaryEmailHtml({
   equity = { withdrawable: null, gross: null },
   closingBalance = null,
   chartUrl = null, notices = [],
+  // The monthly review carries every section below plus two of its own, so it
+  // renders through this function rather than copying it. Defaults reproduce
+  // the weekly email exactly; a caller that passes nothing gets what it always
+  // got. Verified byte-for-byte, not assumed.
+  title = "Weekly Business Summary",
+  subtitle = "Management Reporting | Money Movement & Account Activity",
+  glanceHeading = "Last Week at a Glance",
+  periodNoun = "week",
+  footerLead = "Automated Weekly Business Summary.",
+  afterGlance = "",
+  afterDailyFlow = "",
+  footerExtras = [],
 }) {
   const netRevenue = glance.totalRevenue === null || glance.totalRevenue === undefined
     ? null
@@ -272,28 +284,28 @@ export function buildSummaryEmailHtml({
 
 
   const body = `
-          <p class="section-title" style="margin-top:0;">Last Week at a Glance</p>
-          ${glanceCards}
+          <p class="section-title" style="margin-top:0;">${escapeHtml(glanceHeading)}</p>
+          ${glanceCards}${afterGlance}
 
-          <p class="section-title">Equity Position <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
+          <p class="section-title">Equity Position <span style="font-weight:400;">&mdash; as at send time, not for the ${periodNoun}</span></p>
           <p class="note">Credit is the non-withdrawable part of an account. Withdrawable equity is equity with credit removed, which is why the difference can change sign between the two rows. Mirrors the Dealing &rsaquo; Metrics tab.</p>
           ${equityRowOne || `<p class="note">Withdrawable equity unavailable &mdash; Metrics/dashboard did not respond.</p>`}
           ${equityRowTwo || `<p class="note">Credit-inclusive equity unavailable &mdash; EquityOverview/dashboard did not respond.</p>`}
 
-          <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for the week</span></p>
+          <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for the ${periodNoun}</span></p>
           ${closingBalanceCards || `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}
 
           <p class="section-title">Large Depositors</p>
-          <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week &mdash; the subset of Account Activity below.</p>
+          <p class="note">Accounts that deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this ${periodNoun} &mdash; the subset of Account Activity below.</p>
           ${dataTable({
             headers: ACCOUNT_HEADERS,
             totalRow: agg.largeDepositors.length ? largeTotalRow : "",
             bodyRows: largeRows,
-            emptyText: `No accounts deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this week.`,
+            emptyText: `No accounts deposited more than ${money(LARGE_DEPOSIT_THRESHOLD)} this ${periodNoun}.`,
           })}
 
           <p class="section-title">First-Time Depositors</p>
-          <p class="note">Accounts whose <strong>first ever deposit</strong> landed this week. Confirmed twice: the CRM&rsquo;s own <em>firstDepositDate</em> on the client record, <em>and</em> that client&rsquo;s transaction history before ${escapeHtml(fromYmd)} containing no earlier deposit. A client is listed only when both agree.</p>
+          <p class="note">Accounts whose <strong>first ever deposit</strong> landed this ${periodNoun}. Confirmed twice: the CRM&rsquo;s own <em>firstDepositDate</em> on the client record, <em>and</em> that client&rsquo;s transaction history before ${escapeHtml(fromYmd)} containing no earlier deposit. A client is listed only when both agree.</p>
           ${dataTable({
             headers: [
               { label: "Client", width: "34%" },
@@ -304,7 +316,7 @@ export function buildSummaryEmailHtml({
             ],
             totalRow: firstTimers.rows.length ? firstTimerTotalRow : "",
             bodyRows: firstTimerRows,
-            emptyText: "No first-time depositors this week.",
+            emptyText: `No first-time depositors this ${periodNoun}.`,
           })}
 
           <p class="section-title">Top Trading Instruments</p>
@@ -319,7 +331,7 @@ export function buildSummaryEmailHtml({
             ],
             totalRow: instruments.rows.length ? instrumentTotalRow : "",
             bodyRows: instrumentRows,
-            emptyText: "No traded volume this week.",
+            emptyText: `No traded volume this ${periodNoun}.`,
           })}
 
           <p class="section-title">Daily Flow</p>
@@ -336,15 +348,15 @@ export function buildSummaryEmailHtml({
             emptyText: "No daily movement recorded.",
             narrow: true,
           })}
-          ${chartUrl ? `<div class="ch-img"><img src="${chartUrl}" alt="Daily money movement" width="100%" /></div>` : ""}
+          ${chartUrl ? `<div class="ch-img"><img src="${chartUrl}" alt="Daily money movement" width="100%" /></div>` : ""}${afterDailyFlow}
 
           <p class="section-title">Account Activity</p>
-          <p class="note">Every account that moved money during the week, largest deposit first. Net = Deposits &minus; Withdrawals &minus; IB Rebate.</p>
+          <p class="note">Every account that moved money during the ${periodNoun}, largest deposit first. Net = Deposits &minus; Withdrawals &minus; IB Rebate.</p>
           ${dataTable({
             headers: ACCOUNT_HEADERS,
             totalRow: agg.depositors.length ? depositorTotalRow : "",
             bodyRows: depositorRows,
-            emptyText: "No deposits this week.",
+            emptyText: `No deposits this ${periodNoun}.`,
           })}
 
           <p class="section-title">Money Movement by PSP</p>
@@ -360,17 +372,17 @@ export function buildSummaryEmailHtml({
             ],
             totalRow: pspTotalRow,
             bodyRows: pspRows,
-            emptyText: "No settled transactions for this week.",
+            emptyText: `No settled transactions for this ${periodNoun}.`,
           })}`;
 
   const footerLines = [
-    "Automated Weekly Business Summary.",
+    footerLead,
     `Net = Deposits &minus; Withdrawals &minus; IB Rebate, counting ${escapeHtml(TX_STATUSES.join(", "))} transactions only. Amounts use magnitudes; direction comes from the transaction type.`,
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice &mdash; an <em>ib withdrawal</em> sits in IB Rebate, not in Withdrawals.",
-    `IB Rebate is the ${escapeHtml("ib transfer to account")} and ${escapeHtml("ib withdrawal")} settled this week. The Deal Match report derives IB commission from <em>current</em> CRM wallet balances instead, so the two can differ &mdash; this one is fixed for a closed week, that one drifts between runs.`,
+    `IB Rebate is the ${escapeHtml("ib transfer to account")} and ${escapeHtml("ib withdrawal")} settled this ${periodNoun}. The Deal Match report derives IB commission from <em>current</em> CRM wallet balances instead, so the two can differ &mdash; this one is fixed for a closed ${periodNoun}, that one drifts between runs.`,
     `Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.`,
     "Closing Balance is a snapshot too, and most of its figures are read from the finance Google Sheet, so they are only as current as that sheet. Net all Current Balance is the exception: it is summed from the live PSP balances.",
-    "Equity Position is a snapshot taken when this email was built, not a figure for the reporting week. The withdrawable row comes from <code>Metrics/dashboard</code> and the credit-inclusive row from <code>EquityOverview/dashboard</code>, so the two are fetched moments apart and can differ by a little price movement.",
+    `Equity Position is a snapshot taken when this email was built, not a figure for the reporting ${periodNoun}. The withdrawable row comes from <code>Metrics/dashboard</code> and the credit-inclusive row from <code>EquityOverview/dashboard</code>, so the two are fetched moments apart and can differ by a little price movement.`,
     `IB Rebate by type: ${
       agg.ibByType.length
         ? agg.ibByType.map((t) => `${escapeHtml(t.type)} ${money(t.amount)}`).join(" &middot; ")
@@ -395,14 +407,15 @@ export function buildSummaryEmailHtml({
           `<strong>Check:</strong> ${fmtNum(agg.ibSuspectedDoubleCount, 0)} IB amount(s) appear more than once for the same client on the same day. If those are the two legs of one transfer, IB Rebate is overstated and needs a one-leg rule.`,
         ]
       : []),
+    ...footerExtras,
     ...notices.map((n) => escapeHtml(n)),
-    `Transaction types seen this week: ${escapeHtml(agg.typesSeen.join(", ") || "none")}.`,
+    `Transaction types seen this ${periodNoun}: ${escapeHtml(agg.typesSeen.join(", ") || "none")}.`,
   ];
 
   return emailShell({
     theme: "light",
-    title: "Weekly Business Summary",
-    subtitle: "Management Reporting | Money Movement & Account Activity",
+    title,
+    subtitle,
     metaLines: [
       `Period: <strong>${escapeHtml(fromYmd)}</strong> to <strong>${escapeHtml(toYmd)}</strong> (UTC)`,
       "Scope: all PSPs, all accounts",
