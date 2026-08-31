@@ -1356,7 +1356,7 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
   });
 
   const runUrl = `${BACKEND_BASE_URL}/DealMatch/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(45_000) });
+  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(DEALMATCH_RUN_TIMEOUT_MS) });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`DealMatch/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);

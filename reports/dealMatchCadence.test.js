@@ -86,3 +86,33 @@ describe("cadence heading", () => {
     expect(daily).not.toMatch(/<h1 class="title">Weekly Deal Performance Summary<\/h1>/);
   });
 });
+
+describe("DealMatch/Run timeout consistency", () => {
+  // All DealMatch/Run calls must use DEALMATCH_RUN_TIMEOUT_MS (~40s measured cost).
+  // ClientVolume/Run at line 230 legitimately uses 45s (responds in <1s); this test
+  // must not flag that. Reading the source ensures any future hardcoded 45s on a
+  // DealMatch/Run call is caught at test time.
+  it("uses DEALMATCH_RUN_TIMEOUT_MS for all DealMatch/Run call sites, never bare 45_000", async () => {
+    const { readFileSync } = await import("fs");
+    const { resolve } = await import("path");
+    const filePath = resolve("reports/dealMatchWeeklyReport.js");
+    const source = readFileSync(filePath, "utf-8");
+
+    // Find all lines with DealMatch/Run
+    const lines = source.split("\n");
+    const issues = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.includes("DealMatch/Run")) {
+        // Check if this line or the next few lines (in case of formatting) has a bare 45_000 timeout
+        const context = lines.slice(i, Math.min(i + 3)).join("\n");
+        if (/AbortSignal\.timeout\(\s*45_000\s*\)/.test(context)) {
+          issues.push(`Line ${i + 1}: DealMatch/Run uses bare 45_000 timeout`);
+        }
+      }
+    }
+
+    expect(issues).toEqual([]);
+  });
+});
