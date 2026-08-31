@@ -184,6 +184,12 @@ export function AccountsDepartment({
   refreshKey,
   title = 'Accounts',
   mode = 'accounts',
+  // Off by default: this component is reused as a compact dashboard tile
+  // (home dashboard, MainDashboard) alongside other small live-summary
+  // panels. The Revenue Share panel is a full table with its own date
+  // pickers and a Run button, which only belongs on the dedicated
+  // /departments/accounts page. Only that mount site should pass true.
+  showRevenueShare = false,
 }: {
   selectedEntity: string;
   fromDate?: Date;
@@ -191,6 +197,7 @@ export function AccountsDepartment({
   refreshKey: number;
   title?: string;
   mode?: 'accounts' | 'lp';
+  showRevenueShare?: boolean;
 }) {
   const isLpMode = mode === 'lp';
   const [volumePreset, setVolumePreset] = useState<VolumeRangePreset>('today');
@@ -957,14 +964,16 @@ export function AccountsDepartment({
         </div>
       </div>}
 
-      <div className="space-y-2">
-        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Revenue Share</h2>
-        <p className="text-xs text-slate-500">
-          What each LP is owed for the period. Figures come from the backend's revenue-share
-          calculation; this panel does not recompute them.
-        </p>
-        <RevenueShareTab />
-      </div>
+      {showRevenueShare && (
+        <div className="space-y-2">
+          <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Revenue Share</h2>
+          <p className="text-xs text-slate-500">
+            What each LP is owed for the period. Figures come from the backend's revenue-share
+            calculation; this panel does not recompute them.
+          </p>
+          <RevenueShareTab />
+        </div>
+      )}
     </DepartmentCard>
   );
 }
