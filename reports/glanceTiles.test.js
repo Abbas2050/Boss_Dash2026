@@ -3,7 +3,8 @@
 // The Last Week at a Glance tiles that count deposits and first-time depositors.
 import { describe, it, expect } from "vitest";
 process.env.API_TOKEN = "stub";
-const { aggregate, buildSummaryEmailHtml } = await import("./weeklyBusinessSummary.js");
+const { aggregate } = await import("./summaryCore.js");
+const { buildSummaryEmailHtml } = await import("./weeklyBusinessSummary.js");
 
 // Client 1 deposits three times, client 2 once. Withdrawals, IB movements,
 // internal transfers and credits must NOT be counted as deposits.

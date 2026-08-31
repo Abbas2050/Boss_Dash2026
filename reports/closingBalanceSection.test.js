@@ -3,7 +3,8 @@
 // The Closing Balance section of the Weekly Business Summary.
 import { describe, it, expect } from "vitest";
 process.env.API_TOKEN = "stub";
-const { aggregate, buildSummaryEmailHtml } = await import("./weeklyBusinessSummary.js");
+const { aggregate } = await import("./summaryCore.js");
+const { buildSummaryEmailHtml } = await import("./weeklyBusinessSummary.js");
 
 const AGG = aggregate([
   { type: "deposit", psp: "bankwire", processedAmount: 1000, fromUserId: 1, processedAt: "2026-08-08 10:00:00" },
