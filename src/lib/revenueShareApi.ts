@@ -125,6 +125,21 @@ export function isErrorRow(row: { isError?: boolean }): boolean {
   return row?.isError === true;
 }
 
+/**
+ * An LP with no revenue-share agreement reports ntpPercent as the number 0
+ * and has nothing to show on the Revenue Share view -- a screen of 0.00 rows
+ * would bury the LPs that actually have an agreement. This is a strict
+ * comparison, not a coercion: `Number(null)` and `Number("0")` both equal 0
+ * too, but a null or string "0" is missing/malformed data, not a zero
+ * agreement, and hiding it would make the row vanish silently instead of
+ * surfacing the problem. Error rows are always shown regardless of their
+ * (meaningless) ntpPercent, so a failed fetch surfaces as an error, not a
+ * silent disappearance.
+ */
+export function hidesFromRevenueShare(row: { ntpPercent?: number | null; isError?: boolean }): boolean {
+  return !isErrorRow(row) && row.ntpPercent === 0;
+}
+
 // How much of a non-2xx response body to fold into the thrown Error. Enough
 // to show a real backend error message (a JSON {message: "..."} body, a
 // plain-text stack trace header), short enough that a runaway HTML error

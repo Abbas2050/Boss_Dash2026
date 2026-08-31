@@ -11,7 +11,7 @@
 // the same. A genuinely empty result (the right key holding an empty array)
 // is not an error and must still return [].
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { unwrapDeals, unwrapItems, isErrorRow, fetchRevenueShare, fetchVolume, fetchDeals } from "./revenueShareApi";
+import { unwrapDeals, unwrapItems, isErrorRow, hidesFromRevenueShare, fetchRevenueShare, fetchVolume, fetchDeals } from "./revenueShareApi";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -115,6 +115,41 @@ describe("isErrorRow", () => {
     expect(isErrorRow({ isError: true })).toBe(true);
     expect(isErrorRow({ isError: false })).toBe(false);
     expect(isErrorRow({})).toBe(false);
+  });
+});
+
+// An LP with ntpPercent === 0 (the number) has no revenue-share agreement
+// and should be hidden. Anything else -- including a null/undefined/string
+// "0" that merely LOOKS like zero after coercion -- is missing data, not a
+// zero agreement, and must stay visible. An error row is always visible
+// regardless of its (meaningless) ntpPercent.
+describe("hidesFromRevenueShare", () => {
+  it("hides a row whose ntpPercent is strictly the number 0", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: 0 })).toBe(true);
+  });
+
+  it("shows a row with a nonzero ntpPercent", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: 20 })).toBe(false);
+  });
+
+  it("shows a row whose ntpPercent is null (missing data, not a zero agreement)", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: null })).toBe(false);
+  });
+
+  it("shows a row whose ntpPercent is undefined", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: undefined })).toBe(false);
+  });
+
+  it('shows a row whose ntpPercent is the string "0" (coerces to 0 but is not the number 0)', () => {
+    expect(hidesFromRevenueShare({ ntpPercent: "0" as unknown as number })).toBe(false);
+  });
+
+  it("shows a row with a negative ntpPercent", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: -5 })).toBe(false);
+  });
+
+  it("shows an error row even when its ntpPercent is 0 -- an error must always be visible", () => {
+    expect(hidesFromRevenueShare({ ntpPercent: 0, isError: true })).toBe(false);
   });
 });
 

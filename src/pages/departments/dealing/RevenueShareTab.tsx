@@ -4,6 +4,7 @@ import {
   fetchDeals,
   fetchRevenueShare,
   fetchVolume,
+  hidesFromRevenueShare,
   isErrorRow,
   type DealRow,
   type RevenueShareRow,
@@ -31,7 +32,18 @@ const signed = (v: number | null | undefined) => {
   return n > 0 ? "text-emerald-700 dark:text-emerald-300" : n < 0 ? "text-rose-700 dark:text-rose-300" : "";
 };
 
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
+// Local YYYY-MM-DD, not d.toISOString().slice(0, 10). toISOString() reports
+// the UTC calendar day, which for a UAE user (UTC+4) is the wrong day
+// between local midnight and 04:00 -- the "To" date would default to
+// yesterday, and at a month boundary monthStart could land a month early.
+// Deriving from getFullYear/getMonth/getDate keeps the default in the
+// user's own calendar day.
+export const ymd = (d: Date) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 /**
  * A cell that refuses to print a figure for a row the backend could not
@@ -43,7 +55,7 @@ function cell(row: { isError?: boolean }, render: () => React.ReactNode) {
 
 export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
   const today = new Date();
-  const monthStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
 
   const [fromYmd, setFromYmd] = useState(ymd(monthStart));
   const [toYmd, setToYmd] = useState(ymd(today));
@@ -101,11 +113,10 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
   // (meaningless) ntpPercent so a failed fetch still surfaces as an error,
   // not a silent disappearance. This does NOT apply to Volume, which is a
   // trading-activity view, not a settlement one, so volumeRows is left
-  // unfiltered.
-  const visibleShareRows = useMemo(
-    () => shareRows.filter((r) => isErrorRow(r) || Number(r.ntpPercent) !== 0),
-    [shareRows],
-  );
+  // unfiltered. hidesFromRevenueShare compares ntpPercent strictly against
+  // the number 0 -- see its doc comment for why a null/string "0" must stay
+  // visible instead of being coerced away.
+  const visibleShareRows = useMemo(() => shareRows.filter((r) => !hidesFromRevenueShare(r)), [shareRows]);
 
   const shareColumns = useMemo<SortableTableColumn<RevenueShareRow>[]>(
     () => [
