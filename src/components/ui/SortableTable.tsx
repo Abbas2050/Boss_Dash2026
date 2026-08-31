@@ -23,6 +23,11 @@ type SortableTableProps<T> = {
   columns: SortableTableColumn<T>[];
   tableId?: string;
   enableColumnVisibility?: boolean;
+  /** Column to sort by on first render. Omitted, the table opens unsorted, which
+   *  is what every existing caller expects. */
+  defaultSortKey?: string;
+  /** Direction for defaultSortKey. Ignored without it. */
+  defaultSortDirection?: SortDirection;
   tableClassName?: string;
   emptyText?: string;
   exportFilePrefix?: string;
@@ -96,10 +101,12 @@ export function SortableTable<T>({
   exportFooterRows = [],
   rowClassName,
   onRowClick,
+  defaultSortKey,
+  defaultSortDirection = "asc",
 }: SortableTableProps<T>) {
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<string>("");
-  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [sortKey, setSortKey] = useState<string>(defaultSortKey || "");
+  const [sortDirection, setSortDirection] = useState<SortDirection>(defaultSortDirection);
   const [isColumnMenuOpen, setIsColumnMenuOpen] = useState(false);
   const [draggingColumnKey, setDraggingColumnKey] = useState<string | null>(null);
   const columnMenuRef = useRef<HTMLDivElement | null>(null);
