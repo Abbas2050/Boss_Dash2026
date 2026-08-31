@@ -8,6 +8,7 @@ type InternalAccount = {
   description?: string | null;
   excludeFromEquity: boolean;
   excludeFromPositions: boolean;
+  excludeFromSwaps: boolean;
   isActive: boolean;
 };
 
@@ -18,6 +19,7 @@ type AccountForm = {
   description: string;
   excludeFromEquity: boolean;
   excludeFromPositions: boolean;
+  excludeFromSwaps: boolean;
 };
 
 const EMPTY_FORM: AccountForm = {
@@ -27,6 +29,7 @@ const EMPTY_FORM: AccountForm = {
   description: "",
   excludeFromEquity: true,
   excludeFromPositions: true,
+  excludeFromSwaps: true,
 };
 
 const systemToLabel = (value: unknown) => {
@@ -90,6 +93,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
           description: form.description.trim() || null,
           excludeFromEquity: form.excludeFromEquity,
           excludeFromPositions: form.excludeFromPositions,
+          excludeFromSwaps: form.excludeFromSwaps,
         }),
       });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Add ${resp.status}`));
@@ -119,6 +123,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
           description: String(row.description || "").trim() || null,
           excludeFromEquity: !!row.excludeFromEquity,
           excludeFromPositions: !!row.excludeFromPositions,
+          excludeFromSwaps: !!row.excludeFromSwaps,
         }),
       });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Update ${resp.status}`));
@@ -196,6 +201,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
           <input value={form.description} onChange={(e) => setField("description", e.target.value)} placeholder="Description" className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900/70" />
           <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900/70"><input type="checkbox" checked={form.excludeFromEquity} onChange={(e) => setField("excludeFromEquity", e.target.checked)} />Equity</label>
           <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900/70"><input type="checkbox" checked={form.excludeFromPositions} onChange={(e) => setField("excludeFromPositions", e.target.checked)} />Positions</label>
+          <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900/70"><input type="checkbox" checked={form.excludeFromSwaps} onChange={(e) => setField("excludeFromSwaps", e.target.checked)} />Swaps</label>
         </div>
         <button type="button" onClick={submitAdd} className="mt-2 rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-200">Add Account</button>
       </div>
@@ -214,6 +220,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
               <th className="px-2 py-2 text-left">System</th>
               <th className="px-2 py-2 text-center">Equity</th>
               <th className="px-2 py-2 text-center">Positions</th>
+              <th className="px-2 py-2 text-center">Swaps</th>
               <th className="px-2 py-2 text-left">Description</th>
               <th className="px-2 py-2 text-center">Status</th>
               <th className="px-2 py-2 text-right">Actions</th>
@@ -245,6 +252,9 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
                 </td>
                 <td className="px-2 py-1.5 text-center">
                   {editingId === row.id ? <input type="checkbox" checked={row.excludeFromPositions} onChange={(e) => updateRow(row.id, { excludeFromPositions: e.target.checked })} /> : row.excludeFromPositions ? "Excluded" : "Included"}
+                </td>
+                <td className="px-2 py-1.5 text-center">
+                  {editingId === row.id ? <input type="checkbox" checked={row.excludeFromSwaps} onChange={(e) => updateRow(row.id, { excludeFromSwaps: e.target.checked })} /> : row.excludeFromSwaps ? "Excluded" : "Included"}
                 </td>
                 <td className="px-2 py-1.5">
                   {editingId === row.id ? (
@@ -278,7 +288,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
             ))}
             {!rows.length && !loading && (
               <tr>
-                <td className="px-2 py-4 text-center text-slate-500" colSpan={8}>No internal accounts configured.</td>
+                <td className="px-2 py-4 text-center text-slate-500" colSpan={9}>No internal accounts configured.</td>
               </tr>
             )}
           </tbody>
