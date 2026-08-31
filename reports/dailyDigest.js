@@ -1,6 +1,5 @@
 import {
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   previousFullDayUtc,
@@ -41,10 +40,12 @@ import {
 // otherwise invisible until Saturday, by which point it is history rather than
 // something to act on.
 //
-// Sent EVERY morning, including weekends, whether or not anything happened. The
-// alternative — sending only when a threshold trips — was rejected because
-// silence is ambiguous: a quiet day and a dead scheduler look identical, and
-// this project has already had a scheduler fail silently for want of configured
+// Sent Tuesday to Saturday, each covering the previous weekday. There is no
+// send on Sunday or Monday, because those would cover Saturday or Sunday, when
+// the market is shut and there is nothing to report. The alternative —
+// sending only when a threshold trips — was rejected because silence is
+// ambiguous: a quiet day and a dead scheduler look identical, and this
+// project has already had a scheduler fail silently for want of configured
 // recipients.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
@@ -219,7 +220,7 @@ export function buildDailyDigestHtml({
           })}`;
 
   const footerLines = [
-    "Automated Daily Digest. Sent every morning, including weekends &mdash; a quiet day and a dead scheduler must not look the same.",
+    "Automated Daily Digest. Sent Tuesday to Saturday, each covering the previous weekday &mdash; there is no digest on Sunday or Monday, because the market was shut and there would be nothing to report. A missing digest on any other morning means the scheduler, not a quiet day.",
     `Net = Deposits &minus; Withdrawals &minus; IB Rebate, counting ${escapeHtml(TX_STATUSES.join(", "))} transactions only. Amounts use magnitudes; direction comes from the transaction type.`,
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice.",
     "Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.",

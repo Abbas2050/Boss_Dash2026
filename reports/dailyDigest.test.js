@@ -139,3 +139,15 @@ describe("large deposits", () => {
     expect(html).not.toMatch(/more than \$1,000\.00 this week/);
   });
 });
+
+describe("the footer states the real cadence", () => {
+  // The digest now sends Tuesday-Saturday only. The footer used to claim it
+  // sent every morning including weekends — a reader who got nothing on a
+  // Monday would read the silence as a dead scheduler, exactly the confusion
+  // that sentence exists to prevent. Guard against that claim coming back.
+  it("makes no promise of weekend or every-day sending", () => {
+    const html = base();
+    expect(html).not.toMatch(/every morning, including weekends/i);
+    expect(html).not.toMatch(/sent every morning/i);
+  });
+});

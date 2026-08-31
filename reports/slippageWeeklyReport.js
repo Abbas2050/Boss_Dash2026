@@ -1,7 +1,6 @@
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   fmtNum,

@@ -1,6 +1,5 @@
 import {
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   previousFullMonthUtc,
@@ -42,8 +41,10 @@ import { buildSummaryEmailHtml, SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } fro
 // nothing, so "is this month better than last" has had no answer anywhere in
 // the dashboard.
 //
-// Sent 10:00 Dubai on the 1st. That lands on a weekend twice a year; it sends
-// anyway, because a month-end review is not time-critical to the hour.
+// Sent 12:00 Dubai on the 1st, after the weekly sends, so a 1st that falls on
+// a Saturday does not fire the monthly review and the Weekly Business Summary
+// in the same minute. That lands on a weekend twice a year; it sends anyway,
+// because a month-end review is not time-critical to the hour.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
 
