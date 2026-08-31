@@ -33,6 +33,8 @@ import {
 import { startWeeklyDealMatchScheduler, runWeeklyDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
 import { startWeeklySlippageScheduler, runWeeklySlippageEmailReport } from './reports/slippageWeeklyReport.js';
 import { startWeeklyBusinessSummaryScheduler, runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
+import { startDailyDigestScheduler, runDailyDigest } from './reports/dailyDigest.js';
+import { startMonthlyReviewScheduler, runMonthlyReview } from './reports/monthlyReview.js';
 import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -966,6 +968,34 @@ app.post('/api/reports/summary-weekly/test', authRequired, async (req, res) => {
   }
 });
 
+// On-demand test send of the Daily Digest (admin-only). Same contract as the
+// weekly routes: body recipients only, no env fallback, so a green test send
+// never implies the scheduled one has anywhere to go.
+app.post('/api/reports/daily-digest/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  try {
+    const result = await runDailyDigest({ recipients });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
+// On-demand test send of the Monthly Review (admin-only).
+app.post('/api/reports/monthly-review/test', authRequired, async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  const recipients = parseTestRecipients(req.body);
+  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
+  try {
+    const result = await runMonthlyReview({ recipients });
+    res.json(result);
+  } catch (e) {
+    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
+  }
+});
+
 // On-demand test send of the weekly Deal Match email (admin-only). Mirrors the
 // slippage test route: body recipients only, no env fallback.
 app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) => {
@@ -1136,6 +1166,8 @@ server.listen(PORT, () => {
   startWeeklyDealMatchScheduler();
   startWeeklySlippageScheduler();
   startWeeklyBusinessSummaryScheduler();
+  startDailyDigestScheduler();
+  startMonthlyReviewScheduler();
 
   try {
     startHubWatcher();
