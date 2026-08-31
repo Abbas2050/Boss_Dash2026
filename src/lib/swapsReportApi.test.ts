@@ -77,3 +77,38 @@ describe("readTotals", () => {
       .toBeNull();
   });
 });
+
+import { readFileSync } from "fs";
+import { globSync } from "fs";
+import path from "path";
+
+// The backend sends clientTotals and lpTotals. If this UI also reduces over
+// totalSwap it becomes a second answer to what we paid in swaps, and the two
+// will disagree the first time a row is filtered or hidden.
+//
+// Prose that needs to mention the idea should write "sum of totalSwap" without
+// an arithmetic operator next to the field name, or this test will fire.
+describe("swap totals are never summed in the UI", () => {
+  const files = [
+    ...globSync("src/lib/swapsReport*.ts").filter((f) => !f.endsWith(".test.ts")),
+    ...globSync("src/pages/departments/dealing/SwapsReport*.tsx").filter((f) => !f.endsWith(".test.tsx")),
+  ];
+
+  it("finds the files it is meant to be checking", () => {
+    expect(files.length, "glob matched nothing, so the assertions below are vacuous").toBeGreaterThan(0);
+  });
+
+  for (const file of files) {
+    it(`${file} does not reduce over totalSwap`, () => {
+      const source = readFileSync(path.resolve(file), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/^\s*\/\/.*$/gm, "");
+      const offenders = [/\.reduce\([^)]*totalSwap/, /totalSwap\s*\+/, /\+\s*[a-zA-Z_$][\w$]*\.totalSwap/]
+        .filter((re) => re.test(source));
+      expect(
+        offenders.map(String),
+        "clientTotals and lpTotals come from the backend. Render them; do not derive them.",
+      ).toEqual([]);
+    });
+  }
+});
