@@ -26,6 +26,7 @@ type LPAccount = {
   isBonus?: boolean;
   excludeFromHistory?: boolean;
   excludeFromDealMatching?: boolean;
+  excludeFromSwaps?: boolean;
   isConnected?: boolean | null;
   lastDataReceived?: string | null;
 };
@@ -142,6 +143,7 @@ export const LPManagerPage: React.FC = () => {
   const [isBonus, setIsBonus] = useState(false);
   const [excludeFromHistory, setExcludeFromHistory] = useState(false);
   const [excludeFromDealMatching, setExcludeFromDealMatching] = useState(false);
+  const [excludeFromSwaps, setExcludeFromSwaps] = useState(false);
   const [mt5TerminalPath, setMt5TerminalPath] = useState("");
   const [mt5Server, setMt5Server] = useState("");
   const [mt5Password, setMt5Password] = useState("");
@@ -164,6 +166,7 @@ export const LPManagerPage: React.FC = () => {
   const [editIsBonus, setEditIsBonus] = useState(false);
   const [editExcludeFromHistory, setEditExcludeFromHistory] = useState(false);
   const [editExcludeFromDealMatching, setEditExcludeFromDealMatching] = useState(false);
+  const [editExcludeFromSwaps, setEditExcludeFromSwaps] = useState(false);
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
 
@@ -404,6 +407,7 @@ export const LPManagerPage: React.FC = () => {
     setEditIsBonus(!!a.isBonus);
     setEditExcludeFromHistory(!!a.excludeFromHistory);
     setEditExcludeFromDealMatching(!!a.excludeFromDealMatching);
+    setEditExcludeFromSwaps(!!a.excludeFromSwaps);
     setEditErrors({});
     setEditMsg(null);
     setEditing(true);
@@ -439,6 +443,7 @@ export const LPManagerPage: React.FC = () => {
       isBonus: editIsBonus,
       excludeFromHistory: editExcludeFromHistory,
       excludeFromDealMatching: editExcludeFromDealMatching,
+      excludeFromSwaps: editExcludeFromSwaps,
     };
 
     const path = editTerminalPath.trim();
@@ -496,6 +501,7 @@ export const LPManagerPage: React.FC = () => {
       isBonus,
       excludeFromHistory,
       excludeFromDealMatching,
+      excludeFromSwaps,
     };
 
     if (source === "Terminal") {
@@ -786,6 +792,18 @@ export const LPManagerPage: React.FC = () => {
         ),
     },
     {
+      key: "swaps",
+      label: "Swaps",
+      sortValue: (row) => (row.excludeFromSwaps ? 0 : 1),
+      searchValue: (row) => (row.excludeFromSwaps ? "Excluded" : "Included"),
+      render: (row) =>
+        row.excludeFromSwaps ? (
+          <span className="rounded border border-rose-500/30 bg-rose-500/10 px-2 py-0.5 text-[11px] text-rose-700 dark:text-rose-300">Excluded</span>
+        ) : (
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Included</span>
+        ),
+    },
+    {
       key: "group",
       label: "Group",
       sortValue: (row) => row.groupPattern || "",
@@ -1070,6 +1088,17 @@ export const LPManagerPage: React.FC = () => {
                   <select
                     value={String(excludeFromDealMatching)}
                     onChange={(e) => setExcludeFromDealMatching(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm md:col-span-2">
+                  <label className="text-muted-foreground">Exclude From Swaps</label>
+                  <select
+                    value={String(excludeFromSwaps)}
+                    onChange={(e) => setExcludeFromSwaps(e.target.value === "true")}
                     className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
                   >
                     <option value="false">No</option>
@@ -1501,6 +1530,17 @@ export const LPManagerPage: React.FC = () => {
                   <select
                     value={String(editExcludeFromDealMatching)}
                     onChange={(e) => setEditExcludeFromDealMatching(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Exclude Swaps</label>
+                  <select
+                    value={String(editExcludeFromSwaps)}
+                    onChange={(e) => setEditExcludeFromSwaps(e.target.value === "true")}
                     className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
                   >
                     <option value="false">No</option>
