@@ -35,7 +35,7 @@ export const DepartmentPages: React.FC = () => {
     <div className="min-h-screen p-3 sm:p-4 md:p-6 lg:p-8">
       {selected === "dealing" && <DealingDepartmentPage />}
       {selected === "backoffice" && <BackofficeDepartmentPage />}
-      {selected === "accounts" && <AccountsDepartment {...commonProps} showRevenueShare />}
+      {selected === "accounts" && <AccountsDepartment {...commonProps} />}
       {selected === "marketing" && <MarketingDepartmentPage />}
       {selected === "hr" && <HRDepartment {...commonProps} />}
       {selected === "cp" && <ClientProfileDepartmentPage />}
