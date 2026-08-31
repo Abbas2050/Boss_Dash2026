@@ -78,8 +78,7 @@ describe("readTotals", () => {
   });
 });
 
-import { readFileSync } from "fs";
-import { globSync } from "fs";
+import { readFileSync, globSync, existsSync, readdirSync } from "fs";
 import path from "path";
 
 // The backend sends clientTotals and lpTotals. If this UI also reduces over
@@ -88,27 +87,139 @@ import path from "path";
 //
 // Prose that needs to mention the idea should write "sum of totalSwap" without
 // an arithmetic operator next to the field name, or this test will fire.
+//
+// This is a tripwire, not a proof: it scans source text with regexes, so it
+// can be stepped around by anyone determined to. Known, accepted gaps --
+// not oversights:
+//   - field access split across statements, e.g.
+//     `const t = r.totalSwap; sum += t;` -- the alias `t` carries no textual
+//     link back to `totalSwap` at the point it's added.
+//   - destructuring in a callback, e.g.
+//     `rows.forEach(({ totalSwap }) => { sum += totalSwap; });` -- same
+//     aliasing problem, one syntax over.
+//   - bracket notation, e.g. `row["totalSwap"]`, which none of the patterns
+//     below match (they all require a literal `.totalSwap`).
+//   - a summing helper defined in a file outside both globs below, then
+//     imported and called from a file the globs do cover -- the arithmetic
+//     itself never appears in a scanned file.
+//   - arithmetic performed via `Math.*` or a lodash function (`_.sumBy`,
+//     `Math.hypot`, etc.) rather than a literal `+`/`+=`/`.reduce(`.
+// Only comments are stripped before matching -- block comments, and `//`
+// comments on a line of their own (see stripComments below). A TRAILING `//`
+// comment -- code, then `// comment` on the same line -- is deliberately
+// LEFT IN PLACE and is NOT stripped: the revenue-share version of this same
+// tripwire tried stripping trailing comments (and strings) and a reviewer
+// showed it erased real violations, because reliably telling "`//` starts a
+// comment" from "`//` sits inside a string" needs a character-by-character
+// scan, and an apostrophe in an unstripped trailing comment was enough to
+// start a phantom string that swallowed genuine arithmetic on a later line.
+// A tripwire that can erase the bug it exists to catch is worse than one
+// that occasionally cries wolf on prose, so this version accepts the false
+// positive instead: prose that needs to mention totalSwap arithmetic,
+// including inside a trailing `//` comment, should avoid a bare `+`/`+=`
+// next to the field name.
 describe("swap totals are never summed in the UI", () => {
-  const files = [
-    ...globSync("src/lib/swapsReport*.ts").filter((f) => !f.endsWith(".test.ts")),
-    ...globSync("src/pages/departments/dealing/SwapsReport*.tsx").filter((f) => !f.endsWith(".test.tsx")),
+  const LIB_GLOB = "src/lib/swapsReport*.ts";
+  const COMPONENT_GLOB = "src/pages/departments/dealing/SwapsReport*.tsx";
+
+  // Strips comments only -- block comments and full-line `//` comments. See
+  // the header comment above for why trailing `//` comments and strings are
+  // deliberately left untouched.
+  function stripComments(source: string): string {
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  }
+
+  // Pattern 3 uses `\+=?` rather than `\+` so it matches both `+` and `+=`
+  // immediately before `ident.totalSwap`. Without the `=?` the most natural
+  // accumulator loop -- `total += r.totalSwap` -- slipped through every
+  // pattern here: pattern 2 needs a `+` AFTER `totalSwap`, and the old
+  // pattern 3 needed a `+` directly before `ident.totalSwap` with no `=` in
+  // between, but `+=` puts an `=` right after the `+`, so neither matched.
+  const OFFENDER_PATTERNS = [
+    /\.reduce\([^)]*totalSwap/,
+    /totalSwap\s*\+/,
+    /\+=?\s*[a-zA-Z_$][\w$]*\.totalSwap/,
   ];
 
-  it("finds the files it is meant to be checking", () => {
-    expect(files.length, "glob matched nothing, so the assertions below are vacuous").toBeGreaterThan(0);
+  function offenders(source: string): string[] {
+    const stripped = stripComments(source);
+    return OFFENDER_PATTERNS.filter((re) => re.test(stripped)).map(String);
+  }
+
+  const libFiles = globSync(LIB_GLOB).filter((f) => !f.endsWith(".test.ts"));
+  const componentFiles = globSync(COMPONENT_GLOB).filter((f) => !f.endsWith(".test.tsx"));
+  const files = [...libFiles, ...componentFiles];
+
+  // Asserted on the lib glob alone. Previously this was a union of both
+  // globs, asserting only that the total was non-zero -- and because
+  // swapsReportApi.ts always exists, that union was permanently non-zero
+  // regardless of what the component glob matched. That made the assertion
+  // incapable of ever catching the component glob returning zero, which is
+  // exactly the state that exists until a later task creates the component.
+  it("finds the swaps data module", () => {
+    expect(libFiles.length, `${LIB_GLOB} matched nothing, so the assertions below are vacuous`).toBeGreaterThan(0);
+  });
+
+  // SwapsReportTab.tsx (or similar) does not exist yet -- a later task adds
+  // it -- so asserting componentFiles.length > 0 right now would fail
+  // permanently until that task lands, which would be a lie about what's
+  // broken today. What CAN be checked honestly, without asserting something
+  // false about the present, is that the glob would actually catch such a
+  // component if one existed: scan the dealing pages directory for any
+  // .tsx file whose name loosely looks like a swaps-report component (case-
+  // insensitively contains "swap") and assert every one of those is also
+  // matched by the strict SwapsReport*.tsx glob used above. Today the
+  // directory holds no such file, so both sides are empty and this passes
+  // vacuously. The day a component lands under a name the strict glob
+  // misses -- e.g. SwapReportTab.tsx (singular), DealingSwapsPanel.tsx, or
+  // swapsReportTab.tsx (lowercase) -- this starts failing, which is the
+  // honest way to say "the component glob is stale" without asserting a
+  // false positive about a component that doesn't exist yet.
+  it("the component glob would catch a swaps-report component if one existed", () => {
+    const dealingDir = path.dirname(COMPONENT_GLOB);
+    const present = existsSync(dealingDir) ? readdirSync(dealingDir) : [];
+    const looksLikeSwapsComponent = present.filter(
+      (f) => /swap/i.test(f) && f.endsWith(".tsx") && !f.endsWith(".test.tsx"),
+    );
+    const matchedBasenames = new Set(componentFiles.map((f) => path.basename(f)));
+    const missed = looksLikeSwapsComponent.filter((f) => !matchedBasenames.has(f));
+    expect(
+      missed,
+      `a .tsx file in ${dealingDir} looks like a swaps-report component (name contains "swap") but isn't matched by ${COMPONENT_GLOB} -- widen the glob or rename the file so the checks below actually run against it`,
+    ).toEqual([]);
   });
 
   for (const file of files) {
     it(`${file} does not reduce over totalSwap`, () => {
-      const source = readFileSync(path.resolve(file), "utf8")
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/^\s*\/\/.*$/gm, "");
-      const offenders = [/\.reduce\([^)]*totalSwap/, /totalSwap\s*\+/, /\+\s*[a-zA-Z_$][\w$]*\.totalSwap/]
-        .filter((re) => re.test(source));
+      const source = readFileSync(path.resolve(file), "utf8");
       expect(
-        offenders.map(String),
+        offenders(source),
         "clientTotals and lpTotals come from the backend. Render them; do not derive them.",
       ).toEqual([]);
     });
   }
+
+  // Regression coverage for the detector logic itself, independent of what
+  // currently exists on disk -- so a future edit to OFFENDER_PATTERNS that
+  // reopens one of these bypasses fails here even before a real file trips
+  // it.
+  describe("the detector itself", () => {
+    it("catches a += accumulator (the bypass every pattern used to miss)", () => {
+      const code = "let total = 0; for (const r of rows) { total += r.totalSwap; }";
+      expect(offenders(code)).not.toEqual([]);
+    });
+
+    it("still catches the literal + form", () => {
+      expect(offenders("const sum = a.totalSwap + b.totalSwap;")).not.toEqual([]);
+    });
+
+    it("still catches .reduce", () => {
+      expect(offenders("rows.reduce((s, r) => s + r.totalSwap, 0)")).not.toEqual([]);
+    });
+
+    it("does not fire on prose naming the idea without an arithmetic operator", () => {
+      const code = 'const helpText = "this is the sum of totalSwap for the period";';
+      expect(offenders(code)).toEqual([]);
+    });
+  });
 });
