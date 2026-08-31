@@ -19,6 +19,7 @@ import { ClientRiskScenarioTab } from "@/pages/departments/dealing/ClientRiskSce
 import { LpRiskAlertsTab } from "@/pages/departments/dealing/LpRiskAlertsTab";
 import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
 import { SlippageReportTab } from "@/pages/departments/dealing/SlippageReportTab";
+import { RevenueShareTab } from "@/pages/departments/dealing/RevenueShareTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -94,6 +95,8 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "deal-performance": "Deal Performance",
   slippage: "Slippage Report",
   "slippage-report": "Slippage Report",
+  "revenue-share": "Revenue Share",
+  revshare: "Revenue Share",
   "client-volume": "Client Volume",
   clientvolume: "Client Volume",
   swap: "Swap Tracker",
@@ -1132,6 +1135,7 @@ export function DealingDepartmentPage() {
   const [riskScenarioRefreshKey, setRiskScenarioRefreshKey] = useState(0);
   const [clientRiskScenarioRefreshKey, setClientRiskScenarioRefreshKey] = useState(0);
   const [clientVolumeRefreshKey, setClientVolumeRefreshKey] = useState(0);
+  const [revenueShareRefreshKey, setRevenueShareRefreshKey] = useState(0);
   const [slippageRefreshKey, setSlippageRefreshKey] = useState(0);
   const [lpRiskAlertsRefreshKey, setLpRiskAlertsRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
@@ -1368,6 +1372,10 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Client Volume") {
       setClientVolumeRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Revenue Share") {
+      setRevenueShareRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "Slippage Report") {
@@ -4083,6 +4091,8 @@ export function DealingDepartmentPage() {
             <ClientRiskScenarioTab refreshKey={clientRiskScenarioRefreshKey} />
           ) : activeMenu === "Client Volume" ? (
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
+          ) : activeMenu === "Revenue Share" ? (
+            <RevenueShareTab refreshKey={revenueShareRefreshKey} />
           ) : activeMenu === "Slippage Report" ? (
             <SlippageReportTab refreshKey={slippageRefreshKey} />
           ) : activeMenu === "LP Risk Alerts" ? (

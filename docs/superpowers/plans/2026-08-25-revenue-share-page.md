@@ -19,6 +19,13 @@
 - Reuse `BACKEND_BASE_URL` from `src/lib/backendBase.ts`. Do not declare a ninth local copy of that constant.
 - Requests carry `...authHeaders()` from `src/lib/auth.ts`, matching every other tab.
 - Never send a request to a production write endpoint.
+- **All three endpoints nest their rows.** `/History/aggregate` and
+  `/History/volume` answer `{items: [...]}`; `/History/deals` answers
+  `{deals: [...]}`. An earlier draft of this plan wrongly called the first two
+  bare arrays. Unwrapping must throw on an unexpected shape, never return `[]` —
+  an empty table with no error is indistinguishable from "no data".
+- **Hide LPs on 0% NTP** unless the row is an error row, matching the reference
+  page: an LP with no agreement has no revenue share to report.
 
 ---
 
