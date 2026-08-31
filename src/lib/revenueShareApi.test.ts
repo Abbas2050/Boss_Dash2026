@@ -197,6 +197,25 @@ import path from "path";
 //     list -- so a helper such as revenueShareMath.ts, imported by the
 //     component, is scanned too, and a rename of RevenueShareTab.tsx doesn't
 //     silently drop it from coverage.
+//
+// Only comments are stripped before matching -- block comments, and `//`
+// comments whether full-line or trailing. Strings and template literals are
+// matched AS WRITTEN. An earlier version also stripped string and
+// template-literal contents to avoid failing on prose that names the
+// formula (a tooltip, an aria-label). A reviewer showed that stripping
+// erases real violations, not just prose: the single-quote regex has no
+// line anchor, so an apostrophe anywhere (even inside a trailing comment
+// left un-stripped) pairs with the next apostrophe anywhere later in the
+// file and deletes everything between, including genuine arithmetic on an
+// intervening line; and `` `${...}` `` stripping deleted real arithmetic
+// written as a JSX label, e.g. `` `${row.realLpPL * (row.ntpPercent / 100)}` ``.
+// A tripwire that can erase the bug it exists to catch is worse than one
+// that occasionally cries wolf on prose, so this version accepts the false
+// positive: if a comment or string needs to name the formula, write it with
+// an `x`, not a literal `*`/`/` token -- `realLpPL x ntpPercent`, the way
+// the spec and this file's own comments already do. That is the documented
+// way to avoid tripping this suite; weakening the detector is not.
+//
 // What it deliberately does NOT catch -- known gaps, not oversights:
 //   - a second hop of aliasing (an alias of an alias)
 //   - the two values crossing a function boundary under generic parameter
@@ -213,19 +232,24 @@ import path from "path";
 describe("the revenue share is never recomputed here", () => {
   const FIELDS = ["realLpPL", "ntpPercent"] as const;
 
-  // Comments and string/template literals are stripped before matching, so
-  // prose that explains the formula -- a tooltip, an aria-label, a code
-  // comment -- doesn't fail the suite for describing the rule rather than
-  // breaking it. Comments are stripped first: an apostrophe inside a comment
-  // (e.g. "don't") would otherwise be mistaken for the start of a string
-  // literal once the comment text is exposed to the string-stripping regexes.
+  // Strips comments only -- block comments (/* ... */) and full-line `//`
+  // comments. Strings and template literals are deliberately left alone: an
+  // earlier version also stripped them (plus trailing `//` comments) so
+  // prose naming the formula (a tooltip, an aria-label) wouldn't fail the
+  // suite, but a reviewer showed that combination erases real violations,
+  // not just prose -- see the header comment above and the two regression
+  // tests below. A trailing `//` comment (code, then `// comment` on the
+  // same line) is NOT stripped by this version: reliably telling "`//`
+  // starts a comment" from "`//` sits inside a string, e.g. a URL" needs a
+  // character-by-character scan, and a scan is exactly the kind of clever
+  // machinery that produced this bug in the first place. Leaving trailing
+  // comments unstripped is a known, accepted limitation, not an oversight:
+  // it can occasionally false-positive on a trailing comment that names the
+  // formula with a literal `*`/`/` (fix such comments to use `x` instead,
+  // per the header above), but it can never silently erase real code, which
+  // is the only failure mode that matters for a tripwire.
   function stripNonCode(source: string): string {
-    return source
-      .replace(/\/\*[\s\S]*?\*\//g, "")
-      .replace(/^\s*\/\/.*$/gm, "")
-      .replace(/`(?:\\.|\$\{[^}]*\}|[^`\\])*`/g, "``")
-      .replace(/"(?:\\.|[^"\\])*"/g, '""')
-      .replace(/'(?:\\.|[^'\\])*'/g, "''");
+    return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   }
 
   // Names a value may have been copied out under: either a destructuring
@@ -266,7 +290,9 @@ describe("the revenue share is never recomputed here", () => {
   // Everything matching these two naming patterns, not a fixed file list.
   function scanTargets(): string[] {
     const libFiles = globSync("src/lib/revenueShare*.ts", { cwd: process.cwd() }).filter((f) => !f.endsWith(".test.ts"));
-    const pageFiles = globSync("src/pages/departments/dealing/RevenueShare*.tsx", { cwd: process.cwd() });
+    const pageFiles = globSync("src/pages/departments/dealing/RevenueShare*.tsx", { cwd: process.cwd() }).filter(
+      (f) => !f.endsWith(".test.tsx"),
+    );
     return [...libFiles, ...pageFiles].map((f) => path.resolve(f));
   }
 
@@ -308,14 +334,32 @@ describe("the revenue share is never recomputed here", () => {
       expect(offenders(code)).not.toEqual([]);
     });
 
-    it("does not fire on prose naming the fields inside a string literal", () => {
-      const code = stripNonCode('const helpText = "lpPL is computed as realLpPL * ntpPercent / 100 by the backend";');
+    // Strings are no longer stripped (see stripNonCode above), so prose
+    // naming the formula must spell it with an `x`, not a literal `*`/`/`,
+    // to avoid tripping the suite -- documented in the header comment and
+    // exercised here. Note this only covers the multiplication: a phrase
+    // like "ntpPercent / 100" still trips the detector even with the `x`
+    // rule followed, because `ntpPercent` sits directly against a literal
+    // `/`. Prose describing the percent-to-fraction division has to avoid
+    // that adjacency too (e.g. "divided by 100"), which is why these
+    // fixtures don't mention the `/ 100` step.
+    it("does not fire on prose naming the fields with 'x', inside a string literal", () => {
+      const code = stripNonCode('const helpText = "lpPL is computed as realLpPL x ntpPercent by the backend";');
       expect(offenders(code)).toEqual([]);
     });
 
-    it("does not fire on prose naming the fields inside a template literal", () => {
-      const code = stripNonCode("const helpText = `realLpPL * ntpPercent / 100 = lpPL for ${lpName}`;");
+    it("does not fire on prose naming the fields with 'x', inside a template literal", () => {
+      const code = stripNonCode("const helpText = `realLpPL x ntpPercent = lpPL for ${lpName}`;");
       expect(offenders(code)).toEqual([]);
+    });
+
+    // The flip side of the two tests above: this is the accepted false
+    // positive from no longer stripping strings. Prose that spells the
+    // formula with a literal `*`/`/` now fails the suite -- worse than
+    // silently missing a real violation, per the header comment.
+    it("fires on prose naming the fields with a literal '*', inside a string literal (accepted false positive)", () => {
+      const code = stripNonCode('const helpText = "lpPL is computed as realLpPL * ntpPercent / 100 by the backend";');
+      expect(offenders(code)).not.toEqual([]);
     });
 
     it("does not fire on an object literal that merely names a field realLpPL", () => {
@@ -324,6 +368,34 @@ describe("the revenue share is never recomputed here", () => {
       // a tracked alias.
       const code = stripNonCode("function build(x) { return { realLpPL: x, other: x * 2 }; }");
       expect(offenders(code)).toEqual([]);
+    });
+
+    // Regression for a real bug a reviewer found in string-stripping: a
+    // trailing `//` comment (not a full-line one) is never removed, so an
+    // apostrophe inside it -- "don't" -- is mistaken for the start of a
+    // string literal. The single-quote regex has no line anchor, so it
+    // pairs with the *next* apostrophe anywhere later in the file and wipes
+    // out everything in between, including genuine arithmetic on an
+    // intervening line. A tripwire that can erase the violation it exists
+    // to catch is worse than one that occasionally cries wolf on prose.
+    it("does not erase real arithmetic sitting between two apostrophes in trailing comments", () => {
+      const code = stripNonCode(
+        [
+          "const label = row.realLpPL; // don't touch this",
+          "const lpPL = row.realLpPL * (row.ntpPercent / 100);",
+          "const other = 1; // won't matter",
+        ].join("\n"),
+      );
+      expect(offenders(code)).not.toEqual([]);
+    });
+
+    // Regression for the second half of the same bug: template-literal
+    // stripping deleted `${...}` wholesale, so real arithmetic written as a
+    // JSX label -- `` `${row.realLpPL * (row.ntpPercent / 100)}` `` --
+    // vanished before the offender check ever saw it.
+    it("does not erase real arithmetic written inside a template-literal interpolation", () => {
+      const code = stripNonCode("const label = `${row.realLpPL * (row.ntpPercent / 100)}`;");
+      expect(offenders(code)).not.toEqual([]);
     });
   });
 });
