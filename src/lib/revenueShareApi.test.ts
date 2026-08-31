@@ -254,7 +254,7 @@ describe("getJson error body (via the fetch* wrappers)", () => {
   });
 });
 
-import { readFileSync, globSync } from "fs";
+import { readFileSync, globSync, existsSync } from "fs";
 import path from "path";
 
 // lpPL = realLpPL x ntpPercent / 100 is the backend's calculation, verified in
@@ -365,13 +365,26 @@ describe("the revenue share is never recomputed here", () => {
     return [...hits];
   }
 
-  // Everything matching these two naming patterns, not a fixed file list.
+  // Everything matching these naming patterns, plus two specific mount files
+  // pinned by name rather than pattern. AccountsDepartment.tsx and
+  // DealingDepartmentPage.tsx both consume revenue-share rows directly (they
+  // render realLpPL/ntpPercent from the same aggregate) and are exactly
+  // where someone would bolt on a "total owed" summary without touching a
+  // file the glob would otherwise catch -- a reviewer demonstrated this by
+  // adding an unreduced sum to AccountsDepartment.tsx and watching the suite
+  // pass. Both files are large and carry unrelated code, so they are pinned
+  // explicitly instead of widened into the glob, which would risk sweeping
+  // in unrelated dashboard/page files that happen to match a looser pattern.
   function scanTargets(): string[] {
     const libFiles = globSync("src/lib/revenueShare*.ts", { cwd: process.cwd() }).filter((f) => !f.endsWith(".test.ts"));
     const pageFiles = globSync("src/pages/departments/dealing/RevenueShare*.tsx", { cwd: process.cwd() }).filter(
       (f) => !f.endsWith(".test.tsx"),
     );
-    return [...libFiles, ...pageFiles].map((f) => path.resolve(f));
+    const pinnedMountFiles = [
+      "src/components/dashboard/AccountsDepartment.tsx",
+      "src/pages/departments/DealingDepartmentPage.tsx",
+    ].filter((f) => existsSync(f));
+    return [...libFiles, ...pageFiles, ...pinnedMountFiles].map((f) => path.resolve(f));
   }
 
   // An empty scan must fail loudly, not pass silently. RevenueShareTab.tsx

@@ -191,6 +191,13 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
   const tabCls = (v: View) =>
     `rounded px-3 py-1 text-xs font-semibold ${view === v ? "bg-primary/20 text-primary" : "text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"}`;
 
+  // A stale error from one view (e.g. a failed Deals fetch) must not keep
+  // showing above a different, perfectly fine view -- clear it on switch.
+  const switchView = (v: View) => {
+    setError(null);
+    setView(v);
+  };
+
   return (
     <section className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800/80 dark:bg-slate-950/70">
       <div className="flex flex-wrap items-end gap-3">
@@ -207,9 +214,9 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
           {loading ? "Loading…" : "Run"}
         </button>
         <div className="ml-auto flex gap-1">
-          <button type="button" className={tabCls("share")} onClick={() => setView("share")}>Revenue Share</button>
-          <button type="button" className={tabCls("deals")} onClick={() => setView("deals")}>Deals</button>
-          <button type="button" className={tabCls("volume")} onClick={() => setView("volume")}>Volume</button>
+          <button type="button" className={tabCls("share")} onClick={() => switchView("share")}>Revenue Share</button>
+          <button type="button" className={tabCls("deals")} onClick={() => switchView("deals")}>Deals</button>
+          <button type="button" className={tabCls("volume")} onClick={() => switchView("volume")}>Volume</button>
         </div>
       </div>
 
@@ -221,7 +228,10 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
           rows={visibleShareRows}
           columns={shareColumns}
           tableClassName="min-w-full text-[11px]"
-          emptyText="No LP had a revenue-share period inside this date range. The aggregate is scoped by each agreement's start and end dates, not only by the dates you picked."
+          // Suppressed while `error` is showing above -- an empty table plus
+          // "no data in range" would contradict the banner saying the fetch
+          // itself failed.
+          emptyText={error ? "" : "No LP had a revenue-share period inside this date range. The aggregate is scoped by each agreement's start and end dates, not only by the dates you picked."}
         />
       )}
 
@@ -231,7 +241,7 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
           rows={volumeRows}
           columns={volumeColumns}
           tableClassName="min-w-full text-[11px]"
-          emptyText="No LP had a revenue-share period inside this date range."
+          emptyText={error ? "" : "No LP had trading activity inside this date range."}
         />
       )}
 
@@ -241,8 +251,8 @@ export function RevenueShareTab({ refreshKey }: { refreshKey?: number }) {
             LP
             <select value={selectedLogin} onChange={(e) => void loadDeals(e.target.value)} className={`ml-2 ${inputCls}`}>
               <option value="">Select an LP…</option>
-              {shareRows.map((r) => (
-                <option key={r.login} value={r.login}>{r.lpName || r.login} ({r.login})</option>
+              {shareRows.map((r, i) => (
+                <option key={`${r.login}-${r.effectiveFrom || i}`} value={r.login}>{r.lpName || r.login} ({r.login}{r.effectiveFrom ? `, ${String(r.effectiveFrom).slice(0, 10)}` : ""})</option>
               ))}
             </select>
           </label>
