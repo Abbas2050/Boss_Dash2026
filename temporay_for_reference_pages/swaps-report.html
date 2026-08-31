@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - Swaps Report</title>
+    <style>
+body { padding: 0; }
+        .page { max-width: 1400px; margin: 0 auto; }
+        .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        @media (max-width: 900px) {
+            .panels { grid-template-columns: 1fr; }
+        }
+        .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .panel-head h2 { color: var(--neon); }
+        .panel-grid { height: 55vh; }
+        a.login-link { color: var(--blue); text-decoration: none; font-weight: 600; }
+        a.login-link:hover { text-decoration: underline; }
+        .info-bar {
+            font-size: 11px; color: var(--amber);
+            background: rgba(224,175,104,0.1); border: 1px solid rgba(224,175,104,0.3);
+            border-radius: 4px; padding: 5px 10px;
+        }
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+</head>
+<body>
+<div class="page">
+    <h1>Swaps Report</h1>
+
+    <!-- Control Header -->
+    <div class="glass" style="padding:8px 10px;">
+        <div class="flex flex-wrap items-center gap-4" style="display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span class="text-xs text-muted">From:</span>
+                <input type="date" id="sw-from">
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span class="text-xs text-muted">To:</span>
+                <input type="date" id="sw-to">
+            </div>
+            <button onclick="runSwaps()" id="sw-runBtn" class="btn btn-primary">Run</button>
+            <button onclick="downloadCsv('client')" id="sw-csvClientBtn" class="btn btn-secondary" disabled>CSV - Client</button>
+            <button onclick="downloadCsv('lp')" id="sw-csvLpBtn" class="btn btn-secondary" disabled>CSV - LP</button>
+            <span id="sw-stats" class="text-xs text-muted" style="margin-left:auto;"></span>
+        </div>
+    </div>
+
+    <div id="sw-info" class="info-bar" style="display:none; margin-top:6px;"></div>
+    <div id="sw-error" class="error" style="display:none; margin-top:6px;"></div>
+
+    <div class="panels" style="margin-top:8px;">
+        <div class="glass panel" style="padding:8px;">
+            <div class="panel-head">
+                <h2>Client Swaps</h2>
+                <span id="sw-client-meta" class="text-xs text-muted"></span>
+            </div>
+            <div id="sw-client-grid" class="ag-theme-alpine-dark panel-grid"></div>
+        </div>
+
+        <div class="glass panel" style="padding:8px;">
+            <div class="panel-head">
+                <h2>LP Swaps Charged To Us</h2>
+                <span id="sw-lp-meta" class="text-xs text-muted"></span>
+            </div>
+            <div id="sw-lp-grid" class="ag-theme-alpine-dark panel-grid"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let _clientGridApi;
+    let _lpGridApi;
+
+    const nf2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const nfInt = new Intl.NumberFormat();
+
+    function fmtSwap(p) {
+        return p.value != null ? nf2.format(Number(p.value)) : '';
+    }
+
+    function swapStyle(p) {
+        const v = Number(p.value) || 0;
+        if (v > 0) return { color: 'var(--pos)' };
+        if (v < 0) return { color: 'var(--neg)' };
+        return { color: 'var(--fg-dim)' };
+    }
+
+    // Inverted vs swapStyle: negative on a client account is broker income (green).
+    function clientSwapStyle(p) {
+        const v = Number(p.value) || 0;
+        if (v > 0) return { color: 'var(--neg)' };
+        if (v < 0) return { color: 'var(--pos)' };
+        return { color: 'var(--fg-dim)' };
+    }
+
+    function totalRowStyle(baseStyle) {
+        return p => {
+            const base = baseStyle ? (baseStyle(p) || {}) : {};
+            if (p.node && p.node.rowPinned === 'bottom') {
+                return { ...base, fontWeight: 'bold', background: 'rgba(255,255,255,0.04)' };
+            }
+            return base;
+        };
+    }
+
+    function loginLinkRenderer(p) {
+        if (p.node && p.node.rowPinned) return p.value;
+        if (p.value == null) return '';
+        const login = String(p.value);
+        return '<a class="login-link" href="/client-profile.html?login=' + encodeURIComponent(login)
+            + '" target="_blank" rel="noopener">' + login + '</a>';
+    }
+
+    function defaultDates() {
+        const now = new Date();
+        const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const from = new Date(to.getTime() - 30 * 86400000);
+        document.getElementById('sw-from').value = from.toISOString().slice(0, 10);
+        document.getElementById('sw-to').value = to.toISOString().slice(0, 10);
+    }
+
+    function utcMidnightUnix(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        return Date.UTC(y, m - 1, d) / 1000;
+    }
+
+    // "to" date is inclusive of the whole day, so upper bound is midnight UTC of the day AFTER.
+    function dateRangeToUnix(fromStr, toStr) {
+        return {
+            fromUnixSec: utcMidnightUnix(fromStr),
+            toUnixSec: utcMidnightUnix(toStr) + 86400,
+        };
+    }
+
+    function fmtLots(p) {
+        return p.value != null ? nf2.format(Number(p.value)) : '';
+    }
+
+    function buildClientGrid(rows, totals) {
+        if (_clientGridApi) _clientGridApi.destroy();
+        const pinned = { login: 'TOTAL', name: '', totalSwap: totals.totalSwap, dealVolume: null, realizedVolume: null };
+        _clientGridApi = SLC.createGrid(document.getElementById('sw-client-grid'), {
+            columnDefs: [
+                { headerName: 'Login', field: 'login', minWidth: 120, cellRenderer: loginLinkRenderer },
+                { headerName: 'Name', field: 'name', minWidth: 160 },
+                { headerName: 'Total Swap', field: 'totalSwap', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(clientSwapStyle) },
+                { headerName: 'Deal Volume', field: 'dealVolume', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtLots },
+                { headerName: 'Realized Volume', field: 'realizedVolume', minWidth: 140, type: 'numericColumn',
+                    valueFormatter: fmtLots },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+        document.getElementById('sw-client-meta').textContent =
+            `${nfInt.format(totals.accountCount)} account(s)`;
+    }
+
+    function buildLpGrid(rows, totals) {
+        if (_lpGridApi) _lpGridApi.destroy();
+        const pinned = { lpName: 'TOTAL', totalSwap: totals.totalSwap, dealVolume: null, realizedVolume: null };
+        _lpGridApi = SLC.createGrid(document.getElementById('sw-lp-grid'), {
+            columnDefs: [
+                { headerName: 'LP Name', field: 'lpName', minWidth: 140, cellStyle: totalRowStyle(() => ({ fontWeight: 'bold' })) },
+                { headerName: 'Login', field: 'login', minWidth: 110 },
+                { headerName: 'Source', field: 'source', minWidth: 90,
+                    cellRenderer: p => p.value ? `<span class="badge">${p.value}</span>` : '' },
+                { headerName: 'Total Swap', field: 'totalSwap', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'Deal Volume', field: 'dealVolume', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtLots },
+                { headerName: 'Realized Volume', field: 'realizedVolume', minWidth: 140, type: 'numericColumn',
+                    valueFormatter: fmtLots },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+        document.getElementById('sw-lp-meta').textContent =
+            `${nfInt.format(totals.accountCount)} account(s)`;
+    }
+
+    async function runSwaps() {
+        const btn = document.getElementById('sw-runBtn');
+        const stats = document.getElementById('sw-stats');
+        const errEl = document.getElementById('sw-error');
+        const infoEl = document.getElementById('sw-info');
+        const fromStr = document.getElementById('sw-from').value;
+        const toStr = document.getElementById('sw-to').value;
+
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+        infoEl.style.display = 'none';
+
+        if (!fromStr || !toStr) {
+            stats.textContent = 'Pick a date range first.';
+            return;
+        }
+
+        const { fromUnixSec, toUnixSec } = dateRangeToUnix(fromStr, toStr);
+
+        btn.disabled = true;
+        document.getElementById('sw-csvClientBtn').disabled = true;
+        document.getElementById('sw-csvLpBtn').disabled = true;
+        const t0 = Date.now();
+        stats.textContent = 'Loading...';
+
+        try {
+            const resp = await fetch(`/api/SwapsReport?from=${fromUnixSec}&to=${toUnixSec}`, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                errEl.textContent = `Error ${resp.status}: ${await shortErr(resp)}`;
+                errEl.style.display = 'block';
+                stats.textContent = `Error ${resp.status}`;
+                return;
+            }
+            const data = await resp.json();
+
+            buildClientGrid(data.clients || [], data.clientTotals || { totalSwap: 0, accountCount: 0 });
+            buildLpGrid(data.lps || [], data.lpTotals || { totalSwap: 0, accountCount: 0 });
+
+            const notes = [];
+            if (data.skippedApiLpCount > 0) {
+                notes.push(`${data.skippedApiLpCount} API LP(s) skipped (XTB / Finalto not implemented)`);
+            }
+            if (data.clientPanelError) {
+                notes.push(`Client panel failed: ${data.clientPanelError}`);
+            }
+            if (Array.isArray(data.lpErrors) && data.lpErrors.length > 0) {
+                notes.push(`${data.lpErrors.length} LP(s) failed: ${data.lpErrors.join('; ')}`);
+            }
+            if (notes.length) {
+                infoEl.textContent = notes.join(' | ');
+                infoEl.style.display = 'block';
+            }
+
+            document.getElementById('sw-csvClientBtn').disabled = false;
+            document.getElementById('sw-csvLpBtn').disabled = false;
+
+            const dt = Date.now() - t0;
+            stats.textContent = `${fromStr} -> ${toStr} - ${(dt / 1000).toFixed(1)}s`;
+        } catch (e) {
+            errEl.textContent = 'Failed to load report. Check the server logs.';
+            errEl.style.display = 'block';
+            stats.textContent = 'Failed';
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function shortErr(resp) {
+        try {
+            const body = await resp.text();
+            if (!body) return resp.statusText || 'Request failed';
+            try {
+                const parsed = JSON.parse(body);
+                if (parsed && typeof parsed.error === 'string') return parsed.error;
+            } catch (_) { /* not JSON */ }
+            return 'Request failed. Check the server logs.';
+        } catch (_) {
+            return resp.statusText || 'Request failed';
+        }
+    }
+
+    function downloadCsv(panel) {
+        const fromStr = document.getElementById('sw-from').value;
+        const toStr = document.getElementById('sw-to').value;
+        if (!fromStr || !toStr) return;
+        const { fromUnixSec, toUnixSec } = dateRangeToUnix(fromStr, toStr);
+        window.location = `/api/SwapsReport/csv?from=${fromUnixSec}&to=${toUnixSec}&panel=${panel}`;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        defaultDates();
+    });
+</script>
+
+</body>
+</html>

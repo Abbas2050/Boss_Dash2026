@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Position Match Table</title>
+    <style>
+body { padding: 0; }
+.header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+        .header h1 { color: var(--fg); font-weight: 600; }
+        .header .toolbar { display: flex; gap: 8px; }
+        .toolbar button {
+            background: var(--surface); border: 1px solid var(--line); color: var(--blue); padding: 4px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px;
+        }
+        .toolbar button:hover { background: var(--bg3); border-color: var(--blue); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-left: 8px; }
+        .status-dot.connected { background: var(--pos); }
+        .status-dot.disconnected { background: var(--rose); }
+        .status-text { font-size: 11px; color: var(--fg-muted); margin-left: 4px; }
+        .last-update { font-size: 11px; color: var(--fg-muted); margin-left: auto; }
+
+        .gold-price-bar {
+            display: flex; align-items: center; gap: 16px; padding: 8px 16px;
+            background: var(--surface); border-bottom: 1px solid var(--line); font-size: 13px;
+        }
+        .gold-price-bar .label { color: var(--amber); font-weight: 700; font-size: 12px; }
+        .gold-price-bar .price { font-weight: 700; font-size: 16px; color: var(--fg); }
+        .gold-price-bar .spread-info { font-size: 11px; color: var(--fg-muted); }
+        .gold-price-bar .bid { color: var(--rose); }
+        .gold-price-bar .ask { color: var(--pos); }
+        .gold-price-bar .tick-up { color: var(--pos); }
+        .gold-price-bar .tick-down { color: var(--rose); }
+
+        .bottom-panels { display: flex; gap: 16px; margin-top: 16px; }
+        .volume-alerts-panel {
+            flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+            max-height: 250px; display: flex; flex-direction: column;
+        }
+        .volume-alerts-panel .panel-header {
+            padding: 8px 12px; border-bottom: 1px solid var(--line);
+            font-size: 13px; font-weight: 600; color: var(--amber);
+        }
+        .volume-alerts-panel .panel-body {
+            overflow-y: auto; flex: 1; padding: 0;
+        }
+        .volume-alerts-panel table { border-collapse: collapse; width: 100%; font-size: 12px; }
+        .volume-alerts-panel th {
+            background: #13131d; color: var(--blue); font-weight: 600; font-size: 10px;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line);
+            position: sticky; top: 0; z-index: 1;
+        }
+        .volume-alerts-panel td { padding: 4px 8px; border-bottom: 1px solid var(--bg3); }
+        .volume-alerts-panel .empty-alert { text-align: center; color: var(--fg-muted); padding: 20px; font-size: 12px; }
+        .volume-alerts-panel .alert-flash { animation: alertFlash 2s ease-out; }
+        @keyframes alertFlash { 0% { background: #3a2a1a; } 100% { background: transparent; } }
+        .badge-sm { padding: 1px 6px; border-radius: 8px; font-size: 10px; font-weight: bold; }
+        .badge-sm.buy { background: #1a3a2a; color: var(--pos); }
+        .badge-sm.sell { background: #3a1a1a; color: var(--rose); }
+
+        .loading { text-align: center; padding: 60px; color: var(--fg-muted); font-size: 14px; }
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="/shared/nav.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+</head>
+<body>
+<div class="gold-price-bar">
+        <span class="label">XAUUSD</span>
+        <span>Bid: <span class="bid" id="goldBid">--</span></span>
+        <span>Ask: <span class="ask" id="goldAsk">--</span></span>
+        <span class="price" id="goldLast">--</span>
+        <span class="spread-info" id="goldSpread"></span>
+    </div>
+
+    <div class="page">
+        <div class="header">
+            <h1>Position Match Table</h1>
+            <span class="status-dot disconnected" id="statusDot"></span>
+            <span class="status-text" id="statusText">Connecting...</span>
+            <div class="toolbar">
+                <button onclick="refreshFromApi()">Refresh</button>
+            </div>
+            <span class="last-update" id="lastUpdate"></span>
+        </div>
+
+        <div id="grid-coverage" class="ag-theme-alpine-dark" style="height:80vh;width:100%"></div>
+
+        <div class="bottom-panels">
+            <div class="volume-alerts-panel">
+                <div class="panel-header">Volume Alerts</div>
+                <div class="panel-body">
+                    <table>
+                        <thead><tr>
+                            <th>Time</th><th>Symbol</th><th>Side</th><th>Lots</th><th>Login</th><th>Name</th>
+                        </tr></thead>
+                        <tbody id="volumeAlertTable"></tbody>
+                    </table>
+                    <div id="volumeAlertEmpty" class="empty-alert">No alerts</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <script>
+        let connection = null;
+        let gridApi = null;
+        let currentLpNames = [];
+
+        function isGoldSymbol(symbol) {
+            const s = symbol.toUpperCase();
+            return s === 'XAUUSD' || s.startsWith('GOLD');
+        }
+
+        // Stable tiebreak keeps zero-gold LPs from flapping between polls.
+        function sortLpNamesByGoldExposure(rawRows, lpNames) {
+            if (!lpNames || lpNames.length === 0) return lpNames || [];
+            const goldRows = (rawRows || []).filter(r => r.symbol && isGoldSymbol(r.symbol));
+            if (goldRows.length === 0) return lpNames.slice();
+            const scoreByLp = new Map();
+            lpNames.forEach((lp, i) => {
+                let sum = 0;
+                for (const r of goldRows) sum += (r.lpNets && r.lpNets[lp]) || 0;
+                scoreByLp.set(lp, { score: Math.abs(sum), origIndex: i });
+            });
+            return lpNames.slice().sort((a, b) => {
+                const sa = scoreByLp.get(a);
+                const sb = scoreByLp.get(b);
+                if (sb.score !== sa.score) return sb.score - sa.score;
+                return sa.origIndex - sb.origIndex;
+            });
+        }
+
+        // Cell style: positive green, negative rose, zero muted
+        function valStyle(p) {
+            const v = p.value;
+            if (v === 0 || v == null) return { color: 'var(--fg-muted)' };
+            return { color: v > 0 ? 'var(--pos)' : 'var(--rose)' };
+        }
+
+        // Row styling for gold rows, gold subtotal, and totals
+        function getRowStyle(p) {
+            if (p.data && p.data._isGoldSubtotal) {
+                return { background: 'rgba(224, 175, 104, 0.15)', fontWeight: '700', borderTop: '1px solid rgba(224, 175, 104, 0.3)' };
+            }
+            if (p.data && p.data._isGold) {
+                return { background: 'rgba(224, 175, 104, 0.05)' };
+            }
+            if (p.node && p.node.rowPinned === 'bottom') {
+                return { fontWeight: '700', background: '#13131d', borderTop: '2px solid var(--line)' };
+            }
+            return null;
+        }
+
+        function buildColumnDefs(lpNames) {
+            const cols = [
+                {
+                    headerName: 'Symbol',
+                    field: 'symbol',
+                    pinned: 'left',
+                    minWidth: 110,
+                    cellStyle: p => {
+                        const base = { fontWeight: '600', textAlign: 'left' };
+                        if (p.data && (p.data._isGoldSubtotal || p.data._isGold)) {
+                            base.color = 'var(--amber)';
+                            base.borderLeft = '3px solid var(--amber)';
+                            base.paddingLeft = '7px';
+                        }
+                        if (p.node && p.node.rowPinned === 'bottom') {
+                            base.color = 'var(--fg)';
+                        }
+                        return base;
+                    }
+                },
+                {
+                    headerName: 'Buy/Sell',
+                    field: 'direction',
+                    minWidth: 80,
+                    cellRenderer: p => {
+                        if (!p.value) return '';
+                        if (p.value === 'BUY') return '<span style="color:var(--pos);font-weight:600;font-size:11px">BUY</span>';
+                        if (p.value === 'SELL') return '<span style="color:var(--rose);font-weight:600;font-size:11px">SELL</span>';
+                        return p.value;
+                    }
+                },
+                {
+                    headerName: 'Client Net',
+                    field: 'clientNet',
+                    type: 'numericColumn',
+                    minWidth: 100,
+                    valueFormatter: SLC.fmtNum,
+                    cellStyle: valStyle,
+                    cellRenderer: p => {
+                        const formatted = p.valueFormatted || '';
+                        const badge = (p.data && p.data._csBadge) ? p.data._csBadge : '';
+                        return formatted + badge;
+                    }
+                },
+                {
+                    headerName: 'Uncovered',
+                    field: 'uncovered',
+                    type: 'numericColumn',
+                    minWidth: 100,
+                    valueFormatter: SLC.fmtNum,
+                    cellStyle: valStyle
+                }
+            ];
+
+            lpNames.forEach(lp => {
+                cols.push({
+                    headerName: lp,
+                    field: 'lp_' + lp,
+                    type: 'numericColumn',
+                    minWidth: 90,
+                    valueFormatter: SLC.fmtNum,
+                    cellStyle: valStyle
+                });
+            });
+
+            return cols;
+        }
+
+        function initGrid() {
+            const el = document.getElementById('grid-coverage');
+            gridApi = SLC.createGrid(el, {
+                columnDefs: buildColumnDefs([]),
+                rowData: [],
+                pinnedBottomRowData: [],
+                getRowStyle: getRowStyle,
+                overlayNoRowsTemplate: '<div class="loading">Connecting to server...</div>',
+                // Stable id per (symbol, direction) — diff updates preserve scroll & sort.
+                getRowId: p => `${p.data.symbol}|${p.data.direction}`,
+            });
+        }
+
+        function transformRows(data) {
+            if (!data || !data.rows || data.rows.length === 0) return { rows: [], pinned: [] };
+
+            const lpNames = data.lpNames || [];
+            const rawRows = data.rows.filter(r => r.symbol && r.symbol.trim());
+            const gold = rawRows.filter(r => isGoldSymbol(r.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
+            const rest = rawRows.filter(r => !isGoldSymbol(r.symbol)).sort((a, b) => a.symbol.localeCompare(b.symbol));
+
+            const rows = [];
+
+            gold.forEach(r => {
+                const row = {
+                    symbol: r.symbol,
+                    direction: r.direction,
+                    clientNet: r.clientNet,
+                    uncovered: r.uncovered,
+                    _isGold: true,
+                    _csBadge: (r.contractSizeMultiplier && r.contractSizeMultiplier !== 1)
+                        ? ' <span style="font-size:10px;color:var(--amber);background:rgba(224,175,104,0.15);padding:1px 4px;border-radius:3px;margin-left:4px;font-weight:600">x' + r.contractSizeMultiplier + '</span>'
+                        : ''
+                };
+                lpNames.forEach(lp => { row['lp_' + lp] = (r.lpNets && r.lpNets[lp]) || 0; });
+                rows.push(row);
+            });
+
+            if (gold.length > 0) {
+                const subtotal = {
+                    symbol: 'GOLD TOTAL',
+                    direction: '',
+                    clientNet: gold.reduce((s, r) => s + r.clientNet, 0),
+                    uncovered: gold.reduce((s, r) => s + r.uncovered, 0),
+                    _isGoldSubtotal: true,
+                    _csBadge: ''
+                };
+                lpNames.forEach(lp => {
+                    subtotal['lp_' + lp] = gold.reduce((s, r) => s + ((r.lpNets && r.lpNets[lp]) || 0), 0);
+                });
+                rows.push(subtotal);
+            }
+
+            // Non-gold rows
+            rest.forEach(r => {
+                const row = {
+                    symbol: r.symbol,
+                    direction: r.direction,
+                    clientNet: r.clientNet,
+                    uncovered: r.uncovered,
+                    _isGold: false,
+                    _csBadge: (r.contractSizeMultiplier && r.contractSizeMultiplier !== 1)
+                        ? ' <span style="font-size:10px;color:var(--amber);background:rgba(224,175,104,0.15);padding:1px 4px;border-radius:3px;margin-left:4px;font-weight:600">x' + r.contractSizeMultiplier + '</span>'
+                        : ''
+                };
+                lpNames.forEach(lp => { row['lp_' + lp] = (r.lpNets && r.lpNets[lp]) || 0; });
+                rows.push(row);
+            });
+
+            // Totals (pinned bottom)
+            const totalsRow = {
+                symbol: 'TOTAL',
+                direction: '',
+                clientNet: data.totals.clientNet,
+                uncovered: data.totals.uncovered,
+                _csBadge: ''
+            };
+            lpNames.forEach(lp => {
+                totalsRow['lp_' + lp] = (data.totals.lpNets && data.totals.lpNets[lp]) || 0;
+            });
+
+            return { rows, pinned: [totalsRow] };
+        }
+
+        function renderTable(data) {
+            const keyFn = p => `${p.symbol}|${p.direction}`;
+            if (!data || !data.rows || data.rows.length === 0) {
+                if (gridApi) {
+                    SLC.applyDiff(gridApi, [], keyFn);
+                    gridApi.setGridOption('pinnedBottomRowData', []);
+                    gridApi.showNoRowsOverlay();
+                }
+                return;
+            }
+
+            const lpNames = sortLpNamesByGoldExposure(data.rows, data.lpNames || []);
+            data.lpNames = lpNames;
+
+            if (JSON.stringify(lpNames) !== JSON.stringify(currentLpNames)) {
+                currentLpNames = lpNames;
+                gridApi.setGridOption('columnDefs', buildColumnDefs(lpNames));
+            }
+
+            const { rows, pinned } = transformRows(data);
+            // Diff against current rows so scroll, sort, filter survive periodic refresh.
+            SLC.applyDiff(gridApi, rows, keyFn);
+            gridApi.setGridOption('pinnedBottomRowData', pinned);
+            document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        async function refreshFromApi() {
+            try {
+                const resp = await fetch('/Coverage/position-match-table');
+                const data = await resp.json();
+                renderTable(data);
+            } catch (e) {
+                console.error('API fetch failed:', e);
+            }
+        }
+
+        async function startSignalR() {
+            connection = new signalR.HubConnectionBuilder()
+                .withUrl('/ws/dashboard')
+                .withAutomaticReconnect([0, 1000, 2000, 5000, 10000])
+                .build();
+
+            connection.on('PositionMatchTableUpdate', (data) => {
+                renderTable(data);
+            });
+
+            let lastGoldBid = 0;
+            connection.on('PriceUpdate', (data) => {
+                if (data.symbol && data.symbol.toUpperCase().includes('XAUUSD')) {
+                    const bidEl = document.getElementById('goldBid');
+                    const askEl = document.getElementById('goldAsk');
+                    const lastEl = document.getElementById('goldLast');
+                    const spreadEl = document.getElementById('goldSpread');
+
+                    const dir = data.bid > lastGoldBid ? 'tick-up' : data.bid < lastGoldBid ? 'tick-down' : '';
+                    lastGoldBid = data.bid;
+
+                    bidEl.textContent = data.bid.toFixed(2);
+                    askEl.textContent = data.ask.toFixed(2);
+                    lastEl.textContent = data.bid.toFixed(2);
+                    lastEl.className = 'price ' + dir;
+                    spreadEl.textContent = `Spread: ${((data.ask - data.bid) * 100).toFixed(1)} pts`;
+                }
+            });
+
+            connection.on('LargeVolumeAlert', (data) => {
+                document.getElementById('volumeAlertEmpty').style.display = 'none';
+                const tbody = document.getElementById('volumeAlertTable');
+                const side = data.side === 'Buy' ? '<span class="badge-sm buy">Buy</span>' : '<span class="badge-sm sell">Sell</span>';
+                const row = document.createElement('tr');
+                row.className = 'alert-flash';
+                row.innerHTML = `<td>${data.time || ''}</td><td><strong>${data.symbol}</strong></td><td>${side}</td><td><strong>${data.lots}</strong></td><td>${data.login}</td><td>${data.name || ''}</td>`;
+                tbody.insertBefore(row, tbody.firstChild);
+                while (tbody.children.length > 50) tbody.removeChild(tbody.lastChild);
+            });
+
+            connection.onreconnecting(() => {
+                document.getElementById('statusDot').className = 'status-dot disconnected';
+                document.getElementById('statusText').textContent = 'Reconnecting...';
+            });
+
+            connection.onreconnected(async () => {
+                document.getElementById('statusDot').className = 'status-dot connected';
+                document.getElementById('statusText').textContent = 'Connected';
+                await connection.invoke('SubscribeToSymbol', 'XAUUSD');
+                refreshFromApi();
+            });
+
+            connection.onclose(() => {
+                document.getElementById('statusDot').className = 'status-dot disconnected';
+                document.getElementById('statusText').textContent = 'Disconnected';
+            });
+
+            try {
+                await connection.start();
+                document.getElementById('statusDot').className = 'status-dot connected';
+                document.getElementById('statusText').textContent = 'Connected';
+                await connection.invoke('SubscribeToSymbol', 'XAUUSD');
+                await refreshFromApi();
+            } catch (e) {
+                document.getElementById('statusDot').className = 'status-dot disconnected';
+                document.getElementById('statusText').textContent = 'Connection failed';
+            }
+        }
+
+        // Initialize grid on DOM ready, then start SignalR
+        document.addEventListener('DOMContentLoaded', () => {
+            initGrid();
+            startSignalR();
+        });
+    </script>
+</body>
+</html>

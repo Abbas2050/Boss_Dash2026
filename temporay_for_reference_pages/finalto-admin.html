@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - Finalto Admin</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1500px; margin: 0 auto; padding: 18px 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+        .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim); margin: 0 0 10px; }
+
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end; }
+        .form-grid label { display: block; font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
+        .form-grid input, .form-grid select {
+            width: 100%; box-sizing: border-box;
+            background: var(--bg3); border: 1px solid var(--line);
+            color: var(--fg); padding: 6px 8px; border-radius: 4px; font-size: 13px;
+        }
+        .cb-inline { display: inline-flex; align-items: center; gap: 6px; padding-top: 20px; }
+        .cb-inline input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+        .cb-inline label { margin: 0; text-transform: none; font-size: 13px; color: var(--fg); }
+
+        .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+        button {
+            background: var(--blue); color: var(--surface); border: none;
+            padding: 7px 14px; cursor: pointer; border-radius: 4px;
+            font-size: 13px; font-weight: bold;
+        }
+        button:hover:not(:disabled) { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover:not(:disabled) { background: var(--fg-muted); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-inline { font-size: 12px; color: var(--fg-muted); }
+
+        /* Status table */
+        table.status-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        table.status-table th, table.status-table td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+        table.status-table th { color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px; font-weight: bold; background: var(--bg3); }
+        table.status-table td.err { max-width: 320px; color: var(--fg-muted); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        table.status-table td.missing-warn { color: var(--amber); font-weight: bold; }
+        .status-header-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+        .status-refresh-caption { font-size: 12px; color: var(--fg-muted); }
+
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; color: var(--surface); }
+        .pill-ok { background: var(--pos); }
+        .pill-fail { background: var(--rose); }
+        .pill-neutral { background: var(--fg-muted); }
+
+        /* Backfill results */
+        pre.backfill-results {
+            background: var(--bg3); border: 1px solid var(--line); border-radius: 4px;
+            padding: 8px 10px; margin: 10px 0 0; max-height: 320px; overflow: auto;
+            font-size: 12px; color: var(--fg); white-space: pre-wrap; word-break: break-word;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+        }
+        .schedule-note { font-size: 11px; color: var(--fg-muted); margin-bottom: 8px; font-style: italic; }
+        .disclaimer-banner {
+            background: rgba(245, 194, 107, 0.10);
+            border-left: 3px solid var(--amber);
+            padding: 6px 10px; font-size: 12px; color: var(--fg);
+            margin-bottom: 8px; border-radius: 3px;
+        }
+
+        /* Tabs */
+        .tab-strip { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+        .tab-btn {
+            background: transparent; color: var(--fg-muted); border: none;
+            padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: bold;
+            text-transform: uppercase; letter-spacing: 0.4px;
+            border-bottom: 2px solid transparent;
+        }
+        .tab-btn:hover { color: var(--fg); background: rgba(122, 162, 247, 0.06); }
+        .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); background: transparent; }
+        .tab-pane { display: none; }
+        .tab-pane.active { display: block; }
+
+        .grid-container { height: 500px; width: 100%; margin-top: 10px; }
+        .row-count { font-size: 12px; color: var(--fg-muted); margin: 8px 0; }
+
+        .empty { color: var(--fg-muted); font-style: italic; font-size: 13px; }
+        .hidden { display: none; }
+
+        .toast {
+            position: fixed; bottom: 18px; right: 18px; z-index: 2000;
+            background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+            padding: 10px 14px; font-size: 13px; color: var(--fg);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            display: none;
+        }
+        .toast.show { display: block; }
+        .toast.ok { border-left: 3px solid var(--pos); }
+        .toast.fail { border-left: 3px solid var(--rose); }
+
+        /* Cash Details modal (opened from a per-row 'View' button in the Details column) */
+        .modal-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1500;
+            align-items: center; justify-content: center;
+        }
+        .modal-card {
+            background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+            padding: 14px 16px; min-width: 420px; max-width: 80%; max-height: 80vh;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .modal-card header { display: flex; justify-content: space-between; align-items: center; }
+        .modal-card header span {
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim);
+        }
+        pre.modal-body {
+            background: var(--bg3); border: 1px solid var(--line); border-radius: 4px;
+            padding: 8px 10px; margin: 0; max-height: 60vh; overflow: auto;
+            font-size: 12px; color: var(--fg); white-space: pre-wrap; word-break: break-word;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+        }
+        .cell-btn {
+            background: #414868; color: var(--fg); border: none;
+            padding: 2px 8px; font-size: 11px; font-weight: normal;
+            border-radius: 3px; cursor: pointer;
+        }
+        .cell-btn:hover { background: var(--fg-muted); }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>Finalto Admin</h1>
+    <div class="subtitle">Per-(LP, domain) ingest status, backfill window, and paged row viewer across the six Finalto ingest tables. Super-admin only.</div>
+
+    <!-- ============================================================ -->
+    <!-- Status panel (auto-refresh 60s)                              -->
+    <!-- ============================================================ -->
+    <div class="panel">
+        <h2>Ingest Status</h2>
+        <div class="status-header-row">
+            <button id="btnStatusRefresh" onclick="loadStatus(true)">Refresh now</button>
+            <span id="statusRefreshCaption" class="status-refresh-caption">Auto-refreshes every 60s -- loading...</span>
+        </div>
+        <div id="statusBody">
+            <div class="empty" id="statusEmpty">Loading status...</div>
+        </div>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Backfill panel                                               -->
+    <!-- ============================================================ -->
+    <div class="panel">
+        <h2>Backfill</h2>
+        <div class="schedule-note">Ingest schedule: 01:00 UTC daily, covers yesterday's date. Use Backfill only to fill gaps or force-refresh a specific window.</div>
+        <div class="form-grid">
+            <div>
+                <label for="bfLp">LP Account</label>
+                <select id="bfLp"><option value="">-- All active Finalto LPs --</option></select>
+            </div>
+            <div>
+                <label for="bfDomain">Domain</label>
+                <select id="bfDomain">
+                    <option value="Trades">Trades</option>
+                    <option value="Cash">Cash</option>
+                    <option value="OrderJournal">OrderJournal</option>
+                    <option value="Costs">Costs</option>
+                    <option value="SwapRates">SwapRates</option>
+                    <option value="CorporateActions">CorporateActions</option>
+                </select>
+            </div>
+            <div>
+                <label for="bfFrom">From</label>
+                <input id="bfFrom" type="date" />
+            </div>
+            <div>
+                <label for="bfTo">To</label>
+                <input id="bfTo" type="date" />
+            </div>
+            <div class="cb-inline">
+                <input id="bfForce" type="checkbox" />
+                <label for="bfForce">Force (re-run even if Succeeded)</label>
+            </div>
+        </div>
+        <div class="btn-row">
+            <button id="btnBackfill" onclick="runBackfill()">Submit backfill</button>
+            <span id="backfillStatus" class="status-inline"></span>
+        </div>
+        <pre id="backfillResults" class="backfill-results hidden"></pre>
+    </div>
+
+    <!-- ============================================================ -->
+    <!-- Row viewer (user-driven)                                     -->
+    <!-- ============================================================ -->
+    <div class="panel">
+        <h2>Row Viewer</h2>
+        <div class="tab-strip" id="tabStrip">
+            <button class="tab-btn active" data-tab="Trades" onclick="switchTab('Trades')">Trades</button>
+            <button class="tab-btn" data-tab="Cash" onclick="switchTab('Cash')">Cash</button>
+            <button class="tab-btn" data-tab="OrderJournal" onclick="switchTab('OrderJournal')">OrderJournal</button>
+            <button class="tab-btn" data-tab="Costs" onclick="switchTab('Costs')">Costs</button>
+            <button class="tab-btn" data-tab="SwapRates" onclick="switchTab('SwapRates')">SwapRates</button>
+            <button class="tab-btn" data-tab="CorporateActions" onclick="switchTab('CorporateActions')">CorporateActions</button>
+        </div>
+
+        <!-- Trades -->
+        <div class="tab-pane active" data-tab="Trades">
+            <div class="form-grid">
+                <div><label for="tr_from">From (required)</label><input id="tr_from" type="date" /></div>
+                <div><label for="tr_to">To (required)</label><input id="tr_to" type="date" /></div>
+                <div><label for="tr_accountId">Account ID</label><input id="tr_accountId" type="number" placeholder="optional" /></div>
+                <div><label for="tr_lpId">LP Account ID</label><input id="tr_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('Trades')">Search</button>
+                <button class="secondary" onclick="prevPage('Trades')">Prev</button>
+                <button class="secondary" onclick="nextPage('Trades')">Next</button>
+                <button class="secondary" onclick="exportTab('Trades')">Export CSV</button>
+                <span class="row-count" id="rc_Trades">No search yet.</span>
+            </div>
+            <div id="grid_Trades" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+
+        <!-- Cash -->
+        <div class="tab-pane" data-tab="Cash">
+            <div class="form-grid">
+                <div><label for="ca_from">From (required)</label><input id="ca_from" type="date" /></div>
+                <div><label for="ca_to">To (required)</label><input id="ca_to" type="date" /></div>
+                <div><label for="ca_accountId">Account ID</label><input id="ca_accountId" type="number" placeholder="optional" /></div>
+                <div><label for="ca_lpId">LP Account ID</label><input id="ca_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('Cash')">Search</button>
+                <button class="secondary" onclick="prevPage('Cash')">Prev</button>
+                <button class="secondary" onclick="nextPage('Cash')">Next</button>
+                <button class="secondary" onclick="exportTab('Cash')">Export CSV</button>
+                <span class="row-count" id="rc_Cash">No search yet.</span>
+            </div>
+            <div id="grid_Cash" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+
+        <!-- OrderJournal -->
+        <div class="tab-pane" data-tab="OrderJournal">
+            <div class="form-grid">
+                <div><label for="oj_tradeDate">Trade Date (required)</label><input id="oj_tradeDate" type="date" /></div>
+                <div><label for="oj_accountId">Account ID</label><input id="oj_accountId" type="number" placeholder="optional" /></div>
+                <div><label for="oj_lpId">LP Account ID</label><input id="oj_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('OrderJournal')">Search</button>
+                <button class="secondary" onclick="prevPage('OrderJournal')">Prev</button>
+                <button class="secondary" onclick="nextPage('OrderJournal')">Next</button>
+                <button class="secondary" onclick="exportTab('OrderJournal')">Export CSV</button>
+                <span class="row-count" id="rc_OrderJournal">No search yet.</span>
+            </div>
+            <div id="grid_OrderJournal" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+
+        <!-- Costs -->
+        <div class="tab-pane" data-tab="Costs">
+            <div class="form-grid">
+                <div><label for="co_tradeDate">Trade Date (required)</label><input id="co_tradeDate" type="date" /></div>
+                <div><label for="co_accountId">Account ID</label><input id="co_accountId" type="number" placeholder="optional" /></div>
+                <div><label for="co_lpId">LP Account ID</label><input id="co_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('Costs')">Search</button>
+                <button class="secondary" onclick="prevPage('Costs')">Prev</button>
+                <button class="secondary" onclick="nextPage('Costs')">Next</button>
+                <button class="secondary" onclick="exportTab('Costs')">Export CSV</button>
+                <span class="row-count" id="rc_Costs">No search yet.</span>
+            </div>
+            <div id="grid_Costs" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+
+        <!-- SwapRates -->
+        <div class="tab-pane" data-tab="SwapRates">
+            <div id="sr_disclaimer" class="disclaimer-banner hidden"></div>
+            <div class="form-grid">
+                <div><label for="sr_tradeDate">Trade Date (required)</label><input id="sr_tradeDate" type="date" /></div>
+                <div><label for="sr_accountId">Account ID</label><input id="sr_accountId" type="number" placeholder="optional" /></div>
+                <div>
+                    <label for="sr_kind">Kind</label>
+                    <select id="sr_kind">
+                        <option value="All">All</option>
+                        <option value="TomNext">TomNext</option>
+                        <option value="Preliminary">Preliminary</option>
+                    </select>
+                </div>
+                <div><label for="sr_lpId">LP Account ID</label><input id="sr_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('SwapRates')">Search</button>
+                <button class="secondary" onclick="prevPage('SwapRates')">Prev</button>
+                <button class="secondary" onclick="nextPage('SwapRates')">Next</button>
+                <button class="secondary" onclick="exportTab('SwapRates')">Export CSV</button>
+                <span class="row-count" id="rc_SwapRates">No search yet.</span>
+            </div>
+            <div id="grid_SwapRates" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+
+        <!-- CorporateActions -->
+        <div class="tab-pane" data-tab="CorporateActions">
+            <div class="form-grid">
+                <div><label for="cx_exDateFrom">Ex-date From (required)</label><input id="cx_exDateFrom" type="date" /></div>
+                <div><label for="cx_exDateTo">Ex-date To (required)</label><input id="cx_exDateTo" type="date" /></div>
+                <div><label for="cx_accountId">Account ID</label><input id="cx_accountId" type="number" placeholder="optional" /></div>
+                <div>
+                    <label for="cx_type">Type</label>
+                    <select id="cx_type">
+                        <option value="All">All</option>
+                        <option value="Dividend">Dividend</option>
+                        <option value="Split">Split</option>
+                        <option value="ReverseSplit">ReverseSplit</option>
+                        <option value="Delisting">Delisting</option>
+                    </select>
+                </div>
+                <div><label for="cx_lpId">LP Account ID</label><input id="cx_lpId" type="number" placeholder="optional" /></div>
+            </div>
+            <div class="btn-row">
+                <button onclick="searchTab('CorporateActions')">Search</button>
+                <button class="secondary" onclick="prevPage('CorporateActions')">Prev</button>
+                <button class="secondary" onclick="nextPage('CorporateActions')">Next</button>
+                <button class="secondary" onclick="exportTab('CorporateActions')">Export CSV</button>
+                <span class="row-count" id="rc_CorporateActions">No search yet.</span>
+            </div>
+            <div id="grid_CorporateActions" class="grid-container ag-theme-quartz-dark"></div>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<!-- Cash Details modal: shows the jsonb Details column pretty-printed -->
+<div id="detailsModal" class="modal-overlay" style="display:none;" onclick="onDetailsOverlayClick(event)">
+    <div class="modal-card">
+        <header>
+            <span>Cash Activity Details</span>
+            <button class="secondary" onclick="closeDetailsModal()">Close</button>
+        </header>
+        <pre id="detailsModalBody" class="modal-body"></pre>
+    </div>
+</div>
+
+<script>
+'use strict';
+
+// ------------------------------------------------------------------
+// Shared helpers
+// ------------------------------------------------------------------
+function showToast(msg, kind) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (kind === 'fail' ? 'fail' : 'ok');
+    setTimeout(function () { t.className = 'toast'; }, 2600);
+}
+
+// Turn a fetch response body into a human-readable message.
+// Controller returns plain strings from BadRequest(...) as JSON-encoded
+// string bodies, so JSON.parse yields a string; fall back to the raw text.
+async function extractError(r) {
+    var text = await r.text().catch(function () { return ''; });
+    if (text) {
+        try {
+            var j = JSON.parse(text);
+            if (typeof j === 'string' && j) return j;
+            if (j && typeof j.error === 'string' && j.error) return j.error;
+        } catch (_) { /* not JSON -- use raw text */ }
+    }
+    return 'HTTP ' + r.status + (text ? ': ' + text : '');
+}
+
+function isoDateAddDays(d) {
+    var t = new Date();
+    t.setUTCDate(t.getUTCDate() + d);
+    var y = t.getUTCFullYear();
+    var m = String(t.getUTCMonth() + 1).padStart(2, '0');
+    var day = String(t.getUTCDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+}
+
+function nowHHMMSS() {
+    var d = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+// Timestamp safe for a Windows filename (no colons).
+function fileStamp() {
+    var d = new Date();
+    var pad = function (n) { return String(n).padStart(2, '0'); };
+    return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' +
+           pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+}
+
+// ------------------------------------------------------------------
+// Bootstrap
+// ------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', function () {
+    // Sensible defaults so first-time Search buttons return useful rows.
+    document.getElementById('bfFrom').value = isoDateAddDays(-1);
+    document.getElementById('bfTo').value = isoDateAddDays(-1);
+
+    document.getElementById('tr_from').value = isoDateAddDays(-1);
+    document.getElementById('tr_to').value = isoDateAddDays(-1);
+    document.getElementById('ca_from').value = isoDateAddDays(-1);
+    document.getElementById('ca_to').value = isoDateAddDays(-1);
+    document.getElementById('oj_tradeDate').value = isoDateAddDays(-1);
+    document.getElementById('co_tradeDate').value = isoDateAddDays(-1);
+    document.getElementById('sr_tradeDate').value = isoDateAddDays(-1);
+    document.getElementById('cx_exDateFrom').value = isoDateAddDays(-30);
+    document.getElementById('cx_exDateTo').value = isoDateAddDays(30);
+
+    loadLpDropdown();
+    loadStatus(false);
+    setInterval(function () { loadStatus(false); }, 60000);
+
+    // Lazy-init the initially-visible tab's grid.
+    ensureGrid('Trades');
+});
+
+// ------------------------------------------------------------------
+// LP dropdown -- reuse the tester-controller endpoint (already
+// SuperAdmin-gated, already filtered to Source=Api + ApiVendor=Finalto).
+// ------------------------------------------------------------------
+async function loadLpDropdown() {
+    var sel = document.getElementById('bfLp');
+    try {
+        var r = await fetch('/api/admin/finalto-tester/accounts');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        var accounts = await r.json();
+        // Preserve the "All" option, then append one per account.
+        // Show inactive rows so operators can still Backfill them.
+        accounts.forEach(function (a) {
+            var opt = document.createElement('option');
+            opt.value = String(a.id);
+            var login = a.apiLoginText || '(no login)';
+            var env = a.environment || '(no env)';
+            var inactive = a.isActive ? '' : ' [INACTIVE]';
+            opt.textContent = '#' + a.id + ' -- ' + a.lpName + ' (' + login + ') ' + env + inactive;
+            sel.appendChild(opt);
+        });
+    } catch (e) {
+        showToast('Failed to load LP accounts: ' + (e.message || e), 'fail');
+    }
+}
+
+// ------------------------------------------------------------------
+// Status panel: fetch + render
+// ------------------------------------------------------------------
+var _statusAbort = null;
+
+async function loadStatus(manual) {
+    // Cancel any in-flight request so a slow response never overwrites a
+    // fresh one (or clobbers the user's manual refresh).
+    if (_statusAbort) {
+        try { _statusAbort.abort(); } catch (_) {}
+    }
+    var ctl = new AbortController();
+    _statusAbort = ctl;
+
+    var caption = document.getElementById('statusRefreshCaption');
+    if (manual) caption.textContent = 'Refreshing...';
+
+    try {
+        var r = await fetch('/api/Finalto/Status', { signal: ctl.signal });
+        if (!r.ok) {
+            var msg = await extractError(r);
+            renderStatusError(msg);
+            return;
+        }
+        var rows = await r.json();
+        renderStatus(rows);
+        caption.textContent = 'Auto-refreshes every 60s -- last refreshed ' + nowHHMMSS();
+    } catch (e) {
+        if (e && e.name === 'AbortError') return; // superseded by newer tick / manual
+        renderStatusError(e.message || String(e));
+    } finally {
+        if (_statusAbort === ctl) _statusAbort = null;
+    }
+}
+
+function renderStatusError(msg) {
+    var body = document.getElementById('statusBody');
+    body.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'empty';
+    div.style.color = 'var(--rose)';
+    div.textContent = 'Failed to load status: ' + msg;
+    body.appendChild(div);
+}
+
+function statusPill(status) {
+    var span = document.createElement('span');
+    span.className = 'pill';
+    if (status === 'Succeeded') {
+        span.classList.add('pill-ok');
+        span.textContent = 'Succeeded';
+    } else if (status === 'Failed') {
+        span.classList.add('pill-fail');
+        span.textContent = 'Failed';
+    } else if (status === 'Running') {
+        span.classList.add('pill-neutral');
+        span.textContent = 'Running';
+    } else {
+        span.classList.add('pill-neutral');
+        span.textContent = status || '(none)';
+    }
+    return span;
+}
+
+function renderStatus(rows) {
+    var body = document.getElementById('statusBody');
+    body.innerHTML = '';
+    if (!rows || !rows.length) {
+        var div = document.createElement('div');
+        div.className = 'empty';
+        div.textContent = 'No active Finalto LPs configured.';
+        body.appendChild(div);
+        return;
+    }
+    var table = document.createElement('table');
+    table.className = 'status-table';
+    var thead = document.createElement('thead');
+    var tr = document.createElement('tr');
+    ['LP Name', 'LP #', 'Domain', 'Last Succeeded Covered Date', 'Last Run Completed', 'Last Run Status', 'Missing (30d)', 'Last Error']
+        .forEach(function (h) {
+            var th = document.createElement('th');
+            th.textContent = h;
+            tr.appendChild(th);
+        });
+    thead.appendChild(tr);
+    table.appendChild(thead);
+
+    var tbody = document.createElement('tbody');
+    rows.forEach(function (row) {
+        var r = document.createElement('tr');
+        function td(text, cls) {
+            var c = document.createElement('td');
+            c.textContent = text == null ? '' : String(text);
+            if (cls) c.className = cls;
+            return c;
+        }
+        r.appendChild(td(row.lpName));
+        r.appendChild(td('#' + row.lpAccountId));
+        r.appendChild(td(row.domain));
+        r.appendChild(td(row.lastSucceededCoveredDate || '-'));
+        r.appendChild(td(row.lastRunCompletedAtUtc || '-'));
+
+        var statusCell = document.createElement('td');
+        statusCell.appendChild(statusPill(row.lastRunStatus));
+        r.appendChild(statusCell);
+
+        r.appendChild(td(String(row.missingDatesCount || 0), (row.missingDatesCount > 0 ? 'missing-warn' : null)));
+
+        var errCell = td(row.lastError || '', 'err');
+        if (row.lastError) errCell.title = row.lastError; // full text on hover
+        r.appendChild(errCell);
+
+        tbody.appendChild(r);
+    });
+    table.appendChild(tbody);
+    body.appendChild(table);
+}
+
+// ------------------------------------------------------------------
+// Backfill: single POST, server iterates the window internally.
+// ------------------------------------------------------------------
+async function runBackfill() {
+    var btn = document.getElementById('btnBackfill');
+    var status = document.getElementById('backfillStatus');
+    var resultsBox = document.getElementById('backfillResults');
+
+    var lp = document.getElementById('bfLp').value;
+    var domain = document.getElementById('bfDomain').value;
+    var from = document.getElementById('bfFrom').value;
+    var to = document.getElementById('bfTo').value;
+    var force = document.getElementById('bfForce').checked;
+
+    if (!from || !to) {
+        showToast('From and To dates are required.', 'fail');
+        return;
+    }
+    if (from > to) {
+        showToast('From date must be on or before To date.', 'fail');
+        return;
+    }
+
+    var qs = new URLSearchParams();
+    qs.set('from', from);
+    qs.set('to', to);
+    qs.set('domain', domain);
+    if (lp) qs.set('lpAccountId', lp);
+    qs.set('force', force ? 'true' : 'false');
+
+    btn.disabled = true;
+    status.textContent = 'Backfilling ' + from + '..' + to + ' (' + domain + ')...';
+    resultsBox.classList.remove('hidden');
+    resultsBox.textContent = '(running -- this can take 30s+ for wide windows)';
+
+    try {
+        var r = await fetch('/api/Finalto/Backfill?' + qs.toString(), { method: 'POST' });
+        if (!r.ok) throw new Error(await extractError(r));
+        var results = await r.json();
+        renderBackfillResults(results);
+        var okCount = results.filter(function (x) { return x.status === 'Succeeded'; }).length;
+        var failCount = results.filter(function (x) { return x.status === 'Failed'; }).length;
+        showToast('Backfill complete: ' + okCount + ' ok, ' + failCount + ' fail (' + results.length + ' total).', failCount > 0 ? 'fail' : 'ok');
+        // Immediate status refresh so the operator sees the effect.
+        loadStatus(false);
+    } catch (e) {
+        resultsBox.textContent = 'Failed: ' + (e.message || e);
+        showToast('Backfill failed: ' + (e.message || e), 'fail');
+    } finally {
+        btn.disabled = false;
+        status.textContent = '';
+    }
+}
+
+function renderBackfillResults(results) {
+    var box = document.getElementById('backfillResults');
+    if (!results || !results.length) {
+        box.textContent = '(no rows returned -- no active Finalto LPs?)';
+        return;
+    }
+    var lines = results.map(function (row) {
+        var stat = row.status === 'Succeeded' ? '[OK  ]' : (row.status === 'Failed' ? '[FAIL]' : '[' + (row.status || '?') + ']');
+        var elapsed = row.elapsedMs != null ? row.elapsedMs + 'ms' : '?ms';
+        var err = row.error ? ' err=' + row.error : '';
+        return row.date + ' ' + row.domain + ' LP#' + row.lpAccountId + ' ' + stat +
+               ' rows=' + row.rowsUpserted + ' elapsed=' + elapsed + err;
+    });
+    box.textContent = lines.join('\n');
+}
+
+// ------------------------------------------------------------------
+// Row viewer: tabs, grids, search, pagination, CSV export
+// ------------------------------------------------------------------
+var _tabState = {
+    Trades:           { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+    Cash:             { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+    OrderJournal:     { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+    Costs:            { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+    SwapRates:        { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+    CorporateActions: { page: 1, pageSize: 100, totalRows: 0, gridApi: null, lastQuery: null },
+};
+
+function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
+    });
+    document.querySelectorAll('.tab-pane').forEach(function (p) {
+        p.classList.toggle('active', p.getAttribute('data-tab') === tab);
+    });
+    // Lazy-init this tab's grid on first activation. Does NOT auto-fetch --
+    // that would fire a query every time the user browses between tabs.
+    ensureGrid(tab);
+}
+
+// ---- Cash Details cellRenderer ----
+// The Details column carries the raw jsonb string surfaced by the controller.
+// We render an inert "View" button per row; clicking it opens the modal with
+// the pretty-printed JSON. If the value fails to parse (unexpected shape),
+// we show it verbatim so the operator still sees something.
+function cashDetailsRenderer(params) {
+    var v = params.value;
+    if (v == null || v === '' || v === '[]' || v === 'null') return '';
+    var btn = document.createElement('button');
+    btn.className = 'cell-btn';
+    btn.textContent = 'View';
+    btn.addEventListener('click', function () {
+        var pretty;
+        try {
+            pretty = JSON.stringify(JSON.parse(v), null, 2);
+        } catch (_) {
+            pretty = String(v);
+        }
+        openDetailsModal(pretty);
+    });
+    return btn;
+}
+
+// ---- Column definitions (server-formatted *Fmt fields used verbatim) ----
+var _colDefs = {
+    Trades: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'BO Trade ID', field: 'boTradeId', width: 140 },
+        { headerName: 'TS Trade ID', field: 'tsTradeId', width: 140 },
+        { headerName: 'Instr ID', field: 'instrumentId', width: 90 },
+        { headerName: 'Side', field: 'side', width: 60, valueFormatter: function(p){ return p.value === 0 ? 'Buy' : (p.value === 1 ? 'Sell' : String(p.value)); } },
+        { headerName: 'Amount', field: 'amount', width: 110 },
+        { headerName: 'Price', field: 'price', width: 120 },
+        { headerName: 'Commission', field: 'commission', width: 110 },
+        { headerName: 'Comm Ccy', field: 'commissionCurrency', width: 90 },
+        { headerName: 'Execution', field: 'executionDateFmt', width: 220 },
+        { headerName: 'Trade Date', field: 'tradeDateFmt', width: 110 },
+        { headerName: 'Value Date', field: 'valueDateFmt', width: 110 },
+        { headerName: 'Order ID', field: 'orderId', width: 130 },
+        { headerName: 'Client Ord ID', field: 'clientOrderId', width: 130 },
+        { headerName: 'Trade Type', field: 'tradeType', width: 130 },
+        { headerName: 'Cancelled', field: 'cancelled', width: 90 },
+        { headerName: 'Closed', field: 'closed', width: 80 },
+        { headerName: 'Track', field: 'track', width: 70 },
+        { headerName: 'TS ID', field: 'tradeSystemId', width: 70 },
+        { headerName: 'Ext Client', field: 'externalClientId', width: 110 },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+    Cash: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'Cash Act ID', field: 'cashActivityId', width: 120 },
+        { headerName: 'Corr ID', field: 'correlationId', width: 90 },
+        { headerName: 'Type', field: 'cashActivityType', width: 140 },
+        { headerName: 'Amount', field: 'amount', width: 120 },
+        { headerName: 'Ccy', field: 'currency', width: 70 },
+        { headerName: 'Conv Amount', field: 'convertedAmount', width: 120 },
+        { headerName: 'Conv Ccy', field: 'convertedCurrency', width: 90 },
+        { headerName: 'Trade Date', field: 'tradeDateFmt', width: 110 },
+        { headerName: 'Activity Time', field: 'activityTimeFmt', width: 220 },
+        { headerName: 'Comment', field: 'comment', flex: 1, minWidth: 200 },
+        { headerName: 'Details', field: 'details', width: 90, cellRenderer: cashDetailsRenderer },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+    OrderJournal: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'Journal ID', field: 'journalId', width: 110 },
+        { headerName: 'Activity Time', field: 'activityTimeFmt', width: 220 },
+        { headerName: 'Event', field: 'orderEvent', width: 130 },
+        { headerName: 'Instrument', field: 'instrument', width: 120 },
+        { headerName: 'Side', field: 'orderSide', width: 70 },
+        { headerName: 'Type', field: 'orderType', width: 100 },
+        { headerName: 'Order Amount', field: 'orderAmount', width: 120 },
+        { headerName: 'Order Price', field: 'orderPrice', width: 120 },
+        { headerName: 'Fill Amount', field: 'fillAmount', width: 120 },
+        { headerName: 'Fill Price', field: 'fillPrice', width: 120 },
+        { headerName: 'Trade ID', field: 'tradeId', width: 110 },
+        { headerName: 'Order ID', field: 'orderId', width: 110 },
+        { headerName: 'Trade Date', field: 'tradeDateFmt', width: 110 },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+    // Costs: rewritten to match the CFDCost wire shape (12 fields + LP + Account).
+    // Long/Short cost split replaces the single legacy CFDCost column; adds
+    // dividend + finance-window fields.
+    Costs: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'Symbol', field: 'instrumentSymbol', width: 140 },
+        { headerName: 'Trade Date', field: 'tradeDateFmt', width: 110 },
+        { headerName: 'Long Cost', field: 'longPosCost', width: 120 },
+        { headerName: 'Short Cost', field: 'shortPosCost', width: 120 },
+        { headerName: 'EOD Rate', field: 'eODRate', width: 110 },
+        { headerName: 'Ccy Code', field: 'currencyCode', width: 90 },
+        { headerName: 'Gross Div', field: 'grossDividend', width: 110 },
+        { headerName: 'Net Div', field: 'netDividend', width: 110 },
+        { headerName: 'WHT Rate', field: 'withholdingTaxRate', width: 110 },
+        { headerName: 'Div Ccy', field: 'dividendCurrency', width: 90 },
+        { headerName: 'Finance From', field: 'dayToFinanceFromFmt', width: 200 },
+        { headerName: 'Finance To', field: 'dayToFinanceToFmt', width: 200 },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+    // SwapRates: TomNext carries EODRate/PipSize/From-To value dates;
+    // Preliminary rows leave those null and only fill Long/Short pips + PipSize.
+    SwapRates: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'Symbol', field: 'instrumentSymbol', width: 140 },
+        { headerName: 'Trade Date', field: 'tradeDateFmt', width: 110 },
+        { headerName: 'Kind', field: 'kind', width: 110 },
+        { headerName: 'Long Pips', field: 'longPosPips', width: 120 },
+        { headerName: 'Short Pips', field: 'shortPosPips', width: 120 },
+        { headerName: 'Pip Size', field: 'pipSize', width: 110 },
+        { headerName: 'EOD Rate', field: 'eODRate', width: 110 },
+        { headerName: 'From Val Date', field: 'fromValueDateFmt', width: 200 },
+        { headerName: 'To Val Date', field: 'toValueDateFmt', width: 200 },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+    CorporateActions: [
+        { headerName: 'LP #', field: 'lpAccountId', width: 70 },
+        { headerName: 'Account', field: 'accountId', width: 100 },
+        { headerName: 'Symbol', field: 'instrumentSymbol', width: 140 },
+        { headerName: 'Ex Date', field: 'exDateFmt', width: 110 },
+        { headerName: 'Type', field: 'corporateActionType', width: 130 },
+        // displayValue is now string on the wire ("1:5", "0.25/share"); no formatter needed.
+        { headerName: 'Value', field: 'displayValue', width: 160 },
+        { headerName: 'Ccy', field: 'currencyCode', width: 80 },
+        { headerName: 'Ingested', field: 'ingestedAtUtcFmt', width: 220 },
+    ],
+};
+
+// ---- Cash Details modal helpers ----
+function openDetailsModal(pretty) {
+    var body = document.getElementById('detailsModalBody');
+    body.textContent = pretty; // textContent is XSS-safe
+    document.getElementById('detailsModal').style.display = 'flex';
+}
+function closeDetailsModal() {
+    document.getElementById('detailsModal').style.display = 'none';
+}
+function onDetailsOverlayClick(ev) {
+    // Close only when clicking the dark overlay backdrop, not the card itself.
+    if (ev.target && ev.target.id === 'detailsModal') closeDetailsModal();
+}
+
+function ensureGrid(tab) {
+    var st = _tabState[tab];
+    if (st.gridApi) return;
+    var el = document.getElementById('grid_' + tab);
+    if (!el) return;
+    st.gridApi = agGrid.createGrid(el, {
+        columnDefs: _colDefs[tab],
+        rowData: [],
+        defaultColDef: { sortable: true, resizable: true },
+        rowHeight: 26,
+        headerHeight: 28,
+        animateRows: false,
+    });
+}
+
+// ---- Build the query string for a Search click ----
+function buildQuery(tab, page) {
+    var qs = new URLSearchParams();
+    if (tab === 'Trades') {
+        var f = document.getElementById('tr_from').value;
+        var t = document.getElementById('tr_to').value;
+        if (!f || !t) return { error: 'From and To dates are required.' };
+        if (f > t) return { error: 'From date must be on or before To date.' };
+        qs.set('from', f); qs.set('to', t);
+        var acc = document.getElementById('tr_accountId').value.trim();
+        var lp = document.getElementById('tr_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        if (lp) qs.set('lpAccountId', lp);
+    } else if (tab === 'Cash') {
+        var f = document.getElementById('ca_from').value;
+        var t = document.getElementById('ca_to').value;
+        if (!f || !t) return { error: 'From and To dates are required.' };
+        if (f > t) return { error: 'From date must be on or before To date.' };
+        qs.set('from', f); qs.set('to', t);
+        var acc = document.getElementById('ca_accountId').value.trim();
+        var lp = document.getElementById('ca_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        if (lp) qs.set('lpAccountId', lp);
+    } else if (tab === 'OrderJournal') {
+        var td = document.getElementById('oj_tradeDate').value;
+        if (!td) return { error: 'Trade Date is required.' };
+        qs.set('tradeDate', td);
+        var acc = document.getElementById('oj_accountId').value.trim();
+        var lp = document.getElementById('oj_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        if (lp) qs.set('lpAccountId', lp);
+    } else if (tab === 'Costs') {
+        var td = document.getElementById('co_tradeDate').value;
+        if (!td) return { error: 'Trade Date is required.' };
+        qs.set('tradeDate', td);
+        var acc = document.getElementById('co_accountId').value.trim();
+        var lp = document.getElementById('co_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        if (lp) qs.set('lpAccountId', lp);
+    } else if (tab === 'SwapRates') {
+        var td = document.getElementById('sr_tradeDate').value;
+        if (!td) return { error: 'Trade Date is required.' };
+        qs.set('tradeDate', td);
+        var acc = document.getElementById('sr_accountId').value.trim();
+        var kind = document.getElementById('sr_kind').value;
+        var lp = document.getElementById('sr_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        // "All" is a UI-only marker; omit the param so the server matches every kind.
+        if (kind && kind !== 'All') qs.set('kind', kind);
+        if (lp) qs.set('lpAccountId', lp);
+    } else if (tab === 'CorporateActions') {
+        var f = document.getElementById('cx_exDateFrom').value;
+        var t = document.getElementById('cx_exDateTo').value;
+        if (!f || !t) return { error: 'Ex-date From and To are required.' };
+        if (f > t) return { error: 'Ex-date From must be on or before Ex-date To.' };
+        qs.set('exDateFrom', f); qs.set('exDateTo', t);
+        var acc = document.getElementById('cx_accountId').value.trim();
+        var typ = document.getElementById('cx_type').value;
+        var lp = document.getElementById('cx_lpId').value.trim();
+        if (acc) qs.set('accountId', acc);
+        if (typ && typ !== 'All') qs.set('type', typ);
+        if (lp) qs.set('lpAccountId', lp);
+    } else {
+        return { error: 'Unknown tab: ' + tab };
+    }
+    qs.set('page', String(page));
+    qs.set('pageSize', String(_tabState[tab].pageSize));
+    return { qs: qs.toString() };
+}
+
+async function searchTab(tab) {
+    _tabState[tab].page = 1;
+    await fetchAndRender(tab);
+}
+
+async function prevPage(tab) {
+    var st = _tabState[tab];
+    if (st.page <= 1) return;
+    st.page -= 1;
+    await fetchAndRender(tab);
+}
+
+async function nextPage(tab) {
+    var st = _tabState[tab];
+    if (st.page * st.pageSize >= st.totalRows) return;
+    st.page += 1;
+    await fetchAndRender(tab);
+}
+
+async function fetchAndRender(tab) {
+    ensureGrid(tab);
+    var st = _tabState[tab];
+    var built = buildQuery(tab, st.page);
+    if (built.error) {
+        showToast(built.error, 'fail');
+        return;
+    }
+    var rc = document.getElementById('rc_' + tab);
+    rc.textContent = 'Loading...';
+    try {
+        var r = await fetch('/api/Finalto/' + tab + '?' + built.qs);
+        if (!r.ok) throw new Error(await extractError(r));
+        var data = await r.json();
+
+        st.totalRows = data.totalRows || 0;
+        st.lastQuery = built.qs;
+
+        var items = data.items || [];
+        // User-driven grid -- setGridOption is correct per the SLC.applyDiff convention
+        // (applyDiff is for polled / live grids).
+        st.gridApi.setGridOption('rowData', items);
+
+        var startIdx = st.totalRows === 0 ? 0 : (st.page - 1) * st.pageSize + 1;
+        var endIdx = Math.min(st.page * st.pageSize, st.totalRows);
+        rc.textContent = 'Page ' + st.page + ' -- rows ' + startIdx + '..' + endIdx + ' of ' + st.totalRows;
+
+        // SwapRates disclaimer
+        if (tab === 'SwapRates') {
+            var banner = document.getElementById('sr_disclaimer');
+            if (data.disclaimer) {
+                banner.textContent = data.disclaimer;
+                banner.classList.remove('hidden');
+            } else {
+                banner.textContent = '';
+                banner.classList.add('hidden');
+            }
+        }
+    } catch (e) {
+        rc.textContent = 'Failed: ' + (e.message || e);
+        showToast('Search failed: ' + (e.message || e), 'fail');
+    }
+}
+
+// ------------------------------------------------------------------
+// CSV export
+//   ag-Grid Community 31.3.2 ships gridApi.exportDataAsCsv({fileName}).
+//   Falls back to a manual TSV/CSV builder if -- for any reason -- the
+//   API is missing on the loaded build.
+// ------------------------------------------------------------------
+function exportTab(tab) {
+    ensureGrid(tab);
+    var st = _tabState[tab];
+    if (!st.gridApi) return;
+
+    // Prefer the built-in exporter.
+    var stamp = fileStamp();
+    var fileName = tab + '_' + stamp + '.csv';
+    if (typeof st.gridApi.exportDataAsCsv === 'function') {
+        try {
+            st.gridApi.exportDataAsCsv({ fileName: fileName });
+            return;
+        } catch (e) {
+            // Fall through to manual builder
+        }
+    }
+    manualCsvExport(tab, fileName);
+}
+
+function manualCsvExport(tab, fileName) {
+    var st = _tabState[tab];
+    var defs = _colDefs[tab];
+    var rows = [];
+    st.gridApi.forEachNode(function (n) { if (n.data) rows.push(n.data); });
+
+    var quote = function (v) {
+        if (v == null) return '';
+        var s = String(v);
+        if (s.indexOf(',') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1 || s.indexOf('\r') !== -1) {
+            return '"' + s.replace(/"/g, '""') + '"';
+        }
+        return s;
+    };
+    var header = defs.map(function (d) { return quote(d.headerName || d.field); }).join(',');
+    var body = rows.map(function (row) {
+        return defs.map(function (d) { return quote(row[d.field]); }).join(',');
+    }).join('\n');
+    var csv = header + '\n' + body;
+
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 500);
+}
+</script>
+</body>
+</html>

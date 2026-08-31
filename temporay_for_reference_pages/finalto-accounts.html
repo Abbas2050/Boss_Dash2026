@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - Finalto Accounts</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="/shared/nav.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1200px; margin: 0 auto; padding: 18px 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+        .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim); margin: 0 0 10px; }
+        .panel.aggregate { border-left: 3px solid var(--blue); }
+        .panel.sub { border-left: 3px solid var(--fg-dim); }
+        .panel.sub.inactive { opacity: 0.7; border-left-color: var(--rose); }
+
+        .row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+        .row-title { font-size: 13px; color: var(--fg); font-weight: bold; }
+        .row-title small { color: var(--fg-muted); font-weight: normal; font-size: 12px; margin-left: 6px; }
+
+        .form-grid { display: grid; grid-template-columns: 180px 1fr; gap: 8px 12px; align-items: center; max-width: 640px; }
+        .form-grid label { font-size: 12px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+        .form-grid input[type=text], .form-grid select {
+            background: var(--bg3); border: 1px solid var(--line);
+            color: var(--fg); padding: 6px 8px; border-radius: 4px; font-size: 13px;
+            width: 100%; box-sizing: border-box;
+        }
+        .form-grid input[type=text]:read-only, .form-grid .readonly {
+            background: transparent; color: var(--fg-dim); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+        }
+        .form-grid input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; }
+        .cb-wrap { display: inline-flex; align-items: center; gap: 6px; }
+        .cb-wrap label { font-size: 12px; color: var(--fg); text-transform: none; letter-spacing: 0; }
+
+        .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+        button { background: var(--blue); color: var(--surface); border: none; padding: 8px 14px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover:not(:disabled) { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover:not(:disabled) { background: var(--fg-muted); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-inline { font-size: 12px; color: var(--fg-muted); }
+        .empty { color: var(--fg-muted); font-style: italic; font-size: 13px; }
+        .hidden { display: none; }
+
+        .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; color: var(--surface); }
+        .pill-active { background: var(--pos); }
+        .pill-inactive { background: var(--rose); }
+
+        .toast {
+            position: fixed; bottom: 18px; right: 18px; z-index: 2000;
+            background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+            padding: 10px 14px; font-size: 13px; color: var(--fg);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            display: none;
+        }
+        .toast.show { display: block; }
+        .toast.ok { border-left: 3px solid var(--pos); }
+        .toast.fail { border-left: 3px solid var(--rose); }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>Finalto Accounts</h1>
+    <div class="subtitle">Configure display names and downstream visibility for each Finalto sub-account under a parent LpAccount. Aggregate row applies to the whole login (metrics/equity aggregation). Sub-account IncludeInPositions + DisplayName are active on the Coverage grid; IncludeInEquity / IncludeInDealMatching / IncludeInHistory are stored but still dormant pending their respective consumers.</div>
+
+    <div class="panel">
+        <h2>Parent account</h2>
+        <div id="parentPickerBody">
+            <div class="form-grid">
+                <label for="parentSelect">Parent</label>
+                <select id="parentSelect"><option>Loading...</option></select>
+            </div>
+            <div class="btn-row">
+                <button id="btnRefresh" onclick="refreshFromFinalto()" disabled>Refresh from Finalto</button>
+                <span id="refreshStatus" class="status-inline"></span>
+            </div>
+        </div>
+        <div id="parentEmpty" class="empty hidden" style="margin-top:8px;">
+            No saved Finalto accounts. Add one on the LP Manager page.
+        </div>
+    </div>
+
+    <div id="mainBody" class="hidden">
+        <div class="panel aggregate">
+            <h2>Aggregate (whole login)</h2>
+            <div class="form-grid">
+                <label for="aggLpName">LP name</label>
+                <input type="text" id="aggLpName" />
+
+                <label for="aggIncEquity">Include in Equity</label>
+                <div class="cb-wrap"><input type="checkbox" id="aggIncEquity" /></div>
+
+                <label for="aggIncPositions">Include in Positions</label>
+                <div class="cb-wrap"><input type="checkbox" id="aggIncPositions" /></div>
+
+                <label for="aggIncDealMatching">Include in Deal Matching</label>
+                <div class="cb-wrap"><input type="checkbox" id="aggIncDealMatching" /></div>
+
+                <label for="aggIncHistory">Include in History</label>
+                <div class="cb-wrap"><input type="checkbox" id="aggIncHistory" /></div>
+            </div>
+            <div class="btn-row">
+                <button id="btnSaveAgg" onclick="saveAggregate()" disabled>Save aggregate</button>
+                <span id="aggStatus" class="status-inline"></span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>Sub-accounts (from Finalto)</h2>
+            <div id="subEmpty" class="empty hidden">No sub-accounts. Click "Refresh from Finalto" to fetch.</div>
+            <div id="subList"></div>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+'use strict';
+
+// One in-memory copy of the last loaded page shape. Dirty tracking is per-row
+// (aggregate + each sub-account) and compares live form state against these
+// baselines. On successful save we replace the baseline with the response.
+var _parents = [];
+var _current = null;      // { aggregate, subAccounts } from GET / refresh
+var _aggDirty = false;
+var _subDirty = {};       // sub.id -> true when its row is dirty
+
+document.addEventListener('DOMContentLoaded', function () {
+    loadParents();
+});
+
+function showToast(msg, kind) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (kind === 'fail' ? 'fail' : 'ok');
+    setTimeout(function () { t.className = 'toast'; }, 2400);
+}
+
+async function loadParents() {
+    var sel = document.getElementById('parentSelect');
+    var empty = document.getElementById('parentEmpty');
+    try {
+        var r = await fetch('/api/admin/finalto-accounts/parents');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        _parents = await r.json();
+        sel.innerHTML = '';
+        if (!_parents.length) {
+            sel.classList.add('hidden');
+            empty.classList.remove('hidden');
+            document.getElementById('btnRefresh').disabled = true;
+            document.getElementById('mainBody').classList.add('hidden');
+            return;
+        }
+        sel.classList.remove('hidden');
+        empty.classList.add('hidden');
+        _parents.forEach(function (p) {
+            var opt = document.createElement('option');
+            opt.value = String(p.id);
+            var login = p.apiLoginText || '(no login)';
+            var env = p.environment || '(no env)';
+            var inactive = p.isActive ? '' : ' [INACTIVE]';
+            opt.textContent = '#' + p.id + ' -- ' + p.lpName + ' (' + login + ') ' + env + inactive;
+            sel.appendChild(opt);
+        });
+        sel.addEventListener('change', onParentChange);
+        // auto-select the first parent
+        sel.value = String(_parents[0].id);
+        await onParentChange();
+    } catch (e) {
+        sel.innerHTML = '';
+        var opt = document.createElement('option');
+        opt.textContent = 'Failed to load: ' + (e.message || e);
+        sel.appendChild(opt);
+        document.getElementById('btnRefresh').disabled = true;
+    }
+}
+
+function currentParentId() {
+    var v = document.getElementById('parentSelect').value;
+    var n = parseInt(v, 10);
+    return isNaN(n) ? null : n;
+}
+
+async function onParentChange() {
+    var id = currentParentId();
+    if (id == null) return;
+    document.getElementById('btnRefresh').disabled = false;
+    await loadPage(id);
+}
+
+async function loadPage(id) {
+    try {
+        var r = await fetch('/api/admin/finalto-accounts?lpAccountId=' + encodeURIComponent(id));
+        if (!r.ok) {
+            var text = await r.text().catch(function () { return ''; });
+            throw new Error('HTTP ' + r.status + (text ? ': ' + text : ''));
+        }
+        var data = await r.json();
+        _current = data;
+        renderAggregate();
+        renderSubAccounts();
+        document.getElementById('mainBody').classList.remove('hidden');
+        updateRefreshStatus();
+    } catch (e) {
+        showToast('Load failed: ' + (e.message || e), 'fail');
+    }
+}
+
+function updateRefreshStatus() {
+    var el = document.getElementById('refreshStatus');
+    if (!_current || !_current.subAccounts || !_current.subAccounts.length) {
+        el.textContent = 'No sub-accounts fetched yet.';
+        return;
+    }
+    var maxSeen = null;
+    _current.subAccounts.forEach(function (s) {
+        var t = new Date(s.lastSeenAtUtc).getTime();
+        if (isNaN(t)) return;
+        if (maxSeen == null || t > maxSeen) maxSeen = t;
+    });
+    if (maxSeen == null) {
+        el.textContent = '';
+    } else {
+        el.textContent = 'Last refreshed: ' + new Date(maxSeen).toLocaleString();
+    }
+}
+
+function renderAggregate() {
+    var a = _current && _current.aggregate;
+    if (!a) return;
+    document.getElementById('aggLpName').value = a.lpName || '';
+    document.getElementById('aggIncEquity').checked = !!a.includeInEquity;
+    document.getElementById('aggIncPositions').checked = !!a.includeInPositions;
+    document.getElementById('aggIncDealMatching').checked = !!a.includeInDealMatching;
+    document.getElementById('aggIncHistory').checked = !!a.includeInHistory;
+    _aggDirty = false;
+    document.getElementById('btnSaveAgg').disabled = true;
+    document.getElementById('aggStatus').textContent = '';
+
+    // Bind change listeners once per render (elements are stable, but the
+    // listener is idempotent -- attaching multiple times is harmless because
+    // markDirty just re-sets a flag).
+    ['aggLpName', 'aggIncEquity', 'aggIncPositions', 'aggIncDealMatching', 'aggIncHistory'].forEach(function (id) {
+        var el = document.getElementById(id);
+        el.oninput = markAggDirty;
+        el.onchange = markAggDirty;
+    });
+}
+
+function markAggDirty() {
+    _aggDirty = true;
+    document.getElementById('btnSaveAgg').disabled = false;
+}
+
+function renderSubAccounts() {
+    var list = document.getElementById('subList');
+    list.innerHTML = '';
+    _subDirty = {};
+
+    var subs = (_current && _current.subAccounts) || [];
+    var empty = document.getElementById('subEmpty');
+    if (!subs.length) {
+        empty.classList.remove('hidden');
+        return;
+    }
+    empty.classList.add('hidden');
+
+    subs.forEach(function (s) {
+        list.appendChild(renderSubPanel(s));
+    });
+}
+
+// Every DOM write below uses textContent / createElement / appendChild.
+// FinaltoAccountName / FinaltoAccountType come from Finalto's SOAP response,
+// so treat them as untrusted -- .textContent prevents any markup injection.
+function renderSubPanel(sub) {
+    var panel = document.createElement('div');
+    panel.className = 'panel sub' + (sub.isActive ? '' : ' inactive');
+    panel.setAttribute('data-sub-id', String(sub.id));
+
+    var head = document.createElement('div');
+    head.className = 'row-head';
+    var title = document.createElement('div');
+    title.className = 'row-title';
+    title.textContent = 'Sub-account #' + sub.finaltoAccountId;
+    var small = document.createElement('small');
+    small.textContent = sub.finaltoAccountName ? '(' + sub.finaltoAccountName + ')' : '';
+    title.appendChild(small);
+    head.appendChild(title);
+
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + (sub.isActive ? 'pill-active' : 'pill-inactive');
+    pill.textContent = sub.isActive ? 'Active' : 'Inactive';
+    head.appendChild(pill);
+    panel.appendChild(head);
+
+    var grid = document.createElement('div');
+    grid.className = 'form-grid';
+
+    function addRow(labelText, valueNode, forId) {
+        var lbl = document.createElement('label');
+        lbl.textContent = labelText;
+        if (forId) lbl.setAttribute('for', forId);
+        grid.appendChild(lbl);
+        grid.appendChild(valueNode);
+    }
+
+    function readOnlyValue(text) {
+        var span = document.createElement('span');
+        span.className = 'readonly';
+        span.textContent = text == null || text === '' ? '(none)' : text;
+        return span;
+    }
+
+    addRow('Finalto Account ID', readOnlyValue(String(sub.finaltoAccountId)));
+    addRow('Finalto Name', readOnlyValue(sub.finaltoAccountName || ''));
+    addRow('Type', readOnlyValue(sub.finaltoAccountType || ''));
+
+    var displayId = 'subDisplay_' + sub.id;
+    var displayInput = document.createElement('input');
+    displayInput.type = 'text';
+    displayInput.id = displayId;
+    displayInput.value = sub.displayName || '';
+    displayInput.placeholder = 'Empty = falls back to Finalto Name';
+    displayInput.oninput = function () { markSubDirty(sub.id, panel); };
+    addRow('Display name', displayInput, displayId);
+
+    function checkbox(name, checked) {
+        var wrap = document.createElement('div');
+        wrap.className = 'cb-wrap';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = 'sub_' + name + '_' + sub.id;
+        cb.checked = !!checked;
+        cb.onchange = function () { markSubDirty(sub.id, panel); };
+        wrap.appendChild(cb);
+        addRow(labelFor(name), wrap, cb.id);
+        return cb;
+    }
+
+    function labelFor(name) {
+        switch (name) {
+            case 'IncEquity': return 'Include in Equity';
+            case 'IncPositions': return 'Include in Positions';
+            case 'IncDealMatching': return 'Include in Deal Matching';
+            case 'IncHistory': return 'Include in History';
+        }
+        return name;
+    }
+
+    var cbEq = checkbox('IncEquity', sub.includeInEquity);
+    var cbPos = checkbox('IncPositions', sub.includeInPositions);
+    var cbDm = checkbox('IncDealMatching', sub.includeInDealMatching);
+    var cbHist = checkbox('IncHistory', sub.includeInHistory);
+
+    addRow('Last seen', readOnlyValue(fmtDate(sub.lastSeenAtUtc)));
+
+    panel.appendChild(grid);
+
+    var btnRow = document.createElement('div');
+    btnRow.className = 'btn-row';
+    var btn = document.createElement('button');
+    btn.textContent = 'Save';
+    btn.disabled = true;
+    btn.setAttribute('data-role', 'save');
+    btn.onclick = function () {
+        saveSubAccount(sub.id, {
+            displayName: displayInput.value,
+            includeInEquity: cbEq.checked,
+            includeInPositions: cbPos.checked,
+            includeInDealMatching: cbDm.checked,
+            includeInHistory: cbHist.checked,
+        });
+    };
+    btnRow.appendChild(btn);
+    var status = document.createElement('span');
+    status.className = 'status-inline';
+    status.setAttribute('data-role', 'status');
+    btnRow.appendChild(status);
+    panel.appendChild(btnRow);
+
+    return panel;
+}
+
+function markSubDirty(id, panel) {
+    _subDirty[id] = true;
+    var btn = panel.querySelector('button[data-role=save]');
+    if (btn) btn.disabled = false;
+}
+
+function fmtDate(v) {
+    if (!v) return '';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleString();
+}
+
+// Turn a fetch-error body into a human-readable message: try to parse JSON
+// { error: "..." } from the server, else fall back to the raw text prefixed by
+// HTTP status. Avoids toasting a literal JSON blob to the operator.
+async function extractError(r) {
+    var text = await r.text().catch(function () { return ''; });
+    if (text) {
+        try {
+            var j = JSON.parse(text);
+            if (j && typeof j.error === 'string' && j.error) return j.error;
+        } catch (_) { /* fall through */ }
+    }
+    return 'HTTP ' + r.status + (text ? ': ' + text : '');
+}
+
+// True when any row OTHER than the one just saved still has unsaved edits.
+// Used to gate the post-save reload: reloading would blow away typed input
+// on those other panels.
+function anyOtherDirty(savedKind, savedSubId) {
+    if (savedKind !== 'agg' && _aggDirty) return true;
+    var ids = Object.keys(_subDirty);
+    for (var i = 0; i < ids.length; i++) {
+        if (savedKind === 'sub' && ids[i] === String(savedSubId)) continue;
+        if (_subDirty[ids[i]]) return true;
+    }
+    return false;
+}
+
+async function saveAggregate() {
+    if (!_current || !_current.aggregate) return;
+    var btn = document.getElementById('btnSaveAgg');
+    var status = document.getElementById('aggStatus');
+    var id = _current.aggregate.lpAccountId;
+    var body = {
+        lpName: document.getElementById('aggLpName').value,
+        includeInEquity: document.getElementById('aggIncEquity').checked,
+        includeInPositions: document.getElementById('aggIncPositions').checked,
+        includeInDealMatching: document.getElementById('aggIncDealMatching').checked,
+        includeInHistory: document.getElementById('aggIncHistory').checked,
+    };
+    btn.disabled = true;
+    status.textContent = 'Saving...';
+    try {
+        var r = await fetch('/api/admin/finalto-accounts/aggregate/' + encodeURIComponent(id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(await extractError(r));
+        showToast('Aggregate saved.', 'ok');
+        status.textContent = '';
+        _aggDirty = false;
+        // Only reload if nothing else is pending -- else we'd discard
+        // typed-but-unsaved input on other panels.
+        if (!anyOtherDirty('agg', null)) {
+            await loadPage(id);
+        } else {
+            _current.aggregate.lpName = body.lpName;
+            _current.aggregate.includeInEquity = body.includeInEquity;
+            _current.aggregate.includeInPositions = body.includeInPositions;
+            _current.aggregate.includeInDealMatching = body.includeInDealMatching;
+            _current.aggregate.includeInHistory = body.includeInHistory;
+            status.textContent = 'Saved. Other panels have pending edits -- click Refresh to reload.';
+        }
+    } catch (e) {
+        status.textContent = '';
+        showToast('Save failed: ' + (e.message || e), 'fail');
+        btn.disabled = false;
+    }
+}
+
+async function saveSubAccount(id, body) {
+    var panel = document.querySelector('.panel.sub[data-sub-id="' + id + '"]');
+    if (!panel) return;
+    var btn = panel.querySelector('button[data-role=save]');
+    var status = panel.querySelector('span[data-role=status]');
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Saving...';
+    try {
+        var r = await fetch('/api/admin/finalto-accounts/sub/' + encodeURIComponent(id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(await extractError(r));
+        showToast('Sub-account saved.', 'ok');
+        if (status) status.textContent = '';
+        delete _subDirty[id];
+        var parentId = currentParentId();
+        if (parentId == null) return;
+        // Only reload if nothing else is pending; else preserve other panels' input.
+        if (!anyOtherDirty('sub', id)) {
+            await loadPage(parentId);
+        } else if (status) {
+            status.textContent = 'Saved. Other panels have pending edits -- click Refresh to reload.';
+        }
+    } catch (e) {
+        if (status) status.textContent = '';
+        showToast('Save failed: ' + (e.message || e), 'fail');
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function refreshFromFinalto() {
+    var id = currentParentId();
+    if (id == null) return;
+    var btn = document.getElementById('btnRefresh');
+    var status = document.getElementById('refreshStatus');
+    btn.disabled = true;
+    status.textContent = 'Refreshing from Finalto...';
+    try {
+        var r = await fetch('/api/admin/finalto-accounts/refresh?lpAccountId=' + encodeURIComponent(id), { method: 'POST' });
+        if (!r.ok) throw new Error(await extractError(r));
+        var data = await r.json();
+        _current = data;
+        renderAggregate();
+        renderSubAccounts();
+        updateRefreshStatus();
+        var count = (data.subAccounts || []).length;
+        showToast('Refreshed ' + count + ' sub-account' + (count === 1 ? '' : 's') + '.', 'ok');
+    } catch (e) {
+        status.textContent = '';
+        showToast('Refresh failed: ' + (e.message || e), 'fail');
+    } finally {
+        btn.disabled = false;
+    }
+}
+</script>
+</body>
+</html>

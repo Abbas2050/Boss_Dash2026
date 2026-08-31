@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SLC - History & Revenue Share</title>
+    <style>
+body { padding: 0; }
+h1 { color: var(--blue); margin-bottom: 8px; }
+
+        .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+        .controls label { font-size: 13px; color: #888; }
+        .controls input[type="date"], .controls select { background: var(--bg3); border: 1px solid #414868; color: var(--fg); padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+
+        button { background: var(--blue); color: var(--surface); border: none; padding: 7px 16px; cursor: pointer; border-radius: 4px; font-size: 13px; font-weight: bold; }
+        button:hover { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover { background: var(--fg-muted); }
+
+        .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+        .tab { padding: 10px 20px; font-size: 13px; color: var(--fg-muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s; }
+        .tab:hover { color: var(--fg); }
+        .tab.active { color: var(--blue); border-bottom-color: var(--blue); }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .positive { color: var(--pos); }
+        .negative { color: var(--rose); }
+        .neutral { color: var(--amber); }
+        .muted { color: var(--fg-muted); }
+
+        #msg { font-size: 13px; min-height: 20px; margin-bottom: 8px; }
+        .msg-ok { color: var(--pos); }
+        .msg-err { color: var(--rose); }
+
+        .loading { color: var(--fg-muted); font-style: italic; padding: 20px; text-align: center; }
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+</head>
+<body>
+<div class="page">
+        <h1>History & Revenue Share</h1>
+
+        <div class="controls">
+            <label>From:</label>
+            <input type="date" id="dateFrom" />
+            <label>To:</label>
+            <input type="date" id="dateTo" />
+            <button onclick="loadActivePanel()">Load</button>
+        </div>
+
+        <div id="msg"></div>
+
+        <div class="tabs">
+            <div class="tab active" data-panel="aggregate" onclick="switchTab(this)">Revenue Share</div>
+            <div class="tab" data-panel="deals" onclick="switchTab(this)">Trade Deals</div>
+            <div class="tab" data-panel="volume" onclick="switchTab(this)">Volume (Yards)</div>
+        </div>
+
+        <!-- Tab 1: Aggregate Revenue Share -->
+        <div id="panel-aggregate" class="panel active">
+            <div id="aggGrid" class="ag-theme-alpine-dark" style="width:100%;height:calc(100vh - 230px);"></div>
+        </div>
+
+        <!-- Tab 2: Trade Deals -->
+        <div id="panel-deals" class="panel">
+            <div class="controls">
+                <label>LP:</label>
+                <select id="dealLpSelect"><option value="">-- Select LP --</option></select>
+                <button onclick="loadDeals()">Load Deals</button>
+                <button class="secondary" onclick="exportDealsCsv()">Export CSV</button>
+            </div>
+            <div id="dealsGrid" class="ag-theme-alpine-dark" style="width:100%;height:calc(100vh - 290px);margin-top:10px;"></div>
+        </div>
+
+        <!-- Tab 3: Volume (Yards) -->
+        <div id="panel-volume" class="panel">
+            <div id="volGrid" class="ag-theme-alpine-dark" style="width:100%;height:calc(100vh - 230px);"></div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let lastAggData = null;
+        let lastDealsData = null;
+        let lastVolData = null;
+        let lpAccounts = [];
+
+        // Date overrides tracked outside the grid
+        let dateOverrides = {};
+
+        // Default date range: first of current month to today
+        const now = new Date();
+        document.getElementById('dateFrom').value = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        document.getElementById('dateTo').value = now.toISOString().split('T')[0];
+
+        function msg(text, ok) {
+            const el = document.getElementById('msg');
+            el.textContent = text;
+            el.className = ok ? 'msg-ok' : 'msg-err';
+            if (text) setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 6000);
+        }
+
+        function getTimestamps() {
+            const from = document.getElementById('dateFrom').value;
+            const to = document.getElementById('dateTo').value;
+            if (!from || !to) { msg('Select date range', false); return null; }
+            return {
+                from: Math.floor(new Date(from + 'T00:00:00Z').getTime() / 1000),
+                to: Math.floor(new Date(to + 'T23:59:59Z').getTime() / 1000),
+            };
+        }
+
+        function fmt(v, decimals = 2) {
+            if (v === undefined || v === null) return '-';
+            return v.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+        }
+
+        function colorClass(v) {
+            if (v > 0.005) return 'positive';
+            if (v < -0.005) return 'negative';
+            return '';
+        }
+
+        function tsToDate(ts) {
+            return new Date(ts * 1000).toISOString().split('T')[0];
+        }
+
+        // Shared cell style: pos/neg coloring.
+        const plStyle = p => {
+            const v = p.value || 0;
+            if (v > 0.005) return { color: 'var(--pos)' };
+            if (v < -0.005) return { color: 'var(--rose)' };
+            return {};
+        };
+
+        const aggColDefs = [
+            { headerName: 'LP Name', field: 'lpName', cellRenderer: p => p.data._isError ? `<strong>${p.value}</strong>` : `<strong>${p.value}</strong>`, pinned: 'left', minWidth: 120 },
+            { headerName: 'Login', field: 'login', minWidth: 80 },
+            { headerName: 'Source', field: 'source', cellStyle: { color: 'var(--fg-muted)' }, minWidth: 80 },
+            { headerName: 'Start Period', field: 'effectiveFrom', minWidth: 130,
+              cellRenderer: p => {
+                  if (p.data._isError || p.data._isTotals) return '';
+                  const val = p.value || '';
+                  return `<input type="date" value="${val}" style="background:var(--bg3);border:1px solid #414868;color:var(--fg);padding:2px 6px;border-radius:3px;font-size:12px;width:120px;" data-lp="${p.data.lpName}" onchange="dateOverrides[this.dataset.lp]=Math.floor(new Date(this.value+'T00:00:00Z').getTime()/1000)">`;
+              }
+            },
+            { headerName: 'Start Equity', field: 'startEquity', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+            { headerName: 'End Equity', field: 'endEquity', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+            { headerName: 'Credit', field: 'credit', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+            { headerName: 'Deposit', field: 'deposit', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Withdrawal', field: 'withdrawal', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Net Deposits', field: 'netDeposits', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Gross P/L', field: 'grossProfit', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Commission', field: 'totalCommission', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Swap', field: 'totalSwap', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Net P/L', field: 'netPL', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Real LP P/L', field: 'realLpPL', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'NTP %', field: 'ntpPercent', type: 'numericColumn',
+              valueFormatter: p => p.value != null ? fmt(p.value, 1) + '%' : '',
+              cellStyle: { color: 'var(--amber)' }
+            },
+            { headerName: 'LP P/L (Rev Share)', field: 'lpPL', type: 'numericColumn',
+              valueFormatter: p => fmt(p.value),
+              cellStyle: p => {
+                  const v = p.value || 0;
+                  const color = v > 0.005 ? 'var(--pos)' : v < -0.005 ? 'var(--rose)' : '';
+                  return { fontWeight: 'bold', color, background: 'rgba(255,255,255,0.03)', borderRadius: '4px' };
+              }
+            },
+        ];
+
+        const aggGridApi = SLC.createGrid(document.getElementById('aggGrid'), {
+            columnDefs: aggColDefs,
+        });
+
+        const dealsColDefs = [
+            { headerName: 'Ticket', field: 'dealTicket' },
+            { headerName: 'Symbol', field: 'symbol', cellRenderer: p => `<strong>${p.value}</strong>` },
+            { headerName: 'Time', field: 'timeString', cellStyle: { color: 'var(--fg-muted)' } },
+            { headerName: 'Direction', field: 'direction',
+              cellStyle: p => ({ color: p.value === 'Buy' ? 'var(--pos)' : 'var(--rose)' }) },
+            { headerName: 'Entry', field: 'entry' },
+            { headerName: 'Volume', field: 'volume', type: 'numericColumn', valueFormatter: p => fmt(p.value, 2) },
+            { headerName: 'Price', field: 'price', type: 'numericColumn', valueFormatter: p => fmt(p.value, 5) },
+            { headerName: 'Contract Size', field: 'contractSize', type: 'numericColumn', valueFormatter: p => fmt(p.value, 0) },
+            { headerName: 'Market Value', field: 'marketValue', type: 'numericColumn', valueFormatter: p => fmt(p.value, 0) },
+            { headerName: 'Profit', field: 'profit', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Commission', field: 'commission', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Fee', field: 'fee', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'Swap', field: 'swap', type: 'numericColumn', valueFormatter: p => fmt(p.value), cellStyle: plStyle },
+            { headerName: 'LP Comm', field: 'lpCommission', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+            { headerName: 'LP Comm/Lot', field: 'lpCommPerLot', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+        ];
+
+        const dealsGridApi = SLC.createGrid(document.getElementById('dealsGrid'), {
+            columnDefs: dealsColDefs,
+        });
+
+        const volColDefs = [
+            { headerName: 'LP Name', field: 'lpName', cellRenderer: p => `<strong>${p.value}</strong>` },
+            { headerName: 'Login', field: 'login' },
+            { headerName: 'Source', field: 'source', cellStyle: { color: 'var(--fg-muted)' } },
+            { headerName: 'Trade Count', field: 'tradeCount', type: 'numericColumn', valueFormatter: p => p.value != null ? p.value.toLocaleString() : '' },
+            { headerName: 'Total Lots', field: 'totalLots', type: 'numericColumn', valueFormatter: p => fmt(p.value) },
+            { headerName: 'Notional (USD)', field: 'notionalUsd', type: 'numericColumn', valueFormatter: p => fmt(p.value, 0) },
+            { headerName: 'Volume (Yards)', field: 'volumeYards', type: 'numericColumn', valueFormatter: p => fmt(p.value, 4) },
+        ];
+
+        const volGridApi = SLC.createGrid(document.getElementById('volGrid'), {
+            columnDefs: volColDefs,
+        });
+
+        function switchTab(el) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+            el.classList.add('active');
+            document.getElementById('panel-' + el.dataset.panel).classList.add('active');
+
+            // Resize active grid so columns fit properly after display:none -> block
+            setTimeout(() => {
+                const panel = el.dataset.panel;
+                if (panel === 'aggregate' && aggGridApi) aggGridApi.sizeColumnsToFit();
+                else if (panel === 'deals' && dealsGridApi) dealsGridApi.sizeColumnsToFit();
+                else if (panel === 'volume' && volGridApi) volGridApi.sizeColumnsToFit();
+            }, 50);
+        }
+
+        function loadActivePanel() {
+            const active = document.querySelector('.tab.active').dataset.panel;
+            if (active === 'aggregate') loadAggregate();
+            else if (active === 'deals') loadDeals();
+            else if (active === 'volume') loadVolume();
+        }
+
+        async function loadLpList() {
+            try {
+                const resp = await fetch(`${API}/api/LpAccount`);
+                if (resp.ok) {
+                    lpAccounts = await resp.json();
+                    const sel = document.getElementById('dealLpSelect');
+                    sel.innerHTML = '<option value="">-- Select LP --</option>';
+                    lpAccounts.forEach(lp => {
+                        sel.innerHTML += `<option value="${lp.mt5Login}">${lp.lpName} (${lp.mt5Login})</option>`;
+                    });
+                }
+            } catch (e) { }
+        }
+
+        async function loadAggregate() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            // Collect per-LP date overrides from tracked state
+            const body = {
+                from: ts.from,
+                to: ts.to,
+                overrides: Object.keys(dateOverrides).length > 0 ? dateOverrides : null
+            };
+
+            aggGridApi.setGridOption('rowData', []);
+            aggGridApi.showLoadingOverlay();
+
+            try {
+                const resp = await fetch(`${API}/History/aggregate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastAggData = await resp.json();
+                renderAggregate(lastAggData);
+                msg(`Loaded ${lastAggData.items.length} LPs`, true);
+            } catch (e) {
+                msg('Request failed: ' + e.message, false);
+            }
+        }
+
+        function renderAggregate(data) {
+            const rows = [];
+
+            data.items.forEach(item => {
+                // Skip LPs with 0% NTP
+                if (!item.isError && item.ntpPercent === 0) return;
+
+                if (item.isError) {
+                    rows.push({
+                        lpName: item.lpName,
+                        login: item.login,
+                        source: item.source,
+                        _isError: true,
+                        _errorMsg: item.errorMessage || 'Error',
+                    });
+                } else {
+                    rows.push({
+                        lpName: item.lpName,
+                        login: item.login,
+                        source: item.source,
+                        effectiveFrom: tsToDate(item.effectiveFrom),
+                        startEquity: item.startEquity,
+                        endEquity: item.endEquity,
+                        credit: item.credit,
+                        deposit: item.deposit,
+                        withdrawal: item.withdrawal,
+                        netDeposits: item.netDeposits,
+                        grossProfit: item.grossProfit,
+                        totalCommission: item.totalCommission,
+                        totalSwap: item.totalSwap,
+                        netPL: item.netPL,
+                        realLpPL: item.realLpPL,
+                        ntpPercent: item.ntpPercent,
+                        lpPL: item.lpPL,
+                        _isError: false,
+                    });
+                }
+            });
+
+            const t = data.totals;
+            const totalsRow = {
+                lpName: 'TOTAL',
+                login: '',
+                source: '',
+                effectiveFrom: '',
+                startEquity: t.startEquity,
+                endEquity: t.endEquity,
+                credit: t.credit,
+                deposit: t.deposit,
+                withdrawal: t.withdrawal,
+                netDeposits: t.netDeposits,
+                grossProfit: t.grossProfit,
+                totalCommission: t.totalCommission,
+                totalSwap: t.totalSwap,
+                netPL: t.netPL,
+                realLpPL: t.realLpPL,
+                ntpPercent: null,
+                lpPL: t.lpPL,
+                _isTotals: true,
+            };
+
+            aggGridApi.setGridOption('rowData', rows);
+            aggGridApi.setGridOption('pinnedBottomRowData', [totalsRow]);
+        }
+
+        async function loadDeals() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            const login = document.getElementById('dealLpSelect').value;
+            if (!login) { msg('Select an LP first', false); return; }
+
+            dealsGridApi.setGridOption('rowData', []);
+            dealsGridApi.showLoadingOverlay();
+
+            try {
+                const resp = await fetch(`${API}/History/deals?login=${login}&from=${ts.from}&to=${ts.to}`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastDealsData = await resp.json();
+                renderDeals(lastDealsData);
+                msg(`Loaded ${lastDealsData.totalDeals} deals for ${lastDealsData.lpName}`, true);
+            } catch (e) {
+                msg('Request failed: ' + e.message, false);
+            }
+        }
+
+        function renderDeals(data) {
+            if (!data.deals || data.deals.length === 0) {
+                dealsGridApi.setGridOption('rowData', []);
+                dealsGridApi.showNoRowsOverlay();
+                return;
+            }
+            dealsGridApi.setGridOption('rowData', data.deals);
+        }
+
+        function exportDealsCsv() {
+            if (!lastDealsData || !lastDealsData.deals || lastDealsData.deals.length === 0) {
+                msg('No deals to export', false);
+                return;
+            }
+
+            const headers = ['Ticket','Symbol','Time','Direction','Entry','Volume','Price','ContractSize','MarketValue','Profit','Commission','Fee','Swap','LpComm','LpComm/Lot'];
+            const rows = lastDealsData.deals.map(d => [
+                d.dealTicket, d.symbol, d.timeString, d.direction, d.entry,
+                d.volume, d.price, d.contractSize, d.marketValue,
+                d.profit, d.commission, d.fee, d.swap,
+                d.lpCommission, d.lpCommPerLot
+            ]);
+
+            const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `deals_${lastDealsData.lpName}_${document.getElementById('dateFrom').value}_${document.getElementById('dateTo').value}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        async function loadVolume() {
+            const ts = getTimestamps();
+            if (!ts) return;
+
+            volGridApi.setGridOption('rowData', []);
+            volGridApi.showLoadingOverlay();
+
+            try {
+                const resp = await fetch(`${API}/History/volume?from=${ts.from}&to=${ts.to}`);
+                if (!resp.ok) { msg('Failed: ' + await resp.text(), false); return; }
+
+                lastVolData = await resp.json();
+                renderVolume(lastVolData);
+                msg(`Loaded volume for ${lastVolData.items.length} LPs`, true);
+            } catch (e) {
+                msg('Request failed: ' + e.message, false);
+            }
+        }
+
+        function renderVolume(data) {
+            const rows = [];
+
+            data.items.forEach(item => {
+                if (item.isError) {
+                    rows.push({
+                        lpName: item.lpName,
+                        login: item.login,
+                        source: item.source,
+                        _isError: true,
+                    });
+                } else {
+                    rows.push({
+                        lpName: item.lpName,
+                        login: item.login,
+                        source: item.source,
+                        tradeCount: item.tradeCount,
+                        totalLots: item.totalLots,
+                        notionalUsd: item.notionalUsd,
+                        volumeYards: item.volumeYards,
+                    });
+                }
+            });
+
+            const t = data.totals;
+            const totalsRow = {
+                lpName: 'TOTAL',
+                login: '',
+                source: '',
+                tradeCount: t.tradeCount,
+                totalLots: t.totalLots,
+                notionalUsd: t.notionalUsd,
+                volumeYards: t.volumeYards,
+                _isTotals: true,
+            };
+
+            volGridApi.setGridOption('rowData', rows);
+            volGridApi.setGridOption('pinnedBottomRowData', [totalsRow]);
+        }
+
+        loadLpList();
+    </script>
+</body>
+</html>

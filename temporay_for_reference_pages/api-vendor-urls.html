@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - API Vendor URLs</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1400px; margin: 0 auto; padding: 18px 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+        .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim); margin: 0 0 10px; }
+
+        .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        button {
+            background: var(--blue); color: var(--surface); border: none;
+            padding: 6px 12px; cursor: pointer; border-radius: 4px;
+            font-size: 12px; font-weight: bold;
+        }
+        button:hover:not(:disabled) { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover:not(:disabled) { background: var(--fg-muted); }
+        button.revert { background: var(--rose); color: var(--surface); }
+        button.revert:hover:not(:disabled) { background: #ff9e9e; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-inline { font-size: 12px; color: var(--fg-muted); }
+        .grid-container { height: 480px; width: 100%; margin-top: 4px; }
+        .empty { color: var(--fg-muted); font-style: italic; font-size: 13px; }
+
+        .pill {
+            display: inline-block; padding: 2px 8px; border-radius: 999px;
+            font-size: 10px; font-weight: bold; text-transform: uppercase;
+            letter-spacing: 0.5px; color: var(--surface);
+        }
+        .pill-default { background: var(--fg-muted); }
+        .pill-override { background: var(--blue); }
+
+        .cell-actions { display: inline-flex; gap: 6px; align-items: center; }
+        .cell-actions button { padding: 3px 10px; font-size: 11px; }
+
+        .toast {
+            position: fixed; bottom: 18px; right: 18px; z-index: 2000;
+            background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+            padding: 10px 14px; font-size: 13px; color: var(--fg);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            display: none;
+        }
+        .toast.show { display: block; }
+        .toast.ok { border-left: 3px solid var(--pos); }
+        .toast.fail { border-left: 3px solid var(--rose); }
+
+        .help {
+            background: rgba(122, 162, 247, 0.08);
+            border-left: 3px solid var(--blue);
+            padding: 8px 12px; font-size: 12px; color: var(--fg);
+            margin-bottom: 10px; border-radius: 3px; line-height: 1.5;
+        }
+        .help code {
+            background: var(--bg3); padding: 1px 5px; border-radius: 3px;
+            font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>API Vendor URLs</h1>
+    <div class="subtitle">Override the Live / Demo base URLs used by env-driven vendor clients (Finalto today). Revert deletes the override and falls back to the compiled default. Super-admin only.</div>
+
+    <div class="panel">
+        <h2>Effective Base URLs</h2>
+        <div class="help">
+            Rows shown are the URL each vendor client will actually use.
+            <code>Default</code> = compiled fallback (no DB row).
+            <code>Override</code> = value stored in <code>ApiVendorUrls</code>.
+            Edit the Url cell (double-click or press Enter), then click Save to upsert an override.
+            Revert deletes the override and falls back to Default.
+            Xtb / Lmax rows appear only after an override is added -- those vendors normally use the per-row <code>Mt5Server</code> host today.
+        </div>
+
+        <div class="btn-row">
+            <button onclick="loadRows()">Refresh</button>
+            <span id="loadStatus" class="status-inline"></span>
+        </div>
+
+        <div id="grid" class="grid-container ag-theme-quartz-dark"></div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+'use strict';
+
+// Row identity = (Vendor, Environment). Stable across Default <-> Override
+// transitions on the same pair -- Save on a Default row upserts and comes back
+// as Override with identical id; Revert on an Override row goes back to Default
+// (Finalto) or disappears (Xtb/Lmax).
+function rowKey(r) { return r.vendor + '|' + r.environment; }
+
+var _gridApi = null;
+
+document.addEventListener('DOMContentLoaded', function () {
+    var el = document.getElementById('grid');
+    _gridApi = agGrid.createGrid(el, {
+        columnDefs: buildColumnDefs(),
+        rowData: [],
+        getRowId: function (p) { return rowKey(p.data); },
+        defaultColDef: { sortable: true, resizable: true, filter: false },
+        singleClickEdit: false,
+        stopEditingWhenCellsLoseFocus: true,
+        rowHeight: 30,
+        headerHeight: 28,
+        animateRows: false,
+        onCellValueChanged: function (ev) {
+            // User committed an edit to the Url cell -- redraw the Actions cell
+            // so Save enables/disables against the new value.
+            if (ev.colDef && ev.colDef.field === 'url') {
+                ev.api.refreshCells({ rowNodes: [ev.node], columns: ['actions'], force: true });
+            }
+        },
+    });
+    loadRows();
+});
+
+function buildColumnDefs() {
+    return [
+        { headerName: 'Vendor', field: 'vendor', width: 110, editable: false },
+        { headerName: 'Environment', field: 'environment', width: 130, editable: false },
+        {
+            headerName: 'Url', field: 'url',
+            flex: 1, minWidth: 320,
+            editable: true,
+            cellStyle: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: '12px' },
+        },
+        {
+            headerName: 'Source', field: 'source', width: 110,
+            cellRenderer: function (p) {
+                var cls = p.value === 'Override' ? 'pill-override' : 'pill-default';
+                var span = document.createElement('span');
+                span.className = 'pill ' + cls;
+                span.textContent = p.value == null ? '' : String(p.value);
+                return span;
+            },
+        },
+        {
+            headerName: 'Updated (UTC)', field: 'updatedAtUtc', width: 190,
+            valueFormatter: function (p) { return p.value ? fmtDate(p.value) : ''; },
+        },
+        { headerName: 'Updated By', field: 'updatedBy', width: 160 },
+        {
+            headerName: 'Actions', colId: 'actions', field: 'source',
+            width: 190, sortable: false, editable: false,
+            cellRenderer: function (p) {
+                var row = p.data;
+                if (!row) return '';
+                var rid = 'act_' + rowKey(row).replace(/[^A-Za-z0-9_]/g, '_');
+                var url = (row.url || '').trim();
+                var validHttps = isValidHttps(url);
+                var saveDisabled = !validHttps;
+                var showRevert = row.source === 'Override';
+                setTimeout(function () {
+                    var root = document.getElementById(rid);
+                    if (!root) return;
+                    var saveBtn = root.querySelector('button.save');
+                    if (saveBtn) saveBtn.addEventListener('click', function () { saveRow(row); });
+                    var revBtn = root.querySelector('button.revert');
+                    if (revBtn) revBtn.addEventListener('click', function () { revertRow(row); });
+                }, 0);
+                var saveHtml = '<button class="save"' + (saveDisabled ? ' disabled' : '') + '>Save</button>';
+                var revHtml = showRevert ? '<button class="revert">Revert</button>' : '';
+                return '<div class="cell-actions" id="' + rid + '">' + saveHtml + revHtml + '</div>';
+            },
+        },
+    ];
+}
+
+function isValidHttps(url) {
+    if (!url || url.length > 512) return false;
+    if (url.indexOf('https://') !== 0) return false;
+    try {
+        var u = new URL(url);
+        return u.protocol === 'https:';
+    } catch (_) {
+        return false;
+    }
+}
+
+function showToast(msg, kind) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (kind === 'fail' ? 'fail' : 'ok');
+    setTimeout(function () { t.className = 'toast'; }, 2400);
+}
+
+function fmtDate(v) {
+    if (!v) return '';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleString();
+}
+
+async function extractError(r) {
+    var text = await r.text().catch(function () { return ''; });
+    if (text) {
+        try {
+            var j = JSON.parse(text);
+            if (j && typeof j.error === 'string' && j.error) return j.error;
+        } catch (_) { /* fall through */ }
+    }
+    return 'HTTP ' + r.status + (text ? ': ' + text : '');
+}
+
+async function loadRows() {
+    var status = document.getElementById('loadStatus');
+    status.textContent = 'Loading...';
+    try {
+        var r = await fetch('/api/admin/vendor-urls');
+        if (!r.ok) throw new Error(await extractError(r));
+        var rows = await r.json();
+        SLC.applyDiff(_gridApi, rows, rowKey);
+        status.textContent = 'Loaded ' + rows.length + ' row' + (rows.length === 1 ? '' : 's') + ' at ' + new Date().toLocaleTimeString();
+    } catch (e) {
+        status.textContent = '';
+        showToast('Load failed: ' + (e.message || e), 'fail');
+    }
+}
+
+async function saveRow(row) {
+    // row is the ag-Grid data reference; url reflects the just-committed edit.
+    var url = (row.url || '').trim();
+    if (!isValidHttps(url)) {
+        showToast('Url must start with https:// and be a valid absolute URI.', 'fail');
+        return;
+    }
+    var body = { vendor: row.vendor, environment: row.environment, url: url };
+    try {
+        var r = await fetch('/api/admin/vendor-urls', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!r.ok) throw new Error(await extractError(r));
+        showToast('Saved ' + row.vendor + ' / ' + row.environment + '.', 'ok');
+        await loadRows();
+    } catch (e) {
+        showToast('Save failed: ' + (e.message || e), 'fail');
+    }
+}
+
+async function revertRow(row) {
+    if (row.source !== 'Override') return;
+    if (!confirm('Delete the override for ' + row.vendor + ' / ' + row.environment + '? The vendor will fall back to its compiled default (or per-row Mt5Server for Xtb/Lmax).')) {
+        return;
+    }
+    try {
+        var qs = 'vendor=' + encodeURIComponent(row.vendor) + '&environment=' + encodeURIComponent(row.environment);
+        var r = await fetch('/api/admin/vendor-urls?' + qs, { method: 'DELETE' });
+        if (r.status !== 204) throw new Error(await extractError(r));
+        showToast('Reverted ' + row.vendor + ' / ' + row.environment + '.', 'ok');
+        await loadRows();
+    } catch (e) {
+        showToast('Revert failed: ' + (e.message || e), 'fail');
+    }
+}
+</script>
+</body>
+</html>

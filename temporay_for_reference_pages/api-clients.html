@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - API Clients</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1500px; margin: 0 auto; padding: 18px 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+        .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim); margin: 0 0 10px; }
+        .panel.sub { border-left: 3px solid var(--fg-dim); }
+
+        .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+        button {
+            background: var(--blue); color: var(--surface); border: none;
+            padding: 6px 12px; cursor: pointer; border-radius: 4px;
+            font-size: 12px; font-weight: bold;
+        }
+        button:hover:not(:disabled) { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover:not(:disabled) { background: var(--fg-muted); }
+        button.danger { background: var(--rose); color: var(--surface); }
+        button.danger:hover:not(:disabled) { background: #ff9e9e; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .status-inline { font-size: 12px; color: var(--fg-muted); }
+        .grid-container { height: 480px; width: 100%; margin-top: 4px; }
+        .grid-container.tokens { height: 320px; }
+        .empty { color: var(--fg-muted); font-style: italic; font-size: 13px; }
+        .hidden { display: none; }
+
+        .pill {
+            display: inline-block; padding: 2px 8px; border-radius: 999px;
+            font-size: 10px; font-weight: bold; text-transform: uppercase;
+            letter-spacing: 0.5px; color: var(--surface); margin-right: 4px;
+        }
+        .pill-active { background: var(--pos); cursor: pointer; }
+        .pill-inactive { background: var(--rose); cursor: pointer; }
+        .pill-scope { background: #414868; color: var(--fg); }
+
+        .cell-actions { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+        .cell-actions button { padding: 3px 8px; font-size: 11px; }
+
+        .row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+        .row-title { font-size: 13px; color: var(--fg); font-weight: bold; }
+
+        .toast {
+            position: fixed; bottom: 18px; right: 18px; z-index: 3000;
+            background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+            padding: 10px 14px; font-size: 13px; color: var(--fg);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+            display: none;
+        }
+        .toast.show { display: block; }
+        .toast.ok { border-left: 3px solid var(--pos); }
+        .toast.fail { border-left: 3px solid var(--rose); }
+
+        /* Modal backdrop + card */
+        .modal-backdrop {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+            z-index: 2000; display: none; align-items: center; justify-content: center;
+        }
+        .modal-backdrop.show { display: flex; }
+        .modal-card {
+            background: var(--surface); border: 1px solid var(--line);
+            border-radius: 6px; padding: 16px 18px;
+            min-width: 420px; max-width: 640px; width: 90%;
+            box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+        }
+        .modal-card h2 {
+            font-size: 14px; text-transform: uppercase; letter-spacing: 0.6px;
+            color: var(--blue); margin: 0 0 12px;
+        }
+        .modal-card .form-grid {
+            display: grid; grid-template-columns: 130px 1fr; gap: 10px 12px; align-items: start;
+        }
+        .modal-card label {
+            font-size: 12px; color: var(--fg-muted);
+            text-transform: uppercase; letter-spacing: 0.4px; padding-top: 6px;
+        }
+        .modal-card input[type=text], .modal-card textarea {
+            background: var(--bg3); border: 1px solid var(--line);
+            color: var(--fg); padding: 6px 8px; border-radius: 4px; font-size: 13px;
+            width: 100%; box-sizing: border-box; font-family: inherit;
+        }
+        .modal-card textarea { resize: vertical; min-height: 60px; }
+        .modal-card .check-group, .modal-card .radio-group {
+            display: flex; flex-direction: column; gap: 4px;
+        }
+        .modal-card .check-group label, .modal-card .radio-group label {
+            font-size: 13px; color: var(--fg);
+            text-transform: none; letter-spacing: 0; padding-top: 0;
+            display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+        }
+        .modal-card .modal-actions {
+            display: flex; gap: 8px; justify-content: flex-end;
+            margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+        }
+        .modal-card .field-hint { font-size: 11px; color: var(--fg-muted); margin-top: 4px; }
+        .modal-card .field-error { font-size: 11px; color: var(--rose); margin-top: 4px; min-height: 14px; }
+
+        .reveal-banner {
+            background: rgba(247, 118, 142, 0.14);
+            border-left: 3px solid var(--rose);
+            padding: 10px 12px; font-size: 12px; color: var(--fg);
+            margin-bottom: 12px; border-radius: 3px; line-height: 1.5;
+        }
+        .reveal-key {
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            background: var(--bg3); color: var(--fg);
+            padding: 10px 12px; border-radius: 4px; font-size: 13px;
+            word-break: break-all; white-space: pre-wrap; border: 1px solid var(--line);
+            margin: 0 0 10px;
+        }
+        .reveal-copyrow { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+        .reveal-ack { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--fg); }
+        .reveal-ack input { width: 16px; height: 16px; cursor: pointer; }
+
+        .help {
+            background: rgba(122, 162, 247, 0.08);
+            border-left: 3px solid var(--blue);
+            padding: 8px 12px; font-size: 12px; color: var(--fg);
+            margin-bottom: 10px; border-radius: 3px; line-height: 1.5;
+        }
+        .help code {
+            background: var(--bg3); padding: 1px 5px; border-radius: 3px;
+            font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>API Clients</h1>
+    <div class="subtitle">Create and rotate OAuth client-credentials keys for external machine callers. Two-key graceful rotation, per-key + per-token revoke. Super-admin only.</div>
+
+    <div class="panel">
+        <h2>Clients</h2>
+        <div class="help">
+            Each client owns up to two active keys. Use <code>Add second key</code> for graceful rotation (both keys accept auth until the older one is revoked). <code>Regenerate</code> mints a new key and immediately revokes the older one -- breaks any deployment still using it. Revoking a client (or setting it inactive) cascades <code>RevokedAtUtc = UtcNow</code> onto every live token under it.
+        </div>
+
+        <div class="btn-row">
+            <button onclick="openCreateModal()">New API Client</button>
+            <button class="secondary" onclick="loadClients()">Refresh</button>
+            <span id="loadStatus" class="status-inline"></span>
+        </div>
+
+        <div id="clientsGrid" class="grid-container ag-theme-quartz-dark"></div>
+    </div>
+
+    <div id="tokensPanel" class="panel sub hidden">
+        <div class="row-head">
+            <div class="row-title" id="tokensTitle">Tokens</div>
+            <div>
+                <button class="secondary" onclick="hideTokensPanel()">Hide</button>
+            </div>
+        </div>
+        <div id="tokensGrid" class="grid-container tokens ag-theme-quartz-dark"></div>
+    </div>
+</div>
+
+<!-- Create-client modal -->
+<div id="createModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="createModalTitle">
+    <div class="modal-card">
+        <h2 id="createModalTitle">New API Client</h2>
+        <div class="form-grid">
+            <label for="cmName">Name</label>
+            <div>
+                <input type="text" id="cmName" maxlength="64" autocomplete="off" />
+                <div class="field-hint">1..64 chars. Must be unique.</div>
+                <div class="field-error" id="cmNameError"></div>
+            </div>
+
+            <label for="cmDescription">Description</label>
+            <div>
+                <textarea id="cmDescription" maxlength="256"></textarea>
+                <div class="field-hint">Optional (max 256 chars).</div>
+            </div>
+
+            <label>Scopes</label>
+            <div class="check-group" id="cmScopes">
+                <label><input type="checkbox" value="frontend" /> frontend</label>
+                <label><input type="checkbox" value="worker-host" /> worker-host</label>
+                <label><input type="checkbox" value="terminal-push" /> terminal-push</label>
+                <label><input type="checkbox" value="readonly" /> readonly</label>
+                <div class="field-error" id="cmScopesError"></div>
+            </div>
+
+            <label>Environment</label>
+            <div class="radio-group" id="cmEnv">
+                <label><input type="radio" name="cmEnv" value="live" checked /> live (slc_live_...)</label>
+                <label><input type="radio" name="cmEnv" value="test" /> test (slc_test_...)</label>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="secondary" onclick="closeCreateModal()">Cancel</button>
+            <button id="cmSubmit" onclick="submitCreate()" disabled>Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Edit-client modal (used for IsActive toggle + rename/scope edits) -->
+<div id="editModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="editModalTitle">
+    <div class="modal-card">
+        <h2 id="editModalTitle">Edit API Client</h2>
+        <div class="form-grid">
+            <label for="emName">Name</label>
+            <div>
+                <input type="text" id="emName" maxlength="64" autocomplete="off" />
+                <div class="field-error" id="emNameError"></div>
+            </div>
+
+            <label for="emDescription">Description</label>
+            <div>
+                <textarea id="emDescription" maxlength="256"></textarea>
+            </div>
+
+            <label>Scopes</label>
+            <div class="check-group" id="emScopes">
+                <label><input type="checkbox" value="frontend" /> frontend</label>
+                <label><input type="checkbox" value="worker-host" /> worker-host</label>
+                <label><input type="checkbox" value="terminal-push" /> terminal-push</label>
+                <label><input type="checkbox" value="readonly" /> readonly</label>
+                <div class="field-error" id="emScopesError"></div>
+            </div>
+
+            <label>Active</label>
+            <div>
+                <label style="display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--fg); text-transform:none; letter-spacing:0; padding-top:0; cursor:pointer;">
+                    <input type="checkbox" id="emIsActive" /> Client is active
+                </label>
+                <div class="field-hint">Unchecking cascades RevokedAtUtc onto every live token under this client. Keys are not rotated.</div>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="secondary" onclick="closeEditModal()">Cancel</button>
+            <button id="emSubmit" onclick="submitEdit()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- One-time key reveal modal -->
+<div id="revealModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="revealModalTitle">
+    <div class="modal-card">
+        <h2 id="revealModalTitle">New API Key</h2>
+        <div class="reveal-banner">
+            <b>This is the only time you will see this key. Store it now.</b><br>
+            The server keeps only a salted hash. If you lose this value, you must rotate the key.
+        </div>
+        <div class="field-hint" style="margin-bottom:4px;">Key prefix: <code id="rvPrefix" style="font-family:ui-monospace,Menlo,Consolas,monospace;"></code></div>
+        <pre class="reveal-key" id="rvKey"></pre>
+        <div class="reveal-copyrow">
+            <button id="rvCopyBtn" onclick="copyRevealKey()">Copy</button>
+            <span class="status-inline" id="rvCopyStatus"></span>
+        </div>
+        <div class="reveal-ack">
+            <input type="checkbox" id="ackCopied" onchange="onAckChanged()" />
+            <label for="ackCopied">I have copied and stored this key.</label>
+        </div>
+        <div class="modal-actions">
+            <button id="rvCloseBtn" onclick="closeRevealModal()" disabled>Close</button>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+'use strict';
+
+var _clientsApi = null;
+var _tokensApi = null;
+var _openTokensClientId = null;
+var _openTokensClientName = null;
+var _editingClient = null;   // full client row when editModal is open
+var _clientsCache = [];      // last GET / list result
+
+document.addEventListener('DOMContentLoaded', function () {
+    _clientsApi = agGrid.createGrid(document.getElementById('clientsGrid'), {
+        columnDefs: buildClientColumns(),
+        rowData: [],
+        getRowId: function (p) { return String(p.data.id); },
+        defaultColDef: { sortable: true, resizable: true, filter: false },
+        rowHeight: 30,
+        headerHeight: 28,
+        animateRows: false,
+    });
+    _tokensApi = agGrid.createGrid(document.getElementById('tokensGrid'), {
+        columnDefs: buildTokenColumns(),
+        rowData: [],
+        getRowId: function (p) { return String(p.data.id); },
+        defaultColDef: { sortable: true, resizable: true, filter: false },
+        rowHeight: 28,
+        headerHeight: 28,
+        animateRows: false,
+    });
+
+    // Wire create-modal live validation
+    document.getElementById('cmName').addEventListener('input', updateCreateSubmitEnabled);
+    var scopeBoxes = document.querySelectorAll('#cmScopes input[type=checkbox]');
+    for (var i = 0; i < scopeBoxes.length; i++) {
+        scopeBoxes[i].addEventListener('change', updateCreateSubmitEnabled);
+    }
+
+    // Close modals on backdrop click
+    ['createModal', 'editModal', 'revealModal'].forEach(function (id) {
+        var el = document.getElementById(id);
+        el.addEventListener('click', function (ev) {
+            if (ev.target === el) {
+                if (id === 'revealModal') {
+                    // Reveal modal must gate on ack -- only allow close via button
+                    return;
+                }
+                el.classList.remove('show');
+            }
+        });
+    });
+
+    loadClients();
+});
+
+/* ----------------------------- ag-Grid columns ----------------------------- */
+
+function buildClientColumns() {
+    return [
+        { headerName: 'Id', field: 'id', width: 70 },
+        { headerName: 'Name', field: 'name', flex: 1, minWidth: 160 },
+        {
+            headerName: 'Key prefixes', field: 'keyPrefixes', width: 210,
+            cellStyle: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: '12px' },
+            valueFormatter: function (p) {
+                return (p.value && p.value.length) ? p.value.join(' / ') : '';
+            },
+        },
+        {
+            headerName: 'Scopes', field: 'scopes', flex: 1, minWidth: 220, sortable: false,
+            cellRenderer: function (p) {
+                var wrap = document.createElement('span');
+                var list = Array.isArray(p.value) ? p.value : [];
+                for (var i = 0; i < list.length; i++) {
+                    var s = document.createElement('span');
+                    s.className = 'pill pill-scope';
+                    s.textContent = String(list[i]);
+                    wrap.appendChild(s);
+                }
+                return wrap;
+            },
+        },
+        {
+            headerName: 'Active', field: 'isActive', width: 90,
+            cellRenderer: function (p) {
+                var span = document.createElement('span');
+                var isActive = !!p.value;
+                span.className = 'pill ' + (isActive ? 'pill-active' : 'pill-inactive');
+                span.textContent = isActive ? 'Active' : 'Inactive';
+                span.title = 'Click to edit client (opens the edit dialog with the toggle focused)';
+                span.addEventListener('click', function (ev) {
+                    ev.stopPropagation();
+                    openEditModal(p.data, /*focusToggle*/ true);
+                });
+                return span;
+            },
+        },
+        {
+            headerName: 'Created (UTC)', field: 'createdAtUtc', width: 170,
+            valueFormatter: function (p) { return fmtDate(p.value); },
+        },
+        { headerName: 'Created by', field: 'createdBy', width: 130 },
+        {
+            headerName: 'Last used', field: 'lastUsedAtUtc', width: 170,
+            valueFormatter: function (p) { return p.value ? fmtDate(p.value) : '--'; },
+        },
+        {
+            headerName: 'Live tokens', field: 'activeTokenCount', width: 110,
+            cellStyle: { textAlign: 'right' },
+        },
+        {
+            headerName: 'Actions', colId: 'actions', width: 380, sortable: false,
+            cellRenderer: function (p) {
+                var row = p.data;
+                if (!row) return '';
+                var rid = 'clientAct_' + row.id;
+                var kc = row.keyCount || 0;
+                var addDisabled = kc >= 2;
+                // Regenerate only makes sense at kc == 1: at 0 there's nothing
+                // to rotate, and at 2 the server would 409 (and we cannot
+                // identify the older key to revoke without a per-key list
+                // endpoint).
+                var regenDisabled = kc !== 1;
+                var regenTitle = regenDisabled
+                    ? (kc === 0
+                        ? 'No active key to rotate; use Add second key.'
+                        : 'Client already holds 2 active keys; revoke one first.')
+                    : 'Mints a new key. The existing key stays active until you revoke it separately.';
+                var html = '<div class="cell-actions" id="' + rid + '">'
+                    + '<button data-a="add"' + (addDisabled ? ' disabled title="Client already holds 2 active keys"' : '') + '>Add second key</button>'
+                    + '<button data-a="regen" class="secondary"' + (regenDisabled ? ' disabled' : '') + ' title="' + regenTitle + '">Regenerate</button>'
+                    + '<button data-a="tokens" class="secondary">View tokens</button>'
+                    + '<button data-a="edit" class="secondary">Edit</button>'
+                    + '<button data-a="del" class="danger">Delete</button>'
+                    + '</div>';
+                setTimeout(function () {
+                    var root = document.getElementById(rid);
+                    if (!root) return;
+                    root.querySelectorAll('button').forEach(function (b) {
+                        b.addEventListener('click', function (ev) {
+                            ev.stopPropagation();
+                            var a = b.getAttribute('data-a');
+                            if (a === 'add') addKey(row);
+                            else if (a === 'regen') regenerateKey(row);
+                            else if (a === 'tokens') viewTokens(row);
+                            else if (a === 'edit') openEditModal(row, false);
+                            else if (a === 'del') deleteClient(row);
+                        });
+                    });
+                }, 0);
+                return html;
+            },
+        },
+    ];
+}
+
+function buildTokenColumns() {
+    return [
+        { headerName: 'Id', field: 'id', width: 80 },
+        {
+            headerName: 'Key prefix', field: 'keyPrefix', width: 130,
+            cellStyle: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: '12px' },
+        },
+        {
+            headerName: 'Scopes', field: 'scopes', flex: 1, minWidth: 220, sortable: false,
+            cellRenderer: function (p) {
+                var wrap = document.createElement('span');
+                var list = Array.isArray(p.value) ? p.value : [];
+                for (var i = 0; i < list.length; i++) {
+                    var s = document.createElement('span');
+                    s.className = 'pill pill-scope';
+                    s.textContent = String(list[i]);
+                    wrap.appendChild(s);
+                }
+                return wrap;
+            },
+        },
+        {
+            headerName: 'Issued (UTC)', field: 'issuedAtUtc', width: 180,
+            valueFormatter: function (p) { return fmtDate(p.value); },
+        },
+        {
+            headerName: 'Expires (UTC)', field: 'expiresAtUtc', width: 180,
+            valueFormatter: function (p) { return fmtDate(p.value); },
+        },
+        {
+            headerName: 'Last used', field: 'lastUsedAtUtc', width: 170,
+            valueFormatter: function (p) { return p.value ? fmtDate(p.value) : '--'; },
+        },
+        { headerName: 'IP', field: 'issuedFromIp', width: 130 },
+        {
+            headerName: 'Actions', colId: 'actions', width: 120, sortable: false,
+            cellRenderer: function (p) {
+                var row = p.data;
+                if (!row) return '';
+                var rid = 'tokenAct_' + row.id;
+                var html = '<div class="cell-actions" id="' + rid + '">'
+                    + '<button class="danger" data-a="rev">Revoke</button>'
+                    + '</div>';
+                setTimeout(function () {
+                    var root = document.getElementById(rid);
+                    if (!root) return;
+                    var b = root.querySelector('button[data-a=rev]');
+                    if (b) b.addEventListener('click', function (ev) {
+                        ev.stopPropagation();
+                        revokeToken(row);
+                    });
+                }, 0);
+                return html;
+            },
+        },
+    ];
+}
+
+/* --------------------------------- helpers -------------------------------- */
+
+function fmtDate(v) {
+    if (!v) return '';
+    var d = new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleString();
+}
+
+function showToast(msg, kind) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.className = 'toast show ' + (kind === 'fail' ? 'fail' : 'ok');
+    setTimeout(function () { t.className = 'toast'; }, 2600);
+}
+
+async function extractError(r) {
+    var text = await r.text().catch(function () { return ''; });
+    if (text) {
+        try {
+            var j = JSON.parse(text);
+            if (j && typeof j.error === 'string' && j.error) {
+                if (typeof j.message === 'string' && j.message) return j.error + ': ' + j.message;
+                return j.error;
+            }
+            if (j && typeof j.message === 'string' && j.message) return j.message;
+        } catch (_) { /* fall through */ }
+    }
+    return 'HTTP ' + r.status + (text ? ': ' + text : '');
+}
+
+/* --------------------------------- loaders -------------------------------- */
+
+async function loadClients() {
+    var status = document.getElementById('loadStatus');
+    status.textContent = 'Loading...';
+    try {
+        var r = await fetch('/api/admin/api-clients');
+        if (!r.ok) throw new Error(await extractError(r));
+        var rows = await r.json();
+        _clientsCache = Array.isArray(rows) ? rows : [];
+        _clientsApi.setGridOption('rowData', _clientsCache);
+        status.textContent = 'Loaded ' + _clientsCache.length + ' client' + (_clientsCache.length === 1 ? '' : 's') + ' at ' + new Date().toLocaleTimeString();
+        // Manual refresh always clears the tokens drilldown -- the row it referred to
+        // may no longer exist and its counts are now stale.
+        hideTokensPanel();
+    } catch (e) {
+        status.textContent = '';
+        showToast('Load failed: ' + (e.message || e), 'fail');
+    }
+}
+
+async function viewTokens(client) {
+    _openTokensClientId = client.id;
+    _openTokensClientName = client.name;
+    var panel = document.getElementById('tokensPanel');
+    var title = document.getElementById('tokensTitle');
+    title.textContent = 'Tokens for ' + (client.name || ('#' + client.id));
+    panel.classList.remove('hidden');
+    try {
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(client.id) + '/tokens');
+        if (!r.ok) throw new Error(await extractError(r));
+        var rows = await r.json();
+        SLC.applyDiff(_tokensApi, rows, function (d) { return String(d.id); });
+    } catch (e) {
+        showToast('Load tokens failed: ' + (e.message || e), 'fail');
+    }
+}
+
+function hideTokensPanel() {
+    _openTokensClientId = null;
+    _openTokensClientName = null;
+    var panel = document.getElementById('tokensPanel');
+    panel.classList.add('hidden');
+    // Clear the grid so a subsequent open starts empty until the fetch lands.
+    SLC.applyDiff(_tokensApi, [], function (d) { return String(d.id); });
+}
+
+/* ------------------------------- create flow ------------------------------ */
+
+function openCreateModal() {
+    document.getElementById('cmName').value = '';
+    document.getElementById('cmDescription').value = '';
+    document.getElementById('cmNameError').textContent = '';
+    document.getElementById('cmScopesError').textContent = '';
+    var scopeBoxes = document.querySelectorAll('#cmScopes input[type=checkbox]');
+    for (var i = 0; i < scopeBoxes.length; i++) scopeBoxes[i].checked = false;
+    document.querySelector('#cmEnv input[value=live]').checked = true;
+    updateCreateSubmitEnabled();
+    document.getElementById('createModal').classList.add('show');
+    setTimeout(function () { document.getElementById('cmName').focus(); }, 0);
+}
+
+function closeCreateModal() {
+    document.getElementById('createModal').classList.remove('show');
+}
+
+function collectCreateForm() {
+    var name = document.getElementById('cmName').value.trim();
+    var description = document.getElementById('cmDescription').value.trim();
+    var scopes = [];
+    document.querySelectorAll('#cmScopes input[type=checkbox]').forEach(function (cb) {
+        if (cb.checked) scopes.push(cb.value);
+    });
+    var envRadio = document.querySelector('#cmEnv input[name=cmEnv]:checked');
+    var environment = envRadio ? envRadio.value : 'live';
+    return { name: name, description: description, scopes: scopes, environment: environment };
+}
+
+function updateCreateSubmitEnabled() {
+    var form = collectCreateForm();
+    var ok = form.name.length >= 1 && form.name.length <= 64 && form.scopes.length >= 1;
+    document.getElementById('cmSubmit').disabled = !ok;
+}
+
+async function submitCreate() {
+    var form = collectCreateForm();
+    document.getElementById('cmNameError').textContent = '';
+    document.getElementById('cmScopesError').textContent = '';
+    if (form.name.length < 1 || form.name.length > 64) {
+        document.getElementById('cmNameError').textContent = 'Name must be 1..64 chars.';
+        return;
+    }
+    if (form.scopes.length < 1) {
+        document.getElementById('cmScopesError').textContent = 'Pick at least one scope.';
+        return;
+    }
+    var btn = document.getElementById('cmSubmit');
+    btn.disabled = true;
+    try {
+        var body = {
+            name: form.name,
+            description: form.description || null,
+            scopes: form.scopes,
+            environment: form.environment,
+        };
+        var r = await fetch('/api/admin/api-clients', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (r.status === 409) {
+            document.getElementById('cmNameError').textContent = 'Name already in use.';
+            btn.disabled = false;
+            return;
+        }
+        if (!r.ok) throw new Error(await extractError(r));
+        var resp = await r.json();
+        closeCreateModal();
+        showToast('Client created.', 'ok');
+        await loadClients();
+        openRevealModal(resp.rawKey, resp.keyPrefix);
+    } catch (e) {
+        showToast('Create failed: ' + (e.message || e), 'fail');
+        btn.disabled = false;
+    }
+}
+
+/* -------------------------------- edit flow ------------------------------- */
+
+function openEditModal(client, focusToggle) {
+    _editingClient = client;
+    document.getElementById('editModalTitle').textContent = 'Edit ' + (client.name || ('client #' + client.id));
+    document.getElementById('emName').value = client.name || '';
+    document.getElementById('emDescription').value = client.description || '';
+    document.getElementById('emIsActive').checked = !!client.isActive;
+    document.getElementById('emNameError').textContent = '';
+    document.getElementById('emScopesError').textContent = '';
+    var scopeBoxes = document.querySelectorAll('#emScopes input[type=checkbox]');
+    var have = new Set(Array.isArray(client.scopes) ? client.scopes : []);
+    for (var i = 0; i < scopeBoxes.length; i++) {
+        scopeBoxes[i].checked = have.has(scopeBoxes[i].value);
+    }
+    document.getElementById('editModal').classList.add('show');
+    setTimeout(function () {
+        if (focusToggle) document.getElementById('emIsActive').focus();
+        else document.getElementById('emName').focus();
+    }, 0);
+}
+
+function closeEditModal() {
+    _editingClient = null;
+    document.getElementById('editModal').classList.remove('show');
+}
+
+async function submitEdit() {
+    if (!_editingClient) return;
+    var id = _editingClient.id;
+    var name = document.getElementById('emName').value.trim();
+    var description = document.getElementById('emDescription').value.trim();
+    var isActive = document.getElementById('emIsActive').checked;
+    var scopes = [];
+    document.querySelectorAll('#emScopes input[type=checkbox]').forEach(function (cb) {
+        if (cb.checked) scopes.push(cb.value);
+    });
+    document.getElementById('emNameError').textContent = '';
+    document.getElementById('emScopesError').textContent = '';
+    if (name.length < 1 || name.length > 64) {
+        document.getElementById('emNameError').textContent = 'Name must be 1..64 chars.';
+        return;
+    }
+    if (scopes.length < 1) {
+        document.getElementById('emScopesError').textContent = 'Pick at least one scope.';
+        return;
+    }
+    // Warn once when toggling active -> inactive because it cascade-revokes tokens.
+    if (_editingClient.isActive && !isActive) {
+        if (!confirm('Deactivating "' + (_editingClient.name || ('#' + id)) + '" will revoke every live token under this client immediately. Continue?')) {
+            return;
+        }
+    }
+    var btn = document.getElementById('emSubmit');
+    btn.disabled = true;
+    try {
+        var body = {
+            name: name,
+            description: description || null,
+            scopes: scopes,
+            isActive: isActive,
+        };
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(id), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (r.status === 409) {
+            document.getElementById('emNameError').textContent = 'Name already in use.';
+            btn.disabled = false;
+            return;
+        }
+        if (!r.ok) throw new Error(await extractError(r));
+        showToast('Client updated.', 'ok');
+        closeEditModal();
+        await loadClients();
+    } catch (e) {
+        showToast('Update failed: ' + (e.message || e), 'fail');
+        btn.disabled = false;
+    }
+}
+
+/* -------------------------------- delete flow ----------------------------- */
+
+async function deleteClient(client) {
+    if (!confirm('Delete client "' + (client.name || ('#' + client.id)) + '"? Its keys and every issued token are dropped by cascade. This cannot be undone.')) return;
+    try {
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(client.id), { method: 'DELETE' });
+        if (r.status !== 204) throw new Error(await extractError(r));
+        showToast('Client deleted.', 'ok');
+        await loadClients();
+    } catch (e) {
+        showToast('Delete failed: ' + (e.message || e), 'fail');
+    }
+}
+
+/* -------------------------------- key flows ------------------------------- */
+
+// Environment for a follow-on key: prefer to match an existing key on the
+// client. Falls back to "live" if the client currently has no keys.
+function pickEnvironmentForClient(client) {
+    var prefixes = Array.isArray(client.keyPrefixes) ? client.keyPrefixes : [];
+    for (var i = 0; i < prefixes.length; i++) {
+        if (prefixes[i] === 'slc_test') return 'test';
+    }
+    return 'live';
+}
+
+async function addKey(client) {
+    if ((client.keyCount || 0) >= 2) {
+        showToast('Client already has 2 active keys. Revoke one first.', 'fail');
+        return;
+    }
+    var env = pickEnvironmentForClient(client);
+    if (!confirm('Mint a new ' + env + ' key for "' + (client.name || ('#' + client.id)) + '"? The raw key is shown once, on the next screen.')) return;
+    try {
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(client.id) + '/keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ environment: env }),
+        });
+        if (!r.ok) throw new Error(await extractError(r));
+        var resp = await r.json();
+        showToast('Key added.', 'ok');
+        await loadClients();
+        openRevealModal(resp.rawKey, resp.keyPrefix);
+    } catch (e) {
+        showToast('Add key failed: ' + (e.message || e), 'fail');
+    }
+}
+
+// Regenerate: mints a new key on the client and reveals it once. It does NOT
+// automatically revoke the previous key -- the /api/admin/api-clients list
+// endpoint does not surface per-key ids in Phase 2, so the UI cannot identify
+// which of the client's keys is the older one to revoke. Add second key is the
+// clean graceful-rotation path (both keys stay live until deployments swap
+// over). Regenerate is only offered when the client already holds a single
+// active key -- it is disabled at 0 (nothing to rotate) and at 2 (server would
+// 409, and we cannot pick the target to revoke).
+async function regenerateKey(client) {
+    if ((client.keyCount || 0) !== 1) {
+        showToast('Regenerate only works when the client holds exactly one active key.', 'fail');
+        return;
+    }
+    if (!confirm(
+        'Regenerate mints a NEW key and reveals it once. The existing key remains active until you revoke it separately (or delete the client).\n\n'
+        + 'This is an escape hatch. Prefer Add second key for graceful rotation.\n\nContinue?'
+    )) return;
+    var env = pickEnvironmentForClient(client);
+    try {
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(client.id) + '/keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ environment: env }),
+        });
+        if (!r.ok) throw new Error(await extractError(r));
+        var resp = await r.json();
+        showToast('New key minted. Previous key is still active.', 'ok');
+        await loadClients();
+        openRevealModal(resp.rawKey, resp.keyPrefix);
+    } catch (e) {
+        showToast('Regenerate failed: ' + (e.message || e), 'fail');
+    }
+}
+
+/* ------------------------------ token actions ----------------------------- */
+
+async function revokeToken(token) {
+    if (_openTokensClientId == null) return;
+    if (!confirm('Revoke token #' + token.id + '? Any caller still holding this bearer will be rejected immediately.')) return;
+    try {
+        var r = await fetch('/api/admin/api-clients/' + encodeURIComponent(_openTokensClientId) + '/tokens/' + encodeURIComponent(token.id) + '/revoke', { method: 'POST' });
+        if (r.status !== 204) throw new Error(await extractError(r));
+        showToast('Token revoked.', 'ok');
+        // Reload the drilldown + client counts.
+        var reload = _openTokensClientId;
+        var reloadName = _openTokensClientName;
+        await loadClients();
+        // loadClients hides the drilldown; re-open it on the same client so the
+        // operator does not lose their place after a single revoke.
+        var row = (_clientsCache || []).find(function (c) { return c.id === reload; });
+        if (row) viewTokens(row);
+        else showToast('Client ' + (reloadName || ('#' + reload)) + ' no longer visible in the list.', 'fail');
+    } catch (e) {
+        showToast('Revoke failed: ' + (e.message || e), 'fail');
+    }
+}
+
+/* -------------------------------- reveal modal ---------------------------- */
+
+function openRevealModal(rawKey, keyPrefix) {
+    document.getElementById('rvKey').textContent = String(rawKey || '');
+    document.getElementById('rvPrefix').textContent = String(keyPrefix || '');
+    document.getElementById('ackCopied').checked = false;
+    document.getElementById('rvCloseBtn').disabled = true;
+    document.getElementById('rvCopyStatus').textContent = '';
+    document.getElementById('revealModal').classList.add('show');
+}
+
+function onAckChanged() {
+    document.getElementById('rvCloseBtn').disabled = !document.getElementById('ackCopied').checked;
+}
+
+function closeRevealModal() {
+    // Scrub the raw key from the DOM so it isn't retained after close.
+    document.getElementById('rvKey').textContent = '';
+    document.getElementById('rvPrefix').textContent = '';
+    document.getElementById('ackCopied').checked = false;
+    document.getElementById('rvCloseBtn').disabled = true;
+    document.getElementById('revealModal').classList.remove('show');
+}
+
+async function copyRevealKey() {
+    var val = document.getElementById('rvKey').textContent || '';
+    if (!val) return;
+    var status = document.getElementById('rvCopyStatus');
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(val);
+        } else {
+            // Fallback for older clients.
+            var ta = document.createElement('textarea');
+            ta.value = val;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+        }
+        status.textContent = 'Copied to clipboard.';
+    } catch (e) {
+        status.textContent = 'Copy failed: ' + (e.message || e);
+    }
+}
+</script>
+</body>
+</html>

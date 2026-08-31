@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LP Metrics</title>
+    <style>
+body { padding: 0; }
+.header { display: flex; align-items: center; gap: 16px; margin-bottom: 8px; }
+        .header h1 { color: var(--fg); font-weight: 600; }
+        .toolbar button {
+            background: var(--surface); border: 1px solid var(--line); color: var(--blue); padding: 4px 10px;
+            border-radius: 4px; cursor: pointer; font-size: 12px;
+        }
+        .toolbar button:hover { background: var(--bg3); border-color: var(--blue); }
+        .last-update { font-size: 11px; color: var(--fg-muted); margin-left: auto; }
+
+        .loading { text-align: center; padding: 60px; color: var(--fg-muted); font-size: 14px; }
+
+        .equity-summary {
+            display: flex; gap: 16px; margin-top: 8px;
+        }
+        .equity-box {
+            flex: 1; border: 1px solid var(--line); border-radius: 6px;
+            background: var(--surface); text-align: center; padding: 6px 8px;
+        }
+        .equity-box .label {
+            font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.5px; color: var(--blue); margin-bottom: 8px;
+        }
+        .equity-box .value {
+            font-size: 14px; font-weight: 700; color: var(--fg);
+        }
+        .gold-price-bar {
+            display: flex; align-items: center; gap: 16px; padding: 8px 16px;
+            background: var(--surface); border-bottom: 1px solid var(--line); font-size: 13px;
+        }
+        .gold-price-bar .label { color: var(--amber); font-weight: 700; font-size: 12px; }
+        .gold-price-bar .price { font-weight: 700; font-size: 16px; color: var(--fg); }
+        .gold-price-bar .spread-info { font-size: 11px; color: var(--fg-muted); }
+        .gold-price-bar .bid { color: var(--rose); }
+        .gold-price-bar .ask { color: var(--pos); }
+        .gold-price-bar .tick-up { color: var(--pos); }
+        .gold-price-bar .tick-down { color: var(--rose); }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="/shared/nav.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+</head>
+<body>
+<div class="gold-price-bar">
+        <span class="label">XAUUSD</span>
+        <span>Bid: <span class="bid" id="goldBid">--</span></span>
+        <span>Ask: <span class="ask" id="goldAsk">--</span></span>
+        <span class="price" id="goldLast">--</span>
+        <span class="spread-info" id="goldSpread"></span>
+    </div>
+
+    <div class="page">
+        <div class="header">
+            <h1>LP Metrics</h1>
+            <div class="toolbar">
+                <button onclick="fetchDashboard()">Refresh</button>
+            </div>
+            <span class="last-update" id="lastUpdate"></span>
+        </div>
+
+        <div id="gridContainer" style="height: 500px; width: 100%;" class="ag-theme-alpine-dark"></div>
+
+        <div class="equity-summary" id="equitySummary"></div>
+    </div>
+
+    <script>
+        // Dollar formatter with pos/neg coloring.
+        function dollarStyle(params) {
+            const v = params.value;
+            if (v == null || v === '') return {};
+            if (v === 0) return { color: 'var(--fg-muted)' };
+            return { color: v > 0 ? 'var(--pos)' : 'var(--neg)' };
+        }
+
+        function fmtDollar(params) {
+            const v = params.value;
+            if (v == null || v === '') return '';
+            if (v === 0) return '$0.00';
+            const formatted = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            return `${v < 0 ? '-' : ''}$${formatted}`;
+        }
+
+        function fmtMarginLevel(params) {
+            const v = params.value;
+            if (v == null || v === '') return '';
+            if (v === 0) return '0.00%';
+            return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+        }
+
+        function marginLevelStyle(params) {
+            const v = params.value;
+            if (v == null || v === '' || v === 0) return { color: 'var(--fg-muted)' };
+            return { color: v >= 100 ? 'var(--pos)' : 'var(--neg)' };
+        }
+
+        const columnDefs = [
+            { headerName: 'LP Name', field: 'lp', cellStyle: { fontWeight: 600 }, minWidth: 140 },
+            { headerName: 'Login', field: 'login', cellStyle: { color: '#565f89' }, minWidth: 100 },
+            { headerName: 'Equity', field: 'equity', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Real Equity', field: 'realEquity', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Credit', field: 'credit', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Balance', field: 'balance', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Margin', field: 'margin', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Free Margin', field: 'freeMargin', valueFormatter: fmtDollar, cellStyle: dollarStyle, type: 'rightAligned' },
+            { headerName: 'Margin Level %', field: 'marginLevel', valueFormatter: fmtMarginLevel, cellStyle: marginLevelStyle, type: 'rightAligned', sort: 'desc' },
+        ];
+
+        const gridEl = document.getElementById('gridContainer');
+        const gridApi = SLC.createGrid(gridEl, {
+            columnDefs: columnDefs,
+            rowData: [],
+            pinnedBottomRowData: [],
+            // Stable id per (lp + login) — diff updates preserve scroll & sort across polls.
+            getRowId: p => `${p.data.lp}|${p.data.login}`,
+        });
+
+        function renderTable(data) {
+            const keyFn = p => `${p.lp}|${p.login}`;
+            if (!data || !data.items || data.items.length === 0) {
+                SLC.applyDiff(gridApi, [], keyFn);
+                gridApi.setGridOption('pinnedBottomRowData', []);
+                gridApi.showNoRowsOverlay();
+                return;
+            }
+
+            // Diff-based — preserves scroll, sort, filter, selection across polls.
+            SLC.applyDiff(gridApi, data.items, keyFn);
+
+            const totalsRow = {
+                lp: 'TOTAL',
+                login: '',
+                equity: data.totals.equity,
+                realEquity: data.totals.realEquity,
+                credit: data.totals.credit,
+                balance: data.totals.balance,
+                margin: data.totals.margin,
+                freeMargin: data.totals.freeMargin,
+                marginLevel: null,
+            };
+            gridApi.setGridOption('pinnedBottomRowData', [totalsRow]);
+
+            document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+        }
+
+        function renderEquitySummary(data) {
+            const fmtVal = v => {
+                const formatted = Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                return `${v < 0 ? '-' : ''}$${formatted}`;
+            };
+
+            const diffColor = data.difference < 0 ? '#f7768e' : '#9ece6a';
+
+            document.getElementById('equitySummary').innerHTML = `
+                <div class="equity-box">
+                    <div class="label">LP Withdrawable Equity</div>
+                    <div class="value">${fmtVal(data.lpWithdrawableEquity)}</div>
+                </div>
+                <div class="equity-box">
+                    <div class="label">Client Withdrawable Equity</div>
+                    <div class="value">${fmtVal(data.clientWithdrawableEquity)}</div>
+                </div>
+                <div class="equity-box">
+                    <div class="label">LP-Client WD Equity Difference</div>
+                    <div class="value" style="color:${diffColor}">${fmtVal(data.difference)}</div>
+                </div>
+            `;
+        }
+
+        async function fetchDashboard() {
+            try {
+                const resp = await fetch('/Metrics/dashboard');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const data = await resp.json();
+                renderTable(data);
+                renderEquitySummary(data);
+            } catch (e) {
+                console.error('Failed to fetch metrics:', e);
+            }
+        }
+
+        fetchDashboard();
+        setInterval(fetchDashboard, 5000);
+
+        // Gold price via SignalR
+        let lastGoldBid = 0;
+        const goldConn = new signalR.HubConnectionBuilder()
+            .withUrl('/ws/dashboard')
+            .withAutomaticReconnect([0, 1000, 2000, 5000])
+            .build();
+
+        goldConn.on('PriceUpdate', (data) => {
+            if (data.symbol && data.symbol.toUpperCase().includes('XAUUSD')) {
+                const dir = data.bid > lastGoldBid ? 'tick-up' : data.bid < lastGoldBid ? 'tick-down' : '';
+                lastGoldBid = data.bid;
+                document.getElementById('goldBid').textContent = data.bid.toFixed(2);
+                document.getElementById('goldAsk').textContent = data.ask.toFixed(2);
+                document.getElementById('goldLast').textContent = data.bid.toFixed(2);
+                document.getElementById('goldLast').className = 'price ' + dir;
+                document.getElementById('goldSpread').textContent = `Spread: ${((data.ask - data.bid) * 100).toFixed(1)} pts`;
+            }
+        });
+
+        goldConn.onreconnected(async () => {
+            await goldConn.invoke('SubscribeToSymbol', 'XAUUSD');
+        });
+
+        (async () => {
+            try {
+                await goldConn.start();
+                await goldConn.invoke('SubscribeToSymbol', 'XAUUSD');
+            } catch (e) {
+                console.error('Gold price SignalR error:', e);
+            }
+        })();
+    </script>
+</body>
+</html>
