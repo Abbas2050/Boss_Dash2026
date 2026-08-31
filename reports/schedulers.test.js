@@ -42,24 +42,26 @@ describe("the schedule", () => {
   });
 });
 
+// Shared cron matcher, reused by every describe block below that needs to
+// know whether a defaultCron fires at a given instant.
+const fires = (expr, d) => {
+  const [mi, hh, dom, mon, dow] = expr.split(" ");
+  const f = (part, val) => {
+    if (part === "*") return true;
+    return part.split(",").some((chunk) => {
+      if (!chunk.includes("-")) return Number(chunk) === val;
+      const [lo, hi] = chunk.split("-").map(Number);
+      return val >= lo && val <= hi;
+    });
+  };
+  return f(mi, d.getUTCMinutes()) && f(hh, d.getUTCHours()) && f(dom, d.getUTCDate())
+      && f(mon, d.getUTCMonth() + 1) && f(dow, d.getUTCDay());
+};
+
 // The check that would have caught the live fault: the Business Summary monthly
 // at "0 10 1 * *" and its weekly at "0 10 * * 6" fire in the same minute
 // whenever the 1st is a Saturday. 1 August 2026 was one.
 describe("no two schedulers share a minute", () => {
-  const fires = (expr, d) => {
-    const [mi, hh, dom, mon, dow] = expr.split(" ");
-    const f = (part, val) => {
-      if (part === "*") return true;
-      return part.split(",").some((chunk) => {
-        if (!chunk.includes("-")) return Number(chunk) === val;
-        const [lo, hi] = chunk.split("-").map(Number);
-        return val >= lo && val <= hi;
-      });
-    };
-    return f(mi, d.getUTCMinutes()) && f(hh, d.getUTCHours()) && f(dom, d.getUTCDate())
-        && f(mon, d.getUTCMonth() + 1) && f(dow, d.getUTCDay());
-  };
-
   it("holds for every minute of a full year", () => {
     const collisions = [];
     const start = Date.UTC(2026, 0, 1);
@@ -110,9 +112,44 @@ describe("the daily cadence", () => {
   });
 
   it("covers every weekday exactly once across the week", () => {
-    // Tue..Sat sends cover Mon..Fri. Sunday and Saturday are never covered,
-    // because the market is shut and those reports would be screens of zeros.
-    const covered = [2, 3, 4, 5, 6].map((dow) => (dow + 6) % 7);
-    expect(covered.sort()).toEqual([1, 2, 3, 4, 5]);
+    // Tue..Sat sends cover Mon..Fri (each daily reports on the previous day).
+    // Sunday and Saturday are never covered, because the market is shut and
+    // those reports would be screens of zeros.
+    //
+    // Walk a full year (52 whole weeks, Monday-aligned so every weekday gets
+    // an equal number of occurrences -- 365 days does not divide evenly by 7)
+    // and, for each daily schedule's actual defaultCron, find which weekdays
+    // it fires on and which weekdays that covers. This is derived from
+    // REPORT_SCHEDULES itself -- not a hardcoded [2,3,4,5,6] -- so it fails
+    // if a defaultCron's day-of-week field ever stops being Tue-Sat.
+    const dayMs = 24 * 60 * 60_000;
+    const jan1 = new Date(Date.UTC(2026, 0, 1));
+    const daysSinceMonday = (jan1.getUTCDay() + 6) % 7;
+    const start = jan1.getTime() - daysSinceMonday * dayMs; // most recent Monday
+    const totalWeeks = 52;
+    const end = start + totalWeeks * 7 * dayMs;
+
+    for (const s of dailies) {
+      const [mi, hh] = s.defaultCron.split(" ").map(Number);
+      const fireDows = new Set();
+      const coveredCounts = new Map();
+
+      for (let t = start; t < end; t += dayMs) {
+        const d = new Date(t);
+        d.setUTCHours(hh, mi, 0, 0);
+        if (!fires(s.defaultCron, d)) continue;
+        const fireDow = d.getUTCDay();
+        fireDows.add(fireDow);
+        const coveredDow = (fireDow + 6) % 7;
+        coveredCounts.set(coveredDow, (coveredCounts.get(coveredDow) ?? 0) + 1);
+      }
+
+      expect([...fireDows].sort()).toEqual([2, 3, 4, 5, 6]);
+      expect([...coveredCounts.keys()].sort()).toEqual([1, 2, 3, 4, 5]);
+      // Every Mon-Fri weekday is covered exactly once per week across the year.
+      for (const coveredDow of [1, 2, 3, 4, 5]) {
+        expect(coveredCounts.get(coveredDow)).toBe(totalWeeks);
+      }
+    }
   });
 });
