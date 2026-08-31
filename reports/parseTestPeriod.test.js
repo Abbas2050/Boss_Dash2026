@@ -45,4 +45,44 @@ describe("parseTestPeriod", () => {
     const result = parseTestPeriod({ from: "2026-09-01", to: "2026-08-01" });
     expect(result.error).toBe("from is after to");
   });
+
+  it("rejects 2026-02-30 (February has only 28 days in 2026)", () => {
+    const result = parseTestPeriod({ from: "2026-02-30", to: "2026-03-01" });
+    expect(result.error).toBe("from or to is not a real date");
+  });
+
+  it("rejects 2026-04-31 (April has only 30 days)", () => {
+    const result = parseTestPeriod({ from: "2026-04-31", to: "2026-05-01" });
+    expect(result.error).toBe("from or to is not a real date");
+  });
+
+  it("rejects 2027-02-29 (2027 is not a leap year)", () => {
+    const result = parseTestPeriod({ from: "2027-02-29", to: "2027-03-01" });
+    expect(result.error).toBe("from or to is not a real date");
+  });
+
+  it("accepts 2028-02-29 (2028 is a leap year)", () => {
+    const result = parseTestPeriod({ from: "2028-02-29", to: "2028-03-01" });
+    expect(result.error).toBeUndefined();
+    expect(result.fromDate).toBeInstanceOf(Date);
+    expect(result.toDate).toBeInstanceOf(Date);
+  });
+
+  it("accepts 2026-02-28 (valid February date)", () => {
+    const result = parseTestPeriod({ from: "2026-02-28", to: "2026-03-01" });
+    expect(result.error).toBeUndefined();
+    expect(result.fromDate).toBeInstanceOf(Date);
+  });
+
+  it("accepts 2026-04-30 (valid April date)", () => {
+    const result = parseTestPeriod({ from: "2026-04-30", to: "2026-05-01" });
+    expect(result.error).toBeUndefined();
+    expect(result.fromDate).toBeInstanceOf(Date);
+  });
+
+  it("accepts 2026-08-31 (valid August date)", () => {
+    const result = parseTestPeriod({ from: "2026-08-31", to: "2026-09-01" });
+    expect(result.error).toBeUndefined();
+    expect(result.fromDate).toBeInstanceOf(Date);
+  });
 });

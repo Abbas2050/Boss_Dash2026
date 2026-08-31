@@ -18,6 +18,15 @@ export function parseTestPeriod(body) {
   if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
     return { error: 'from or to is not a real date' };
   }
+  // new Date() silently rolls calendar-invalid dates into the next month (e.g.,
+  // 2026-02-30 becomes 2 March 2026). Verify the parsed date round-trips back to
+  // the input string to catch these invalid dates like Feb 30 or Apr 31.
+  if (fromDate.toISOString().slice(0, 10) !== from) {
+    return { error: 'from or to is not a real date' };
+  }
+  if (toDate.toISOString().slice(0, 10) !== to) {
+    return { error: 'from or to is not a real date' };
+  }
   if (fromDate > toDate) return { error: 'from is after to' };
   return { fromDate, toDate };
 }
