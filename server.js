@@ -30,12 +30,13 @@ import {
   saveGoogleSheetsMappingConfig,
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
-import { startWeeklyDealMatchScheduler, runDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
-import { startWeeklySlippageScheduler, runSlippageEmailReport } from './reports/slippageWeeklyReport.js';
-import { startWeeklyBusinessSummaryScheduler, runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
-import { startDailyDigestScheduler, runDailyDigest } from './reports/dailyDigest.js';
-import { startMonthlyReviewScheduler, runMonthlyReview } from './reports/monthlyReview.js';
+import { runDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
+import { runSlippageEmailReport } from './reports/slippageWeeklyReport.js';
+import { runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
+import { runDailyDigest } from './reports/dailyDigest.js';
+import { runMonthlyReview } from './reports/monthlyReview.js';
 import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
+import { startAllReportSchedulers } from './reports/schedulers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1163,11 +1164,7 @@ server.listen(PORT, () => {
     console.log("[ClientProfileCron] disabled by CLIENT_PROFILE_CRON_ENABLED=false");
   }
 
-  startWeeklyDealMatchScheduler();
-  startWeeklySlippageScheduler();
-  startWeeklyBusinessSummaryScheduler();
-  startDailyDigestScheduler();
-  startMonthlyReviewScheduler();
+  startAllReportSchedulers();
 
   try {
     startHubWatcher();

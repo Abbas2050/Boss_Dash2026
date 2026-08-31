@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import {
   toYmdUtc,
   parseRecipients,
@@ -49,9 +48,6 @@ import {
 // recipients.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
-
-const DEFAULT_SCHEDULE = "0 8 * * *"; // 08:00 every day (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 export function buildDailyDigestHtml({
   ymd,
@@ -332,49 +328,4 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
     fromYmd,
     toYmd,
   };
-}
-
-export function startDailyDigestScheduler() {
-  const enabled = String(process.env.DAILY_DIGEST_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[DailyDigest] disabled by DAILY_DIGEST_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.DAILY_DIGEST_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.DAILY_DIGEST_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[DailyDigest] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runDailyDigest();
-      } catch (error) {
-        console.error("[DailyDigest] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[DailyDigest] scheduled with expression "${schedule}" (${timezone})`);
-
-  // A missing recipient list is otherwise invisible: the schedule fires, one
-  // warning goes to the log, and nothing is sent. Say so at BOOT, while someone
-  // is watching.
-  if (!parseRecipients(process.env.DAILY_DIGEST_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[DailyDigest] WILL NOT SEND: neither DAILY_DIGEST_RECIPIENTS nor SUMMARY_ALERT_RECIPIENTS is set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.DAILY_DIGEST_RUN_ON_START || "false").toLowerCase() === "true") {
-    runDailyDigest().catch((error) => {
-      console.error("[DailyDigest] startup run failed:", error?.message || error);
-    });
-  }
 }

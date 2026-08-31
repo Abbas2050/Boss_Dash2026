@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import {
   toYmdUtc,
   parseRecipients,
@@ -47,9 +46,6 @@ import { buildSummaryEmailHtml, SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } fro
 // anyway, because a month-end review is not time-critical to the hour.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
-
-const DEFAULT_SCHEDULE = "0 10 1 * *"; // 10:00 on the 1st of every month (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 // ── month-over-month arithmetic ─────────────────────────────────────────────
 
@@ -410,46 +406,4 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
     fromYmd,
     toYmd,
   };
-}
-
-export function startMonthlyReviewScheduler() {
-  const enabled = String(process.env.MONTHLY_REVIEW_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[MonthlyReview] disabled by MONTHLY_REVIEW_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.MONTHLY_REVIEW_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.MONTHLY_REVIEW_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[MonthlyReview] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runMonthlyReview();
-      } catch (error) {
-        console.error("[MonthlyReview] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[MonthlyReview] scheduled with expression "${schedule}" (${timezone})`);
-
-  if (!parseRecipients(process.env.MONTHLY_REVIEW_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[MonthlyReview] WILL NOT SEND: neither MONTHLY_REVIEW_RECIPIENTS nor SUMMARY_ALERT_RECIPIENTS is set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.MONTHLY_REVIEW_RUN_ON_START || "false").toLowerCase() === "true") {
-    runMonthlyReview().catch((error) => {
-      console.error("[MonthlyReview] startup run failed:", error?.message || error);
-    });
-  }
 }

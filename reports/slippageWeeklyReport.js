@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
@@ -14,9 +13,6 @@ import {
   CADENCES,
   resolveRecipients,
 } from "./reportShared.js";
-
-const DEFAULT_SCHEDULE = "30 9 * * 6"; // 09:30 every Saturday (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 // The weekly key is bare because sends already recorded in the send log use it.
 // A daily that reused it would make Saturday's weekly skip as "already sent".
@@ -533,48 +529,4 @@ export async function getWeeklySlippageDataset({ fromDate, toDate } = {}) {
   const kpis = computeKpis(buckets, rows);
 
   return { fromYmd, toYmd, kpis, buckets };
-}
-
-export function startWeeklySlippageScheduler() {
-  const enabled = String(process.env.WEEKLY_SLIPPAGE_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[SlippageWeekly] disabled by WEEKLY_SLIPPAGE_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.WEEKLY_SLIPPAGE_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.WEEKLY_SLIPPAGE_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[SlippageWeekly] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runSlippageEmailReport({ cadence: "weekly" });
-      } catch (error) {
-        console.error("[SlippageWeekly] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[SlippageWeekly] scheduled with expression "${schedule}" (${timezone})`);
-
-  // See the note in weeklyBusinessSummary.js: an unset recipient list fails
-  // silently on schedule while test sends keep working.
-  if (!parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[SlippageWeekly] WILL NOT SEND: SLIPPAGE_ALERT_RECIPIENTS is not set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.WEEKLY_SLIPPAGE_RUN_ON_START || "false").toLowerCase() === "true") {
-    runSlippageEmailReport({ cadence: "weekly" }).catch((error) => {
-      console.error("[SlippageWeekly] startup run failed:", error?.message || error);
-    });
-  }
 }

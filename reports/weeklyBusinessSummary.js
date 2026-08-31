@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
@@ -55,9 +54,6 @@ import {
 // Sent Saturday 10:00 Dubai, AFTER Deal Match (09:00) and Slippage (09:30), so
 // the glance is never computed before the reports it summarises. The week is
 // Saturday->Friday, closed the previous night -- see previousFullWeekUtc().
-const DEFAULT_SCHEDULE = "0 10 * * 6"; // 10:00 every Saturday (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
-
 // Unprefixed and inconsistent with slippage-* / dealmatch-* on purpose: these
 // three keys were recorded against real sends on 1 September 2026, and renaming
 // them would let those sends repeat on the next app-pool restart.
@@ -554,50 +550,4 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
     `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | firstTime=${firstTimers.rows.length} | instruments=${instruments.instrumentCount} | period=${fromYmd}..${toYmd}`,
   );
   return { ok: true, psps: agg.byPsp.length, depositors: agg.depositors.length, firstTime: firstTimers.rows.length, instruments: instruments.instrumentCount, fromYmd, toYmd };
-}
-
-export function startWeeklyBusinessSummaryScheduler() {
-  const enabled = String(process.env.WEEKLY_SUMMARY_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[WeeklySummary] disabled by WEEKLY_SUMMARY_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.WEEKLY_SUMMARY_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.WEEKLY_SUMMARY_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[WeeklySummary] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runWeeklyBusinessSummary();
-      } catch (error) {
-        console.error("[WeeklySummary] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[WeeklySummary] scheduled with expression "${schedule}" (${timezone})`);
-
-  // A missing recipient list is otherwise invisible: the schedule fires, one
-  // warning goes to the log a week later, and nothing is sent. Say so at BOOT,
-  // while someone is watching. The test-send route takes its recipients from
-  // the request body, so it keeps working and hides the problem completely.
-  if (!parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[WeeklySummary] WILL NOT SEND: SUMMARY_ALERT_RECIPIENTS is not set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.WEEKLY_SUMMARY_RUN_ON_START || "false").toLowerCase() === "true") {
-    runWeeklyBusinessSummary().catch((error) => {
-      console.error("[WeeklySummary] startup run failed:", error?.message || error);
-    });
-  }
 }

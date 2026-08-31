@@ -1,4 +1,3 @@
-import cron from "node-cron";
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
@@ -18,8 +17,6 @@ import {
   resolveRecipients,
 } from "./reportShared.js";
 
-const DEFAULT_SCHEDULE = "0 9 * * 6"; // 09:00 every Saturday (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 const CRM_API_VERSION = String(process.env.VITE_API_VERSION || "1.0.0");
 const CRM_API_TOKEN = String(process.env.VITE_API_TOKEN || process.env.API_TOKEN || "").trim();
 const CRM_REST_BASE = String(process.env.REST_PROXY_TARGET || "https://portal.skylinkscapital.com").replace(/\/+$/, "");
@@ -1379,48 +1376,4 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     unresolved,
     rebateResult,
   };
-}
-
-export function startWeeklyDealMatchScheduler() {
-  const enabled = String(process.env.WEEKLY_DEALMATCH_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[DealMatchWeekly] disabled by WEEKLY_DEALMATCH_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.WEEKLY_DEALMATCH_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.WEEKLY_DEALMATCH_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[DealMatchWeekly] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runDealMatchEmailReport({ cadence: "weekly" });
-      } catch (error) {
-        console.error("[DealMatchWeekly] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[DealMatchWeekly] scheduled with expression "${schedule}" (${timezone})`);
-
-  // See the note in weeklyBusinessSummary.js: an unset recipient list fails
-  // silently on schedule while test sends keep working.
-  if (!parseRecipients(process.env.DEALMATCH_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[DealMatchWeekly] WILL NOT SEND: DEALMATCH_ALERT_RECIPIENTS is not set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.WEEKLY_DEALMATCH_RUN_ON_START || "false").toLowerCase() === "true") {
-    runDealMatchEmailReport({ cadence: "weekly" }).catch((error) => {
-      console.error("[DealMatchWeekly] startup run failed:", error?.message || error);
-    });
-  }
 }
