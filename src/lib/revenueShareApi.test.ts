@@ -199,7 +199,10 @@ import path from "path";
 //     silently drop it from coverage.
 //
 // Only comments are stripped before matching -- block comments, and `//`
-// comments whether full-line or trailing. Strings and template literals are
+// comments on a line of their own. A TRAILING `//` comment is deliberately
+// left in place: stripping it safely needs to know whether the `//` sits
+// inside a string, and getting that wrong is how the previous version came to
+// erase real code. Strings and template literals are
 // matched AS WRITTEN. An earlier version also stripped string and
 // template-literal contents to avoid failing on prose that names the
 // formula (a tooltip, an aria-label). A reviewer showed that stripping
