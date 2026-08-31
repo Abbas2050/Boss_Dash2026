@@ -1,9 +1,7 @@
-import cron from "node-cron";
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
   toUnixRange,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   mapWithConcurrency,
@@ -21,6 +19,7 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
 
 import {
@@ -54,8 +53,16 @@ import {
 // Sent Saturday 10:00 Dubai, AFTER Deal Match (09:00) and Slippage (09:30), so
 // the glance is never computed before the reports it summarises. The week is
 // Saturday->Friday, closed the previous night -- see previousFullWeekUtc().
-const DEFAULT_SCHEDULE = "0 10 * * 6"; // 10:00 every Saturday (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
+// Unprefixed and inconsistent with slippage-* / dealmatch-* on purpose: these
+// three keys were recorded against real sends on 1 September 2026, and renaming
+// them would let those sends repeat on the next app-pool restart.
+export const SUMMARY_GUARD_KEYS = { daily: "daily", weekly: "summary", monthly: "monthly" };
+
+export const SUMMARY_RECIPIENT_VARS = {
+  daily: ["DAILY_DIGEST_RECIPIENTS", "SUMMARY_ALERT_RECIPIENTS"],
+  weekly: ["SUMMARY_ALERT_RECIPIENTS"],
+  monthly: ["MONTHLY_REVIEW_RECIPIENTS", "SUMMARY_ALERT_RECIPIENTS"],
+};
 
 export function buildSummaryEmailHtml({
   fromYmd, toYmd, agg, glance,
@@ -440,7 +447,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.weekly);
   if (!recipients.length) {
     console.warn("[WeeklySummary] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -448,7 +455,7 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
 
   // Same window, already sent: this is a restart, not a new week.
   const windowKey = `${fromYmd}..${toYmd}`;
-  if (isScheduledRun && (await alreadySentFor("summary", windowKey))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.weekly, windowKey))) {
     console.log(`[WeeklySummary] ${windowKey} already sent; skipping (restart, not a new week).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -536,56 +543,10 @@ export async function runWeeklyBusinessSummary({ fromDate, toDate, recipients: r
   const html = buildSummaryEmailHtml({ fromYmd, toYmd, agg, glance, firstTimers, instruments, equity, closingBalance, chartUrl, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Business Summary" });
 
-  if (isScheduledRun) await recordSentFor("summary", windowKey);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.weekly, windowKey);
 
   console.log(
     `[WeeklySummary] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | depositors=${agg.depositors.length} | firstTime=${firstTimers.rows.length} | instruments=${instruments.instrumentCount} | period=${fromYmd}..${toYmd}`,
   );
   return { ok: true, psps: agg.byPsp.length, depositors: agg.depositors.length, firstTime: firstTimers.rows.length, instruments: instruments.instrumentCount, fromYmd, toYmd };
-}
-
-export function startWeeklyBusinessSummaryScheduler() {
-  const enabled = String(process.env.WEEKLY_SUMMARY_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[WeeklySummary] disabled by WEEKLY_SUMMARY_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.WEEKLY_SUMMARY_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.WEEKLY_SUMMARY_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[WeeklySummary] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runWeeklyBusinessSummary();
-      } catch (error) {
-        console.error("[WeeklySummary] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[WeeklySummary] scheduled with expression "${schedule}" (${timezone})`);
-
-  // A missing recipient list is otherwise invisible: the schedule fires, one
-  // warning goes to the log a week later, and nothing is sent. Say so at BOOT,
-  // while someone is watching. The test-send route takes its recipients from
-  // the request body, so it keeps working and hides the problem completely.
-  if (!parseRecipients(process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[WeeklySummary] WILL NOT SEND: SUMMARY_ALERT_RECIPIENTS is not set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.WEEKLY_SUMMARY_RUN_ON_START || "false").toLowerCase() === "true") {
-    runWeeklyBusinessSummary().catch((error) => {
-      console.error("[WeeklySummary] startup run failed:", error?.message || error);
-    });
-  }
 }

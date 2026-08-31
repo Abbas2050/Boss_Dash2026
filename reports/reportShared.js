@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import os from "os";
 import path from "path";
 import crypto from "crypto";
+import cron from "node-cron";
 
 export const BACKEND_BASE_URL = String(
   process.env.BACKEND_API_BASE_URL ||
@@ -281,6 +282,110 @@ export function previousFullMonthUtc(now = new Date()) {
   end.setUTCHours(23, 59, 59, 0);
 
   return { start, end };
+}
+
+// The three reporting rhythms, in one place. Every report answers the same
+// questions over one of these windows, so the noun its copy uses, the word its
+// subject starts with, the period it covers and the key the send guard records
+// all belong together rather than being restated in each report module.
+export const CADENCES = {
+  daily: {
+    noun: "day",
+    subjectWord: "Daily",
+    period: previousFullDayUtc,
+    windowKey: (fromYmd) => fromYmd,
+  },
+  weekly: {
+    noun: "week",
+    subjectWord: "Weekly",
+    period: previousFullWeekUtc,
+    windowKey: (fromYmd, toYmd) => `${fromYmd}..${toYmd}`,
+  },
+  monthly: {
+    noun: "month",
+    subjectWord: "Monthly",
+    period: previousFullMonthUtc,
+    // YYYY-MM, not the date range. A monthly re-run on the same 1st after an app
+    // pool recycle must find its own key and skip.
+    windowKey: (fromYmd) => fromYmd.slice(0, 7),
+  },
+};
+
+// First variable that carries an actual list wins. An empty string is not a
+// list: writing DAILY_SLIPPAGE_RECIPIENTS= in the env file must fall through to
+// the report's own list rather than resolving to nobody.
+export function resolveRecipients(recipientVars) {
+  for (const name of recipientVars) {
+    const parsed = parseRecipients(process.env[name] || "");
+    if (parsed.length) return parsed;
+  }
+  return [];
+}
+
+// One scheduler for all nine sends. Every report used to carry its own copy of
+// this block; five copies meant the boot-time warning below could be forgotten
+// in the sixth, which is the failure that made the weekly summary silently send
+// nothing for weeks.
+//
+// `schedule` is injectable so tests can observe registration without leaving a
+// live cron job behind.
+export function startReportScheduler({
+  label,
+  defaultCron,
+  defaultTimezone = "Asia/Dubai",
+  enabledVar,
+  cronVar,
+  timezoneVar,
+  runOnStartVar,
+  recipientVars,
+  run,
+  schedule: scheduleFn = cron.schedule,
+}) {
+  const enabled = String(process.env[enabledVar] || "true").toLowerCase() !== "false";
+  if (!enabled) {
+    console.log(`[${label}] disabled by ${enabledVar}=false`);
+    return { registered: false, reason: "disabled" };
+  }
+
+  const expression = String(process.env[cronVar] || defaultCron);
+  const timezone = String(process.env[timezoneVar] || defaultTimezone);
+  if (!cron.validate(expression)) {
+    console.error(`[${label}] Invalid cron expression: "${expression}"`);
+    return { registered: false, reason: "invalid-cron", schedule: expression, timezone };
+  }
+
+  scheduleFn(
+    expression,
+    async () => {
+      try {
+        await run();
+      } catch (error) {
+        // One report failing must never take the other eight down with it.
+        console.error(`[${label}] run failed:`, error?.message || error);
+      }
+    },
+    { timezone },
+  );
+  console.log(`[${label}] scheduled with expression "${expression}" (${timezone})`);
+
+  // Say this at BOOT, while someone is watching. On schedule it is invisible:
+  // the job fires, logs one line and sends nothing. The test-send routes take
+  // their recipients from the request body, so they keep working and hide it.
+  const warnedNoRecipients = resolveRecipients(recipientVars).length === 0;
+  if (warnedNoRecipients) {
+    console.error(
+      `[${label}] WILL NOT SEND: none of ${recipientVars.join(", ")} is set. ` +
+        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
+    );
+  }
+
+  if (String(process.env[runOnStartVar] || "false").toLowerCase() === "true") {
+    run().catch((error) => {
+      console.error(`[${label}] startup run failed:`, error?.message || error);
+    });
+  }
+
+  return { registered: true, schedule: expression, timezone, warnedNoRecipients };
 }
 
 export function toUnixRange(fromDate, toDate) {

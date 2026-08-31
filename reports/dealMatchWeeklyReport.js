@@ -1,8 +1,6 @@
-import cron from "node-cron";
 import {
   BACKEND_BASE_URL,
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   fmtNum,
@@ -14,13 +12,42 @@ import {
   sendBrevoEmail,
   renderChartBuffer,
   publishChartImages,
+  CADENCES,
+  resolveRecipients,
 } from "./reportShared.js";
 
-const DEFAULT_SCHEDULE = "0 9 * * 6"; // 09:00 every Saturday (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 const CRM_API_VERSION = String(process.env.VITE_API_VERSION || "1.0.0");
 const CRM_API_TOKEN = String(process.env.VITE_API_TOKEN || process.env.API_TOKEN || "").trim();
 const CRM_REST_BASE = String(process.env.REST_PROXY_TARGET || "https://portal.skylinkscapital.com").replace(/\/+$/, "");
+
+// The weekly key is bare because sends already recorded in the send log use it.
+// A daily that reused it would make Saturday's weekly skip as "already sent".
+export const DEALMATCH_GUARD_KEYS = {
+  daily: "dealmatch-daily",
+  weekly: "dealmatch",
+  monthly: "dealmatch-monthly",
+};
+
+// Each cadence may have its own audience, and falls back to the one list this
+// report has always used -- so the new sends work with no environment change.
+export const DEALMATCH_RECIPIENT_VARS = {
+  daily: ["DAILY_DEALMATCH_RECIPIENTS", "DEALMATCH_ALERT_RECIPIENTS"],
+  weekly: ["DEALMATCH_ALERT_RECIPIENTS"],
+  monthly: ["MONTHLY_DEALMATCH_RECIPIENTS", "DEALMATCH_ALERT_RECIPIENTS"],
+};
+
+// DealMatch/Run costs ~40s whatever the window: 41.8s for one day and 40.4s for
+// a month, measured 2026-08-31. The cost is in starting the match, not in the
+// deals matched, so a shorter period buys no headroom. The old 45s left under
+// four seconds of it.
+export const DEALMATCH_RUN_TIMEOUT_MS = 180_000;
+
+export function dealMatchSubject(cadence, fromYmd, toYmd) {
+  const word = CADENCES[cadence].subjectWord;
+  // A single day rendered as "2026-08-31 to 2026-08-31" reads like a bug.
+  const period = fromYmd === toYmd ? fromYmd : `${fromYmd} to ${toYmd}`;
+  return `${word} Deal Match Analysis (${period})`;
+}
 
 const fmtMoney = (value) => {
   const n = Number(value) || 0;
@@ -787,7 +814,7 @@ function buildStackedChart(heading, note, series, rows) {
 
 // Equity-vs-CFD summary cards + a per-day table for the report week. Renders a
 // short notice instead of throwing when the volume endpoint was unavailable.
-function buildVolumeSection(volume, charts, volumeStats) {
+function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
   const title = `<p class="section-title" style="margin-top:18px;">Client Volume &mdash; Equity vs CFD</p>`;
 
   if (!volume) {
@@ -858,7 +885,7 @@ function buildVolumeSection(volume, charts, volumeStats) {
                 ${dataCell("CFD Lots", fmtNum(volume.totalCfdLots, 2), { align: "right" })}
                 ${dataCell("Traded Lots", fmtNum(volume.totalLots, 2), { align: "right" })}
               </tr>
-              ${dailyRows || `<tr>${spanCell("No volume recorded for this week.", { colspan: 4, align: "center" })}</tr>`}
+              ${dailyRows || `<tr>${spanCell(`No volume recorded for this ${periodNoun}.`, { colspan: 4, align: "center" })}</tr>`}
             </tbody>
           </table>
 
@@ -877,7 +904,7 @@ function buildVolumeSection(volume, charts, volumeStats) {
           )}`;
 }
 
-function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, charts = null, chartError = null, ibNotice = null }) {
+export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -1042,7 +1069,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
                 </div>
               </td>
               <td class="header-right" width="52%">
-                <h1 class="title">Weekly Deal Performance Summary</h1>
+                <h1 class="title">${CADENCES[cadence].subjectWord} Deal Performance Summary</h1>
                 <div class="subtitle">Management Reporting | Deal Match Revenue Analytics</div>
               </td>
             </tr>
@@ -1076,7 +1103,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
             ${topClient ? `| ${money(topClient.netRev)}` : ""}
           </div>
 
-          ${buildVolumeSection(volume, charts, volumeStats)}
+          ${buildVolumeSection(volume, charts, volumeStats, periodNoun)}
 
           <p class="section-title" style="margin-top:18px;">Client Revenue Table</p>
           <div class="tscroll">
@@ -1105,7 +1132,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
                 ${dataCell("Rebate Withdrawn", money(totals.rebateWithdrawn), { align: "right", cls: "money-cost" })}
                 ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
               </tr>
-              ${bodyRows || `<tr>${spanCell("No rows with Lots &gt; 0 for this week.", { colspan: 9, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell(`No rows with Lots &gt; 0 for this ${periodNoun}.`, { colspan: 9, align: "center" })}</tr>`}
             </tbody>
           </table>
           </div>
@@ -1174,7 +1201,7 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
             Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + Rebate Withdrawn)<br/>
-            Rebate Withdrawn is the approved IB transfers and withdrawals <em>settled inside this week</em>, looked up once per client. It is money that left the IB wallet during the week and may have been earned earlier, so it is a cash figure rather than earnings. The running IB wallet balance is not included.<br/>
+            Rebate Withdrawn is the approved IB transfers and withdrawals <em>settled inside this ${periodNoun}</em>, looked up once per client. It is money that left the IB wallet during the ${periodNoun} and may have been earned earlier, so it is a cash figure rather than earnings. The running IB wallet balance is not included.<br/>
             ${ibNotice ? `<strong>Check:</strong> ${escapeHtml(ibNotice)}<br/>` : ""}
             ${chartError ? `Chart images unavailable: ${escapeHtml(chartError)} &mdash; showing built-in bar charts instead.<br/>` : ""}
             Traded Lots (realized) come from ClientVolume/Run &mdash; the dashboard's Dealing (LP) volume tile. Total Lots (deals) count every MT5 deal, so a round trip appears twice; realized equity + CFD reconciles the two.
@@ -1187,9 +1214,13 @@ function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, char
 }
 
 
-export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipients: recipientsOverride } = {}) {
-  const week = fromDate && toDate ? { start: fromDate, end: toDate } : previousFullWeekUtc();
-  const { from, to } = toUnixRange(week.start, week.end);
+export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, toDate, recipients: recipientsOverride } = {}) {
+  const spec = CADENCES[cadence];
+  if (!spec) throw new Error(`Unknown cadence "${cadence}"`);
+  const label = `DealMatch${cadence[0].toUpperCase()}${cadence.slice(1)}`;
+
+  const period = fromDate && toDate ? { start: fromDate, end: toDate } : spec.period();
+  const { from, to } = toUnixRange(period.start, period.end);
   const params = new URLSearchParams({
     group: "*",
     from: String(from),
@@ -1201,7 +1232,7 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   });
 
   const runUrl = `${BACKEND_BASE_URL}/DealMatch/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(45_000) });
+  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(DEALMATCH_RUN_TIMEOUT_MS) });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`DealMatch/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);
@@ -1224,10 +1255,10 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
 
-  const { rows, unresolved, rebateResult } = await buildClientRows(baseRows, week);
+  const { rows, unresolved, rebateResult } = await buildClientRows(baseRows, period);
 
-  const fromYmd = toYmdUtc(week.start);
-  const toYmd = toYmdUtc(week.end);
+  const fromYmd = toYmdUtc(period.start);
+  const toYmd = toYmdUtc(period.end);
   // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
   // An explicit recipient list means the on-demand test button, which must
   // always send. Everything else is the cron or a RUN_ON_START boot, and a
@@ -1237,16 +1268,16 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.DEALMATCH_ALERT_RECIPIENTS || "");
+    : resolveRecipients(DEALMATCH_RECIPIENT_VARS[cadence]);
   if (!recipients.length) {
-    console.warn("[DealMatchWeekly] No recipients configured. Skipping.");
+    console.warn(`[${label}] No recipients configured. Skipping.`);
     return { ok: false, reason: "no-recipients", rows: rows.length, fromYmd, toYmd };
   }
 
-  // Same window, already sent: this is a restart, not a new week.
-  const windowKey = `${fromYmd}..${toYmd}`;
-  if (isScheduledRun && (await alreadySentFor("dealmatch", windowKey))) {
-    console.log(`[DealMatchWeekly] ${windowKey} already sent; skipping (restart, not a new week).`);
+  // Same window, already sent: this is a restart, not a new period.
+  const windowKey = spec.windowKey(fromYmd, toYmd);
+  if (isScheduledRun && (await alreadySentFor(DEALMATCH_GUARD_KEYS[cadence], windowKey))) {
+    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
   // Volume is supplementary — a ClientVolume outage must not block the revenue
@@ -1255,7 +1286,7 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
   try {
     volume = await fetchClientVolume(fromYmd, toYmd);
   } catch (error) {
-    console.warn("[DealMatchWeekly] client volume lookup failed:", error?.message || error);
+    console.warn(`[${label}] client volume lookup failed:`, error?.message || error);
   }
 
   // Charts render to PNG and travel inside the message, referenced by cid:. If
@@ -1279,13 +1310,13 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     const images = await buildChartImages(rows, volume, totalsForCharts, `(${fromYmd} to ${toYmd})`);
     const published = await publishChartImages(images);
     chartUrls = published.urls;
-    console.log(`[DealMatchWeekly] published ${images.length} charts to ${published.dir}`);
+    console.log(`[${label}] published ${images.length} charts to ${published.dir}`);
   } catch (error) {
     chartError = `${error?.code ? `${error.code}: ` : ""}${error?.message || String(error)}`;
-    console.warn("[DealMatchWeekly] chart rendering failed, using HTML fallback:", chartError);
+    console.warn(`[${label}] chart rendering failed, using HTML fallback:`, chartError);
   }
 
-  const subject = `Weekly Deal Match Analysis (${fromYmd} to ${toYmd})`;
+  const subject = dealMatchSubject(cadence, fromYmd, toYmd);
   // A zero rebate understates the cost and so overstates Net Revenue; an
   // unresolved login cannot be grouped. Both are named rather than left to look
   // like ordinary rows.
@@ -1297,13 +1328,13 @@ export async function runWeeklyDealMatchEmailReport({ fromDate, toDate, recipien
     noticeParts.push(`${unresolved} login(s) could not be matched to a CRM client and appear as their own rows`);
   }
   const ibNotice = noticeParts.length ? noticeParts.join("; ") : null;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice });
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice, periodNoun: spec.noun, cadence });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
 
-  if (isScheduledRun) await recordSentFor("dealmatch", windowKey);
+  if (isScheduledRun) await recordSentFor(DEALMATCH_GUARD_KEYS[cadence], windowKey);
 
-  console.log(`[DealMatchWeekly] Sent to ${recipients.join(", ")} | rows=${rows.length} | period=${fromYmd}..${toYmd}`);
+  console.log(`[${label}] Sent to ${recipients.join(", ")} | rows=${rows.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, rows: rows.length, fromYmd, toYmd };
 }
 
@@ -1321,7 +1352,7 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
   });
 
   const runUrl = `${BACKEND_BASE_URL}/DealMatch/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(45_000) });
+  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(DEALMATCH_RUN_TIMEOUT_MS) });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`DealMatch/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);
@@ -1344,48 +1375,4 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     unresolved,
     rebateResult,
   };
-}
-
-export function startWeeklyDealMatchScheduler() {
-  const enabled = String(process.env.WEEKLY_DEALMATCH_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[DealMatchWeekly] disabled by WEEKLY_DEALMATCH_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.WEEKLY_DEALMATCH_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.WEEKLY_DEALMATCH_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[DealMatchWeekly] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runWeeklyDealMatchEmailReport();
-      } catch (error) {
-        console.error("[DealMatchWeekly] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[DealMatchWeekly] scheduled with expression "${schedule}" (${timezone})`);
-
-  // See the note in weeklyBusinessSummary.js: an unset recipient list fails
-  // silently on schedule while test sends keep working.
-  if (!parseRecipients(process.env.DEALMATCH_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[DealMatchWeekly] WILL NOT SEND: DEALMATCH_ALERT_RECIPIENTS is not set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.WEEKLY_DEALMATCH_RUN_ON_START || "false").toLowerCase() === "true") {
-    runWeeklyDealMatchEmailReport().catch((error) => {
-      console.error("[DealMatchWeekly] startup run failed:", error?.message || error);
-    });
-  }
 }

@@ -1,7 +1,5 @@
-import cron from "node-cron";
 import {
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   previousFullMonthUtc,
@@ -14,6 +12,7 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
 import {
   MONTH_NAMES,
@@ -32,7 +31,7 @@ import {
   signCls,
   topInstruments,
 } from "./summaryCore.js";
-import { buildSummaryEmailHtml } from "./weeklyBusinessSummary.js";
+import { buildSummaryEmailHtml, SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
 
 // Monthly review -- everything the weekly Business Summary carries, over a
 // calendar month, plus the two things only a month can show: how it compares
@@ -42,13 +41,12 @@ import { buildSummaryEmailHtml } from "./weeklyBusinessSummary.js";
 // nothing, so "is this month better than last" has had no answer anywhere in
 // the dashboard.
 //
-// Sent 10:00 Dubai on the 1st. That lands on a weekend twice a year; it sends
-// anyway, because a month-end review is not time-critical to the hour.
+// Sent 12:00 Dubai on the 1st, after the weekly sends, so a 1st that falls on
+// a Saturday does not fire the monthly review and the Weekly Business Summary
+// in the same minute. That lands on a weekend twice a year; it sends anyway,
+// because a month-end review is not time-critical to the hour.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
-
-const DEFAULT_SCHEDULE = "0 10 1 * *"; // 10:00 on the 1st of every month (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 // ── month-over-month arithmetic ─────────────────────────────────────────────
 
@@ -297,7 +295,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.MONTHLY_REVIEW_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.monthly);
   if (!recipients.length) {
     console.warn("[MonthlyReview] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -306,7 +304,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
   // YYYY-MM is the window key: one send per month, however many times the
   // process restarts on the 1st.
   const windowKey = fromYmd.slice(0, 7);
-  if (isScheduledRun && (await alreadySentFor("monthly", windowKey))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.monthly, windowKey))) {
     console.log(`[MonthlyReview] ${windowKey} already sent; skipping (restart, not a new month).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -396,7 +394,7 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
   });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Monthly Review" });
 
-  if (isScheduledRun) await recordSentFor("monthly", windowKey);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.monthly, windowKey);
 
   console.log(
     `[MonthlyReview] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | depositors=${agg.depositors.length} | weeks=${weekBuckets(agg.byDay).length} | prior=${prior ? prior.monthLabel : "unavailable"} | month=${monthLabel}`,
@@ -409,46 +407,4 @@ export async function runMonthlyReview({ fromDate, toDate, recipients: recipient
     fromYmd,
     toYmd,
   };
-}
-
-export function startMonthlyReviewScheduler() {
-  const enabled = String(process.env.MONTHLY_REVIEW_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[MonthlyReview] disabled by MONTHLY_REVIEW_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.MONTHLY_REVIEW_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.MONTHLY_REVIEW_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[MonthlyReview] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runMonthlyReview();
-      } catch (error) {
-        console.error("[MonthlyReview] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[MonthlyReview] scheduled with expression "${schedule}" (${timezone})`);
-
-  if (!parseRecipients(process.env.MONTHLY_REVIEW_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[MonthlyReview] WILL NOT SEND: neither MONTHLY_REVIEW_RECIPIENTS nor SUMMARY_ALERT_RECIPIENTS is set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.MONTHLY_REVIEW_RUN_ON_START || "false").toLowerCase() === "true") {
-    runMonthlyReview().catch((error) => {
-      console.error("[MonthlyReview] startup run failed:", error?.message || error);
-    });
-  }
 }

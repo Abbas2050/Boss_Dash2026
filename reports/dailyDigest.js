@@ -1,7 +1,5 @@
-import cron from "node-cron";
 import {
   toYmdUtc,
-  parseRecipients,
   alreadySentFor,
   recordSentFor,
   previousFullDayUtc,
@@ -15,7 +13,9 @@ import {
   dataTable,
   dataCell,
   spanCell,
+  resolveRecipients,
 } from "./reportShared.js";
+import { SUMMARY_GUARD_KEYS, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
 import {
   ACCOUNT_HEADERS,
   LARGE_DEPOSIT_THRESHOLD,
@@ -40,16 +40,15 @@ import {
 // otherwise invisible until Saturday, by which point it is history rather than
 // something to act on.
 //
-// Sent EVERY morning, including weekends, whether or not anything happened. The
-// alternative — sending only when a threshold trips — was rejected because
-// silence is ambiguous: a quiet day and a dead scheduler look identical, and
-// this project has already had a scheduler fail silently for want of configured
+// Sent Tuesday to Saturday, each covering the previous weekday. There is no
+// send on Sunday or Monday, because those would cover Saturday or Sunday, when
+// the market is shut and there is nothing to report. The alternative —
+// sending only when a threshold trips — was rejected because silence is
+// ambiguous: a quiet day and a dead scheduler look identical, and this
+// project has already had a scheduler fail silently for want of configured
 // recipients.
 //
 // Design: docs/superpowers/specs/2026-08-25-daily-and-monthly-reports-design.md
-
-const DEFAULT_SCHEDULE = "0 8 * * *"; // 08:00 every day (UAE time)
-const DEFAULT_TIMEZONE = "Asia/Dubai";
 
 export function buildDailyDigestHtml({
   ymd,
@@ -221,7 +220,7 @@ export function buildDailyDigestHtml({
           })}`;
 
   const footerLines = [
-    "Automated Daily Digest. Sent every morning, including weekends &mdash; a quiet day and a dead scheduler must not look the same.",
+    "Automated Daily Digest. Sent Tuesday to Saturday, each covering the previous weekday &mdash; there is no digest on Sunday or Monday, because the market was shut and there would be nothing to report. A missing digest on any other morning means the scheduler, not a quiet day.",
     `Net = Deposits &minus; Withdrawals &minus; IB Rebate, counting ${escapeHtml(TX_STATUSES.join(", "))} transactions only. Amounts use magnitudes; direction comes from the transaction type.`,
     "Deposits and Withdrawals are <strong>client money only</strong>. IB commission is held in its own column so it is never counted twice.",
     "Total Revenue = markup + client commission &minus; LP commission, from <code>DealMatch/Run</code>. Net Revenue = Total Revenue &minus; IB Rebate.",
@@ -265,7 +264,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
 
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.DAILY_DIGEST_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SUMMARY_RECIPIENT_VARS.daily);
   if (!recipients.length) {
     console.warn("[DailyDigest] No recipients configured. Skipping.");
     return { ok: false, reason: "no-recipients", fromYmd, toYmd };
@@ -273,7 +272,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
 
   // The covered date is the window key: one send per day, however many times
   // the process restarts.
-  if (isScheduledRun && (await alreadySentFor("daily", fromYmd))) {
+  if (isScheduledRun && (await alreadySentFor(SUMMARY_GUARD_KEYS.daily, fromYmd))) {
     console.log(`[DailyDigest] ${fromYmd} already sent; skipping (restart, not a new day).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
@@ -317,7 +316,7 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
   const html = buildDailyDigestHtml({ ymd: fromYmd, agg, glance, instruments, closingBalance, notices });
   await sendBrevoEmail({ subject, html, recipients, senderName: "Daily Digest" });
 
-  if (isScheduledRun) await recordSentFor("daily", fromYmd);
+  if (isScheduledRun) await recordSentFor(SUMMARY_GUARD_KEYS.daily, fromYmd);
 
   console.log(
     `[DailyDigest] Sent to ${recipients.join(", ")} | net=${agg.netFlow.toFixed(2)} | psps=${agg.byPsp.length} | large=${agg.largeDepositors.length} | lots=${instruments.totalLots} | day=${fromYmd}`,
@@ -330,49 +329,4 @@ export async function runDailyDigest({ fromDate, toDate, recipients: recipientsO
     fromYmd,
     toYmd,
   };
-}
-
-export function startDailyDigestScheduler() {
-  const enabled = String(process.env.DAILY_DIGEST_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
-    console.log("[DailyDigest] disabled by DAILY_DIGEST_ENABLED=false");
-    return;
-  }
-
-  const schedule = String(process.env.DAILY_DIGEST_CRON || DEFAULT_SCHEDULE);
-  const timezone = String(process.env.DAILY_DIGEST_TIMEZONE || DEFAULT_TIMEZONE);
-  if (!cron.validate(schedule)) {
-    console.error(`[DailyDigest] Invalid cron expression: "${schedule}"`);
-    return;
-  }
-
-  cron.schedule(
-    schedule,
-    async () => {
-      try {
-        await runDailyDigest();
-      } catch (error) {
-        console.error("[DailyDigest] run failed:", error?.message || error);
-      }
-    },
-    { timezone },
-  );
-
-  console.log(`[DailyDigest] scheduled with expression "${schedule}" (${timezone})`);
-
-  // A missing recipient list is otherwise invisible: the schedule fires, one
-  // warning goes to the log, and nothing is sent. Say so at BOOT, while someone
-  // is watching.
-  if (!parseRecipients(process.env.DAILY_DIGEST_RECIPIENTS || process.env.SUMMARY_ALERT_RECIPIENTS || "").length) {
-    console.error(
-      "[DailyDigest] WILL NOT SEND: neither DAILY_DIGEST_RECIPIENTS nor SUMMARY_ALERT_RECIPIENTS is set. " +
-        "Scheduled runs skip silently; test sends still work because they pass recipients explicitly.",
-    );
-  }
-
-  if (String(process.env.DAILY_DIGEST_RUN_ON_START || "false").toLowerCase() === "true") {
-    runDailyDigest().catch((error) => {
-      console.error("[DailyDigest] startup run failed:", error?.message || error);
-    });
-  }
 }
