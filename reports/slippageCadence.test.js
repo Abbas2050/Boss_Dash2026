@@ -60,19 +60,41 @@ const KPIS = { totalDeals: 120, totalSlippageUsd: -320.25, avgSlipUsd: -2.67, wo
 const html = (over = {}) =>
   buildSlippageEmailHtml({ fromYmd: "2026-08-31", toYmd: "2026-08-31", buckets: BUCKETS, kpis: KPIS, ...over });
 
+// The empty-table fallback ("No slippage rows for this ${periodNoun}") only
+// renders when bodyRows is falsy, which never happens with the one-row
+// BUCKETS fixture above. A separate empty-buckets fixture is required to
+// actually exercise that branch instead of asserting on text that can't render.
+const emptyHtml = (over = {}) =>
+  buildSlippageEmailHtml({ fromYmd: "2026-08-31", toYmd: "2026-08-31", buckets: [], kpis: KPIS, ...over });
+
 describe("period wording", () => {
-  it("says day in a daily email and never week", () => {
-    const out = html({ periodNoun: "day", cadence: "daily" });
-    expect(out).toMatch(/this day|the day/i);
+  it("titles the heading with the cadence word", () => {
+    expect(html({ cadence: "daily" })).toMatch(/<h1 class="title">Daily Slippage Report<\/h1>/);
+    expect(html({ cadence: "weekly" })).toMatch(/<h1 class="title">Weekly Slippage Report<\/h1>/);
+    expect(html({ cadence: "monthly" })).toMatch(/<h1 class="title">Monthly Slippage Report<\/h1>/);
+  });
+
+  it("says day in the empty-state fallback of a daily email, and never week", () => {
+    const out = emptyHtml({ periodNoun: "day", cadence: "daily" });
+    expect(out).toMatch(/No slippage rows for this day\./);
     expect(out).not.toMatch(/this week|the week/i);
   });
 
-  it("says month in a monthly email and never week", () => {
-    const out = html({ periodNoun: "month", cadence: "monthly" });
+  it("says month in the empty-state fallback of a monthly email, and never week", () => {
+    const out = emptyHtml({ periodNoun: "month", cadence: "monthly" });
+    expect(out).toMatch(/No slippage rows for this month\./);
     expect(out).not.toMatch(/this week|the week/i);
   });
 
-  it("still says week by default", () => {
+  it("a daily email contains no occurrence of 'week' anywhere", () => {
+    expect(html({ periodNoun: "day", cadence: "daily" })).not.toMatch(/week/i);
+  });
+
+  it("a monthly email contains no occurrence of 'week' anywhere", () => {
+    expect(html({ periodNoun: "month", cadence: "monthly" })).not.toMatch(/week/i);
+  });
+
+  it("the weekly email still says week", () => {
     expect(html()).toMatch(/week/i);
   });
 });

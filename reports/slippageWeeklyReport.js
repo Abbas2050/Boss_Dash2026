@@ -308,8 +308,8 @@ export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNo
                 </div>
               </td>
               <td class="header-right" width="52%">
-                <h1 class="title">Weekly Slippage Report</h1>
-                <div class="subtitle">Management Reporting | LP Slippage Analytics${cadence !== "weekly" ? ` for this ${periodNoun}` : ""}</div>
+                <h1 class="title">${CADENCES[cadence].subjectWord} Slippage Report</h1>
+                <div class="subtitle">Management Reporting | LP Slippage Analytics</div>
               </td>
             </tr>
           </table>
