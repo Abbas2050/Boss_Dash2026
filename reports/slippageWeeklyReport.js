@@ -11,10 +11,35 @@ import {
   previousFullWeekUtc,
   sendBrevoEmail,
   renderChartBuffer,
+  CADENCES,
+  resolveRecipients,
 } from "./reportShared.js";
 
 const DEFAULT_SCHEDULE = "30 9 * * 6"; // 09:30 every Saturday (UAE time)
 const DEFAULT_TIMEZONE = "Asia/Dubai";
+
+// The weekly key is bare because sends already recorded in the send log use it.
+// A daily that reused it would make Saturday's weekly skip as "already sent".
+export const SLIPPAGE_GUARD_KEYS = {
+  daily: "slippage-daily",
+  weekly: "slippage",
+  monthly: "slippage-monthly",
+};
+
+// Each cadence may have its own audience, and falls back to the one list this
+// report has always used -- so the new sends work with no environment change.
+export const SLIPPAGE_RECIPIENT_VARS = {
+  daily: ["DAILY_SLIPPAGE_RECIPIENTS", "SLIPPAGE_ALERT_RECIPIENTS"],
+  weekly: ["SLIPPAGE_ALERT_RECIPIENTS"],
+  monthly: ["MONTHLY_SLIPPAGE_RECIPIENTS", "SLIPPAGE_ALERT_RECIPIENTS"],
+};
+
+export function slippageSubject(cadence, fromYmd, toYmd) {
+  const word = CADENCES[cadence].subjectWord;
+  // A single day rendered as "2026-08-31 to 2026-08-31" reads like a bug.
+  const period = fromYmd === toYmd ? fromYmd : `${fromYmd} to ${toYmd}`;
+  return `${word} Slippage Report (${period})`;
+}
 
 // ── aggregation (mirrors src/pages/departments/dealing/SlippageReportTab.tsx) ──
 
@@ -150,7 +175,7 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
   return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
-function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
+export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNoun = "week", cadence = "weekly" }) {
   const bodyRows = buckets
     .map(
       (b) => `<tr>
@@ -284,7 +309,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
               </td>
               <td class="header-right" width="52%">
                 <h1 class="title">Weekly Slippage Report</h1>
-                <div class="subtitle">Management Reporting | LP Slippage Analytics</div>
+                <div class="subtitle">Management Reporting | LP Slippage Analytics${cadence !== "weekly" ? ` for this ${periodNoun}` : ""}</div>
               </td>
             </tr>
           </table>
@@ -350,7 +375,7 @@ function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis }) {
                 ${dataCell("Net Positive USD", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
                 ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
               </tr>
-              ${bodyRows || `<tr>${spanCell("No slippage rows for this week.", { colspan: 11, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell(`No slippage rows for this ${periodNoun}.`, { colspan: 11, align: "center" })}</tr>`}
             </tbody>
           </table>
           </div>
@@ -448,10 +473,19 @@ async function fetchSlippageRows(fromYmd, toYmd) {
   return Array.isArray(report?.rows) ? report.rows : [];
 }
 
-export async function runWeeklySlippageEmailReport({ fromDate, toDate, recipients: recipientsOverride } = {}) {
-  const week = fromDate && toDate ? { start: fromDate, end: toDate } : previousFullWeekUtc();
-  const fromYmd = toYmdUtc(week.start);
-  const toYmd = toYmdUtc(week.end);
+export async function runSlippageEmailReport({
+  cadence = "weekly",
+  fromDate,
+  toDate,
+  recipients: recipientsOverride,
+} = {}) {
+  const spec = CADENCES[cadence];
+  if (!spec) throw new Error(`Unknown cadence "${cadence}"`);
+  const label = `Slippage${cadence[0].toUpperCase()}${cadence.slice(1)}`;
+
+  const period = fromDate && toDate ? { start: fromDate, end: toDate } : spec.period();
+  const fromYmd = toYmdUtc(period.start);
+  const toYmd = toYmdUtc(period.end);
 
   const rows = await fetchSlippageRows(fromYmd, toYmd);
   const { buckets } = aggregateByLp(rows);
@@ -463,30 +497,29 @@ export async function runWeeklySlippageEmailReport({ fromDate, toDate, recipient
   // window that already went out must not go again -- an app pool that
   // recycles nightly would otherwise mail this every morning.
   const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
-
   const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
     ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : parseRecipients(process.env.SLIPPAGE_ALERT_RECIPIENTS || "");
+    : resolveRecipients(SLIPPAGE_RECIPIENT_VARS[cadence]);
   if (!recipients.length) {
-    console.warn("[SlippageWeekly] No recipients configured. Skipping.");
+    console.warn(`[${label}] No recipients configured. Skipping.`);
     return { ok: false, reason: "no-recipients", lps: buckets.length, fromYmd, toYmd };
   }
 
-  // Same window, already sent: this is a restart, not a new week.
-  const windowKey = `${fromYmd}..${toYmd}`;
-  if (isScheduledRun && (await alreadySentFor("slippage", windowKey))) {
-    console.log(`[SlippageWeekly] ${windowKey} already sent; skipping (restart, not a new week).`);
+  // Same window, already sent: this is a restart, not a new period.
+  const windowKey = spec.windowKey(fromYmd, toYmd);
+  if (isScheduledRun && (await alreadySentFor(SLIPPAGE_GUARD_KEYS[cadence], windowKey))) {
+    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
     return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
 
-  const subject = `Weekly Slippage Report (${fromYmd} to ${toYmd})`;
-  const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis });
+  const subject = slippageSubject(cadence, fromYmd, toYmd);
+  const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNoun: spec.noun, cadence });
   const attachments = await buildSlippageChartAttachments(buckets, fromYmd, toYmd);
   await sendBrevoEmail({ subject, html, recipients, attachments, senderName: "Slippage Reporter" });
 
-  if (isScheduledRun) await recordSentFor("slippage", windowKey);
+  if (isScheduledRun) await recordSentFor(SLIPPAGE_GUARD_KEYS[cadence], windowKey);
 
-  console.log(`[SlippageWeekly] Sent to ${recipients.join(", ")} | lps=${buckets.length} | period=${fromYmd}..${toYmd}`);
+  console.log(`[${label}] Sent to ${recipients.join(", ")} | lps=${buckets.length} | period=${fromYmd}..${toYmd}`);
   return { ok: true, lps: buckets.length, fromYmd, toYmd };
 }
 
@@ -520,7 +553,7 @@ export function startWeeklySlippageScheduler() {
     schedule,
     async () => {
       try {
-        await runWeeklySlippageEmailReport();
+        await runSlippageEmailReport({ cadence: "weekly" });
       } catch (error) {
         console.error("[SlippageWeekly] run failed:", error?.message || error);
       }
@@ -540,7 +573,7 @@ export function startWeeklySlippageScheduler() {
   }
 
   if (String(process.env.WEEKLY_SLIPPAGE_RUN_ON_START || "false").toLowerCase() === "true") {
-    runWeeklySlippageEmailReport().catch((error) => {
+    runSlippageEmailReport({ cadence: "weekly" }).catch((error) => {
       console.error("[SlippageWeekly] startup run failed:", error?.message || error);
     });
   }
