@@ -55,6 +55,23 @@ export interface ExcessSourceGroup {
 
 const DASH = "—";
 
+// EXCESS_LABELS in excessFunds.ts still emits "FAB Operating Balance" and
+// "FAB Holding Balance" into missing[] -- the client explicitly rejected
+// those names because, next to "Net FAB & MBME" above, they read as the same
+// account three times. That library is out of scope here (its own tests pin
+// EXCESS_LABELS exactly), so the rejected names are translated to the
+// approved card names at the last possible moment, right before they reach
+// the "why" text. Anything not in this map passes through unchanged, so a
+// future input added upstream still reads sensibly instead of vanishing.
+const MISSING_LABEL_DISPLAY: Record<string, string> = {
+  "FAB Operating Balance": "Skylinks Capital LLC",
+  "FAB Holding Balance": "Skylink holdings",
+};
+
+function displayMissingLabel(label: string): string {
+  return MISSING_LABEL_DISPLAY[label] ?? label;
+}
+
 function money(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return DASH;
   const text = Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -91,7 +108,8 @@ function clockTime(iso?: string): string | null {
 // would risk disagreeing with it.
 export function excessHeadlines({ inputs }: ExcessFundsSectionProps): [ExcessHeadline, ExcessHeadline] {
   const { gross, net } = computeExcessFunds(inputs);
-  const unavailable = (missing: string[]) => `Unavailable — could not read ${missing.join(", ")}.`;
+  const unavailable = (missing: string[]) =>
+    `Unavailable — could not read ${missing.map(displayMissingLabel).join(", ")}.`;
 
   return [
     {
@@ -168,7 +186,7 @@ export function ExcessFundsSection(props: ExcessFundsSectionProps) {
   return (
     <div className="pt-2 border-t border-border/30">
       <div className="flex items-baseline justify-between gap-2 mb-2">
-        <div className="text-xs font-semibold text-foreground">Excess Funds</div>
+        <div className="text-xs font-semibold text-foreground">Excess funds</div>
         {asOf.length ? <div className="text-[10px] text-muted-foreground">{asOf.join(" · ")}</div> : null}
       </div>
 

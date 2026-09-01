@@ -59,6 +59,39 @@ describe("the two headline figures", () => {
     expect(gross.value).toBe("-$854,016.16");
     expect(net.unavailable).toBe(true);
   });
+
+  // computeExcessFunds still emits the client-rejected "FAB Operating
+  // Balance" / "FAB Holding Balance" strings into missing[] (that library is
+  // out of scope and its own tests pin those strings exactly). This is the
+  // single likeliest failure a reader sees -- most mornings the company sheet
+  // just isn't filled in yet -- so the component must translate them before
+  // they reach the "why" text.
+  it("translates the rejected FAB names to the approved company names when the net figure is unavailable", () => {
+    const [, net] = excessHeadlines(props({ fabOperating: null, fabHolding: null }) as never);
+    expect(net.why).toContain("Skylinks Capital LLC");
+    expect(net.why).toContain("Skylink holdings");
+    expect(net.why).not.toContain("FAB Operating");
+    expect(net.why).not.toContain("FAB Holding");
+  });
+
+  // Any missing label the library already names sensibly -- like crypto --
+  // must pass through untouched rather than being swallowed by the map.
+  it("leaves an already-sensible missing label alone, such as crypto on the gross figure", () => {
+    const [gross] = excessHeadlines(props({ netCrypto: null }) as never);
+    expect(gross.why).toContain("Net Crypto");
+  });
+
+  // Both a rejected name and a pass-through name can be missing at once (a
+  // failed company sheet plus a failed crypto read); both must be named, not
+  // just the first one translated.
+  it("names both a translated and a pass-through label when both are missing together", () => {
+    const [, net] = excessHeadlines(props({ netCrypto: null, fabOperating: null, fabHolding: null }) as never);
+    expect(net.why).toContain("Net Crypto");
+    expect(net.why).toContain("Skylinks Capital LLC");
+    expect(net.why).toContain("Skylink holdings");
+    expect(net.why).not.toContain("FAB Operating");
+    expect(net.why).not.toContain("FAB Holding");
+  });
 });
 
 describe("the inputs are grouped by where they came from", () => {
