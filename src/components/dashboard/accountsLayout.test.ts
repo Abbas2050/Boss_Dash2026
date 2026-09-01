@@ -14,6 +14,15 @@ const PAGE_BRANCH = ACCOUNTS.slice(
   ACCOUNTS.indexOf("// --- Card layout (default) ---"),
 );
 
+// The tail of the data-fetching useEffect, where fetchFab() and
+// fetchLpEquitySummary() are called and their intervals set up. Sliced out
+// the same way as PAGE_BRANCH above, and for the same reason: scanning the
+// whole file would find these calls regardless of which branch guards them.
+const EFFECT_TAIL = ACCOUNTS.slice(
+  ACCOUNTS.indexOf("let walletInterval"),
+  ACCOUNTS.indexOf("}, [refreshKey"),
+);
+
 describe("only the department page gets the new layout", () => {
   it("defaults the layout prop to card", () => {
     expect(ACCOUNTS).toMatch(/layout\s*=\s*['"]card['"]/);
@@ -50,6 +59,39 @@ describe("only the department page gets the new layout", () => {
     expect(PAGE_BRANCH).toMatch(/\{walletError && \(/);
     expect(PAGE_BRANCH).toMatch(/pspBalances\.length === 0 && !isLoading/);
     expect(PAGE_BRANCH).toContain("No wallet data available.");
+  });
+});
+
+// The client's instruction was explicit: "u dont need to change anythng on
+// the home page / dont touch home page / just work on accounts page only".
+// Excess Funds used to mount in both the page branch and the card branch
+// (the card branch mount fed the home dashboard's Accounts card and the
+// Dealing (LP) card). It must now render only on the accounts page.
+describe("Excess Funds is scoped to the accounts page only", () => {
+  it("mounts ExcessFundsSection exactly once, inside the page branch", () => {
+    // Scanning the whole file, not PAGE_BRANCH: a second mount surviving in
+    // the card branch would still pass a "PAGE_BRANCH contains it" check.
+    const mounts = ACCOUNTS.match(/<ExcessFundsSection/g) || [];
+    expect(mounts.length).toBe(1);
+    expect(PAGE_BRANCH).toMatch(/<ExcessFundsSection/);
+  });
+
+  // fetchFab() feeds fabAccounts, which only excessInputs (and therefore only
+  // ExcessFundsSection) reads. The plain home Accounts card -- layout 'card',
+  // mode not 'lp' -- must not call /api/fab-accounts for a section it no
+  // longer shows.
+  it("does not fetch /api/fab-accounts when layout is card and mode is not lp", () => {
+    const nonLpBranch = EFFECT_TAIL.slice(
+      EFFECT_TAIL.indexOf("if (!isLpMode) {"),
+      EFFECT_TAIL.indexOf("} else {"),
+    );
+    const pageGuardIndex = nonLpBranch.indexOf("if (layout === 'page')");
+    const fetchFabIndex = nonLpBranch.indexOf("void fetchFab();");
+    // fetchFab must exist only nested inside a layout==='page' guard within
+    // the non-LP branch -- not called unconditionally for every non-LP mount
+    // (which would include the plain home Accounts card).
+    expect(pageGuardIndex).toBeGreaterThan(-1);
+    expect(fetchFabIndex).toBeGreaterThan(pageGuardIndex);
   });
 });
 

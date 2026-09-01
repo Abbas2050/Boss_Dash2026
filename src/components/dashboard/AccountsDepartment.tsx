@@ -664,30 +664,36 @@ export function AccountsDepartment({
 
     let walletInterval: ReturnType<typeof setInterval> | null = null;
     let lpInterval: ReturnType<typeof setInterval> | null = null;
-    // The equity fetch used to run only in LP mode. The Accounts page's Excess
-    // Funds section needs netDifference too, so this now runs unconditionally
-    // instead of being gated on isLpMode.
-    fetchLpEquitySummary();
+    // The equity fetch used to run only in LP mode. The Excess Funds section on
+    // the accounts page needs netDifference too, so this also runs for the page
+    // layout. But the client scoped Excess Funds to the accounts page only, so
+    // the plain home Accounts card (layout 'card', mode 'accounts') must not
+    // fetch equity at all -- only the LP card (which showed equity long before
+    // any of this) and the accounts page do.
+    if (layout === 'page' || isLpMode) fetchLpEquitySummary();
     if (!isLpMode) {
       fetchTodayData();
       fetchWalletData();
-      // The FAB workbook feeds the Excess Funds section, which only renders when
-      // !isLpMode. Ungated, the home page's Dealing (LP) card called
-      // /api/fab-accounts on every mount and refresh, took a 502 and logged a
-      // warning for data it never shows.
-      void fetchFab();
+      if (layout === 'page') {
+        // The FAB workbook feeds the Excess Funds section, which the client
+        // scoped to the accounts page only. Ungated, the home page's plain
+        // Accounts card called /api/fab-accounts on every mount and refresh
+        // for a section it never shows.
+        void fetchFab();
+        // walletWidgets re-polls above, but until now nothing re-fetched equity
+        // here, so netDifference/lpEquity/clientEquity went stale forever after
+        // mount while the wallet figures kept moving -- a reader can't tell half
+        // a treasury figure is frozen. Page layout only, for the same reason
+        // fetchLpEquitySummary's initial call above is gated on layout.
+        //
+        // 60s, not LP mode's 5s: this call also POSTs to
+        // /api/lp-equity-live-snapshots, so 5s is 12 external calls and 12 database
+        // upserts a minute per mount, and this component mounts twice on the home
+        // page. It buys nothing either -- the wallet half refreshes every 2
+        // minutes, so the section can never be fresher than that.
+        lpInterval = setInterval(fetchLpEquitySummary, 60 * 1000);
+      }
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
-      // walletWidgets re-polls above, but until now nothing re-fetched equity
-      // here, so netDifference/lpEquity/clientEquity went stale forever after
-      // mount while the wallet figures kept moving -- a reader can't tell half
-      // a treasury figure is frozen.
-      //
-      // 60s, not LP mode's 5s: this call also POSTs to
-      // /api/lp-equity-live-snapshots, so 5s is 12 external calls and 12 database
-      // upserts a minute per mount, and this component mounts twice on the home
-      // page. It buys nothing either -- the wallet half refreshes every 2
-      // minutes, so the section can never be fresher than that.
-      lpInterval = setInterval(fetchLpEquitySummary, 60 * 1000);
     } else {
       fetchLpOverview();
       fetchWalletData();
@@ -702,7 +708,7 @@ export function AccountsDepartment({
       if (walletInterval) clearInterval(walletInterval);
       if (lpInterval) clearInterval(lpInterval);
     };
-  }, [refreshKey, isLpMode]);
+  }, [refreshKey, isLpMode, layout]);
 
   const periodLabel = 'Today';
   const lpDepositsTotal = toBeDepositedIntoLpsK20 + toBeDepositedIntoLpsK21;
@@ -1228,20 +1234,10 @@ export function AccountsDepartment({
         </div>
       </div>}
 
-      {!isLpMode && (
-        <ExcessFundsSection
-          inputs={excessInputs}
-          lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
-          clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
-          fabFetchedAt={fabAccounts?.fetchedAt}
-          // The staleness signals belong ON this section. walletError already
-          // renders inside the Closing Balance block further up, but a reader
-          // looking at Gross Excess Fund has no reason to connect the two.
-          walletError={walletError}
-          equityError={equityError}
-          walletUpdated={reportUpdated}
-        />
-      )}
+      {/* Excess Funds used to mount here too. The client scoped it to the
+          accounts page only ("dont touch home page / just work on accounts
+          page only"), so this card no longer renders it -- see the page
+          branch above, which still does. */}
     </DepartmentCard>
   );
 }
