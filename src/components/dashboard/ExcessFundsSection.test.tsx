@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { excessHeadlines, excessSourceGroups } from "./ExcessFundsSection";
 import type { ExcessFundsInputs } from "@/lib/excessFunds";
@@ -149,5 +150,46 @@ describe("no cell references reach the UI", () => {
     const rendered = JSON.stringify([excessHeadlines(props() as never), excessSourceGroups(props() as never)]);
     expect(rendered).not.toMatch(/SEP\s*20\d\d/);
     expect(rendered).not.toMatch(/![A-Z]\d/);
+  });
+});
+
+// This section renders at two very different widths from a single set of
+// classes: full width on /departments/accounts, and inside the home
+// dashboard's lg:col-span-4 third-width column, because AccountsDepartment's
+// card branch mounts the very same component. The card branch was excluded
+// from the redesign but did not escape it. These assertions read the source
+// because the property is the class list itself -- jsdom has no layout engine
+// and would report every width as 0.
+describe("the section fits the narrow column it also renders in", () => {
+  // Comments stripped first: the classes these assertions forbid are named in
+  // the prose explaining why they were wrong, and a tripwire that fires on its
+  // own explanation is worthless.
+  const SECTION = readFileSync("src/components/dashboard/ExcessFundsSection.tsx", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("never pairs the two headlines unconditionally", () => {
+    // A bare grid-cols-2 gives each headline ~150px in the third-width column,
+    // which -$854,016.16 does not fit in at headline size.
+    expect(SECTION).not.toMatch(/grid-cols-2(?![\w-])/);
+  });
+
+  it("floors each headline cell at a width its figure fits in", () => {
+    expect(SECTION).toMatch(/grid-cols-\[repeat\(auto-fit,minmax\(\d+px,1fr\)\)\]/);
+  });
+
+  it("truncates a headline figure rather than letting it spill past its border", () => {
+    expect(SECTION).toMatch(/font-mono tabular-nums font-semibold [^`"]*\btruncate\b/);
+  });
+
+  // sm:/md:/lg: are viewport breakpoints. They are already satisfied on a wide
+  // screen, which is precisely when the home dashboard's column is narrowest.
+  it("uses no viewport breakpoint to decide its column count", () => {
+    expect(SECTION).not.toMatch(/\b(sm|md|lg|xl):grid-cols-/);
+  });
+
+  it("lets a long entity name ellipse instead of pushing its figure out of the row", () => {
+    expect(SECTION).toMatch(/<span className="min-w-0 truncate text-muted-foreground"/);
+    expect(SECTION).toMatch(/flex-none font-mono tabular-nums/);
   });
 });

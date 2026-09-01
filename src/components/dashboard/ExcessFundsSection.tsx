@@ -196,30 +196,62 @@ export function ExcessFundsSection(props: ExcessFundsSectionProps) {
         </div>
       ) : null}
 
-      {/* The two headline figures, side by side and large -- this is the answer
-          most readers came for; everything below is where it came from. */}
-      <div className="grid grid-cols-2 gap-1.5 mb-2">
+      {/* The two headline figures, paired when there is room and stacked when
+          there is not -- this is the answer most readers came for; everything
+          below is where it came from.
+
+          auto-fit/minmax rather than a `sm:` breakpoint, because this section
+          renders in two very different widths and only one of them tracks the
+          viewport. On /departments/accounts it is full width, but the card
+          branch of AccountsDepartment mounts the same component inside the home
+          dashboard's lg:col-span-4 column -- roughly a third of the screen. A
+          viewport breakpoint is already satisfied there (the screen is wide;
+          the column is not), so `grid-cols-2` would hand each headline ~150px
+          and -$854,016.16 at 20px mono needs ~144px with no break opportunity.
+          minmax() measures the grid's own width, so the narrow column stacks
+          and the wide page pairs, with no breakpoint to keep in sync. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-1.5 mb-2">
         {[gross, net].map((h) => (
-          <div key={h.label} className="p-2.5 rounded-md border bg-primary/10 border-primary/20">
+          <div key={h.label} className="min-w-0 p-2.5 rounded-md border bg-primary/10 border-primary/20">
             <div className="text-[10px] text-muted-foreground mb-0.5">{h.label}</div>
-            <div className={`font-mono tabular-nums font-semibold text-xl ${toneClass(h.tone)}`}>{h.value}</div>
+            {/* text-lg, not text-xl: 220px minus the cell's padding leaves
+                ~200px, and the widest figure this section can print
+                (-$100,854,016.16, sixteen characters) is ~173px at 18px mono.
+                truncate is the hard stop behind that arithmetic -- a treasury
+                figure must never quietly render outside its own border. The
+                title carries the untruncated figure if it ever does fire. */}
+            <div
+              className={`font-mono tabular-nums font-semibold text-lg truncate ${toneClass(h.tone)}`}
+              title={h.value}
+            >
+              {h.value}
+            </div>
             <div className="text-[10px] text-muted-foreground mt-0.5">{h.why}</div>
           </div>
         ))}
       </div>
 
       {/* The seven inputs, grouped by source so it is obvious which figure came
-          from where. */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+          from where. Same reasoning as the headlines above: sm:grid-cols-3 was
+          a viewport breakpoint, so the third-width column on a wide screen got
+          three ~110px columns holding "Skylinks Capital LLC" and a figure. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-1.5">
         {groups.map((group) => (
-          <div key={group.title} className="p-2 rounded-md border bg-muted/30 border-border/30">
+          <div key={group.title} className="min-w-0 p-2 rounded-md border bg-muted/30 border-border/30">
             <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
               {group.title}
             </div>
             {group.rows.map((row) => (
               <div key={row.label} className="flex items-center justify-between gap-2 py-0.5 text-[11px]">
-                <span className="text-muted-foreground">{row.label}</span>
-                <span className={`font-mono tabular-nums ${toneClass(row.tone)}`}>{row.value}</span>
+                {/* min-w-0 so the label can actually shrink (a flex item's
+                    default min-width:auto refuses to go below its text), and
+                    flex-none on the figure so the label yields first. Without
+                    this pair a long entity name pushes the figure out of the
+                    row instead of ellipsing itself. */}
+                <span className="min-w-0 truncate text-muted-foreground" title={row.label}>
+                  {row.label}
+                </span>
+                <span className={`flex-none font-mono tabular-nums ${toneClass(row.tone)}`}>{row.value}</span>
               </div>
             ))}
           </div>
