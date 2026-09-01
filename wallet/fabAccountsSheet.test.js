@@ -35,10 +35,20 @@ describe("parseSheetNumber", () => {
     expect(parseSheetNumber("$0.00")).toBe(0);
   });
 
+  // Accounting number format renders a zero balance as a lone dash instead of
+  // "0.00". That is a real zero, not a missing cell -- verified against live
+  // production data (match2pay/mbme in the wallet workbook), and confirmed by
+  // the sheet owner.
+  it("reads the accounting-format dash as zero, not as missing", () => {
+    for (const dash of ["-", "  -   ", "–", "—"]) {
+      expect(parseSheetNumber(dash)).toBe(0);
+    }
+  });
+
   // An empty or unreadable cell is NOT a balance of zero. Returning 0 here is
   // the exact failure this design exists to prevent.
   it("returns null for an empty or unreadable cell", () => {
-    for (const bad of ["", "   ", null, undefined, "#REF!", "N/A", "-"]) {
+    for (const bad of ["", "   ", null, undefined, "#REF!", "N/A"]) {
       expect(parseSheetNumber(bad)).toBeNull();
     }
   });

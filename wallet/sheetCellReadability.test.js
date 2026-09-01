@@ -24,17 +24,32 @@ describe("_isCellReadable", () => {
   });
 
   it("rejects an empty, blank, #REF! or N/A cell", () => {
-    for (const bad of [null, undefined, "", "   ", "#REF!", "#N/A", "N/A", "-", "pending", "TBC"]) {
+    for (const bad of [null, undefined, "", "   ", "#REF!", "#N/A", "N/A", "abc", "pending", "TBC"]) {
       expect(client()._isCellReadable(bad)).toBe(false);
+    }
+  });
+
+  // The wallet sheet is in accounting number format, where a zero balance
+  // renders as a lone dash instead of "0.00" -- verified against live
+  // production data (K9/K18 in today's tab, match2pay and mbme) and confirmed
+  // by the sheet owner as meaning zero, not "unknown". Whitespace around the
+  // dash, and all three dash characters a sheet might contain, must read the
+  // same way.
+  it("accepts the accounting-format dash as a genuine zero", () => {
+    for (const dash of ["-", "  -   ", "–", "—"]) {
+      expect(client()._isCellReadable(dash)).toBe(true);
     }
   });
 
   // The two must agree exactly, or a cell could be called unreadable while
   // _parseCell is happily returning a number from it (or the reverse, which is
-  // the bug). Unreadable is precisely the set where `|| 0` invents the zero.
+  // the bug). Unreadable is precisely the set where `|| 0` invents the zero --
+  // except the lone dash, which is a genuine zero that _isCellReadable now
+  // recognizes on purpose, so it is asserted separately above rather than
+  // through the "invented" heuristic below (which would misclassify it).
   it("is unreadable exactly where _parseCell invents a zero", () => {
     const c = client();
-    for (const raw of ["", "   ", "#REF!", "N/A", "-", "abc", null, undefined, "0", "$0.00", "12", "-3.5", "1,000"]) {
+    for (const raw of ["", "   ", "#REF!", "N/A", "abc", null, undefined, "0", "$0.00", "12", "-3.5", "1,000"]) {
       const invented = c._parseCell(raw) === 0 && !/0/.test(String(raw ?? ""));
       if (invented) expect(c._isCellReadable(raw)).toBe(false);
       if (c._isCellReadable(raw)) expect(Number.isFinite(c._parseCell(raw))).toBe(true);
@@ -94,6 +109,30 @@ describe("_readWalletCells reports which fields it could not read", () => {
     );
     expect(wallet.unreadable).toEqual([]);
     expect(wallet.values.goldSouq).toBe(0);
+    expect(wallet.values.mbme).toBe(0);
+  });
+
+  // Regression test: exact raw cell values pulled from today's live tab via
+  // /api/wallet/google-sheets-debug. Match2Pay (K9) and MBME (K18) are
+  // genuine zero balances rendered as an accounting-format dash -- before the
+  // fix this test fails because both landed in `unreadable`, which is what
+  // made the Closing Balance Report show $0.00 for them while the Excess
+  // Funds section directly below called them unavailable and could not total.
+  it("today's live accounting-format dash data is not reported unreadable", async () => {
+    const wallet = await client()._readWalletCells(
+      fakeSheets({
+        ...allGood,
+        match2pay: "  -   ",
+        deusXpay: "0.00",
+        openPayed: "0.00",
+        goldSouq: "  64,130.96 ",
+        fabAed: "  51,681.20 ",
+        mbme: "  -   ",
+      }),
+      "01/09/2026",
+    );
+    expect(wallet.unreadable).toEqual([]);
+    expect(wallet.values.match2pay).toBe(0);
     expect(wallet.values.mbme).toBe(0);
   });
 });

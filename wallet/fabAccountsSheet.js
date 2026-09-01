@@ -37,7 +37,12 @@ export function parseSheetNumber(raw) {
   if (raw === null || raw === undefined) return null;
   const text = String(raw).trim();
   if (!text) return null;
-  if (/^[-–—]$/.test(text)) return null;
+  // Accounting number format renders a zero balance as a lone dash (hyphen,
+  // en dash or em dash). It is a real zero, not a missing cell -- this used
+  // to return null here, which made this workbook disagree with the wallet
+  // workbook (pspClients.js._isCellReadable), where the sheet owner has
+  // confirmed the same dash means zero.
+  if (/^[-–—]$/.test(text)) return 0;
   if (/^(#|N\/A$)/i.test(text)) return null;
   const negative = /^\(.*\)$/.test(text);
   const digits = text.replace(/[()]/g, "").replace(/[^0-9.-]/g, "");

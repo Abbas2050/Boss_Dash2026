@@ -373,6 +373,13 @@ export class GoogleSheetsClient {
     if (value === null || value === undefined) return false;
     const text = String(value).trim();
     if (!text) return false;
+    // The wallet sheet is in accounting number format, where a zero balance
+    // renders as a lone dash (hyphen, en dash or em dash) instead of "0.00".
+    // That is a real zero, not a missing cell -- calling it unreadable is
+    // what made Match2Pay and MBME show $0.00 in the Closing Balance Report
+    // while the Excess Funds section directly below called the same cell
+    // unavailable and could not total.
+    if (/^[-–—]$/.test(text)) return true;
     return Number.isFinite(parseFloat(text.replace(/[^0-9.-]/g, '')));
   }
 
