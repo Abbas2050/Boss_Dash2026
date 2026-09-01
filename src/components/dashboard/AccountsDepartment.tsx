@@ -6,8 +6,11 @@ import { MetricRow } from './MetricRow';
 import { fetchTransactions } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { StatusBadge } from './StatusBadge';
-import { fetchWalletBalances } from '@/lib/walletApi';
+import { fetchWalletBalances, type WalletWidgetEntry } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
+import { fetchFabAccounts, type FabAccounts } from '@/lib/excessFundsApi';
+import { ExcessFundsSection } from './ExcessFundsSection';
+import type { ExcessFundsInputs } from '@/lib/excessFunds';
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { fetchClientVolume, resolveVolumeRange, type ClientVolumeSummary, type VolumeRangePreset } from '@/lib/clientVolumeApi';
 // /api/lp-equity-live-snapshots sits behind requireSession (server.js denies
@@ -291,6 +294,15 @@ export function AccountsDepartment({
   const [showLpBreakdownTooltip, setShowLpBreakdownTooltip] = useState(false);
 
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
+  // The raw widgets, before status:'error' is flattened to a balance of 0 for
+  // display. The Excess Funds figures need to tell a real zero from a failed
+  // read; pspBalances cannot, by design, because a zero row still has to render.
+  const [walletWidgets, setWalletWidgets] = useState<WalletWidgetEntry[]>([]);
+  const [fabAccounts, setFabAccounts] = useState<FabAccounts | null>(null);
+  // lpEquitySummary initialises to zeroes below, so a failed equity fetch would
+  // otherwise present as a real netDifference of 0.00. This tracks whether the
+  // fetch has ever actually succeeded.
+  const [equityLoaded, setEquityLoaded] = useState(false);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
   const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
@@ -365,6 +377,10 @@ export function AccountsDepartment({
       setWalletError(null);
 
       const widgets = response.data.widgets;
+      // The raw widgets, before status:'error' is flattened to a balance of 0 for
+      // display. The Excess Funds figures need to tell a real zero from a failed
+      // read; pspBalances cannot, by design, because a zero row still has to render.
+      setWalletWidgets(widgets);
       const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
       const order = PSP_ORDER;
 
@@ -452,6 +468,7 @@ export function AccountsDepartment({
           clientWithdrawableEquity,
           difference,
         });
+        setEquityLoaded(true);
         const snapshotKey = buildUtcMinuteKey();
         const pointTs = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
         const nextPoint: LpEquityPoint = {
@@ -562,14 +579,29 @@ export function AccountsDepartment({
       }
     };
 
+    const fetchFab = async () => {
+      try {
+        setFabAccounts(await fetchFabAccounts());
+      } catch (error) {
+        // Its own catch: the FAB workbook is a separate dependency and its
+        // absence must cost the Net Excess Fund card, not the page.
+        console.warn('[ExcessFunds] FAB accounts unavailable:', (error as Error)?.message || error);
+        setFabAccounts(null);
+      }
+    };
+
     let walletInterval: ReturnType<typeof setInterval> | null = null;
     let lpInterval: ReturnType<typeof setInterval> | null = null;
+    // The equity fetch used to run only in LP mode. The Accounts page's Excess
+    // Funds section needs netDifference too, so this now runs unconditionally
+    // instead of being gated on isLpMode.
+    fetchLpEquitySummary();
+    void fetchFab();
     if (!isLpMode) {
       fetchTodayData();
       fetchWalletData();
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
     } else {
-      fetchLpEquitySummary();
       fetchLpOverview();
       fetchWalletData();
       lpInterval = setInterval(() => {
@@ -595,6 +627,34 @@ export function AccountsDepartment({
     bankReceivable +
     lpDepositsTotal;
   const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+
+  // Built from the RAW widgets, not from pspBalances: that array has already had
+  // status:'error' flattened to a balance of 0 so the row can still render, and a
+  // treasury figure must never treat a failed read as a zero balance.
+  const widgetValue = (id: string): number | null => {
+    const entry = walletWidgets.find((w) => w.id === id);
+    if (!entry) return null;
+    return entry.status === 'error' ? null : Number(entry.balance ?? Number.NaN);
+  };
+
+  const addOrNull = (...values: (number | null)[]): number | null =>
+    values.some((v) => v === null || !Number.isFinite(v as number))
+      ? null
+      : values.reduce((total: number, v) => total + (v as number), 0);
+
+  const cryptoKeys = PSP_ORDER.filter((p) => p.group === 'crypto').map((p) => p.key);
+
+  const excessInputs: ExcessFundsInputs = {
+    // equityLoaded, not the value itself: lpEquitySummary initialises to zeroes,
+    // so a failed equity fetch would otherwise present as a real netDifference
+    // of 0.00 and produce a confident, wrong treasury figure.
+    netDifference: equityLoaded ? lpEquitySummary.difference : null,
+    netCrypto: addOrNull(...cryptoKeys.map(widgetValue)),
+    fabAndMbme: addOrNull(widgetValue('googlesheets_fab'), widgetValue('googlesheets_mbme')),
+    goldSouq: widgetValue('googlesheets_goldsouq'),
+    fabOperating: fabAccounts ? fabAccounts.fabOperating : null,
+    fabHolding: fabAccounts ? fabAccounts.fabHolding : null,
+  };
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -672,6 +732,9 @@ export function AccountsDepartment({
                 title={equityDifferenceTooltip}
               >
                 ${lpPlusPspDifference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                Counts every PSP, plus receivables and to-LP amounts
               </div>
             </div>
           </div>
@@ -959,6 +1022,14 @@ export function AccountsDepartment({
           <div className="font-mono font-semibold text-sky-500">${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
+
+      {!isLpMode && (
+        <ExcessFundsSection
+          inputs={excessInputs}
+          lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
+          clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
+        />
+      )}
     </DepartmentCard>
   );
 }
