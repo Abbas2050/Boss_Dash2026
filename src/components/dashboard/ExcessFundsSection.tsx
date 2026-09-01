@@ -34,7 +34,17 @@ export interface ExcessHeadline {
   label: string;
   value: string;
   tone: Tone;
+  // The formula itself, e.g. "Net LP equity − Net client equity + Net crypto
+  // + ...". Shown on every card, whether the figure computed or not -- the
+  // client's own ask was to see how the number is made, not just its prose
+  // gloss. Always present, so this is `string`, not `string | null`.
   why: string;
+  // A second, quieter line naming what could not be read, or null when the
+  // figure computed cleanly. Kept separate from `why` rather than folded into
+  // it: the formula answers "how is this built", this answers "why is it
+  // blank today", and collapsing them back into one string is what the client
+  // was asking us to undo.
+  missingNote: string | null;
   unavailable: boolean;
 }
 
@@ -102,10 +112,17 @@ function clockTime(iso?: string): string | null {
 // from computeExcessFunds's own `missing` list -- that function already holds
 // every rule about which inputs can go missing and why; re-deriving it here
 // would risk disagreeing with it.
+// The client's own formulas, verbatim (U+2212 minus, matching EXCESS_LABELS
+// in excessFunds.ts, not a hyphen), and the two company names as they appear
+// on the cards -- not "FAB Operating Balance" / "FAB Holding Balance", which
+// the client rejected there for the same reason they're rejected in `why`.
+const GROSS_FORMULA = "Gross excess fund = Net LP equity − Net client equity + Net crypto + Net FAB & MBME + Gold Souq";
+const NET_FORMULA = "Net excess fund = Gross excess fund + Skylinks Capital LLC + Skylink holdings";
+
 export function excessHeadlines({ inputs }: ExcessFundsSectionProps): [ExcessHeadline, ExcessHeadline] {
   const { gross, net } = computeExcessFunds(inputs);
-  const unavailable = (missing: string[]) =>
-    `Unavailable — could not read ${missing.map(displayMissingLabel).join(", ")}.`;
+  const missingNote = (missing: string[]) =>
+    missing.length ? `Unavailable — could not read ${missing.map(displayMissingLabel).join(", ")}.` : null;
 
   return [
     {
@@ -113,14 +130,16 @@ export function excessHeadlines({ inputs }: ExcessFundsSectionProps): [ExcessHea
       value: money(gross.value),
       tone: tone(gross.value),
       unavailable: gross.missing.length > 0,
-      why: gross.missing.length ? unavailable(gross.missing) : "Equity gap, plus crypto, bank and gold",
+      why: GROSS_FORMULA,
+      missingNote: missingNote(gross.missing),
     },
     {
       label: "Net excess fund",
       value: money(net.value),
       tone: tone(net.value),
       unavailable: net.missing.length > 0,
-      why: net.missing.length ? unavailable(net.missing) : "Gross, plus both company accounts",
+      why: NET_FORMULA,
+      missingNote: missingNote(net.missing),
     },
   ];
 }
@@ -222,7 +241,19 @@ export function ExcessFundsSection(props: ExcessFundsSectionProps) {
             >
               {h.value}
             </div>
-            <div className="text-[10px] text-muted-foreground mt-0.5">{h.why}</div>
+            {/* The formula, always -- this is the client's own ask: show how
+                the figure is built, not a prose gloss over it. It's long, so
+                it wraps (break-words, no truncate/whitespace-nowrap) rather
+                than forcing itself onto one line in a 220px card. */}
+            <div className="text-[10px] text-muted-foreground mt-0.5 break-words">{h.why}</div>
+            {/* The "could not read X, Y" line, only when something is missing.
+                Without it a reader sees a formula and a dash with no way to
+                tell which term broke -- this project's rule is that a figure
+                that can't be computed says so and names what was missing, and
+                the formula line alone does not satisfy that. */}
+            {h.missingNote ? (
+              <div className="text-[10px] text-destructive/80 mt-0.5 break-words">{h.missingNote}</div>
+            ) : null}
           </div>
         ))}
       </div>

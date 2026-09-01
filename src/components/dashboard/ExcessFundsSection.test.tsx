@@ -48,7 +48,7 @@ describe("the two headline figures", () => {
     const [gross, net] = excessHeadlines(props({ netCrypto: null }) as never);
     expect(gross.unavailable).toBe(true);
     expect(gross.value).toBe("—");
-    expect(gross.why).toContain("Net Crypto");
+    expect(gross.missingNote).toContain("Net Crypto");
     expect(net.unavailable).toBe(true);
   });
 
@@ -69,17 +69,17 @@ describe("the two headline figures", () => {
   // they reach the "why" text.
   it("translates the rejected FAB names to the approved company names when the net figure is unavailable", () => {
     const [, net] = excessHeadlines(props({ fabOperating: null, fabHolding: null }) as never);
-    expect(net.why).toContain("Skylinks Capital LLC");
-    expect(net.why).toContain("Skylink holdings");
-    expect(net.why).not.toContain("FAB Operating");
-    expect(net.why).not.toContain("FAB Holding");
+    expect(net.missingNote).toContain("Skylinks Capital LLC");
+    expect(net.missingNote).toContain("Skylink holdings");
+    expect(net.missingNote).not.toContain("FAB Operating");
+    expect(net.missingNote).not.toContain("FAB Holding");
   });
 
   // Any missing label the library already names sensibly -- like crypto --
   // must pass through untouched rather than being swallowed by the map.
   it("leaves an already-sensible missing label alone, such as crypto on the gross figure", () => {
     const [gross] = excessHeadlines(props({ netCrypto: null }) as never);
-    expect(gross.why).toContain("Net Crypto");
+    expect(gross.missingNote).toContain("Net Crypto");
   });
 
   // Both a rejected name and a pass-through name can be missing at once (a
@@ -87,11 +87,57 @@ describe("the two headline figures", () => {
   // just the first one translated.
   it("names both a translated and a pass-through label when both are missing together", () => {
     const [, net] = excessHeadlines(props({ netCrypto: null, fabOperating: null, fabHolding: null }) as never);
-    expect(net.why).toContain("Net Crypto");
-    expect(net.why).toContain("Skylinks Capital LLC");
-    expect(net.why).toContain("Skylink holdings");
-    expect(net.why).not.toContain("FAB Operating");
-    expect(net.why).not.toContain("FAB Holding");
+    expect(net.missingNote).toContain("Net Crypto");
+    expect(net.missingNote).toContain("Skylinks Capital LLC");
+    expect(net.missingNote).toContain("Skylink holdings");
+    expect(net.missingNote).not.toContain("FAB Operating");
+    expect(net.missingNote).not.toContain("FAB Holding");
+  });
+
+  // The client's own ask: the formula shows on both cards, whether the figure
+  // computed or not -- unavailability must not hide it.
+  describe("the formula shows on the card regardless of whether the figure computed", () => {
+    it("shows the gross formula when the figure computed", () => {
+      const [gross] = excessHeadlines(props() as never);
+      expect(gross.why).toBe(
+        "Gross excess fund = Net LP equity − Net client equity + Net crypto + Net FAB & MBME + Gold Souq",
+      );
+    });
+
+    it("still shows the gross formula when the figure is unavailable", () => {
+      const [gross] = excessHeadlines(props({ netCrypto: null }) as never);
+      expect(gross.unavailable).toBe(true);
+      expect(gross.why).toBe(
+        "Gross excess fund = Net LP equity − Net client equity + Net crypto + Net FAB & MBME + Gold Souq",
+      );
+    });
+
+    it("shows the net formula when the figure computed", () => {
+      const [, net] = excessHeadlines(props() as never);
+      expect(net.why).toBe("Net excess fund = Gross excess fund + Skylinks Capital LLC + Skylink holdings");
+    });
+
+    it("still shows the net formula when the figure is unavailable", () => {
+      const [, net] = excessHeadlines(props({ fabOperating: null, fabHolding: null }) as never);
+      expect(net.unavailable).toBe(true);
+      expect(net.why).toBe("Net excess fund = Gross excess fund + Skylinks Capital LLC + Skylink holdings");
+    });
+
+    // No note when the figure computed cleanly -- the "could not read" line
+    // only belongs on the card when something actually is missing.
+    it("carries no missingNote when the figure computed cleanly", () => {
+      const [gross, net] = excessHeadlines(props() as never);
+      expect(gross.missingNote).toBeNull();
+      expect(net.missingNote).toBeNull();
+    });
+
+    // The formula text must use the client's own minus sign (U+2212), not an
+    // ASCII hyphen -- matching the convention EXCESS_LABELS already set.
+    it("uses the U+2212 minus in the gross formula, not a hyphen", () => {
+      const [gross] = excessHeadlines(props() as never);
+      expect(gross.why).toContain("−");
+      expect(gross.why).not.toMatch(/ - /);
+    });
   });
 });
 
