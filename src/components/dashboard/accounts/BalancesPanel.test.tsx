@@ -64,3 +64,32 @@ describe("missing widgets", () => {
     expect(bank[0].label).toBe("Gold Souq (-$30,000.00 deducted, J31)");
   });
 });
+
+describe("the subtotal agrees with the rows it sums", () => {
+  // The row value coerces with `Number(x) || 0` and the subtotal used to
+  // coerce with `Number(x ?? 0)`. Those agree on every input except the one
+  // that matters: a non-numeric balance printed $0.00 on the row and $NaN on
+  // the subtotal directly beneath it.
+  it("does not print $NaN under rows that printed $0.00", () => {
+    const { crypto } = balancesRows(props([w("ownbit", "oops" as never), w("ownbitnew", 500)]));
+    expect(crypto.find((r) => r.id === "ownbit")?.value).toBe("$0.00");
+    const subtotal = crypto.find((r) => r.kind === "subtotal");
+    expect(subtotal?.value).toBe("$500.00");
+    expect(subtotal?.value).not.toContain("NaN");
+  });
+
+  // The subtotal used to be pushed unconditionally, which made the panel's
+  // own `crypto.length > 0` guard permanently true: a never-loaded panel
+  // rendered a "Crypto" heading over a lone "Subtotal crypto $0.00" -- a
+  // subtotal of no rows at all, reading as a real zero balance.
+  it("emits no crypto group at all when no crypto widget was reported", () => {
+    const { crypto } = balancesRows(props([w("googlesheets_fab", 10)]));
+    expect(crypto).toEqual([]);
+  });
+
+  it("still subtotals a single genuine zero row", () => {
+    const { crypto } = balancesRows(props([w("ownbit", 0)]));
+    expect(crypto.map((r) => r.kind)).toEqual(["row", "subtotal"]);
+    expect(crypto[1].value).toBe("$0.00");
+  });
+});

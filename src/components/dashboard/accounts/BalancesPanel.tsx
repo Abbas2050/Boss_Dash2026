@@ -75,14 +75,28 @@ export function balancesRows(
 
   // The subtotal IS summed from the crypto rows on screen -- it is a subtotal
   // *of those rows* and must always agree with what is displayed above it.
-  const cryptoSubtotal = crypto.reduce((sum, row) => sum + Number(widgetMap.get(row.id)?.balance ?? 0), 0);
-  crypto.push({
-    id: "__crypto_subtotal",
-    label: "Subtotal crypto",
-    value: money(cryptoSubtotal),
-    failed: false,
-    kind: "subtotal",
-  });
+  //
+  // `Number(x) || 0`, the same coercion buildGroupRows uses for the row
+  // values: `Number(x ?? 0)` differs from it on exactly the input that matters,
+  // a non-numeric balance. That reads $0.00 on the row and NaN in the sum, so
+  // the rows said $0.00 and the subtotal beneath them said $NaN. Agreeing with
+  // the rows it sums is this figure's whole contract.
+  //
+  // Pushed only when there are rows to subtotal. It used to be pushed
+  // unconditionally, which made the `crypto.length > 0` guard below always
+  // true, so a never-loaded panel rendered a "Crypto" heading over a lone
+  // "Subtotal crypto $0.00" -- a subtotal of nothing, presented as a zero
+  // balance. The guard was right and the push was wrong.
+  if (crypto.length > 0) {
+    const cryptoSubtotal = crypto.reduce((sum, row) => sum + (Number(widgetMap.get(row.id)?.balance) || 0), 0);
+    crypto.push({
+      id: "__crypto_subtotal",
+      label: "Subtotal crypto",
+      value: money(cryptoSubtotal),
+      failed: false,
+      kind: "subtotal",
+    });
+  }
 
   // The total comes from the totalBalance prop -- the backend's own figure.
   // Summing the rows here would create a second answer to the same question.
