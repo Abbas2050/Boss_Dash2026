@@ -79,43 +79,59 @@ call. Enabling it here is a real change, not a re-render.
 ## The new workbook
 
 **A completely separate spreadsheet**, unrelated to the existing wallet workbook.
-Nothing about its structure may be assumed from the current one: not its tab
-naming, not its column, not its layout.
+Its structure was guessed when this spec was first written and is now known,
+having been opened on 2026-09-01:
 
-It gets its own client (`wallet/fabAccountsSheet.js`), its own spreadsheet ID in
-its own environment variable, and its own failure path. It must not share a code
-path with `wallet/pspClients.js` — a change to one workbook's layout must not be
-able to break the other's read.
-
-Every locating detail is **configuration, not code**: spreadsheet ID, tab, and
-the two cell addresses. The existing mapping file carries *three* generations of
-cell addresses (`DEFAULT_`, `PRE_OWNBIT_NEW_`, `LEGACY_GOOGLE_SHEETS_FIELDS`)
-because someone inserting a row silently shifted every reference. The new
-workbook has the same failure mode and gets the same treatment from the start.
-
-**Its ID, tab name and cell addresses are not known yet.** The implementer builds
-against this contract and treats any mismatch as a loud failure naming the sheet
-and cell, never as a zero:
+- Id `1DWxqMxVznoCzRC6vkLIgP0w8-xufR-Pc44dXT8W0nwk`, titled "FAB LLC and Holding
+  Bank Accout Balance update".
+- **One tab per month**, named `SEP 2026` — uppercase three-letter month, space,
+  four-digit year.
+- Row 1 is junk, row 2 is headers, data starts at row 3, one row per day:
 
 ```
-GET /api/fab-accounts
-
-{
-  "fabOperating": 1234567.89,
-  "fabHolding":   987654.32,
-  "fetchedAt":    "2026-09-01T06:00:00Z",
-  "source":       { "spreadsheetId": "...", "tab": "...", "cells": { "fabOperating": "B4", "fabHolding": "B5" } }
-}
+        A                 B                       C
+2   Date              Skylinks Capital LLC    Skylink holdings
+3   09/01/2026        0                       0
+4   09/02/2026        (blank)                 (blank)
 ```
 
-`source` is echoed back so a wrong figure can be traced to the cell it came from
-without opening the server. Both balances are USD. A response missing either key,
-or carrying a non-numeric value, throws naming the keys that did arrive — it does
-not default to zero.
+- **Column B is FAB Operating Balance; column C is FAB Holding Balance**,
+  confirmed by the sheet owner.
 
-The route reads the spreadsheet ID from `FAB_ACCOUNTS_SHEET_ID` and the tab and
-cell addresses from the same JSON-config mechanism the existing mapping uses, so
-a row inserted in the sheet is fixed by editing config rather than shipping code.
+So the reader resolves the tab from today's date, finds the row whose column A is
+today, and reads B and C from it. Three rules follow, and each exists because
+getting it wrong produces a wrong number rather than an error:
+
+**The date is matched as a serial, never as a string.** Column A displays
+`09/01/2026`, which is 1 September in US format and 9 January in the other. The
+range is requested with `valueRenderOption: 'UNFORMATTED_VALUE'` so column A
+arrives as Google Sheets serial numbers, and those are compared. A string match
+would read the wrong day for every date after the 12th.
+
+**"Today" is the Asia/Dubai calendar date**, matching the report schedulers.
+
+**The row is searched for, never computed.** Day-of-month plus two is correct
+today, but the other workbook in this project carries three generations of cell
+addresses because an inserted row shifted every reference.
+
+Three failures mean different things and are handled differently:
+
+| Situation | Behaviour |
+| --- | --- |
+| The month tab does not exist — it is the 1st and nobody has made it | **throw**, naming the tab expected and the tabs that do exist |
+| The tab exists but has no row for today | **throw**, naming the tab and the date |
+| The row exists but B or C is blank | **`null` for that one**, so the card reads unavailable |
+
+That last row is the important one: a blank cell means "not filled in yet", which
+is not a balance. A genuine `0` — as both cells hold today — returns `0`.
+
+It gets its own client (`wallet/fabAccountsSheet.js`), its own spreadsheet id in
+`FAB_ACCOUNTS_SHEET_ID`, and its own failure path. It must not share a code path
+with `wallet/pspClients.js` — a change to one workbook's layout must not be able
+to break the other's read.
+
+The column letters, the first data row and the tab-name pattern are
+**configuration, not code**, for the same reason the other workbook's cells are.
 
 ## Partial data shows nothing
 
