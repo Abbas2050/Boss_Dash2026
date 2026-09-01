@@ -16,10 +16,6 @@ export interface ExcessFundsSectionProps {
   // answer to a question already answered upstream.
   lpEquity: number | null;
   clientEquity: number | null;
-  // Where the two FAB balances were actually read from, so a wrong figure can be
-  // traced to the cell it came from without opening the server. Kept in the API
-  // response for diagnostics; the cell address itself never reaches the UI.
-  fabSource?: { tab: string; cells: Record<string, string> } | null;
   // Staleness. An arithmetically complete figure says nothing about how old its
   // inputs are: a failed wallet refresh leaves the widgets at the last good
   // read, and a failed equity fetch leaves netDifference frozen with the section

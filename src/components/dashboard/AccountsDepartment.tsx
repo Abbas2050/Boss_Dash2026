@@ -802,7 +802,6 @@ export function AccountsDepartment({
             inputs={excessInputs}
             lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
             clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
-            fabSource={fabAccounts ? { tab: fabAccounts.source.tab, cells: fabAccounts.source.cells } : null}
             fabFetchedAt={fabAccounts?.fetchedAt}
             walletError={walletError}
             equityError={equityError}
@@ -1234,7 +1233,6 @@ export function AccountsDepartment({
           inputs={excessInputs}
           lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
           clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
-          fabSource={fabAccounts ? { tab: fabAccounts.source.tab, cells: fabAccounts.source.cells } : null}
           fabFetchedAt={fabAccounts?.fetchedAt}
           // The staleness signals belong ON this section. walletError already
           // renders inside the Closing Balance block further up, but a reader

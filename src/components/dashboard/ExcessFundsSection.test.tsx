@@ -151,6 +151,15 @@ describe("no cell references reach the UI", () => {
     expect(rendered).not.toMatch(/SEP\s*20\d\d/);
     expect(rendered).not.toMatch(/![A-Z]\d/);
   });
+
+  // The section used to accept a fabSource prop wiring the FAB workbook's cell
+  // addresses straight in from both call sites. Nothing read it -- not the
+  // exported functions, not the component body -- but a live wire from cell
+  // addresses into a component whose governing rule is that no cell reference
+  // reaches the UI is how one comes back.
+  it("is not handed the cell addresses in the first place", () => {
+    expect(readFileSync("src/components/dashboard/ExcessFundsSection.tsx", "utf8")).not.toMatch(/\bcells\b/);
+  });
 });
 
 // This section renders at two very different widths from a single set of
