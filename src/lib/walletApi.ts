@@ -27,6 +27,12 @@ export interface WalletBalancesResponse {
     // Returned by walletMonitor.js and already read by both dashboards; it was
     // simply missing from this type.
     credit_by_lps?: number;
+    // Google Sheets field keys whose cell could not be parsed into a number.
+    // The widget balances still carry a 0 for these so the closing-balance
+    // tiles are untouched; anything that must not add a zero that was never a
+    // balance reads this instead. Optional because an older backend build will
+    // not send it.
+    unreadableSheetFields?: string[];
   };
   error?: string;
 }

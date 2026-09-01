@@ -6,8 +6,12 @@ import { MetricRow } from './MetricRow';
 import { fetchTransactions } from '@/lib/api';
 import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
 import { StatusBadge } from './StatusBadge';
-import { fetchWalletBalances } from '@/lib/walletApi';
+import { fetchWalletBalances, type WalletWidgetEntry } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
+import { fetchFabAccounts, type FabAccounts } from '@/lib/excessFundsApi';
+import { ExcessFundsSection } from './ExcessFundsSection';
+import type { ExcessFundsInputs } from '@/lib/excessFunds';
+import { addOrNull, widgetValue as readWidgetValue } from '@/lib/excessFundsInputs';
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { fetchClientVolume, resolveVolumeRange, type ClientVolumeSummary, type VolumeRangePreset } from '@/lib/clientVolumeApi';
 // /api/lp-equity-live-snapshots sits behind requireSession (server.js denies
@@ -291,6 +295,26 @@ export function AccountsDepartment({
   const [showLpBreakdownTooltip, setShowLpBreakdownTooltip] = useState(false);
 
   const [pspBalances, setPspBalances] = useState<PSPBalance[]>([]);
+  // The raw widgets, before status:'error' is flattened to a balance of 0 for
+  // display. The Excess Funds figures need to tell a real zero from a failed
+  // read; pspBalances cannot, by design, because a zero row still has to render.
+  const [walletWidgets, setWalletWidgets] = useState<WalletWidgetEntry[]>([]);
+  // Sheet field keys the backend could not parse into a number. A widget built
+  // on one of them arrives status:'ok' with a balance of 0 that was never a
+  // balance, so this is the only thing standing between a shifted spreadsheet
+  // row and a confident, wrong treasury figure.
+  const [unreadableSheetFields, setUnreadableSheetFields] = useState<string[]>([]);
+  const [fabAccounts, setFabAccounts] = useState<FabAccounts | null>(null);
+  // lpEquitySummary initialises to zeroes below, so a failed equity fetch would
+  // otherwise present as a real netDifference of 0.00. This tracks whether the
+  // fetch has ever actually succeeded.
+  const [equityLoaded, setEquityLoaded] = useState(false);
+  // equityLoaded never goes back to false once the first fetch succeeds, so a
+  // later failure leaves lpEquitySummary frozen at its last good value while the
+  // wallet half keeps moving. The figures then read complete and current when
+  // half of them is neither. This carries the last failure so the section can
+  // say so on itself.
+  const [equityError, setEquityError] = useState<string | null>(null);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
   const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
@@ -305,6 +329,11 @@ export function AccountsDepartment({
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
+    // This component mounts twice on the home page and the effect re-runs on
+    // every refresh, so an in-flight response must not write state into a torn
+    // down mount.
+    let cancelled = false;
+
     const fetchTodayData = async () => {
       try {
         setIsLoading(true);
@@ -365,6 +394,13 @@ export function AccountsDepartment({
       setWalletError(null);
 
       const widgets = response.data.widgets;
+      // The raw widgets, before status:'error' is flattened to a balance of 0 for
+      // display. The Excess Funds figures need to tell a real zero from a failed
+      // read; pspBalances cannot, by design, because a zero row still has to render.
+      setWalletWidgets(widgets);
+      setUnreadableSheetFields(
+        Array.isArray(response.data.unreadableSheetFields) ? response.data.unreadableSheetFields : [],
+      );
       const widgetMap = new Map(widgets.map((widget) => [widget.id, widget]));
       const order = PSP_ORDER;
 
@@ -441,9 +477,18 @@ export function AccountsDepartment({
       }
     };
 
+    // One equity call at a time. The non-LP path polls a minute apart and the LP
+    // path five seconds apart, but the call also POSTs a snapshot row, and a
+    // response slower than the interval would otherwise land after a newer one
+    // and write a stale equity back over a fresher one.
+    let equityInFlight = false;
+
     const fetchLpEquitySummary = async () => {
+      if (equityInFlight) return;
+      equityInFlight = true;
       try {
         const data = await fetchEquityOverviewDashboard({ includeDetails: false });
+        if (cancelled) return;
         const lpWithdrawableEquity = data.lps.netWithdrawableEquity;
         const clientWithdrawableEquity = data.clients.netWithdrawableEquity;
         const difference = data.netDifference;
@@ -452,6 +497,8 @@ export function AccountsDepartment({
           clientWithdrawableEquity,
           difference,
         });
+        setEquityLoaded(true);
+        setEquityError(null);
         const snapshotKey = buildUtcMinuteKey();
         const pointTs = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
         const nextPoint: LpEquityPoint = {
@@ -464,7 +511,12 @@ export function AccountsDepartment({
         };
         await upsertLpEquitySnapshot(nextPoint);
       } catch (err) {
-        // silently ignore
+        // Swallowing this used to leave equityLoaded true forever, so the
+        // section kept printing an arithmetically complete figure off an
+        // arbitrarily old equity read with no sign anywhere that it was old.
+        if (!cancelled) setEquityError((err as Error)?.message || String(err));
+      } finally {
+        equityInFlight = false;
       }
     };
 
@@ -562,14 +614,44 @@ export function AccountsDepartment({
       }
     };
 
+    const fetchFab = async () => {
+      try {
+        setFabAccounts(await fetchFabAccounts());
+      } catch (error) {
+        // Its own catch: the FAB workbook is a separate dependency and its
+        // absence must cost the Net Excess Fund card, not the page.
+        console.warn('[ExcessFunds] FAB accounts unavailable:', (error as Error)?.message || error);
+        setFabAccounts(null);
+      }
+    };
+
     let walletInterval: ReturnType<typeof setInterval> | null = null;
     let lpInterval: ReturnType<typeof setInterval> | null = null;
+    // The equity fetch used to run only in LP mode. The Accounts page's Excess
+    // Funds section needs netDifference too, so this now runs unconditionally
+    // instead of being gated on isLpMode.
+    fetchLpEquitySummary();
     if (!isLpMode) {
       fetchTodayData();
       fetchWalletData();
+      // The FAB workbook feeds the Excess Funds section, which only renders when
+      // !isLpMode. Ungated, the home page's Dealing (LP) card called
+      // /api/fab-accounts on every mount and refresh, took a 502 and logged a
+      // warning for data it never shows.
+      void fetchFab();
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
+      // walletWidgets re-polls above, but until now nothing re-fetched equity
+      // here, so netDifference/lpEquity/clientEquity went stale forever after
+      // mount while the wallet figures kept moving -- a reader can't tell half
+      // a treasury figure is frozen.
+      //
+      // 60s, not LP mode's 5s: this call also POSTs to
+      // /api/lp-equity-live-snapshots, so 5s is 12 external calls and 12 database
+      // upserts a minute per mount, and this component mounts twice on the home
+      // page. It buys nothing either -- the wallet half refreshes every 2
+      // minutes, so the section can never be fresher than that.
+      lpInterval = setInterval(fetchLpEquitySummary, 60 * 1000);
     } else {
-      fetchLpEquitySummary();
       fetchLpOverview();
       fetchWalletData();
       lpInterval = setInterval(() => {
@@ -579,6 +661,7 @@ export function AccountsDepartment({
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
     }
     return () => {
+      cancelled = true;
       if (walletInterval) clearInterval(walletInterval);
       if (lpInterval) clearInterval(lpInterval);
     };
@@ -595,6 +678,30 @@ export function AccountsDepartment({
     bankReceivable +
     lpDepositsTotal;
   const equityDifferenceTooltip = `Formula: fetched difference + PSP total balance + To be received in CRYPTO + To be received in BANK + To be deposited into LPs (Bank - USD) + To be deposited into LPs (Crypto USDT)\n(${lpEquitySummary.difference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${metrics.totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${cryptoReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${bankReceivable.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK20.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + ${toBeDepositedIntoLpsK21.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`;
+
+  // Built from the RAW widgets, not from pspBalances: that array has already had
+  // status:'error' flattened to a balance of 0 so the row can still render, and a
+  // treasury figure must never treat a failed read as a zero balance. The
+  // unreadable-field list does the same job one level down, for a sheet cell the
+  // backend could not parse while the widget still reported ok.
+  const widgetValue = (id: string): number | null =>
+    readWidgetValue(walletWidgets, id, unreadableSheetFields);
+
+  const cryptoKeys = PSP_ORDER.filter((p) => p.group === 'crypto').map((p) => p.key);
+
+  const excessInputs: ExcessFundsInputs = {
+    // equityLoaded, not the value itself: lpEquitySummary initialises to zeroes,
+    // so a failed equity fetch would otherwise present as a real netDifference
+    // of 0.00 and produce a confident, wrong treasury figure.
+    netDifference: equityLoaded ? lpEquitySummary.difference : null,
+    netCrypto: addOrNull(...cryptoKeys.map(widgetValue)),
+    fabAndMbme: addOrNull(widgetValue('googlesheets_fab'), widgetValue('googlesheets_mbme')),
+    // Through addOrNull like its neighbours: a non-error widget with an absent
+    // balance yields NaN, and NaN must arrive as null, not as a number.
+    goldSouq: addOrNull(widgetValue('googlesheets_goldsouq')),
+    fabOperating: fabAccounts ? fabAccounts.fabOperating : null,
+    fabHolding: fabAccounts ? fabAccounts.fabHolding : null,
+  };
 
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
@@ -672,6 +779,9 @@ export function AccountsDepartment({
                 title={equityDifferenceTooltip}
               >
                 ${lpPlusPspDifference.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">
+                Counts every PSP, plus receivables and to-LP amounts
               </div>
             </div>
           </div>
@@ -959,6 +1069,22 @@ export function AccountsDepartment({
           <div className="font-mono font-semibold text-sky-500">${creditByLps.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>}
+
+      {!isLpMode && (
+        <ExcessFundsSection
+          inputs={excessInputs}
+          lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
+          clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
+          fabSource={fabAccounts ? { tab: fabAccounts.source.tab, cells: fabAccounts.source.cells } : null}
+          fabFetchedAt={fabAccounts?.fetchedAt}
+          // The staleness signals belong ON this section. walletError already
+          // renders inside the Closing Balance block further up, but a reader
+          // looking at Gross Excess Fund has no reason to connect the two.
+          walletError={walletError}
+          equityError={equityError}
+          walletUpdated={reportUpdated}
+        />
+      )}
     </DepartmentCard>
   );
 }

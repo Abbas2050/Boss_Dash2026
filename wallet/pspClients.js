@@ -357,6 +357,25 @@ export class GoogleSheetsClient {
     return parseFloat(String(value).replace(/[^0-9.-]/g, '')) || 0;
   }
 
+  // Whether _parseCell's 0 came from a real zero or from a cell it could not
+  // read at all. It has to be a SEPARATE question, because `parseFloat(...) || 0`
+  // answers both with the same number: an empty cell, a `#REF!` left by a
+  // deleted row, an `N/A`, and a genuine balance of zero all arrive as 0 and the
+  // widget is then stamped status:'ok'. That is how one shifted row in the
+  // workbook silently drops a whole term out of a treasury figure while the
+  // page still reads complete and confident.
+  //
+  // Deliberately mirrors _parseCell exactly -- same strip, same parseFloat -- so
+  // a cell can never be called unreadable while _parseCell is happily returning
+  // a number from it. Unreadable is precisely the set where parseFloat gives
+  // NaN, which is precisely the set where `|| 0` invents the zero.
+  _isCellReadable(value) {
+    if (value === null || value === undefined) return false;
+    const text = String(value).trim();
+    if (!text) return false;
+    return Number.isFinite(parseFloat(text.replace(/[^0-9.-]/g, '')));
+  }
+
   _todaySheetName(offsetDays = 0) {
     // Use Dubai date to match business reporting day.
     const nowDubai = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
@@ -405,11 +424,14 @@ export class GoogleSheetsClient {
     const cellsByKey = {};
     const cellsByCell = {};
     const values = {};
+    const unreadable = [];
 
     for (let i = 0; i < fields.length; i += 1) {
       const field = fields[i];
       const raw = vr[i]?.values?.[0]?.[0] ?? null;
       const parsed = this._parseCell(raw);
+      const readable = this._isCellReadable(raw);
+      if (!readable) unreadable.push(field.key);
 
       const cellInfo = {
         key: field.key,
@@ -418,6 +440,7 @@ export class GoogleSheetsClient {
         required: Boolean(field.required),
         raw,
         parsed,
+        readable,
       };
 
       cellsByKey[field.key] = cellInfo;
@@ -432,6 +455,9 @@ export class GoogleSheetsClient {
       cells: cellsByKey,
       cellsByCell,
       values,
+      // Additive: `values` keeps its existing zeroes so nothing already on the
+      // page moves. This list is what lets a caller tell those zeroes apart.
+      unreadable,
     };
   }
 
@@ -471,6 +497,7 @@ export class GoogleSheetsClient {
       cells: wallet.cells,
       cellsByCell: wallet.cellsByCell,
       mapped: wallet.values,
+      unreadableFields: wallet.unreadable,
     };
   }
 
@@ -538,6 +565,11 @@ export class GoogleSheetsClient {
       differenceBetweenActualAndExpected: wallet.values.differenceBetweenActualAndExpected ?? 0,
       creditByLPs: wallet.values.creditByLPs ?? 0,
       goldSouqDeductionJ31: wallet.values.goldSouqDeductionJ31 ?? 0,
+      // The configured field keys whose cell could not be parsed into a number.
+      // Every balance above still carries its historical 0 for those, so no
+      // existing tile moves; a caller that must not confuse "empty cell" with
+      // "zero balance" reads this list instead.
+      unreadableFields: wallet.unreadable,
       customValues,
     };
   }
