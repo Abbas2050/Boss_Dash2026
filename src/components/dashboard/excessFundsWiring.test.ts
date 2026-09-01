@@ -110,6 +110,26 @@ describe("the Excess Funds inputs are not taken from the coerced balances", () =
   });
 });
 
+// SEAM 2 (~line 402): the effect must forward the *response's*
+// unreadableSheetFields into state, not a hardcoded empty array. The check at
+// line 75 above (`expect(SOURCE).toMatch(/setUnreadableSheetFields\(/)`) only
+// proves the identifier appears somewhere in the file -- a reviewer showed that
+// mutating the real call to `setUnreadableSheetFields([])` still satisfies it,
+// and every other test in this suite (and all 564 elsewhere) stays green. This
+// pins the actual argument text of that one call site instead.
+describe("seam 2: the unreadable-field list reaches state as reported, not hardcoded", () => {
+  it("passes response.data.unreadableSheetFields into setUnreadableSheetFields, not a literal []", () => {
+    const callStart = SOURCE.indexOf("setUnreadableSheetFields(");
+    expect(callStart).toBeGreaterThan(-1);
+    const callEnd = SOURCE.indexOf(");", callStart);
+    expect(callEnd).toBeGreaterThan(callStart);
+    const call = SOURCE.slice(callStart, callEnd + 2);
+
+    expect(call).toMatch(/response\.data\.unreadableSheetFields/);
+    expect(call).not.toMatch(/setUnreadableSheetFields\(\s*\[\]\s*\)/);
+  });
+});
+
 describe("the equity poll costs what it is worth", () => {
   // fetchLpEquitySummary also POSTs to /api/lp-equity-live-snapshots, so a 5s
   // interval is 12 external calls and 12 database upserts a minute per mount --
