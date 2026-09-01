@@ -182,6 +182,23 @@ const PSP_ORDER = [
 
 const CRYPTO_PSP_COUNT = PSP_ORDER.filter((p) => p.group === 'crypto').length;
 
+// Display names of the wallet widgets that failed their balance check, for
+// TreasuryPanel's "understated" notice.
+//
+// Built from the RAW walletWidgets, not from pspBalances: that array has
+// already had status:'error' flattened to a balance of 0.00 so the row can
+// still render, so it can no longer tell a failure from a real zero -- the
+// same reasoning as widgetValue() inside the component.
+//
+// Exported and lifted out of the component body so it can be unit-tested on
+// its own. It was previously an inline .filter().map() covered only by a
+// regex over this file's source, which matched three unrelated places and
+// still passed when the derivation was replaced with `.filter(() => false)`
+// -- the mutation that permanently silences the understatement notice.
+export function failedProviderNames(widgets: readonly WalletWidgetEntry[]): string[] {
+  return widgets.filter((widget) => widget.status === 'error').map((widget) => widget.name);
+}
+
 export function AccountsDepartment({
   selectedEntity,
   fromDate,
@@ -723,14 +740,7 @@ export function AccountsDepartment({
     fabHolding: fabAccounts ? fabAccounts.fabHolding : null,
   };
 
-  // Display names of the wallet widgets that failed their balance check, for
-  // TreasuryPanel's "understated" notice. Built from the RAW walletWidgets,
-  // not pspBalances: that array has already had status:'error' flattened to a
-  // balance of 0.00 for display, so it can no longer tell a failure from a
-  // real zero -- the same reasoning as widgetValue() above.
-  const failedProviders = walletWidgets
-    .filter((widget) => widget.status === 'error')
-    .map((widget) => widget.name);
+  const failedProviders = failedProviderNames(walletWidgets);
 
   // Time-only formatting for the page header's three freshness stamps. Local
   // to the page branch: the section this mirrors (ExcessFundsSection.tsx) has
