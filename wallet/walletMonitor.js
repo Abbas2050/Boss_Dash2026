@@ -36,6 +36,11 @@ export async function checkAllBalances() {
   let goldSouqDeductionJ31 = 0;
   let netAllCurrentBalance = 0;
   let netBalanceAfterExpectedFunds = 0;
+  // Which Google Sheets field keys came back as something that is not a number.
+  // The widget balances below still carry the historical 0 for those, so nothing
+  // already on the Closing Balance Report moves; this list is what lets the
+  // Excess Funds figures refuse to add a zero that was never a balance.
+  let unreadableSheetFields = [];
 
   const now = () => new Date().toISOString();
 
@@ -155,6 +160,7 @@ export async function checkAllBalances() {
             goldSouqDeductionJ31: goldSouqDeduction,
             netAllCurrentBalance: gs.netAllCurrentBalance,
             netBalanceAfterExpectedFunds: gs.netBalanceAfterExpectedFunds,
+            unreadableSheetFields: Array.isArray(gs.unreadableFields) ? gs.unreadableFields : [],
           },
         };
       } catch (e) {
@@ -192,6 +198,9 @@ export async function checkAllBalances() {
       differenceBetweenActualAndExpected = Number(sourceResult.extra.differenceBetweenActualAndExpected || 0);
       creditByLPs = Number(sourceResult.extra.creditByLPs || 0);
       goldSouqDeductionJ31 = Number(sourceResult.extra.goldSouqDeductionJ31 || 0);
+      unreadableSheetFields = Array.isArray(sourceResult.extra.unreadableSheetFields)
+        ? sourceResult.extra.unreadableSheetFields
+        : [];
       // netAllCurrentBalance is derived from total (sum of all PSPs), not from the sheet
       netBalanceAfterExpectedFunds = Number(sourceResult.extra.netBalanceAfterExpectedFunds || 0);
     }
@@ -216,6 +225,13 @@ export async function checkAllBalances() {
       gold_souq_deduction_j31: goldSouqDeductionJ31,
       net_all_current_balance: total,
       net_balance_after_expected_funds: netBalanceAfterExpectedFunds,
+      // Additive field. Whole-sheet failure is already signalled by every sheet
+      // widget carrying status:'error'; this covers the per-cell case, which is
+      // the documented historical failure here -- googleSheetsMappingConfig.js
+      // carries three generations of cell addresses because rows kept shifting,
+      // and a shifted row lands an empty cell or a #REF! on a widget that is
+      // then stamped status:'ok'.
+      unreadableSheetFields,
     },
   };
 }
