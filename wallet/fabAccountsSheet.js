@@ -26,9 +26,13 @@ function getService() {
   return cachedService;
 }
 
-// Sheets returns display strings. An empty or unreadable cell is NOT zero -- zero
-// is a real balance, and conflating the two is how a treasury figure silently
-// loses a term.
+// The FALLBACK path, for when a string arrives anyway. batchGet is asked for
+// UNFORMATTED_VALUE below precisely so this is not the primary route: stripping
+// everything but [0-9.-] out of a display string turns a European-formatted
+// "1.234,56" into 1.23456 -- a wrong number rather than a loud failure, on a
+// workbook whose locale nobody has seen. An empty or unreadable cell is still
+// NOT zero: zero is a real balance, and conflating the two is how a treasury
+// figure silently loses a term.
 export function parseSheetNumber(raw) {
   if (raw === null || raw === undefined) return null;
   const text = String(raw).trim();
@@ -72,7 +76,15 @@ export async function readFabAccounts() {
 
   let response;
   try {
-    response = await sheets.spreadsheets.values.batchGet({ spreadsheetId, ranges });
+    // UNFORMATTED_VALUE returns the cell's underlying number instead of its
+    // rendered text, so the sheet's locale, currency symbol and thousands
+    // separator never reach parseSheetNumber. Without it a workbook set to a
+    // comma-decimal locale reads "1.234,56" and parses to 1.23456.
+    response = await sheets.spreadsheets.values.batchGet({
+      spreadsheetId,
+      ranges,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
   } catch (error) {
     throw new Error(describeSheetError(error, { spreadsheetId, tab, account }));
   }

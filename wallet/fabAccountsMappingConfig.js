@@ -35,27 +35,3 @@ export function loadFabAccountsMapping() {
     return { tab: DEFAULT_FAB_ACCOUNTS_MAPPING.tab, cells: { ...DEFAULT_FAB_ACCOUNTS_MAPPING.cells } };
   }
 }
-
-export function saveFabAccountsMapping(next) {
-  fs.mkdirSync(STORAGE_DIR, { recursive: true });
-  const current = loadFabAccountsMapping();
-  const merged = {
-    tab: typeof next?.tab === "string" && next.tab.trim() ? next.tab.trim() : current.tab,
-    cells: { ...current.cells },
-  };
-  for (const key of Object.keys(merged.cells)) {
-    const cell = next?.cells?.[key];
-    if (typeof cell === "string" && /^[A-Z]+[0-9]+$/i.test(cell.trim())) merged.cells[key] = cell.trim().toUpperCase();
-  }
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), "utf8");
-  return merged;
-}
-
-export function resetFabAccountsMapping() {
-  try {
-    fs.unlinkSync(CONFIG_FILE);
-  } catch {
-    // Already absent; loadFabAccountsMapping falls back to the defaults.
-  }
-  return loadFabAccountsMapping();
-}
