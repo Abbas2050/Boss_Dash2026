@@ -601,6 +601,12 @@ export function AccountsDepartment({
       fetchTodayData();
       fetchWalletData();
       walletInterval = setInterval(fetchWalletData, 2 * 60 * 1000);
+      // walletWidgets re-polls above, but until now nothing re-fetched equity
+      // here, so netDifference/lpEquity/clientEquity went stale forever after
+      // mount while the wallet figures kept moving -- a reader can't tell half
+      // a treasury figure is frozen. Reuse LP mode's own cadence (5s) via the
+      // same lpInterval slot/cleanup below rather than inventing a new one.
+      lpInterval = setInterval(fetchLpEquitySummary, 5000);
     } else {
       fetchLpOverview();
       fetchWalletData();

@@ -30,10 +30,19 @@ describe("the Excess Funds inputs are not taken from the coerced balances", () =
     expect(SOURCE).toMatch(/netDifference:\s*equityLoaded\s*\?/);
   });
 
-  // The equity call is gated behind isLpMode today, so the Accounts page never
-  // makes it. Without this, netDifference is permanently null here.
+  // The equity call used to be gated behind an isLpMode if/else, so the
+  // Accounts page (which renders with mode unset) never made it. Prove the
+  // call now happens outside any isLpMode-conditional: everything in the
+  // effect between the fetchLpEquitySummary definition and the first branch
+  // on isLpMode runs unconditionally, so the literal call must live there.
   it("no longer gates the equity fetch to LP mode only", () => {
-    expect(SOURCE).not.toMatch(/if\s*\(\s*!isLpMode\s*\)\s*return;[\s\S]{0,200}fetchLpEquitySummary/);
+    const effectStart = SOURCE.indexOf("const fetchLpEquitySummary = async");
+    expect(effectStart).toBeGreaterThan(-1);
+    const afterDefinition = SOURCE.slice(effectStart);
+    const branchIdx = afterDefinition.search(/if\s*\(\s*!?isLpMode\s*\)/);
+    expect(branchIdx).toBeGreaterThan(-1);
+    const unconditionalRegion = afterDefinition.slice(0, branchIdx);
+    expect(unconditionalRegion).toMatch(/\bfetchLpEquitySummary\(\);/);
   });
 });
 
