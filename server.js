@@ -30,6 +30,7 @@ import {
   saveGoogleSheetsMappingConfig,
   resetGoogleSheetsMappingConfig,
 } from './wallet/googleSheetsMappingConfig.js';
+import { readFabAccounts } from './wallet/fabAccountsSheet.js';
 import { runDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
 import { runSlippageEmailReport } from './reports/slippageWeeklyReport.js';
 import { runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
@@ -595,6 +596,19 @@ app.get('/api/closing-balance-report/notify-log', (req, res) => {
     count: Math.min(limit, walletNotifyLogs.length),
     logs: walletNotifyLogs.slice(0, limit),
   });
+});
+
+// FAB Operating and Holding balances, for the Excess Funds section. Its own
+// workbook, so its own route -- a failure here must not take the closing-balance
+// report down with it, and vice versa.
+app.get('/api/fab-accounts', authRequired, async (_req, res) => {
+  try {
+    res.json({ ok: true, ...(await readFabAccounts()) });
+  } catch (e) {
+    // 502, not 500: the sheet is an upstream dependency, and the message names
+    // the spreadsheet, tab and service account so the cause is actionable.
+    res.status(502).json({ ok: false, error: 'fab_sheet_unavailable', message: e?.message || String(e) });
+  }
 });
 
 app.get('/api/wallet/google-sheets-debug', async (req, res) => {
