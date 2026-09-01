@@ -810,6 +810,25 @@ export function AccountsDepartment({
           />
         </div>
 
+        {/* The card branch's two wallet-failure signals, carried onto this
+            page. Both panels below are built from the same wallet fetch, and
+            without these a failed or still-pending first fetch renders a
+            Crypto heading with no rows, a $0.00 total combined and eight
+            Treasury tiles all reading $0.00 -- a page of confident zeroes
+            exactly where the card branch said why. A never-loaded page must
+            not present itself as a loaded one. Above the pair rather than
+            inside Balances, because the zeroes are in both panels. */}
+        {walletError && (
+          <div className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+            {walletError}
+          </div>
+        )}
+        {pspBalances.length === 0 && !isLoading && (
+          <div className="mb-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+            No wallet data available.
+          </div>
+        )}
+
         {/* Balances (wider) and Treasury side by side; single column below lg. */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.15fr_1fr]">
           <BalancesPanel

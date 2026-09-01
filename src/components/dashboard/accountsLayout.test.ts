@@ -5,6 +5,15 @@ import { failedProviderNames } from "./AccountsDepartment";
 const ACCOUNTS = readFileSync("src/components/dashboard/AccountsDepartment.tsx", "utf8");
 const PAGES = readFileSync("src/pages/DepartmentPages.tsx", "utf8");
 
+// Only the JSX the page layout returns. Scanning the whole file would find
+// every one of these strings in the card branch below and pass whether the
+// page branch carries them or not -- the exact failure that let a regex
+// "protecting" the understatement notice match three unrelated places.
+const PAGE_BRANCH = ACCOUNTS.slice(
+  ACCOUNTS.indexOf("if (layout === 'page')"),
+  ACCOUNTS.indexOf("// --- Card layout (default) ---"),
+);
+
 describe("only the department page gets the new layout", () => {
   it("defaults the layout prop to card", () => {
     expect(ACCOUNTS).toMatch(/layout\s*=\s*['"]card['"]/);
@@ -30,6 +39,17 @@ describe("only the department page gets the new layout", () => {
   it("feeds the treasury panel the providers that failed", () => {
     expect(ACCOUNTS).toMatch(/failedProviders=\{failedProviders\}/);
     expect(ACCOUNTS).toMatch(/const failedProviders = failedProviderNames\(walletWidgets\)/);
+  });
+
+  // Both panels on this page are built from one wallet fetch. Without these
+  // two signals a failed or still-pending first fetch renders a Crypto
+  // heading with no rows, $0.00 total combined and eight Treasury tiles all
+  // reading $0.00 -- a page of confident zeroes where the card branch said
+  // why. PAGE_BRANCH, not ACCOUNTS: the card branch already contains both.
+  it("says why the page is empty instead of showing a page of zeroes", () => {
+    expect(PAGE_BRANCH).toMatch(/\{walletError && \(/);
+    expect(PAGE_BRANCH).toMatch(/pspBalances\.length === 0 && !isLoading/);
+    expect(PAGE_BRANCH).toContain("No wallet data available.");
   });
 });
 
