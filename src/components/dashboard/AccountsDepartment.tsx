@@ -4,7 +4,7 @@ import { Wallet, ArrowUpRight, ArrowDownRight, TrendingUp, CheckCircle, AlertTri
 import { DepartmentCard } from './DepartmentCard';
 import { MetricRow } from './MetricRow';
 import { fetchTransactions } from '@/lib/api';
-import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
+import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart, formatDubaiInstant, formatDubaiClock, dubaiCalendarDate } from '@/lib/dubaiTime';
 import { StatusBadge } from './StatusBadge';
 import { fetchWalletBalances, type WalletWidgetEntry } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
@@ -456,19 +456,14 @@ export function AccountsDepartment({
         : mapped.reduce((sum, item) => sum + item.balance, 0);
 
       if (response.timestamp) {
-        const ts = new Date(response.timestamp.replace(' ', 'T'));
-        if (!Number.isNaN(ts.getTime())) {
-          setReportDate(ts.toISOString().slice(0, 10));
-          setReportUpdated(
-            ts.toLocaleString('en-US', {
-              month: 'short',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: false,
-            })
-          );
+        // response.timestamp is a proper ISO-8601 instant (see
+        // wallet/walletMonitor.js); render it in Dubai wall-clock time, not
+        // the viewer's machine timezone, and derive the report date from
+        // Dubai's calendar day rather than re-deriving it from UTC.
+        const dubaiDate = dubaiCalendarDate(response.timestamp);
+        if (dubaiDate) {
+          setReportDate(dubaiDate);
+          setReportUpdated(formatDubaiInstant(response.timestamp));
         }
       }
 
@@ -748,16 +743,10 @@ export function AccountsDepartment({
 
   const failedProviders = failedProviderNames(walletWidgets);
 
-  // Time-only formatting for the page header's three freshness stamps. Local
-  // to the page branch: the section this mirrors (ExcessFundsSection.tsx) has
-  // its own private clockTime() but doesn't export it, and that file is out
-  // of scope for this task.
-  const formatClock = (iso?: string | null): string => {
-    if (!iso) return '—';
-    const dt = new Date(iso);
-    if (!Number.isFinite(dt.getTime())) return '—';
-    return dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-  };
+  // Time-only formatting for the page header's three freshness stamps, in
+  // Dubai time (see src/lib/dubaiTime.ts) so Wallet/Equity/FAB sheet always
+  // agree regardless of the viewer's machine timezone.
+  const formatClock = formatDubaiClock;
 
   if (layout === 'page') {
     return (

@@ -35,7 +35,7 @@ import {
   type Account,
 } from '@/lib/api';
 import { fetchDocusignOverview, type DocusignOverview } from '@/lib/docusignApi';
-import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart } from '@/lib/dubaiTime';
+import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart, formatDubaiInstant, dubaiCalendarDate } from '@/lib/dubaiTime';
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -1498,19 +1498,14 @@ export function BackOfficeDepartment({
       setNetBalanceAfterExpectedFunds(Number.isFinite(netAfterExpected) ? netAfterExpected : netCurrent + bankValue + cryptoValue);
 
       if (response.timestamp) {
-        const ts = new Date(response.timestamp.replace(' ', 'T'));
-        if (!Number.isNaN(ts.getTime())) {
-          setReportDate(ts.toISOString().slice(0, 10));
-          setReportUpdated(
-            ts.toLocaleString('en-US', {
-              month: 'short',
-              day: '2-digit',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: false,
-            })
-          );
+        // response.timestamp is a proper ISO-8601 instant (see
+        // wallet/walletMonitor.js); render it in Dubai wall-clock time, not
+        // the viewer's machine timezone, and derive the report date from
+        // Dubai's calendar day rather than re-deriving it from UTC.
+        const dubaiDate = dubaiCalendarDate(response.timestamp);
+        if (dubaiDate) {
+          setReportDate(dubaiDate);
+          setReportUpdated(formatDubaiInstant(response.timestamp));
         }
       }
     };

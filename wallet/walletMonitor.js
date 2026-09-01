@@ -212,7 +212,15 @@ export async function checkAllBalances() {
   const generatedAt = new Date();
   return {
     ok: true,
-    timestamp: generatedAt.toISOString().replace('T', ' ').slice(0, 19),
+    // Keep the trailing "Z". A date-time string with no zone designator
+    // (what `.replace('T', ' ').slice(0, 19)` used to produce, e.g.
+    // "2026-09-01 21:22:35") is parsed by JavaScript's `Date` constructor as
+    // LOCAL time, not UTC -- so a viewer anywhere other than UTC+0 saw this
+    // instant rendered shifted by their own UTC offset (and sometimes on the
+    // wrong calendar day). Emitting a real ISO-8601 instant keeps the value
+    // unambiguous; every consumer parses it correctly regardless of where the
+    // browser or server happens to be.
+    timestamp: generatedAt.toISOString(),
     data: {
       widgets: widgetsArray,
       total_balance: total,

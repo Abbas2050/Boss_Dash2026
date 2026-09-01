@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 // SEAM 1 (walletMonitor.js:163): checkAllBalances() reads
 // `gs.unreadableFields` off the GoogleSheetsClient result and republishes it as
@@ -95,5 +95,117 @@ describe("checkAllBalances() carries the sheet client's unreadable field list th
     const goldSouqWidget = report.data.widgets.find((w) => w.id === "googlesheets_goldsouq");
     expect(goldSouqWidget.balance).toBe(40);
     expect(report.data.unreadableSheetFields).toEqual(["goldSouq"]);
+  });
+});
+
+// SEAM 2 (walletMonitor.js:215): the `timestamp` field on the report.
+//
+// This reproduces the reported bug end-to-end: checkAllBalances() builds
+// `timestamp` from `generatedAt`, the frontend parses it back with
+// `new Date(str.replace(' ', 'T'))` (AccountsDepartment.tsx /
+// BackOfficeDepartment.tsx before the fix -- both did exactly this), and the
+// three "freshness" stamps are rendered in Dubai time. The old
+// `.toISOString().replace('T', ' ').slice(0, 19)` dropped the trailing "Z",
+// so `new Date(...)` on the frontend parsed the string as LOCAL time instead
+// of UTC. On a machine whose local zone IS Dubai (UTC+4) -- e.g. the server,
+// or a phone set to Dubai -- a UTC instant of 21:22:35 got re-interpreted as
+// 21:22:35 *Dubai* time, four hours (and, near midnight, a whole calendar
+// day) off from the correct 01:22:35 the next day. That is precisely what
+// was seen in production: "Wallet Sep 01, 21:22:35" instead of "Sep 02,
+// 01:22:35".
+//
+// Pinning process.env.TZ here is deliberate: on a UTC CI box, the old buggy
+// code and the fixed code produce the SAME output (parsing a zone-less string
+// as UTC-local is a no-op when local IS UTC), so a test that never leaves the
+// default UTC timezone would pass whether the bug is present or not. Setting
+// TZ to Asia/Dubai reproduces the real failure.
+describe("checkAllBalances() timestamp survives frontend parsing across the date line (seam 2)", () => {
+  const originalTz = process.env.TZ;
+
+  beforeEach(() => {
+    mockGoogleSheetsGetBalance.mockReset();
+    mockGoogleSheetsGetBalance.mockResolvedValue(sheetResult());
+    vi.useFakeTimers();
+    // Machine/server local timezone at the time of the reported bug.
+    process.env.TZ = "Asia/Dubai";
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  // Mirrors AccountsDepartment.tsx / BackOfficeDepartment.tsx's parsing of
+  // `response.timestamp` prior to the fix (still harmless afterwards, since
+  // the fixed timestamp has no space to replace).
+  function parseAsFrontendDid(timestamp) {
+    return new Date(String(timestamp).replace(" ", "T"));
+  }
+
+  it("renders as 2 September, 01:22:35 Dubai for a UTC instant of 2026-09-01T21:22:35Z, not 1 September 21:22:35", async () => {
+    vi.setSystemTime(new Date("2026-09-01T21:22:35.000Z"));
+
+    const report = await checkAllBalances();
+    const parsed = parseAsFrontendDid(report.timestamp);
+
+    expect(Number.isNaN(parsed.getTime())).toBe(false);
+    const rendered = parsed.toLocaleString("en-US", {
+      timeZone: "Asia/Dubai",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    expect(rendered).toBe("Sep 02, 01:22:35");
+    expect(rendered).not.toBe("Sep 01, 21:22:35");
+  });
+
+  it("derives a Dubai report date of 2026-09-02 for that instant, not 2026-09-01", async () => {
+    vi.setSystemTime(new Date("2026-09-01T21:22:35.000Z"));
+
+    const report = await checkAllBalances();
+    const parsed = parseAsFrontendDid(report.timestamp);
+
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Asia/Dubai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(parsed);
+    const byType = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+    const dubaiDate = `${byType.year}-${byType.month}-${byType.day}`;
+
+    expect(dubaiDate).toBe("2026-09-02");
+    expect(dubaiDate).not.toBe("2026-09-01");
+  });
+
+  it("still renders correctly for an instant that does not cross the date line", async () => {
+    vi.setSystemTime(new Date("2026-09-01T06:00:00.000Z"));
+
+    const report = await checkAllBalances();
+    const parsed = parseAsFrontendDid(report.timestamp);
+
+    const rendered = parsed.toLocaleString("en-US", {
+      timeZone: "Asia/Dubai",
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    expect(rendered).toBe("Sep 01, 10:00:00");
+  });
+
+  it("emits a full ISO-8601 instant with its zone designator, not a bare 19-character date-time", async () => {
+    vi.setSystemTime(new Date("2026-09-01T21:22:35.000Z"));
+
+    const report = await checkAllBalances();
+
+    expect(report.timestamp).toMatch(/Z$/);
+    expect(report.timestamp).toBe("2026-09-01T21:22:35.000Z");
   });
 });
