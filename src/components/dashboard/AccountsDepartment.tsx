@@ -10,6 +10,8 @@ import { fetchWalletBalances, type WalletWidgetEntry } from '@/lib/walletApi';
 import { fetchEquityOverviewDashboard } from '@/lib/equityOverviewApi';
 import { fetchFabAccounts, type FabAccounts } from '@/lib/excessFundsApi';
 import { ExcessFundsSection } from './ExcessFundsSection';
+import { BalancesPanel } from './accounts/BalancesPanel';
+import { TreasuryPanel } from './accounts/TreasuryPanel';
 import type { ExcessFundsInputs } from '@/lib/excessFunds';
 import { addOrNull, widgetValue as readWidgetValue } from '@/lib/excessFundsInputs';
 import { ResponsiveContainer, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
@@ -180,6 +182,23 @@ const PSP_ORDER = [
 
 const CRYPTO_PSP_COUNT = PSP_ORDER.filter((p) => p.group === 'crypto').length;
 
+// Display names of the wallet widgets that failed their balance check, for
+// TreasuryPanel's "understated" notice.
+//
+// Built from the RAW walletWidgets, not from pspBalances: that array has
+// already had status:'error' flattened to a balance of 0.00 so the row can
+// still render, so it can no longer tell a failure from a real zero -- the
+// same reasoning as widgetValue() inside the component.
+//
+// Exported and lifted out of the component body so it can be unit-tested on
+// its own. It was previously an inline .filter().map() covered only by a
+// regex over this file's source, which matched three unrelated places and
+// still passed when the derivation was replaced with `.filter(() => false)`
+// -- the mutation that permanently silences the understatement notice.
+export function failedProviderNames(widgets: readonly WalletWidgetEntry[]): string[] {
+  return widgets.filter((widget) => widget.status === 'error').map((widget) => widget.name);
+}
+
 export function AccountsDepartment({
   selectedEntity,
   fromDate,
@@ -191,6 +210,15 @@ export function AccountsDepartment({
   // panels. The Revenue Share panel is a full table with its own date
   // pickers and a Run button, which only belongs on the dedicated
   // /departments/accounts page. Only that mount site should pass true.
+  //
+  // 'page' is the redesigned full-page composition built for
+  // /departments/accounts. AccountsDepartment mounts five times across the
+  // app and the home dashboard was explicitly excluded from this redesign --
+  // there it sits in a third-width column, and a full-width layout would look
+  // worse than what it has now. Only DepartmentPages.tsx passes 'page'; every
+  // other call site keeps the default and renders exactly what it renders
+  // today. See accountsLayout.test.ts.
+  layout = 'card',
 }: {
   selectedEntity: string;
   fromDate?: Date;
@@ -198,6 +226,7 @@ export function AccountsDepartment({
   refreshKey: number;
   title?: string;
   mode?: 'accounts' | 'lp';
+  layout?: 'card' | 'page';
 }) {
   const isLpMode = mode === 'lp';
   const [volumePreset, setVolumePreset] = useState<VolumeRangePreset>('today');
@@ -315,6 +344,13 @@ export function AccountsDepartment({
   // half of them is neither. This carries the last failure so the section can
   // say so on itself.
   const [equityError, setEquityError] = useState<string | null>(null);
+  // The equity endpoint carries no timestamp of its own. The page layout's
+  // header shows three source freshness times (Wallet, Equity, FAB sheet);
+  // this is the client-side read time for the second one, set only on a
+  // successful fetch so a failure leaves it at the last good value rather
+  // than claiming freshness it doesn't have. Display only -- read on the page
+  // branch below, never touches any figure.
+  const [equityUpdatedAt, setEquityUpdatedAt] = useState<string | null>(null);
   const [bankReceivable, setBankReceivable] = useState(0);
   const [cryptoReceivable, setCryptoReceivable] = useState(0);
   const [toBeDepositedIntoLpsK20, setToBeDepositedIntoLpsK20] = useState(0);
@@ -499,6 +535,7 @@ export function AccountsDepartment({
         });
         setEquityLoaded(true);
         setEquityError(null);
+        setEquityUpdatedAt(new Date().toISOString());
         const snapshotKey = buildUtcMinuteKey();
         const pointTs = new Date(snapshotKey.replace(' ', 'T') + 'Z').getTime();
         const nextPoint: LpEquityPoint = {
@@ -703,6 +740,127 @@ export function AccountsDepartment({
     fabHolding: fabAccounts ? fabAccounts.fabHolding : null,
   };
 
+  const failedProviders = failedProviderNames(walletWidgets);
+
+  // Time-only formatting for the page header's three freshness stamps. Local
+  // to the page branch: the section this mirrors (ExcessFundsSection.tsx) has
+  // its own private clockTime() but doesn't export it, and that file is out
+  // of scope for this task.
+  const formatClock = (iso?: string | null): string => {
+    if (!iso) return '—';
+    const dt = new Date(iso);
+    if (!Number.isFinite(dt.getTime())) return '—';
+    return dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  };
+
+  if (layout === 'page') {
+    return (
+      <div>
+        {/* Page header: title on the left, the three source freshness stamps
+            on the right -- wallet, LP/client equity and the FAB workbook, the
+            same three sources the Excess Funds figures below are built from. */}
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Departments</p>
+            <h1 className="text-xl font-semibold text-foreground">{title}</h1>
+          </div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span>Wallet <span className="font-medium text-foreground">{reportUpdated}</span></span>
+            <span>Equity <span className="font-medium text-foreground">{formatClock(equityUpdatedAt)}</span></span>
+            <span>FAB sheet <span className="font-medium text-foreground">{formatClock(fabAccounts?.fetchedAt)}</span></span>
+          </div>
+        </div>
+
+        {/* The day's flow strip. */}
+        <div className="mb-5 grid grid-cols-1 gap-px overflow-hidden rounded-lg border border-border/60 bg-border/40 sm:grid-cols-3">
+          <div className="bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground">Deposits today</div>
+            <div className="mt-0.5 font-mono text-lg font-medium text-success">
+              ${metrics.depositsToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div className="bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground">Withdrawals today</div>
+            <div className="mt-0.5 font-mono text-lg font-medium text-destructive">
+              ${metrics.withdrawalsToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <div className="bg-card px-4 py-3">
+            <div className="text-xs text-muted-foreground">Net flow today</div>
+            <div className={`mt-0.5 font-mono text-lg font-medium ${metrics.netFlow >= 0 ? 'text-success' : 'text-destructive'}`}>
+              ${metrics.netFlow.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+          </div>
+        </div>
+
+        {/* Excess funds, full width. Same component and same inputs as the
+            card branch below -- only the surrounding chrome differs, because
+            on this page it stands alone as its own panel instead of living
+            inside DepartmentCard's border-topped stack of sections. */}
+        <div className="mb-5 rounded-lg border border-border/60 bg-card p-3">
+          <ExcessFundsSection
+            inputs={excessInputs}
+            lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
+            clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
+            fabFetchedAt={fabAccounts?.fetchedAt}
+            walletError={walletError}
+            equityError={equityError}
+            walletUpdated={reportUpdated}
+          />
+        </div>
+
+        {/* The card branch's two wallet-failure signals, carried onto this
+            page. Both panels below are built from the same wallet fetch, and
+            without these a failed or still-pending first fetch renders a
+            Crypto heading with no rows, a $0.00 total combined and eight
+            Treasury tiles all reading $0.00 -- a page of confident zeroes
+            exactly where the card branch said why. A never-loaded page must
+            not present itself as a loaded one. Above the pair rather than
+            inside Balances, because the zeroes are in both panels. */}
+        {walletError && (
+          <div className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+            {walletError}
+          </div>
+        )}
+        {pspBalances.length === 0 && !isLoading && (
+          <div className="mb-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+            No wallet data available.
+          </div>
+        )}
+
+        {/* Balances (wider) and Treasury side by side; single column below lg. */}
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.15fr_1fr]">
+          <BalancesPanel
+            widgets={walletWidgets}
+            totalBalance={metrics.totalBalance}
+            reportDate={reportDate === '—' ? null : reportDate}
+            order={PSP_ORDER}
+          />
+          <TreasuryPanel
+            bankReceivable={bankReceivable}
+            cryptoReceivable={cryptoReceivable}
+            toLpsBank={toBeDepositedIntoLpsK20}
+            toLpsCrypto={toBeDepositedIntoLpsK21}
+            netAllCurrentBalance={netAllCurrentBalance}
+            netAfterExpectedFunds={netBalanceAfterExpectedFunds}
+            differenceActualVsExpected={differenceBetweenActualAndExpected}
+            creditByLps={creditByLps}
+            failedProviders={failedProviders}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // --- Card layout (default) ---
+  // This is the JSX that mounts on the home dashboard (Index.tsx x2,
+  // MainDashboard.tsx) and MT5Examples.tsx, none of which opted into the
+  // redesign above. It is intentionally left byte-for-byte as it was before
+  // this task: the home dashboard was explicitly excluded from the redesign,
+  // and this markup renders there four times over. That duplicates markup
+  // with the page branch above -- deliberate and scoped. Unifying the two
+  // needs its own approval, because it would change what renders on the home
+  // dashboard.
   return (
     <DepartmentCard title={title} icon={Wallet} accentColor="success">
       {/* LP Equity Summary or Deposits/Withdrawals */}
@@ -1075,7 +1233,6 @@ export function AccountsDepartment({
           inputs={excessInputs}
           lpEquity={equityLoaded ? lpEquitySummary.lpWithdrawableEquity : null}
           clientEquity={equityLoaded ? lpEquitySummary.clientWithdrawableEquity : null}
-          fabSource={fabAccounts ? { tab: fabAccounts.source.tab, cells: fabAccounts.source.cells } : null}
           fabFetchedAt={fabAccounts?.fetchedAt}
           // The staleness signals belong ON this section. walletError already
           // renders inside the Closing Balance block further up, but a reader

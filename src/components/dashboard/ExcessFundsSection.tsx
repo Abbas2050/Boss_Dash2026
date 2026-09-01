@@ -1,6 +1,8 @@
 import { computeExcessFunds, type ExcessFundsInputs } from "@/lib/excessFunds";
 
-// The Excess Funds section: seven inputs and the two figures they produce.
+// The Excess Funds section: a header row, the two headline figures side by
+// side, and the seven inputs that feed them grouped by where each one came
+// from.
 //
 // Its own component rather than a tenth of AccountsDepartment.tsx, which is
 // already 964 lines.
@@ -14,9 +16,6 @@ export interface ExcessFundsSectionProps {
   // answer to a question already answered upstream.
   lpEquity: number | null;
   clientEquity: number | null;
-  // Where the two FAB balances were actually read from, so a wrong figure can be
-  // traced to the cell it came from without opening the server.
-  fabSource?: { tab: string; cells: Record<string, string> } | null;
   // Staleness. An arithmetically complete figure says nothing about how old its
   // inputs are: a failed wallet refresh leaves the widgets at the last good
   // read, and a failed equity fetch leaves netDifference frozen with the section
@@ -29,15 +28,45 @@ export interface ExcessFundsSectionProps {
   fabFetchedAt?: string;
 }
 
-export interface ExcessCard {
+type Tone = "positive" | "negative" | "neutral";
+
+export interface ExcessHeadline {
   label: string;
   value: string;
-  tone: "positive" | "negative" | "neutral";
-  note?: string;
-  emphasis?: boolean;
+  tone: Tone;
+  why: string;
+  unavailable: boolean;
+}
+
+export interface ExcessSourceRow {
+  label: string;
+  value: string;
+  tone: Tone;
+}
+
+export interface ExcessSourceGroup {
+  title: string;
+  rows: ExcessSourceRow[];
 }
 
 const DASH = "—";
+
+// EXCESS_LABELS in excessFunds.ts still emits "FAB Operating Balance" and
+// "FAB Holding Balance" into missing[] -- the client explicitly rejected
+// those names because, next to "Net FAB & MBME" above, they read as the same
+// account three times. That library is out of scope here (its own tests pin
+// EXCESS_LABELS exactly), so the rejected names are translated to the
+// approved card names at the last possible moment, right before they reach
+// the "why" text. Anything not in this map passes through unchanged, so a
+// future input added upstream still reads sensibly instead of vanishing.
+const MISSING_LABEL_DISPLAY: Record<string, string> = {
+  "FAB Operating Balance": "Skylinks Capital LLC",
+  "FAB Holding Balance": "Skylink holdings",
+};
+
+function displayMissingLabel(label: string): string {
+  return MISSING_LABEL_DISPLAY[label] ?? label;
+}
 
 function money(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return DASH;
@@ -45,7 +74,7 @@ function money(value: number | null): string {
   return value < 0 ? `-$${text}` : `$${text}`;
 }
 
-function tone(value: number | null): ExcessCard["tone"] {
+function tone(value: number | null): Tone {
   if (value === null || !Number.isFinite(value)) return "neutral";
   // Zero is neither. Break-even excess funds is not a surplus and must not
   // render green, which is read across this dashboard as "there is money here to
@@ -60,14 +89,6 @@ function tone(value: number | null): ExcessCard["tone"] {
   return value < 0 ? "negative" : "positive";
 }
 
-// "Sheet1!B2". Shown on the two FAB cards so a figure that looks wrong can be
-// checked against the cell it was read from.
-function cellRef(source: ExcessFundsSectionProps["fabSource"], key: string): string | undefined {
-  const cell = source?.cells?.[key];
-  if (!source?.tab || !cell) return undefined;
-  return `${source.tab}!${cell}`;
-}
-
 // The time part only: the section is read on a phone, where a full ISO stamp
 // wraps and buys nothing.
 function clockTime(iso?: string): string | null {
@@ -77,52 +98,75 @@ function clockTime(iso?: string): string | null {
   return dt.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-export function excessFundsCards({ inputs, lpEquity, clientEquity, fabSource }: ExcessFundsSectionProps): ExcessCard[] {
+// The two headline figures, in order. Both read their unavailable/why state
+// from computeExcessFunds's own `missing` list -- that function already holds
+// every rule about which inputs can go missing and why; re-deriving it here
+// would risk disagreeing with it.
+export function excessHeadlines({ inputs }: ExcessFundsSectionProps): [ExcessHeadline, ExcessHeadline] {
   const { gross, net } = computeExcessFunds(inputs);
-  const unavailable = (missing: string[]) => `Unavailable — could not read ${missing.join(", ")}.`;
+  const unavailable = (missing: string[]) =>
+    `Unavailable — could not read ${missing.map(displayMissingLabel).join(", ")}.`;
 
   return [
-    { label: "Net LP Equity", value: money(lpEquity), tone: tone(lpEquity) },
-    { label: "Net Client Equity", value: money(clientEquity), tone: tone(clientEquity) },
-    { label: "Net Crypto", value: money(inputs.netCrypto), tone: tone(inputs.netCrypto) },
-    { label: "Net FAB & MBME", value: money(inputs.fabAndMbme), tone: tone(inputs.fabAndMbme) },
-    { label: "Gold Souq", value: money(inputs.goldSouq), tone: tone(inputs.goldSouq) },
     {
-      label: "FAB Operating Balance",
-      value: money(inputs.fabOperating),
-      tone: tone(inputs.fabOperating),
-      note: cellRef(fabSource, "fabOperating"),
-    },
-    {
-      label: "FAB Holding Balance",
-      value: money(inputs.fabHolding),
-      tone: tone(inputs.fabHolding),
-      note: cellRef(fabSource, "fabHolding"),
-    },
-    {
-      label: "Gross Excess Fund",
+      label: "Gross excess fund",
       value: money(gross.value),
       tone: tone(gross.value),
-      emphasis: true,
-      // Says what it counts because the page also carries "Equity Difference +
-      // PSPs", which counts every PSP plus receivables and will disagree.
-      note: gross.missing.length
-        ? unavailable(gross.missing)
-        : "LP less client equity, plus crypto, FAB & MBME and Gold Souq only",
+      unavailable: gross.missing.length > 0,
+      why: gross.missing.length ? unavailable(gross.missing) : "Equity gap, plus crypto, bank and gold",
     },
     {
-      label: "Net Excess Fund",
+      label: "Net excess fund",
       value: money(net.value),
       tone: tone(net.value),
-      emphasis: true,
-      note: net.missing.length ? unavailable(net.missing) : "Gross Excess Fund plus both FAB accounts",
+      unavailable: net.missing.length > 0,
+      why: net.missing.length ? unavailable(net.missing) : "Gross, plus both company accounts",
+    },
+  ];
+}
+
+// The seven inputs, grouped by where each one came from -- Equity, Wallet and
+// bank, Company accounts -- so a reader can see at a glance which source a
+// figure is standing on.
+export function excessSourceGroups({ inputs, lpEquity, clientEquity }: ExcessFundsSectionProps): ExcessSourceGroup[] {
+  return [
+    {
+      title: "Equity",
+      rows: [
+        { label: "LP", value: money(lpEquity), tone: tone(lpEquity) },
+        { label: "Client", value: money(clientEquity), tone: tone(clientEquity) },
+        // The backend's own netDifference, not lpEquity - clientEquity computed
+        // here. That value already answers this question upstream; subtracting
+        // the two cards again would risk a second, disagreeing answer.
+        { label: "Gap", value: money(inputs.netDifference), tone: tone(inputs.netDifference) },
+      ],
+    },
+    {
+      title: "Wallet and bank",
+      rows: [
+        { label: "Crypto", value: money(inputs.netCrypto), tone: tone(inputs.netCrypto) },
+        { label: "FAB and MBME", value: money(inputs.fabAndMbme), tone: tone(inputs.fabAndMbme) },
+        { label: "Gold Souq", value: money(inputs.goldSouq), tone: tone(inputs.goldSouq) },
+      ],
+    },
+    {
+      title: "Company accounts",
+      rows: [
+        // Named for the entity, not "FAB" -- "FAB Operating Balance" beside
+        // "FAB and MBME" above read as the same account twice. These are
+        // separate companies, from a different sheet.
+        { label: "Skylinks Capital LLC", value: money(inputs.fabOperating), tone: tone(inputs.fabOperating) },
+        { label: "Skylink holdings", value: money(inputs.fabHolding), tone: tone(inputs.fabHolding) },
+      ],
     },
   ];
 }
 
 export function ExcessFundsSection(props: ExcessFundsSectionProps) {
-  const cards = excessFundsCards(props);
-  const toneClass = (t: ExcessCard["tone"]) =>
+  const [gross, net] = excessHeadlines(props);
+  const groups = excessSourceGroups(props);
+
+  const toneClass = (t: Tone) =>
     t === "negative" ? "text-destructive" : t === "positive" ? "text-success" : "text-muted-foreground";
 
   const stale = [
@@ -137,27 +181,78 @@ export function ExcessFundsSection(props: ExcessFundsSectionProps) {
 
   return (
     <div className="pt-2 border-t border-border/30">
-      <div className="text-xs font-semibold text-foreground mb-2">Excess Funds</div>
+      <div className="flex items-baseline justify-between gap-2 mb-2">
+        <div className="text-xs font-semibold text-foreground">Excess funds</div>
+        {asOf.length ? <div className="text-[10px] text-muted-foreground">{asOf.join(" · ")}</div> : null}
+      </div>
+
       {stale.length ? (
         <div className="text-[10px] text-destructive mb-1.5">
           Figures below may be stale — last refresh failed for {stale.join(" and ")}.
         </div>
       ) : null}
-      <div className="grid grid-cols-2 gap-1.5">
-        {cards.map((card) => (
-          <div
-            key={card.label}
-            className={`p-2 rounded-md border ${card.emphasis ? "bg-primary/10 border-primary/20 col-span-2" : "bg-muted/30 border-border/30"}`}
-          >
-            <div className="text-[10px] text-muted-foreground mb-0.5">{card.label}</div>
-            <div className={`font-mono font-semibold text-sm ${toneClass(card.tone)}`}>{card.value}</div>
-            {card.note ? <div className="text-[10px] text-muted-foreground mt-0.5">{card.note}</div> : null}
+
+      {/* The two headline figures, paired when there is room and stacked when
+          there is not -- this is the answer most readers came for; everything
+          below is where it came from.
+
+          auto-fit/minmax rather than a `sm:` breakpoint, because this section
+          renders in two very different widths and only one of them tracks the
+          viewport. On /departments/accounts it is full width, but the card
+          branch of AccountsDepartment mounts the same component inside the home
+          dashboard's lg:col-span-4 column -- roughly a third of the screen. A
+          viewport breakpoint is already satisfied there (the screen is wide;
+          the column is not), so `grid-cols-2` would hand each headline ~150px
+          and -$854,016.16 at 20px mono needs ~144px with no break opportunity.
+          minmax() measures the grid's own width, so the narrow column stacks
+          and the wide page pairs, with no breakpoint to keep in sync. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-1.5 mb-2">
+        {[gross, net].map((h) => (
+          <div key={h.label} className="min-w-0 p-2.5 rounded-md border bg-primary/10 border-primary/20">
+            <div className="text-[10px] text-muted-foreground mb-0.5">{h.label}</div>
+            {/* text-lg, not text-xl: 220px minus the cell's padding leaves
+                ~200px, and the widest figure this section can print
+                (-$100,854,016.16, sixteen characters) is ~173px at 18px mono.
+                truncate is the hard stop behind that arithmetic -- a treasury
+                figure must never quietly render outside its own border. The
+                title carries the untruncated figure if it ever does fire. */}
+            <div
+              className={`font-mono tabular-nums font-semibold text-lg truncate ${toneClass(h.tone)}`}
+              title={h.value}
+            >
+              {h.value}
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-0.5">{h.why}</div>
           </div>
         ))}
       </div>
-      {asOf.length ? (
-        <div className="text-[10px] text-muted-foreground mt-1.5">Sources read: {asOf.join(" · ")}</div>
-      ) : null}
+
+      {/* The seven inputs, grouped by source so it is obvious which figure came
+          from where. Same reasoning as the headlines above: sm:grid-cols-3 was
+          a viewport breakpoint, so the third-width column on a wide screen got
+          three ~110px columns holding "Skylinks Capital LLC" and a figure. */}
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-1.5">
+        {groups.map((group) => (
+          <div key={group.title} className="min-w-0 p-2 rounded-md border bg-muted/30 border-border/30">
+            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide mb-1">
+              {group.title}
+            </div>
+            {group.rows.map((row) => (
+              <div key={row.label} className="flex items-center justify-between gap-2 py-0.5 text-[11px]">
+                {/* min-w-0 so the label can actually shrink (a flex item's
+                    default min-width:auto refuses to go below its text), and
+                    flex-none on the figure so the label yields first. Without
+                    this pair a long entity name pushes the figure out of the
+                    row instead of ellipsing itself. */}
+                <span className="min-w-0 truncate text-muted-foreground" title={row.label}>
+                  {row.label}
+                </span>
+                <span className={`flex-none font-mono tabular-nums ${toneClass(row.tone)}`}>{row.value}</span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
