@@ -86,7 +86,10 @@ export async function mapWithConcurrency<T, R>(items: T[], worker: (item: T, idx
 export async function fetchDealMatch(baseUrl: string, startYmd: string, endYmd: string): Promise<DealMatchResponse> {
   const { from, to } = toUnixRange(startYmd, endYmd);
   const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "false" });
-  const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
+  // baseUrl is the same-origin /api/backend prefix now, which puts this behind
+  // requireSession -- so it carries the dashboard session bearer like the CRM
+  // calls below already do.
+  const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`, { headers: { ...authHeaders() } });
   if (!resp.ok) throw new Error(`DealMatch API ${resp.status}`);
   return (await resp.json()) as DealMatchResponse;
 }

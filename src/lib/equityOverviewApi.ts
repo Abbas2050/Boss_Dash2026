@@ -1,4 +1,5 @@
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
 
 // Deliberately lenient: most fields here are display-only and a zero default is
 // the right answer for them. Do not tighten it -- the treasury-critical fields
@@ -111,7 +112,13 @@ function normalizeDashboard(payload: any, includeItems: boolean): EquityDashboar
 export async function fetchEquityOverviewDashboard(options?: { includeDetails?: boolean }): Promise<EquityDashboard> {
   const includeDetails = options?.includeDetails === true;
   const query = includeDetails ? "" : "?includeDetails=false";
-  const response = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard${query}`);
+  // The path and query string are unchanged; only the base moved onto the
+  // same-origin proxy, which puts this call behind our own session gate — hence
+  // the session bearer that was never needed while the request went straight to
+  // the backend origin.
+  const response = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard${query}`, {
+    headers: { ...authHeaders() },
+  });
 
   if (!response.ok) {
     throw new Error(`EquityOverview ${response.status}`);
@@ -123,7 +130,9 @@ export async function fetchEquityOverviewDashboard(options?: { includeDetails?: 
 }
 
 export async function fetchEquityOverviewNames(): Promise<Record<string, string>> {
-  const response = await fetch(`${BACKEND_BASE_URL}/EquityOverview/names`);
+  const response = await fetch(`${BACKEND_BASE_URL}/EquityOverview/names`, {
+    headers: { ...authHeaders() },
+  });
 
   if (!response.ok) {
     throw new Error(`EquityOverview names ${response.status}`);

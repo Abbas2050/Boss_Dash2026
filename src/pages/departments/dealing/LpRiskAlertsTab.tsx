@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { SignalRConnectionManager, type SignalRStatus } from "@/lib/signalRConnectionManager";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
+import { BACKEND_BASE_URL, DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
 
 const API_BASE = `${BACKEND_BASE_URL}/api/LpRiskAlert`;
 
@@ -245,7 +244,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   const loadAlerts = async () => {
     setGridLoading(true);
     try {
-      const resp = await fetch(API_BASE);
+      const resp = await fetch(API_BASE, { headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = (await resp.json()) as AlertConfig[];
       setAlerts(Array.isArray(data) ? data : []);
@@ -266,7 +265,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await fetch(`${BACKEND_BASE_URL}/RiskScenario/symbols`);
+        const resp = await fetch(`${BACKEND_BASE_URL}/RiskScenario/symbols`, { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = (await resp.json()) as string[];
         setAllSymbols(Array.isArray(data) ? data.filter(Boolean) : []);
@@ -279,7 +278,12 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   // ── SignalR: self-contained subscription to LpRiskAlerts ───────────────────
   useEffect(() => {
     const manager = new SignalRConnectionManager({
-      hubUrl: `${BACKEND_BASE_URL}/ws/dashboard`,
+      // Deliberately NOT BACKEND_BASE_URL. That is now the /api/backend HTTP
+      // proxy, and a fetch-based proxy cannot carry a websocket upgrade, so the
+      // hub keeps talking to the backend origin directly. Live alerts stay
+      // broken until websocket auth is solved; failing here in the open is the
+      // intended state.
+      hubUrl: DASHBOARD_HUB_URL,
       trackedEvents: ["LpRiskAlerts"],
       // No accessTokenFactory: the backend hub's negotiate endpoint answers
       // unauthenticated. The old factory fetched /api/signalr/token, which
@@ -329,7 +333,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   const toggleEnabled = async (row: AlertConfig) => {
     const verb = row.isEnabled ? "disable" : "enable";
     try {
-      const resp = await fetch(`${API_BASE}/${row.id}/${verb}`, { method: "POST" });
+      const resp = await fetch(`${API_BASE}/${row.id}/${verb}`, { method: "POST", headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(await resp.text());
       showMsg(`${verb === "enable" ? "Enabled" : "Disabled"} ${row.name}`, true);
       void loadAlerts();
@@ -341,7 +345,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
   const deleteAlert = async (row: AlertConfig) => {
     if (!window.confirm(`Delete alert "${row.name}"?`)) return;
     try {
-      const resp = await fetch(`${API_BASE}/${row.id}`, { method: "DELETE" });
+      const resp = await fetch(`${API_BASE}/${row.id}`, { method: "DELETE", headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(await resp.text());
       showMsg(`Deleted ${row.name}`, true);
       void loadAlerts();
@@ -431,7 +435,7 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
     try {
       const resp = await fetch(form.id ? `${API_BASE}/${form.id}` : API_BASE, {
         method: form.id ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
       if (!resp.ok) {

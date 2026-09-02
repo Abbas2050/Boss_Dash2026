@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
 
 // ── formatting helpers ──────────────────────────────────────────────────────
 
@@ -290,7 +289,7 @@ export function SlippageReportTab({ refreshKey }: { refreshKey: number }) {
       const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: group || "*" });
       if (symbol.trim()) params.set("symbol", symbol.trim());
       if (login.trim()) params.set("login", login.trim());
-      const resp = await fetch(`${BACKEND_BASE_URL}/SlippageReport/Run?${params.toString()}`);
+      const resp = await fetch(`${BACKEND_BASE_URL}/SlippageReport/Run?${params.toString()}`, { headers: { ...authHeaders() } });
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
         throw new Error(`Error ${resp.status}${txt ? `: ${txt}` : ""}`);

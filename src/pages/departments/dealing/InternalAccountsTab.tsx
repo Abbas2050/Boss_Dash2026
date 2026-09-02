@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { authHeaders } from "@/lib/auth";
 
 type InternalAccount = {
   id: number;
@@ -50,13 +51,16 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
   const [form, setForm] = useState<AccountForm>(EMPTY_FORM);
   const [editingId, setEditingId] = useState<number | null>(null);
 
+  // backendBaseUrl is now the same-origin /api/backend prefix, so these calls
+  // pass through our own requireSession gate before the proxy forwards them --
+  // every one of them therefore carries the dashboard session bearer.
   const api = `${backendBaseUrl}/api/internal-accounts`;
 
   const load = async () => {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch(`${api}?all=true`);
+      const resp = await fetch(`${api}?all=true`, { headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(`Internal accounts ${resp.status}`);
       const data = (await resp.json()) as InternalAccount[];
       // Coerce with !! so a field the API doesn't send yet (excludeFromSwaps
@@ -100,7 +104,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
     try {
       const resp = await fetch(api, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           mt5Login: login,
           label: form.label.trim(),
@@ -130,7 +134,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
     try {
       const resp = await fetch(`${api}/${row.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           mt5Login: login,
           label: String(row.label || "").trim(),
@@ -155,7 +159,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
     try {
       const resp = await fetch(`${api}/${row.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ isActive }),
       });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Toggle ${resp.status}`));
@@ -169,7 +173,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
   const deletePermanent = async (row: InternalAccount) => {
     setError(null);
     try {
-      const resp = await fetch(`${api}/${row.id}?permanent=true`, { method: "DELETE" });
+      const resp = await fetch(`${api}/${row.id}?permanent=true`, { method: "DELETE", headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Delete ${resp.status}`));
       setMessage(`Deleted ${row.mt5Login}.`);
       await load();
@@ -181,7 +185,7 @@ export function InternalAccountsTab({ backendBaseUrl, refreshKey }: { backendBas
   const resolveSystems = async () => {
     setError(null);
     try {
-      const resp = await fetch(`${api}/resolve-systems`, { method: "POST" });
+      const resp = await fetch(`${api}/resolve-systems`, { method: "POST", headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Resolve ${resp.status}`));
       const data = (await resp.json()) as { corrected?: number; total?: number };
       setMessage(`Auto-detected systems: corrected ${Number(data?.corrected || 0)} of ${Number(data?.total || 0)} accounts.`);

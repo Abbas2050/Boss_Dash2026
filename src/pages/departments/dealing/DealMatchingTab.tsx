@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { lpCommPerMillion } from "@/lib/dealMatchApi";
+import { authHeaders } from "@/lib/auth";
 
 type Row = Record<string, any>;
 
@@ -1112,7 +1113,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     if (runParams.login) params.set("login", runParams.login);
 
     try {
-      const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
+      const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`, { headers: { ...authHeaders() } });
       if (!resp.ok) {
         const text = await resp.text();
         throw new Error(text || `DealMatch API ${resp.status}`);
@@ -1144,7 +1145,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     if (lastRunParams.login) params.set("login", lastRunParams.login);
 
     try {
-      const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`);
+      const resp = await fetch(`${baseUrl}/DealMatch/Run?${params.toString()}`, { headers: { ...authHeaders() } });
       if (!resp.ok) {
         const text = await resp.text();
         throw new Error(text || `DealMatch details API ${resp.status}`);
@@ -1173,7 +1174,9 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     setClientRevenueDetailLabel(`${selectedLogin} | ${safe(row.name)} | loading...`);
 
     try {
-      const resp = await fetch(`${baseUrl}/DealMatch/ClientRevenueDetail?login=${encodeURIComponent(selectedLogin)}`);
+      const resp = await fetch(`${baseUrl}/DealMatch/ClientRevenueDetail?login=${encodeURIComponent(selectedLogin)}`, {
+        headers: { ...authHeaders() },
+      });
       if (!resp.ok) {
         const text = await resp.text();
         throw new Error(text || `ClientRevenueDetail API ${resp.status}`);

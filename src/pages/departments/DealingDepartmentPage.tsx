@@ -6,7 +6,8 @@ import { getDealsByGroup, getPositionsByGroup, getSummaryByGroup } from "@/lib/d
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/rebateApi";
 import { classifyLpBucket } from "@/lib/lpBuckets";
-import { hasAccess } from "@/lib/auth";
+import { authHeaders, hasAccess } from "@/lib/auth";
+import { BACKEND_BASE_URL, DASHBOARD_HUB_URL } from "@/lib/backendBase";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
@@ -899,13 +900,14 @@ const escapeCsv = (value: string | number | null | undefined) => {
 
 const ALERT_EVENT_SET = new Set<string>(ALERT_EVENT_KEYS as readonly string[]);
 type BonusSubTab = (typeof BONUS_SUB_TABS)[number];
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
-
 const getAlertsHubConfig = () => {
   const explicitTokenUrl = (import.meta as any).env?.VITE_SIGNALR_TOKEN_URL || "";
   const tokenBase = String(explicitTokenUrl).trim();
   return {
-    hubUrl: `${BACKEND_BASE_URL}/ws/dashboard`,
+    // Not BACKEND_BASE_URL: that is the /api/backend HTTP proxy now, and a
+    // fetch-based proxy cannot carry a websocket upgrade. The hub keeps its
+    // direct-origin address so its failure stays visible and honest.
+    hubUrl: DASHBOARD_HUB_URL,
     tokenUrls: tokenBase ? [tokenBase] : [],
   };
 };
@@ -1847,14 +1849,15 @@ export function DealingDepartmentPage() {
     }
 
     const coverageEndpoint = `${BACKEND_BASE_URL}/Coverage/position-match-table`;
-    const hubUrl = `${BACKEND_BASE_URL}/ws/dashboard`;
+    // Websocket, so it bypasses the HTTP proxy and keeps the direct origin.
+    const hubUrl = DASHBOARD_HUB_URL;
     let cancelled = false;
 
     const fetchCoverage = async () => {
       if (cancelled) return;
       setCoverageLoading(true);
       try {
-        const resp = await fetch(coverageEndpoint);
+        const resp = await fetch(coverageEndpoint, { headers: { ...authHeaders() } });
         if (!resp.ok) {
           throw new Error(`Coverage API ${resp.status}`);
         }
@@ -1944,7 +1947,7 @@ export function DealingDepartmentPage() {
 
       setMetricsLoading(true);
       try {
-        const resp = await fetch(metricsDashboardEndpoint);
+        const resp = await fetch(metricsDashboardEndpoint, { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(describeRateLimit(resp, "Metrics dashboard"));
 
         const dashboard = (await resp.json()) as Partial<MetricsData & EquitySummaryData>;
@@ -1974,7 +1977,7 @@ export function DealingDepartmentPage() {
         // show a dash while the withdrawable row above keeps working. A dash is
         // honest; a zero would read as a real figure.
         try {
-          const equityResp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`);
+          const equityResp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`, { headers: { ...authHeaders() } });
           if (!equityResp.ok) throw new Error(describeRateLimit(equityResp, "Equity overview"));
           type EquityItem = { equity?: unknown; credit?: unknown; withdrawableEquity?: unknown };
           const payload = (await equityResp.json()) as {
@@ -2030,7 +2033,8 @@ export function DealingDepartmentPage() {
     }
 
     const connection = new HubConnectionBuilder()
-      .withUrl(`${BACKEND_BASE_URL}/ws/dashboard`)
+      // Websocket, so it bypasses the HTTP proxy and keeps the direct origin.
+      .withUrl(DASHBOARD_HUB_URL)
       .withAutomaticReconnect([0, 1000, 2000, 5000])
       .configureLogging(LogLevel.None)
       .build();
@@ -2087,7 +2091,7 @@ export function DealingDepartmentPage() {
       setContractSizesLoading(true);
       setContractSizesError(null);
       try {
-        const resp = await fetch(endpoint);
+        const resp = await fetch(endpoint, { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(`ContractSize ${resp.status}`);
         const data = (await resp.json()) as ContractSizeEntry[];
         if (cancelled) return;
@@ -2120,7 +2124,7 @@ export function DealingDepartmentPage() {
     }
     const endpoint = `${BACKEND_BASE_URL}/api/ContractSize/detect/${encodeURIComponent(symbol)}`;
     try {
-      const resp = await fetch(endpoint);
+      const resp = await fetch(endpoint, { headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(`Detect ${resp.status}`);
       const data = (await resp.json()) as Partial<ContractSizeDetectResponse>;
       setContractClientCsInput(Number(data.clientContractSize || 0) > 0 ? String(data.clientContractSize) : "");
@@ -2147,7 +2151,7 @@ export function DealingDepartmentPage() {
     try {
       const resp = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ symbol, clientContractSize, lpContractSize }),
       });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Add ${resp.status}`));
@@ -2172,7 +2176,7 @@ export function DealingDepartmentPage() {
     try {
       const resp = await fetch(endpoint, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ symbol: "", clientContractSize, lpContractSize }),
       });
       if (!resp.ok) throw new Error(await resp.text().catch(() => `Update ${resp.status}`));
@@ -2186,7 +2190,7 @@ export function DealingDepartmentPage() {
   const deleteContractSizeEntry = async (id: number) => {
     const endpoint = `${BACKEND_BASE_URL}/api/ContractSize/${id}`;
     try {
-      const resp = await fetch(endpoint, { method: "DELETE" });
+      const resp = await fetch(endpoint, { method: "DELETE", headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(`Delete ${resp.status}`);
       setContractSizesRefreshKey((k) => k + 1);
     } catch (e: any) {
@@ -2207,7 +2211,7 @@ export function DealingDepartmentPage() {
       if (cancelled) return;
       setSwapLoading(true);
       try {
-        const resp = await fetch(endpoint);
+        const resp = await fetch(endpoint, { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(`Swap API ${resp.status}`);
         const data = (await resp.json()) as SwapPosition[];
         if (cancelled) return;
@@ -2331,7 +2335,7 @@ export function DealingDepartmentPage() {
     try {
       const resp = await fetch(endpoint, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           customStartDate: `${customStartDate}T00:00:00Z`,
         }),
@@ -2387,10 +2391,10 @@ export function DealingDepartmentPage() {
         const historyEndpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${historyTimestamps.from}&to=${historyTimestamps.to}`;
 
         const [coverageResp, metricsDashboardResp, swapResp, historyResp] = await Promise.allSettled([
-          fetch(coverageEndpoint),
-          fetch(metricsDashboardEndpoint),
-          fetch(swapEndpoint),
-          fetch(historyEndpoint),
+          fetch(coverageEndpoint, { headers: { ...authHeaders() } }),
+          fetch(metricsDashboardEndpoint, { headers: { ...authHeaders() } }),
+          fetch(swapEndpoint, { headers: { ...authHeaders() } }),
+          fetch(historyEndpoint, { headers: { ...authHeaders() } }),
         ]);
 
         const nextData: DealingOverviewData = {
@@ -2584,7 +2588,7 @@ export function DealingDepartmentPage() {
 
     const loadLpAccounts = async () => {
       try {
-        const resp = await fetch(endpoint);
+        const resp = await fetch(endpoint, { headers: { ...authHeaders() } });
         if (!resp.ok) return;
         const data = (await resp.json()) as LpAccount[];
         if (cancelled) return;
@@ -2639,7 +2643,7 @@ export function DealingDepartmentPage() {
           ? loginParts.map((login) => `${historyBase}/Deal/GetTransactions?${buildDealTransactionsQuery(from, to, login)}`)
           : [`${historyBase}/Deal/GetTransactions?${buildDealTransactionsQuery(from, to)}`];
 
-        const responses = await Promise.all(endpoints.map((endpoint) => fetch(endpoint)));
+        const responses = await Promise.all(endpoints.map((endpoint) => fetch(endpoint, { headers: { ...authHeaders() } })));
         for (const resp of responses) {
           if (!resp.ok) throw new Error(describeRateLimit(resp, "Deal/GetTransactions"));
         }
@@ -2764,7 +2768,7 @@ export function DealingDepartmentPage() {
         } else if (loginParts.length > 1) {
           params.set("logins", loginParts.join(","));
         }
-        const resp = await fetch(`${BACKEND_BASE_URL}/Transactions/history?${params.toString()}`, { cache: "no-store" });
+        const resp = await fetch(`${BACKEND_BASE_URL}/Transactions/history?${params.toString()}`, { cache: "no-store", headers: { ...authHeaders() } });
         if (!resp.ok) {
           const text = await resp.text().catch(() => "");
           throw new Error(`Error ${resp.status}${text ? `: ${text}` : ""}`);
@@ -2802,6 +2806,7 @@ export function DealingDepartmentPage() {
         const resp = await fetch(endpoint, {
           headers: {
             Accept: "application/json",
+            ...authHeaders(),
           },
         });
         const rawBody = await resp.text();
@@ -2857,19 +2862,19 @@ export function DealingDepartmentPage() {
       setBonusLoading(true);
       setBonusError(null);
       try {
-        const requests: Promise<Response>[] = [fetch(dashboardEndpoint)];
+        const requests: Promise<Response>[] = [fetch(dashboardEndpoint, { headers: { ...authHeaders() } })];
         if (bonusSubTab === "Bonus Equity") {
-          requests.push(fetch(statusEndpoint));
-          requests.push(fetch(pnlSummaryEndpoint));
+          requests.push(fetch(statusEndpoint, { headers: { ...authHeaders() } }));
+          requests.push(fetch(pnlSummaryEndpoint, { headers: { ...authHeaders() } }));
         }
         if (bonusSubTab === "Bonus PNL") {
-          requests.push(fetch(pnlSummaryEndpoint));
+          requests.push(fetch(pnlSummaryEndpoint, { headers: { ...authHeaders() } }));
           const params = new URLSearchParams({
             from: toYmd(fromDate),
             to: toYmd(toDate),
           });
           const pnlSmartEndpoint = `${BACKEND_BASE_URL}/Bonus/pnl-smart?${params}`;
-          requests.push(fetch(pnlSmartEndpoint));
+          requests.push(fetch(pnlSmartEndpoint, { headers: { ...authHeaders() } }));
         }
 
         const settled = await Promise.allSettled(requests);
@@ -2916,7 +2921,7 @@ export function DealingDepartmentPage() {
             // Background fetch HWM monthly-report for HWM-adjusted values
             setBonusPnlMonthlyReport(null);
             const hwmEndpoint = `${BACKEND_BASE_URL}/Bonus/pnl-monthly-report?from=${toYmd(fromDate)}`;
-            fetch(hwmEndpoint)
+            fetch(hwmEndpoint, { headers: { ...authHeaders() } })
               .then((r) => (r.ok ? r.json() : null))
               .then((hwmData) => {
                 if (!cancelled && hwmData?.months?.length > 0) {

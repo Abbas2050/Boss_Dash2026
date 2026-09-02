@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Camera, Maximize2, Minimize2 } from "lucide-react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
 
 type ClientRiskRow = {
   lp?: string;
@@ -53,7 +55,7 @@ type ClientRiskResponse = {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
+
 
 const formatNumber = (value: number | undefined | null, digits = 2) => {
   const n = Number(value);
@@ -170,7 +172,7 @@ export function ClientRiskScenarioTab({ refreshKey }: { refreshKey: number }) {
 
   const loadSymbols = async () => {
     try {
-      const resp = await fetch(`${BACKEND_BASE_URL}/RiskScenario/symbols`);
+      const resp = await fetch(`${BACKEND_BASE_URL}/RiskScenario/symbols`, { headers: { ...authHeaders() } });
       if (!resp.ok) throw new Error(`RiskScenario symbols ${resp.status}`);
       const payload = (await resp.json()) as string[];
       const sorted = (Array.isArray(payload) ? payload : []).filter(Boolean).sort((a, b) => a.localeCompare(b));
@@ -218,7 +220,7 @@ export function ClientRiskScenarioTab({ refreshKey }: { refreshKey: number }) {
     try {
       const resp = await fetch(`${BACKEND_BASE_URL}/api/ClientRiskScenario/analyze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({
           symbol: selectedSymbols[0],
           symbols: selectedSymbols,

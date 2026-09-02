@@ -1,3 +1,9 @@
+// The `new URL(endpoint, window.location.origin)` calls below are the shape
+// backendBase.ts sanctions: BACKEND_BASE_URL is a same-origin path prefix, so it
+// needs a base to resolve against and must never be parsed as an absolute URL.
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
+
 export interface GroupSummaryResponse {
   fromTimestamp: number;
   fromDate: string;
@@ -54,8 +60,6 @@ export interface GroupDeal {
   storage: number;
 }
 
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || 'https://api.skylinkscapital.com').replace(/\/+$/, '');
-
 const toNumber = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -83,6 +87,7 @@ export async function getSummaryByGroup(params: {
   const response = await fetch(url.toString(), {
     headers: {
       accept: 'text/plain',
+      ...authHeaders(),
     },
   });
 
@@ -132,6 +137,7 @@ export async function getPositionsByGroup(params: { group: string }): Promise<Gr
   const response = await fetch(url.toString(), {
     headers: {
       accept: 'text/plain',
+      ...authHeaders(),
     },
   });
 
@@ -166,6 +172,7 @@ export async function getDealsByGroup(params: {
   const response = await fetch(url.toString(), {
     headers: {
       accept: 'text/plain',
+      ...authHeaders(),
     },
   });
 

@@ -15,7 +15,9 @@
 //   - a variable spread (`...headers`) where that variable was assigned
 //     `authHeaders()` earlier in the file (e.g. auth.ts's logout())
 //   - a named helper function used as the whole `headers` value, whose body
-//     calls `authHeaders()` (e.g. ticketsApi.ts's crmHeaders())
+//     calls `authHeaders()` (e.g. ticketsApi.ts's crmHeaders()), or a header
+//     OBJECT assigned to a const and reused across calls (AccountsDepartment's
+//     `backendHeaders`)
 //   - a manually built `Authorization: Bearer <token>` header sourced from
 //     getAuthToken() (agentApi.ts's pattern, equivalent to authHeaders())
 //
@@ -37,14 +39,22 @@
 //          that is itself a literal "/api" or "/rest" string (the SignalR
 //          access-token-factory pattern in useAccountAlerts.ts, WSTestPage.tsx
 //          and AlertsHubProvider.tsx).
-//      It deliberately does NOT resolve arbitrary variable indirection (e.g.
-//      DealingDepartmentPage.tsx's many `const endpoint = ...` reused across
-//      functions, or `API_BASE`/`api` constants built from a BACKEND_BASE_URL
-//      that falls back to an absolute external origin such as
-//      https://api.skylinkscapital.com). Those either resolve to a genuinely
-//      different origin in production (out of scope for this app's gate) or
-//      are too ambiguous to resolve correctly by text matching alone; they
-//      were instead checked by hand (see .superpowers/sdd/final-review-fix-report.md).
+//      (d) built on BACKEND_BASE_URL from @/lib/backendBase. That constant used
+//          to fall back to the backend's own origin, which put those calls on a
+//          genuinely different host and so outside this gate. It is now the
+//          same-origin prefix "/api/backend", which sits UNDER the deny-by-
+//          default gate like any other /api path -- so `fetch(`${BACKEND_BASE_URL}
+//          /Metrics/dashboard`)` is in scope, and so is one extra hop of
+//          indirection through a const built the same way (`API_BASE`, `api`,
+//          `endpoint`, `historyBase`, and the many `const endpoint = ...` in
+//          DealingDepartmentPage.tsx).
+//      It still deliberately does NOT chase a base that arrives as a function
+//      PARAMETER or a component PROP -- DealMatchingTab's `baseUrl`,
+//      InternalAccountsTab's `backendBaseUrl`, dealMatchApi's `fetchDealMatch
+//      (baseUrl, ...)`. Whether those are same-origin depends on the caller, and
+//      guessing would make this scan lie in one direction or the other. Their
+//      only caller passes BACKEND_BASE_URL and they were fixed by hand; see
+//      .superpowers/sdd/backend-rewire-2-report.md.
 //   2. It looks for `fetch(` call sites literally; a wrapper such as
 //      clientProfileApi.ts's `fetchJson()` is not itself pattern-matched, but
 //      the native `fetch(...)` call inside its definition is, so that file is
@@ -116,6 +126,24 @@ function literalStartsGuarded(text: string): boolean {
   return /^["'`](\/api|\/rest)(\/|["'`?]|$)/.test(text.trim());
 }
 
+// `${BACKEND_BASE_URL}/Metrics/dashboard` and friends. BACKEND_BASE_URL is the
+// literal string "/api/backend" (backendBase.ts pins it, and backendBase.test.ts
+// holds it there), so anything rooted at it is a same-origin /api path.
+function startsWithBackendBase(text: string): boolean {
+  return /^`\$\{\s*BACKEND_BASE_URL\s*\}/.test(text.trim());
+}
+
+// One hop of indirection: `const API_BASE = `${BACKEND_BASE_URL}/api/LpRiskAlert``
+// then `fetch(`${API_BASE}/${row.id}`)`. Deeper chains are not followed; they do
+// not occur, and a scan that pretended to follow them would be guessing.
+function resolvesToBackendBase(text: string, source: string): boolean {
+  const trimmed = text.trim();
+  if (startsWithBackendBase(trimmed)) return true;
+  const rooted = /^`?\$\{\s*([A-Za-z_$][\w$]*)\s*\}/.exec(trimmed) || /^([A-Za-z_$][\w$]*)$/.exec(trimmed);
+  if (!rooted) return false;
+  return findVarAssignments(source, rooted[1]).some((a) => startsWithBackendBase(a.rhs));
+}
+
 function rhsHasGuardedFallback(rhs: string): boolean {
   return /["'`](\/api|\/rest)[^"'`]*["'`]/.test(rhs);
 }
@@ -170,6 +198,9 @@ function findUnguardedFetchCalls(): string[] {
       let guarded = false;
       if (/^["'`]/.test(urlArg) && literalStartsGuarded(urlArg)) {
         guarded = true;
+      } else if (resolvesToBackendBase(urlArg, source)) {
+        // Same-origin /api/backend, reached through the proxy prefix.
+        guarded = true;
       } else {
         const apiUrlCallMatch = /^apiUrl\s*\(([\s\S]*)\)$/.exec(urlArg);
         if (apiUrlCallMatch && hasRelativeApiUrl) {
@@ -211,6 +242,18 @@ function findUnguardedFetchCalls(): string[] {
         if (helperMatch) {
           const body = extractHelperBody(source, helperMatch[1]);
           if (/authHeaders\s*\(\s*\)/.test(body)) hasAuthViaHelper = true;
+          // `headers: <ident>` where <ident> is not a function but a header
+          // OBJECT built once and reused across several calls -- e.g.
+          // AccountsDepartment.tsx's `const backendHeaders = { Accept: ...,
+          // ...authHeaders() }` shared by four Promise.allSettled fetches.
+          // extractHelperBody only knows how to find function bodies, so
+          // without this the shared-object form reads as unguarded when it is
+          // the safest shape of the lot.
+          if (!hasAuthViaHelper) {
+            hasAuthViaHelper = findVarAssignments(source, helperMatch[1]).some((a) =>
+              /authHeaders\s*\(\s*\)/.test(a.rhs),
+            );
+          }
         }
         const spreadNames = [...callText.matchAll(/\.\.\.([A-Za-z_$][\w$]*)/g)].map((m) => m[1]);
         for (const name of spreadNames) {

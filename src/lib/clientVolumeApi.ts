@@ -1,3 +1,6 @@
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
+
 export type VolumeRangePreset = "today" | "yesterday" | "week" | "month";
 
 /**
@@ -40,9 +43,6 @@ export function resolveVolumeRange(preset: VolumeRangePreset, now: Date): { from
   return { from: ymd, to: ymd };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const BACKEND_BASE_URL = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "https://api.skylinkscapital.com").replace(/\/+$/, "");
-
 export type ClientVolumeDay = {
   date: string;
   lots: number;
@@ -73,7 +73,12 @@ export async function fetchClientVolume(params: {
     group: params.group ?? "*",
   });
 
-  const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/Run?${query.toString()}`, { signal: params.signal });
+  // Same path and query as before; the base is now our same-origin proxy, which
+  // is gated by requireSession, so the dashboard's own bearer has to ride along.
+  const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/Run?${query.toString()}`, {
+    headers: { ...authHeaders() },
+    signal: params.signal,
+  });
   if (!resp.ok) throw new Error(`ClientVolume/Run failed (${resp.status})`);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

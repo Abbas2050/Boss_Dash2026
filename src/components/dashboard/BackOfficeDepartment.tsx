@@ -39,7 +39,8 @@ import { formatDateTimeForAPI, getDubaiDate, getDubaiDayEnd, getDubaiDayStart, f
 import { fetchWalletBalances } from '@/lib/walletApi';
 import { SortableTable, type SortableTableColumn } from '@/components/ui/SortableTable';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { getCurrentUser } from '@/lib/auth';
+import { authHeaders, getCurrentUser } from '@/lib/auth';
+import { BACKEND_BASE_URL } from '@/lib/backendBase';
 import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from '@/lib/rebateApi';
 import { getRateForSymbol, normalizeRebateSymbol } from '@/pages/departments/dealing/rebateUtils';
 import { aggregateRealEquityByLpBucket, EMPTY_LP_BUCKET_TOTALS } from '@/lib/lpBuckets';
@@ -1518,7 +1519,7 @@ export function BackOfficeDepartment({
   useEffect(() => {
     if (variant !== 'full') return;
 
-    const dashboardEndpoint = `${String((import.meta as any).env?.VITE_BACKEND_BASE_URL || 'https://api.skylinkscapital.com').replace(/\/+$/, '')}/Metrics/dashboard`;
+    const dashboardEndpoint = `${BACKEND_BASE_URL}/Metrics/dashboard`;
     let cancelled = false;
     const describeRateLimit = (resp: Response) => {
       if (resp.status !== 429) return `Metrics dashboard ${resp.status}`;
@@ -1533,7 +1534,10 @@ export function BackOfficeDepartment({
       if (!force && now - metricsBucketsRequestRef.current.at < 1200) return;
       metricsBucketsRequestRef.current.at = now;
       try {
-        const res = await fetch(dashboardEndpoint);
+        // Same endpoint path as before, now reached through the same-origin
+        // proxy, which sits behind requireSession -- so it needs our session
+        // bearer as well as the token the proxy attaches for the backend.
+        const res = await fetch(dashboardEndpoint, { headers: { ...authHeaders() } });
         if (!res.ok) throw new Error(describeRateLimit(res));
 
         const dashboard = await res.json();
