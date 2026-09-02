@@ -9,6 +9,14 @@ export interface WalletWidgetEntry {
   balance: number;
   currencies?: Record<string, unknown> | string[];
   status?: string;
+  // wallet/pspClients.js + wallet/walletMonitor.js: holdings the provider
+  // reports in a non-USD currency with no exchange rate attached. `balance`
+  // deliberately excludes these -- pricing them here would mean this
+  // dashboard picking its own exchange rate, which would then drift from the
+  // provider's own screen at every refresh. Carried through so the UI can
+  // name what a figure leaves out instead of just disagreeing with the
+  // provider silently.
+  unvalued?: { currency: string; amount: number }[];
 }
 
 export interface WalletBalancesResponse {

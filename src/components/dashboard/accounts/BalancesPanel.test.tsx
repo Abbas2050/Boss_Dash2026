@@ -8,7 +8,13 @@ const ORDER = [
   { key: "googlesheets_fab", label: "FAB Bank", group: "bank" },
 ] as const;
 
-const w = (id: string, balance: number, status = "ok", name?: string) => ({ id, name: name ?? id, balance, status });
+const w = (
+  id: string,
+  balance: number,
+  status = "ok",
+  name?: string,
+  unvalued?: { currency: string; amount: number }[],
+) => ({ id, name: name ?? id, balance, status, unvalued });
 
 const props = (widgets: ReturnType<typeof w>[], totalBalance = 0) =>
   ({ widgets, totalBalance, reportDate: "2026-09-01", order: ORDER }) as never;
@@ -91,5 +97,51 @@ describe("the subtotal agrees with the rows it sums", () => {
     const { crypto } = balancesRows(props([w("ownbit", 0)]));
     expect(crypto.map((r) => r.kind)).toEqual(["row", "subtotal"]);
     expect(crypto[1].value).toBe("$0.00");
+  });
+});
+
+describe("unvalued holdings the provider gives no USD price for", () => {
+  // wallet/pspClients.js + wallet/walletMonitor.js: the provider's own screen
+  // is higher than ours by exactly this ETH's worth because their API hands
+  // back no exchange rate for it. The row's value stays what the backend
+  // reported; the note just says what was left out of it.
+  it("names the currency and amount when one holding is unvalued", () => {
+    const { bank } = balancesRows(
+      props([w("googlesheets_goldsouq", 184.46, "ok", undefined, [{ currency: "ETH", amount: 0.00288773 }])]),
+    );
+    expect(bank[0].note).toBe("excludes 0.00288773 ETH");
+    expect(bank[0].value).toBe("$184.46");
+  });
+
+  it("adds no note when a widget has no unvalued holdings", () => {
+    const { bank } = balancesRows(props([w("googlesheets_goldsouq", 184.46)]));
+    expect(bank[0].note).toBeUndefined();
+  });
+
+  it("names two unvalued holdings without a run-on", () => {
+    const { bank } = balancesRows(
+      props([
+        w("googlesheets_goldsouq", 184.46, "ok", undefined, [
+          { currency: "ETH", amount: 0.00288773 },
+          { currency: "BTC", amount: 0.5 },
+        ]),
+      ]),
+    );
+    expect(bank[0].note).toBe("excludes 0.00288773 ETH and 0.5 BTC");
+  });
+
+  it("does not treat a zero-amount unvalued entry as an exclusion", () => {
+    const { bank } = balancesRows(
+      props([w("googlesheets_goldsouq", 184.46, "ok", undefined, [{ currency: "ETH", amount: 0 }])]),
+    );
+    expect(bank[0].note).toBeUndefined();
+  });
+
+  it("leaves the row's own value unchanged whether or not it carries a note", () => {
+    const withNote = balancesRows(
+      props([w("googlesheets_goldsouq", 184.46, "ok", undefined, [{ currency: "ETH", amount: 0.00288773 }])]),
+    ).bank[0];
+    const withoutNote = balancesRows(props([w("googlesheets_goldsouq", 184.46)])).bank[0];
+    expect(withNote.value).toBe(withoutNote.value);
   });
 });

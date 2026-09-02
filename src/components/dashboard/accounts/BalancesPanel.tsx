@@ -20,6 +20,12 @@ export interface BalancesRow {
   value: string;
   failed: boolean;
   kind: "row" | "subtotal" | "total";
+  // Names what `value` leaves out (e.g. "excludes 0.00288773 ETH"), so a
+  // provider figure that looks lower than the provider's own screen explains
+  // itself instead of reading as a discrepancy. Undefined -- never an empty
+  // string -- when the widget carried no unvalued holdings, so the row
+  // renders no extra line at all.
+  note?: string;
 }
 
 export interface BalancesPanelProps {
@@ -35,6 +41,22 @@ export interface BalancesPanelProps {
 function money(value: number): string {
   const text = Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   return value < 0 ? `-$${text}` : `$${text}`;
+}
+
+// The provider's API returns bare amounts for these holdings with no USD
+// value attached (see WalletWidgetEntry.unvalued) -- pricing them here would
+// mean this dashboard adopting its own exchange rate, which would then drift
+// from the provider's own screen at every refresh. So the row keeps its
+// provider-agreeing total and this note just names what was left out of it.
+// A zero amount is not an exclusion (nothing was left out), so it is
+// filtered rather than displayed as "excludes 0 ETH".
+function unvaluedNote(unvalued: WalletWidgetEntry["unvalued"]): string | undefined {
+  const held = (unvalued ?? []).filter((entry) => entry.amount > 0);
+  if (held.length === 0) return undefined;
+  const parts = held.map((entry) => `${entry.amount} ${entry.currency}`);
+  const list =
+    parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `excludes ${list}`;
 }
 
 function buildGroupRows(
@@ -59,6 +81,7 @@ function buildGroupRows(
       value: money(Number(widget.balance) || 0),
       failed,
       kind: "row",
+      note: unvaluedNote(widget.unvalued),
     });
   }
   return rows;
@@ -124,17 +147,24 @@ export function BalancesPanel(props: BalancesPanelProps) {
             ? "flex items-center justify-between gap-2 px-1 pt-3 mt-1 border-t border-border/60 text-sm"
             : row.kind === "subtotal"
               ? "flex items-center gap-2 px-1 py-1.5 rounded-md bg-secondary/40 text-xs font-medium"
-              : "flex items-center gap-2 px-1 py-1 text-xs"
+              : `flex gap-2 px-1 py-1 text-xs ${row.note ? "items-start" : "items-center"}`
         }
       >
         {row.kind !== "total" && (
           <span
-            className={`h-1.5 w-1.5 rounded-full flex-none ${row.failed ? "bg-destructive" : "bg-success"}`}
+            className={`h-1.5 w-1.5 rounded-full flex-none ${row.note ? "mt-1" : ""} ${row.failed ? "bg-destructive" : "bg-success"}`}
             title={row.failed ? "Balance could not be read" : undefined}
           />
         )}
-        <span className={`flex-1 min-w-0 truncate ${isSpecial ? "text-foreground" : "text-muted-foreground"} ${row.kind === "total" ? "font-semibold" : ""}`}>
-          {row.label}
+        <span className="flex-1 min-w-0 flex flex-col">
+          <span className={`truncate ${isSpecial ? "text-foreground" : "text-muted-foreground"} ${row.kind === "total" ? "font-semibold" : ""}`}>
+            {row.label}
+          </span>
+          {row.note && (
+            // Compact by design: this is a dense ledger, not a card -- one
+            // small line, not a callout.
+            <span className="truncate text-[10px] leading-tight text-muted-foreground/70">{row.note}</span>
+          )}
         </span>
         <span
           className={`font-mono tabular-nums flex-none ${row.kind === "total" ? "font-bold" : row.kind === "subtotal" ? "font-semibold" : ""}`}
