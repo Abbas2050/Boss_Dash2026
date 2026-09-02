@@ -206,7 +206,12 @@ export const LPManagerPage: React.FC = () => {
   async function loadCoverage() {
     setCoverageLoading(true);
     try {
-      const resp = await fetch(apiUrl(`/Coverage/dashboard`), { headers: { Accept: "application/json" } });
+      // apiUrl() prefixes BACKEND_BASE_URL, which is the same-origin
+      // /api/backend proxy now -- behind the session gate, so this needs the
+      // app JWT like the /api/* calls around it.
+      const resp = await fetch(apiUrl(`/Coverage/dashboard`), {
+        headers: { Accept: "application/json", ...authHeaders() },
+      });
       const data = await readJsonOrThrow<CoverageItem[]>(resp, "Load coverage");
       setCoverageRows(Array.isArray(data) ? data : []);
     } catch {

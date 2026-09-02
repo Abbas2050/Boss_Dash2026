@@ -568,11 +568,16 @@ export function AccountsDepartment({
         const swapEndpoint = `${BACKEND_BASE_URL}/Swap/positions`;
         const historyEndpoint = `${BACKEND_BASE_URL}/History/aggregate?from=${fromTs}&to=${toTs}`;
 
+        // BACKEND_BASE_URL is the same-origin /api/backend proxy now, and that
+        // prefix is behind the deny-by-default session gate in
+        // auth/requireSession.js, so all four need the dashboard JWT. The
+        // backend's own Bearer is attached server-side by the proxy.
+        const backendHeaders = { Accept: 'application/json', ...authHeaders() };
         const [coverageResp, metricsResp, swapResp, historyResp] = await Promise.allSettled([
-          fetch(coverageEndpoint),
-          fetch(metricsEndpoint),
-          fetch(swapEndpoint),
-          fetch(historyEndpoint),
+          fetch(coverageEndpoint, { headers: backendHeaders }),
+          fetch(metricsEndpoint, { headers: backendHeaders }),
+          fetch(swapEndpoint, { headers: backendHeaders }),
+          fetch(historyEndpoint, { headers: backendHeaders }),
         ]);
 
         let totalUncovered = 0;

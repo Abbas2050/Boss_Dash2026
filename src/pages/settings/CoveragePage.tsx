@@ -1,4 +1,5 @@
 import { BACKEND_BASE_URL } from "@/lib/backendBase";
+import { authHeaders } from "@/lib/auth";
 import React, { useEffect, useState } from "react";
 
 type Row = any;
@@ -15,7 +16,12 @@ export const CoveragePage: React.FC = () => {
 
   async function refreshFromApi() {
     try {
-      const resp = await fetch(`${BACKEND_BASE_URL}/Coverage/position-match-table`);
+      // BACKEND_BASE_URL is now the same-origin /api/backend proxy, which sits
+      // under the deny-by-default session gate, so this needs the app JWT. The
+      // backend Bearer is attached by the proxy and never exists here.
+      const resp = await fetch(`${BACKEND_BASE_URL}/Coverage/position-match-table`, {
+        headers: { Accept: "application/json", ...authHeaders() },
+      });
       const json = await resp.json();
       setData(json);
       setStatus({ connected: true, last: new Date().toLocaleTimeString() });

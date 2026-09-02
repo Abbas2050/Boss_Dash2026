@@ -122,6 +122,10 @@ export async function fetchPositionsByLogin(login: string | number): Promise<Mt5
   const res = await fetch(url.toString(), {
     headers: {
       accept: "text/plain",
+      // BACKEND_BASE_URL now resolves to the same-origin /api/backend proxy,
+      // which is behind the deny-by-default session gate, so this call needs
+      // the app JWT. The backend's own Bearer is attached by the proxy.
+      ...authHeaders(),
     },
   });
   if (!res.ok) {
@@ -148,6 +152,8 @@ export async function fetchDealsByLogin(params: { login: string | number; from: 
   const res = await fetch(url.toString(), {
     headers: {
       accept: "text/plain",
+      // Same gate as GetPositionsByLogin above.
+      ...authHeaders(),
     },
   });
   if (!res.ok) {

@@ -5,12 +5,65 @@ import os from "os";
 import path from "path";
 import crypto from "crypto";
 import cron from "node-cron";
+import { fetchWithBackendToken } from "../wallet/backendToken.js";
 
 export const BACKEND_BASE_URL = String(
   process.env.BACKEND_API_BASE_URL ||
   process.env.VITE_BACKEND_BASE_URL ||
   "https://api.skylinkscapital.com",
 ).replace(/\/+$/, "");
+
+// Default budget for a backend call. Matches the 45s the report modules were
+// already passing for everything except DealMatch/Run, which is slower than a
+// whole minute and passes its own.
+const BACKEND_FETCH_TIMEOUT_MS = 45_000;
+
+/**
+ * The one way a report module talks to the trading backend.
+ *
+ * WHY THIS EXISTS AT ALL: api.skylinkscapital.com now rejects every request
+ * with 401 invalid_token unless a Bearer minted from BACKEND_API_KEY is
+ * attached. Five report modules make that call, and they have drifted apart
+ * before -- the Deal Match tab and the weekly email disagreed about Net Revenue
+ * for weeks because the same maths was written twice. Writing the
+ * fetch-with-token dance five times would set that up again, this time on the
+ * credential rather than the arithmetic, so it is written once here.
+ *
+ * WHY NOT THE /api/backend PROXY: that proxy exists to keep the token out of
+ * the BROWSER. These modules run in the same Node process that mints the
+ * token, so going out through our own HTTP server would add a hop, a second
+ * timeout budget and a session requirement for no benefit.
+ *
+ * FAILURE BEHAVIOUR IS DELIBERATELY BORING. This resolves with the upstream
+ * Response whatever its status -- it does not throw on a 4xx/5xx and does not
+ * invent a fallback payload -- so each caller's existing `if (!resp.ok) throw`
+ * plus its surrounding try/catch keeps deciding what an outage looks like. A
+ * token failure throws a BackendTokenError out of here, which is an ordinary
+ * rejection landing in that same try/catch, so a missing or rejected
+ * BACKEND_API_KEY renders "section unavailable" exactly like an HTTP 500 does.
+ * It must never become a zero: a zero is indistinguishable from a real figure.
+ *
+ * @param {string} pathOrUrl Path relative to BACKEND_BASE_URL ("/DealMatch/Run?..."),
+ *   or a full URL, which is passed through untouched.
+ */
+export function backendFetch(pathOrUrl, { timeoutMs = BACKEND_FETCH_TIMEOUT_MS, headers = {}, ...init } = {}) {
+  const target = /^https?:\/\//i.test(pathOrUrl)
+    ? pathOrUrl
+    : `${BACKEND_BASE_URL}${String(pathOrUrl).startsWith("/") ? pathOrUrl : `/${pathOrUrl}`}`;
+
+  // The signal is built INSIDE the callback, not once outside it, because
+  // fetchWithBackendToken may run this a second time after refreshing a
+  // rejected token. A signal shared with the first attempt would hand the
+  // retry whatever was left of the original budget -- on DealMatch/Run, which
+  // costs ~40s whatever window it is asked for, that is reliably nothing.
+  return fetchWithBackendToken((token) =>
+    fetch(target, {
+      ...init,
+      headers: { ...headers, Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    }),
+  );
+}
 
 // Where the report emails point when they reference a chart image. Must be the
 // app's public origin, because the reader's mail client fetches it directly.

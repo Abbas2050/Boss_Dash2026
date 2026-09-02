@@ -1,5 +1,5 @@
 import {
-  BACKEND_BASE_URL,
+  backendFetch,
   toYmdUtc,
   alreadySentFor,
   recordSentFor,
@@ -458,8 +458,7 @@ async function buildSlippageChartAttachments(buckets, fromYmd, toYmd) {
 
 async function fetchSlippageRows(fromYmd, toYmd) {
   const params = new URLSearchParams({ group: "*", from: fromYmd, to: toYmd });
-  const runUrl = `${BACKEND_BASE_URL}/SlippageReport/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(45_000) });
+  const resp = await backendFetch(`/SlippageReport/Run?${params.toString()}`, { timeoutMs: 45_000 });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`SlippageReport/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);

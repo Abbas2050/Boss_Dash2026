@@ -1,5 +1,5 @@
 import {
-  BACKEND_BASE_URL,
+  backendFetch,
   toYmdUtc,
   alreadySentFor,
   recordSentFor,
@@ -222,8 +222,7 @@ function fmtDayLabel(ymd) {
 
 async function fetchClientVolume(fromYmd, toYmd) {
   const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
-  const url = `${BACKEND_BASE_URL}/ClientVolume/Run?${params.toString()}`;
-  const resp = await fetch(url, { signal: AbortSignal.timeout(45_000) });
+  const resp = await backendFetch(`/ClientVolume/Run?${params.toString()}`, { timeoutMs: 45_000 });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`ClientVolume/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);
@@ -1231,8 +1230,9 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     lite: "true",
   });
 
-  const runUrl = `${BACKEND_BASE_URL}/DealMatch/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(DEALMATCH_RUN_TIMEOUT_MS) });
+  const resp = await backendFetch(`/DealMatch/Run?${params.toString()}`, {
+    timeoutMs: DEALMATCH_RUN_TIMEOUT_MS,
+  });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`DealMatch/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);
@@ -1351,8 +1351,9 @@ export async function getWeeklyDealMatchDataset({ fromDate, toDate, limit = 100 
     lite: "true",
   });
 
-  const runUrl = `${BACKEND_BASE_URL}/DealMatch/Run?${params.toString()}`;
-  const resp = await fetch(runUrl, { signal: AbortSignal.timeout(DEALMATCH_RUN_TIMEOUT_MS) });
+  const resp = await backendFetch(`/DealMatch/Run?${params.toString()}`, {
+    timeoutMs: DEALMATCH_RUN_TIMEOUT_MS,
+  });
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new Error(`DealMatch/Run HTTP ${resp.status}: ${body.slice(0, 200)}`);

@@ -1,5 +1,5 @@
 import {
-  BACKEND_BASE_URL,
+  backendFetch,
   toUnixRange,
   parseRecipients,
   mapWithConcurrency,
@@ -357,9 +357,7 @@ export function topInstruments(byClientSymbol, limit = 10) {
 
 export async function fetchClientVolume(fromYmd, toYmd) {
   const params = new URLSearchParams({ from: fromYmd, to: toYmd, group: "*" });
-  const resp = await fetch(`${BACKEND_BASE_URL}/ClientVolume/Run?${params}`, {
-    signal: AbortSignal.timeout(60_000),
-  });
+  const resp = await backendFetch(`/ClientVolume/Run?${params}`, { timeoutMs: 60_000 });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const raw = await resp.json();
   return Array.isArray(raw?.byClientSymbol) ? raw.byClientSymbol : [];
@@ -494,7 +492,7 @@ export async function fetchGlance(week) {
     const params = new URLSearchParams({ group: "*", from: String(from), to: String(to), symbol: "", lite: "true" });
     // A week of deals took longer than the original 45s, which is why Total
     // Revenue came back empty on the first live send.
-    const resp = await fetch(`${BACKEND_BASE_URL}/DealMatch/Run?${params}`, { signal: AbortSignal.timeout(180_000) });
+    const resp = await backendFetch(`/DealMatch/Run?${params}`, { timeoutMs: 180_000 });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const report = await resp.json();
     const rows = Array.isArray(report?.clientRevenueSummaries) ? report.clientRevenueSummaries : [];
@@ -536,7 +534,7 @@ export async function fetchEquityPosition() {
   const position = { withdrawable: null, gross: null };
 
   try {
-    const resp = await fetch(`${BACKEND_BASE_URL}/Metrics/dashboard`, { signal: AbortSignal.timeout(45_000) });
+    const resp = await backendFetch(`/Metrics/dashboard`, { timeoutMs: 45_000 });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const raw = await resp.json();
     position.withdrawable = {
@@ -551,7 +549,7 @@ export async function fetchEquityPosition() {
   }
 
   try {
-    const resp = await fetch(`${BACKEND_BASE_URL}/EquityOverview/dashboard`, { signal: AbortSignal.timeout(60_000) });
+    const resp = await backendFetch(`/EquityOverview/dashboard`, { timeoutMs: 60_000 });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const raw = await resp.json();
     const sum = (group, field) =>
