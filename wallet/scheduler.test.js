@@ -58,6 +58,17 @@ function reportWith(overrides = {}) {
 
 const snapshotWith = (overrides) => extractSnapshot(reportWith(overrides));
 
+// Production sums total_balance from the providers' UNROUNDED balances and
+// rounds the sum once at the end, so the total can move a cent while every
+// rounded provider row stays byte-identical. reportWith() adds up the rounded
+// rows and can never produce that, so these fixtures set the total directly --
+// which is the only honest way to reproduce the alert of 2026-09-03.
+function snapshotWithTotal(total, overrides = {}) {
+  const report = reportWith(overrides);
+  report.data.total_balance = total;
+  return extractSnapshot(report);
+}
+
 const keysOf = (changeItems) => changeItems.map((item) => item.key).sort();
 
 describe("wallet alert: a price move is not a balance change", () => {
@@ -214,6 +225,73 @@ describe("wallet alert: a price move is not a balance change", () => {
     expect(state.channels.email.lastSentHash).toBe(hash);
     expect(state.channels.telegram.lastSentHash).toBe(hash);
     expect(state.lastNotifiedHash).toBe(hash);
+  });
+
+  it("says nothing when Total Combined alone slips $650,866.09 -> $650,866.08", () => {
+    // The alert production actually sent, verbatim: one line, no provider row
+    // under it. A sub-cent price drift tipped the single end-of-sum rounding.
+    const before = snapshotWithTotal(650866.09);
+    const after = snapshotWithTotal(650866.08);
+
+    // The email really would have had nothing else in it.
+    expect(keysOf(buildChangeItems(before, after))).toEqual(["total_balance"]);
+
+    const decision = decideChangeItems(before, after);
+    expect(decision.rebaseline).toBe(false);
+    expect(decision.changeItems).toEqual([]);
+  });
+
+  it("alerts on the same cent when the ETH behind it is a different amount", () => {
+    // A deposit far too small to shift LetKnow Pay's rounded row, so the total
+    // is again the only change item -- but the holding moved, so this is money,
+    // not price, and it must not be swallowed by the rule above.
+    const before = snapshotWithTotal(650866.09);
+    const after = snapshotWithTotal(650866.08, {
+      letknowpay: { currencies: { ...LETKNOWPAY_HOLDINGS, ETH: 0.00288874 } },
+    });
+
+    expect(keysOf(buildChangeItems(before, after))).toEqual(["total_balance"]);
+    expect(keysOf(decideChangeItems(before, after).changeItems)).toEqual(["total_balance"]);
+  });
+
+  it("alerts when a sheet row moves while the total moves", () => {
+    // Gold Souq has no holdings to compare, so the total-only rule must never
+    // reach the point of deciding anything here: its own row survives.
+    const before = snapshotWithTotal(650866.09);
+    const after = snapshotWithTotal(650171.13, { googlesheets_goldsouq: { balance: 50000 } });
+
+    const { changeItems } = decideChangeItems(before, after);
+
+    expect(keysOf(changeItems)).toEqual(["googlesheets_goldsouq", "total_balance"]);
+  });
+
+  it("still drops a total whose whole move is explained by a dropped row", () => {
+    // The accounting that already worked, kept honest: Bitpace's holdings move
+    // (its rounded row does not), so the new total-only rule declines this one
+    // and the total has to be dropped the old way -- by its delta matching the
+    // dropped LetKnow Pay row exactly.
+    const before = snapshotWith({});
+    const after = snapshotWith({
+      letknowpay: { balance: 191.37 },
+      bitpace: { currencies: { USDT: 0.437999 } },
+    });
+
+    expect(keysOf(buildChangeItems(before, after))).toEqual(["letknowpay", "total_balance"]);
+    expect(decideChangeItems(before, after).changeItems).toEqual([]);
+  });
+
+  it("re-baselines a total-only move when neither side records holdings", () => {
+    // The saved state on the running server has no holdings at all. A total
+    // that moved across that boundary cannot be shown to be price, so the rule
+    // must not fire -- the migration path takes it instead.
+    const shape = snapshotWith({});
+    const oldBefore = { total_balance: 650866.09, widgets: shape.widgets };
+    const oldAfter = { total_balance: 650866.08, widgets: shape.widgets };
+
+    const decision = decideChangeItems(oldBefore, oldAfter);
+
+    expect(decision.rebaseline).toBe(true);
+    expect(decision.changeItems).toEqual([]);
   });
 
   it("still builds the dollar deltas the email prints", () => {

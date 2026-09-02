@@ -247,6 +247,27 @@ function isPriceOnlyChange(item, previousSnapshot, currentSnapshot) {
   return holdingsKey(previousHoldings) === holdingsKey(currentHoldings);
 }
 
+// Did every provider that can answer the question answer it the same way twice?
+//
+// A provider with no breakdown -- the six sheet rows -- is skipped rather than
+// counted against the answer. It cannot be compared this way, and it does not
+// need to be: any movement in a sheet cell shows up as that row's own change
+// item, which the caller checks separately.
+//
+// A breakdown that appears on one side and not the other is not an answer
+// either, and is treated as movement, because the safe direction here is to
+// send.
+function everyTrackedHoldingIdentical(previousSnapshot, currentSnapshot) {
+  for (const id of TRACKED_WIDGET_IDS) {
+    const previousHoldings = previousSnapshot?.holdings?.[id];
+    const currentHoldings = currentSnapshot?.holdings?.[id];
+    if (!previousHoldings && !currentHoldings) continue;
+    if (!previousHoldings || !currentHoldings) return false;
+    if (holdingsKey(previousHoldings) !== holdingsKey(currentHoldings)) return false;
+  }
+  return true;
+}
+
 // Both noise classes at one seam, so `total_balance` is settled once against
 // everything that was dropped rather than twice against half of it.
 //
@@ -264,15 +285,41 @@ export function filterNoisyChangeItems(changeItems, previousSnapshot, currentSna
   );
 
   const noiseItems = [...apiNoise, ...priceNoise];
-  if (noiseItems.length === 0) return changeItems;
-
   const noiseKeys = new Set(noiseItems.map((item) => item.key));
   const noiseDeltaSum = roundMoney(noiseItems.reduce((sum, item) => sum + (item.delta ?? 0), 0));
 
+  // The total can drift on its own, with no provider row beside it. Production
+  // sent exactly that on 2026-09-03: "Total Combined $650,866.09 -> $650,866.08
+  // (-$0.01)" and not one other line. Provider rows are compared at cent
+  // precision, but the total is summed from the providers' UNROUNDED balances
+  // and rounded once at the very end (walletMonitor.js), so a sub-cent price
+  // drift on LetKnow Pay's ETH can tip that single rounding across a cent
+  // boundary while leaving its own row byte-identical. There is no row to drop,
+  // so there is no delta to account the total against, and it walked straight
+  // through.
+  //
+  // The total is exactly the sum of the tracked providers and nothing else --
+  // it accumulates only each source's own delta. So if no provider's holdings
+  // moved, nothing the total is made of moved, and the only thing left that can
+  // have shifted it is price.
+  //
+  // Both halves are needed. Without the second, a 0.000001 ETH deposit -- too
+  // small to show in the provider's rounded row, but big enough to tip the
+  // total's cent -- would be silenced as drift. Changed holdings mean real
+  // money, however little of it, and the total must survive.
+  const someProviderSurvives = changeItems.some(
+    (item) => item?.key !== 'total_balance' && !noiseKeys.has(item.key),
+  );
+  const totalIsPriceOnly = !someProviderSurvives
+    && everyTrackedHoldingIdentical(previousSnapshot, currentSnapshot);
+
   return changeItems.filter((item) => {
-    // Keep the total only while some part of its movement is still unaccounted
-    // for by the rows that were dropped.
-    if (item?.key === 'total_balance') return roundMoney(item.delta) !== noiseDeltaSum;
+    if (item?.key === 'total_balance') {
+      if (totalIsPriceOnly) return false;
+      // Otherwise keep the total only while some part of its movement is still
+      // unaccounted for by the rows that were dropped.
+      return roundMoney(item.delta) !== noiseDeltaSum;
+    }
     return !noiseKeys.has(item.key);
   });
 }
