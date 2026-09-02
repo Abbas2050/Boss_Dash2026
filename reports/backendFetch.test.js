@@ -21,15 +21,22 @@ import { fetchEquityPosition } from "./summaryCore.js";
 
 const realFetch = globalThis.fetch;
 const realKey = process.env.BACKEND_API_KEY;
+const realClientId = process.env.BACKEND_CLIENT_ID;
 
 beforeEach(() => {
   resetBackendTokenState();
+  // The documented client_credentials exchange needs both halves of the
+  // credential; without the client id backendToken.js refuses to call the
+  // endpoint at all, which is a separate case covered in backendToken.test.js.
+  process.env.BACKEND_CLIENT_ID = "4071";
 });
 
 afterEach(() => {
   globalThis.fetch = realFetch;
   if (realKey === undefined) delete process.env.BACKEND_API_KEY;
   else process.env.BACKEND_API_KEY = realKey;
+  if (realClientId === undefined) delete process.env.BACKEND_CLIENT_ID;
+  else process.env.BACKEND_CLIENT_ID = realClientId;
   resetBackendTokenState();
 });
 
@@ -42,14 +49,13 @@ function stubFetch(calls, { token = "issued-token" } = {}) {
         headers: { "content-type": "application/json" },
       });
     }
-    // backendToken.js's direct-Bearer candidate probes this same endpoint
-    // with the raw BACKEND_API_KEY before ever reaching /oauth/token; reject
-    // that probe (identifiable by the raw key on the Authorization header)
-    // so these tests keep exercising the exchange path they are named for --
-    // the direct-Bearer path itself is covered in wallet/backendToken.test.js.
+    // The backend team's hard rule: the API key is a client_secret for the
+    // token endpoint and must NEVER appear on a data endpoint. Fail loudly
+    // rather than answering, so a regression that puts the long-lived secret
+    // in front of a data route shows up here as a broken test.
     const authHeader = init.headers?.Authorization || init.headers?.authorization;
     if (authHeader === `Bearer ${process.env.BACKEND_API_KEY}`) {
-      return new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 });
+      throw new Error("the raw BACKEND_API_KEY was sent to a data endpoint");
     }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -67,9 +73,6 @@ describe("backendFetch", () => {
     const resp = await backendFetch("/Metrics/dashboard");
     expect(resp.status).toBe(200);
 
-    // The direct-Bearer candidate probes this SAME path first (and is
-    // rejected here so the exchange runs) -- take the LAST call to it, which
-    // is the real, authenticated data request.
     const dataCall = calls.filter((c) => c.url.includes("/Metrics/dashboard")).pop();
     expect(dataCall, "the backend call never happened").toBeTruthy();
     expect(dataCall.init.headers.Authorization).toBe("Bearer issued-token");

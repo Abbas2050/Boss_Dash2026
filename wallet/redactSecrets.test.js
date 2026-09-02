@@ -32,6 +32,27 @@ describe("redactText", () => {
     expect(redacted).not.toContain(signature);
   });
 
+  // The regression: a blanket rule on everything after "Bearer " rewrote the
+  // trading backend's own "Bearer token missing, expired, or revoked." to
+  // "Bearer [REDACTED] missing, expired, or revoked." -- it redacted the WORD
+  // "token" out of THEIR message, which is the whole diagnostic. Redact secret
+  // VALUES, not vocabulary.
+  it("keeps the word 'token' in upstream prose while still removing real credentials", () => {
+    const key = "slc_live_9f3a1c2b4d8e7f60";
+    const accessToken = "abcdef0123456789abcdef0123456789";
+    const secrets = buildSecretList({ BACKEND_API_KEY: key });
+    const message =
+      `Bearer token missing, expired, or revoked. The access token was rejected. ` +
+      `client_secret=${key} access_token=${accessToken}`;
+
+    const redacted = redactText(message, secrets);
+
+    expect(redacted).toContain("Bearer token missing, expired, or revoked.");
+    expect(redacted).toContain("The access token was rejected.");
+    expect(redacted).not.toContain(key);
+    expect(redacted).not.toContain(accessToken);
+  });
+
   it("leaves ordinary error text alone", () => {
     const message = "LetKnow Pay API error: shop temporarily unavailable, HTTP 503";
     expect(redactText(message, [])).toBe(message);

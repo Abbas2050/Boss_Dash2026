@@ -57,11 +57,10 @@ function upstreamReply(status, body = "{}", headers = {}) {
 }
 
 // A token endpoint that always issues one, so these tests are about the proxy
-// rather than about discovery (backendToken.test.js covers discovery,
-// including the direct-Bearer candidate). The direct-Bearer candidate probes
-// the target endpoint directly with the raw key before ever reaching
-// /oauth/token, so that probe is rejected here to keep these tests on the
-// exchange path they were written to exercise.
+// rather than about the exchange (backendToken.test.js covers the documented
+// client_credentials protocol). Anything that is not the token endpoint is
+// refused here: the API key is a client_secret and must never reach a data
+// endpoint, so the proxy has no business calling one with it.
 function tokenFetch(token = "backend-token-xyz") {
   return vi.fn(async (url) => {
     if (!String(url).includes("/oauth/token")) {
@@ -78,11 +77,15 @@ function tokenFetch(token = "backend-token-xyz") {
 beforeEach(() => {
   resetBackendTokenState();
   process.env.BACKEND_API_KEY = KEY;
+  // Both halves of the documented client credential; the exchange refuses to
+  // run without the client id.
+  process.env.BACKEND_CLIENT_ID = "4071";
   process.env.BACKEND_API_BASE_URL = "https://api.skylinkscapital.com";
 });
 
 afterEach(() => {
   delete process.env.BACKEND_API_KEY;
+  delete process.env.BACKEND_CLIENT_ID;
   delete process.env.BACKEND_API_BASE_URL;
 });
 

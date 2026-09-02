@@ -40,13 +40,35 @@ function redactKnownSecrets(text, secrets) {
   return out;
 }
 
+// Does this look like credential MATERIAL, as opposed to an ordinary English
+// word that happens to follow "Bearer" in someone's error prose?
+//
+// This distinction is load-bearing. The backend's own rejection reads "Bearer
+// token missing, expired, or revoked", and a blanket rule on everything after
+// "Bearer " rewrote it to "Bearer [REDACTED] missing, expired, or revoked."
+// -- redacting the WORD "token" out of THEIR message and destroying the only
+// diagnostic the operator had. We redact secret values, not vocabulary.
+//
+// Two cheap signals separate the two, and a real token passes both: minted
+// access tokens here are opaque hex or JWTs, so they are long, and they carry
+// digits, dots, dashes or underscores. A word of prose is short, or is pure
+// letters, or both. Anything that slips past is still caught by the literal
+// scrub of buildSecretList() and by the 32+ hex rule below.
+function looksLikeCredentialMaterial(value) {
+  if (value.length < 12) return false; // "token", "credentials", "auth"
+  if (/^[A-Za-z]+$/.test(value)) return false; // "authentication", "authorization"
+  return true;
+}
+
 // Pattern-based backstop for credential shapes even when the concrete value
 // isn't known ahead of time -- e.g. an HMAC signature computed per-request
 // (never sitting in its own env var) or a key rotated after this process
 // started, so it is no longer in buildSecretList().
 function redactKnownPatterns(text) {
   return text
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [REDACTED]')
+    .replace(/Bearer\s+([A-Za-z0-9._-]+)/gi, (match, value) =>
+      looksLikeCredentialMaterial(value) ? 'Bearer [REDACTED]' : match,
+    )
     // A bare 32+ char hex run is what both an API key and an HMAC-SHA256/512
     // signature look like on the wire; there is nothing else in a PSP
     // balance response that legitimately looks like this.
