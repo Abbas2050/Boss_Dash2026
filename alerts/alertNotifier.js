@@ -88,12 +88,52 @@ export function buildLpMarginEmail(rows) {
   return { subject: `[ALERT] LP Margin — ${rows.length} account(s) below threshold`, html };
 }
 
-export function buildBackendDownEmail() {
+// The two down alerts below describe two different incidents and deliberately
+// share no wording beyond the timestamp. "Data backend unreachable" was sent
+// for a backend that was up and answering every request, and it cost an
+// operator a night looking at a healthy backend: the real fault was that our
+// own hub connection was negotiating without a credential and being refused.
+// Whoever reads these has to be able to tell, from the subject line alone,
+// whether to page the backend team or to check our own configuration.
+
+/** The backend is not answering at all: timeout, DNS, refused socket, 5xx. */
+export function buildBackendDownEmail({ repeat = false } = {}) {
   const when = new Date().toLocaleString("en-GB", { timeZone: "Asia/Dubai" });
+  const still = repeat ? "still " : "";
   return {
-    subject: "[ALERT] Data backend unreachable",
-    html: `<div style="font-family:Arial,sans-serif"><h2 style="color:#c62828">⚠ Data backend unreachable</h2>
-      <p>The dashboard's connection to the data backend could not be re-established after retries.</p>
+    subject: `[ALERT] Data backend ${still}unreachable`,
+    html: `<div style="font-family:Arial,sans-serif"><h2 style="color:#c62828">⚠ Data backend ${still}unreachable</h2>
+      <p>The dashboard cannot reach the data backend at all — the connection timed out, was refused,
+      or the backend answered with a server error. Live LP margin alerts are not being delivered.</p>
+      <p>This is a fault on the backend side or on the network between us and it; there is nothing to
+      change on the dashboard. Check that the backend host is serving, then wait — the dashboard keeps
+      retrying and will email again when the connection is restored.</p>
+      <p style="color:#666">${when} (Asia/Dubai)</p></div>`,
+  };
+}
+
+/**
+ * The backend is up and answering, and is refusing OUR credentials (401/403 on
+ * the hub negotiate, or a refused token exchange). Nothing is wrong with the
+ * backend; something is wrong with our configuration.
+ *
+ * No token, key or credential value appears anywhere in this email. It names
+ * the variables to look at, never their contents.
+ */
+export function buildBackendAuthFailedEmail({ repeat = false } = {}) {
+  const when = new Date().toLocaleString("en-GB", { timeZone: "Asia/Dubai" });
+  const still = repeat ? "still " : "";
+  return {
+    subject: `[ALERT] Data backend ${still}rejecting dashboard credentials`,
+    html: `<div style="font-family:Arial,sans-serif"><h2 style="color:#c62828">⚠ Data backend ${still}rejecting our credentials</h2>
+      <p>The data backend is reachable and answering, but it refused the dashboard's authentication
+      (HTTP 401/403) when opening the live alerts connection. The backend is healthy — the dashboard's
+      credentials are the problem. Live LP margin alerts are not being delivered.</p>
+      <p>Check on the dashboard server: <b>BACKEND_API_KEY</b> and <b>BACKEND_CLIENT_ID</b> (these are
+      exchanged for the short-lived token the connection presents), and <b>SIGNALR_TOKEN</b> if it is
+      set, since an explicit value there overrides the exchange and a stale one will be refused
+      forever. A key that was rotated on the backend side needs to be updated here and the server
+      restarted.</p>
       <p style="color:#666">${when} (Asia/Dubai)</p></div>`,
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffBreaches, nextConnState } from "./alertLogic.js";
+import { classifyHubFailure, diffBreaches, nextConnState, shouldRenotify } from "./alertLogic.js";
 
 describe("diffBreaches", () => {
   const COOLDOWN = 600000; // 10 min
@@ -50,5 +50,49 @@ describe("nextConnState", () => {
   });
   it("up + connected => stays up, no action", () => {
     expect(nextConnState("up", "connected")).toEqual({ state: "up", action: null });
+  });
+});
+
+describe("classifyHubFailure", () => {
+  const withStatus = (status) => Object.assign(new Error(`Status code '${status}'`), { statusCode: status });
+
+  it("calls 401 and 403 an auth failure", () => {
+    expect(classifyHubFailure(withStatus(401))).toBe("auth");
+    expect(classifyHubFailure(withStatus(403))).toBe("auth");
+  });
+  it("calls any other answered status unreachable", () => {
+    expect(classifyHubFailure(withStatus(500))).toBe("unreachable");
+    expect(classifyHubFailure(withStatus(404))).toBe("unreachable");
+  });
+  it("calls a transport failure with no status unreachable", () => {
+    expect(classifyHubFailure(new Error("connect ECONNREFUSED"))).toBe("unreachable");
+    expect(classifyHubFailure(new Error("getaddrinfo ENOTFOUND api.example.com"))).toBe("unreachable");
+    expect(classifyHubFailure(undefined)).toBe("unreachable");
+  });
+  it("treats a refused token exchange as an auth failure", () => {
+    // wallet/backendToken.js throws this when client_credentials is rejected:
+    // the backend is up, our credentials are not accepted.
+    const e = new Error("Could not obtain a backend token");
+    e.name = "BackendTokenError";
+    expect(classifyHubFailure(e)).toBe("auth");
+  });
+  it("reads the status out of the message when the property was lost", () => {
+    expect(classifyHubFailure(new Error("Unauthorized: Status code '401'"))).toBe("auth");
+  });
+});
+
+describe("shouldRenotify", () => {
+  const HOUR = 3600000;
+  it("is false before the interval elapses and true at or after it", () => {
+    expect(shouldRenotify(1000, 1000 + HOUR - 1, HOUR)).toBe(false);
+    expect(shouldRenotify(1000, 1000 + HOUR, HOUR)).toBe(true);
+  });
+  it("is false when nothing has been notified yet", () => {
+    expect(shouldRenotify(null, 10 * HOUR, HOUR)).toBe(false);
+  });
+  it("is false for a non-positive or unusable interval", () => {
+    expect(shouldRenotify(1000, 10 * HOUR, 0)).toBe(false);
+    expect(shouldRenotify(1000, 10 * HOUR, -1)).toBe(false);
+    expect(shouldRenotify(1000, 10 * HOUR, NaN)).toBe(false);
   });
 });
