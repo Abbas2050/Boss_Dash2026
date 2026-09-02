@@ -9,6 +9,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadGoogleSheetsMappingConfig } from './googleSheetsMappingConfig.js';
+import { getUsdRates } from './cryptoRates.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -31,9 +32,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // A substring test such as `code.includes('USD')` is the tempting shortcut and
 // is wrong: it would quietly value any future ticker containing those three
 // letters at par, whatever it actually is. A code this list has never seen is
-// not a dollar -- it is something we cannot value, and it belongs in the
-// `unvalued` list where a person can see it, not folded into a total at a
-// guessed rate.
+// not a dollar -- it is something this function cannot value, and it comes out
+// in the `unvalued` list where a person can see it, not folded into a total at
+// a guessed rate.
+//
+// Since then a SECOND, separate step prices some of what comes out of that
+// list, from a live Binance spot rate (see wallet/cryptoRates.js and
+// applyUsdRates() below). That does not soften this rule and must not be
+// merged into it. Par-by-construction and priced-at-a-rate are different
+// claims with different failure modes, and the row says which is which. In
+// particular: the 1:1 treatment of the stablecoins above stays 1:1 even though
+// a rate for them exists, because the moment we mark USDC to market we are
+// carrying a rate we cannot reconcile against the provider's.
 export const DOLLAR_DENOMINATED_CURRENCIES = new Set([
   'USD',
   // Tether, across every chain the providers settle it on.
@@ -112,6 +122,95 @@ export function valueDollarBalances(rawAmounts) {
   }
 
   return { balance, currencies, unvalued };
+}
+
+/**
+ * Pure: prices whatever it can out of a valuation's `unvalued` list, using a
+ * { CODE: usdRate } map, and hands back the same shape plus a `valued` list.
+ *
+ * Split out from valueDollarBalances() rather than folded into it, and kept
+ * synchronous, because the two answer different questions. valueDollarBalances
+ * answers "what is dollar-denominated by construction", which needs no network
+ * and must never depend on one. This answers "what can a live rate price", and
+ * the rate may or may not have arrived. Keeping them apart is what lets the
+ * failure path below be literally "call this with {}".
+ *
+ * A holding moves out of `unvalued` only when we have a usable number for it:
+ * a finite positive amount AND a finite positive rate. Everything else stays
+ * exactly where valueDollarBalances put it, with `balance` untouched. That is
+ * the direction the defaults have to fall for a treasury figure -- an absent
+ * rate must cost us $6.84 of visible, labelled ETH, never the $184.46 that
+ * already resolved.
+ *
+ * `valued` carries the rate and the derived USD alongside the amount so the
+ * breakdown stays inspectable: the row can say what rate it used, and anyone
+ * reconciling against the provider's screen can see WHERE we disagree instead
+ * of only that we do.
+ */
+export function applyUsdRates(valuation, rates) {
+  const unvalued = [];
+  const valued = [];
+  let balance = valuation?.balance ?? 0;
+
+  for (const entry of valuation?.unvalued ?? []) {
+    const amount = entry?.amount;
+    const rate = rates?.[entry?.currency];
+
+    // A zero holding is not money and is never priced -- it would add $0.00 to
+    // the balance and put a meaningless "includes 0 ETH at $2,367.12" line on
+    // the row. (valueDollarBalances already drops zeros, so this is a guard
+    // for callers that build a valuation by hand, not dead weight.)
+    const priceable =
+      typeof amount === 'number' && Number.isFinite(amount) && amount > 0 &&
+      typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
+
+    if (!priceable) {
+      unvalued.push(entry);
+      continue;
+    }
+
+    const usd = amount * rate;
+    balance += usd;
+    valued.push({ currency: entry.currency, amount, rate, usd });
+  }
+
+  return { ...valuation, balance, unvalued, valued };
+}
+
+/**
+ * Looks up rates for whatever a valuation could not price and applies them.
+ *
+ * The try/catch is the whole point of this function, so it is worth being
+ * explicit about what it buys. getUsdRates() already contains its own
+ * per-code failures, but "already contains" is not a guarantee we should be
+ * betting a treasury total on. If anything at all goes wrong in here -- the
+ * network is down, Binance answers 429, the request times out, the module
+ * throws for a reason nobody predicted -- the catch hands applyUsdRates an
+ * empty rate map, which by construction returns today's exact behaviour: the
+ * holding stays in `unvalued`, `balance` still holds only the dollar-pegged
+ * sum, and the row still says what it excludes. A price feed hiccup must never
+ * be able to zero a holding, discard the dollar balances that did resolve, or
+ * make the whole PSP read as failed. Losing $184.46 to save $6.84 would be a
+ * far worse bug than the one this change fixes.
+ */
+export async function withUsdRates(valuation) {
+  const codes = (valuation?.unvalued ?? [])
+    .filter((entry) => typeof entry?.amount === 'number' && entry.amount > 0)
+    .map((entry) => entry.currency);
+
+  // Nothing to price: skip the call entirely rather than spend a request (and
+  // a timeout's worth of latency) on an empty question.
+  if (codes.length === 0) return applyUsdRates(valuation, {});
+
+  let rates = {};
+  try {
+    rates = await getUsdRates(codes);
+  } catch (e) {
+    console.warn('[cryptoRates] rate lookup failed; leaving holdings unvalued:', e?.message || e);
+    rates = {};
+  }
+
+  return applyUsdRates(valuation, rates);
 }
 
 // ─────────────────────────────────────────────────────────
@@ -247,9 +346,13 @@ export class BitpaceClient {
     return valueDollarBalances(rawAmounts);
   }
 
+  // deriveBalance() stays pure and synchronous -- the psp-debug route depends
+  // on being able to show what we derive from a raw body with no network of
+  // its own. The rate lookup is layered on here, in the production path, and
+  // degrades to exactly deriveBalance()'s answer if it cannot get a price.
   async getBalance() {
     const data = await this.getRawBalances();
-    return BitpaceClient.deriveBalance(data);
+    return withUsdRates(BitpaceClient.deriveBalance(data));
   }
 }
 
@@ -403,9 +506,12 @@ export class LetKnowPayClient {
     return valueDollarBalances(data?.balances ?? {});
   }
 
+  // Same layering as Bitpace: deriveBalance() stays pure for psp-debug, and
+  // the ETH that made this row read $184.46 against LetKnow's own $191.24 gets
+  // priced here, where a failed lookup can fall back to that same pure answer.
   async getBalance() {
     const data = await this.getRawBalances();
-    return LetKnowPayClient.deriveBalance(data);
+    return withUsdRates(LetKnowPayClient.deriveBalance(data));
   }
 }
 

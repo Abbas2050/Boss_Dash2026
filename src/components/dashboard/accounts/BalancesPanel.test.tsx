@@ -14,7 +14,8 @@ const w = (
   status = "ok",
   name?: string,
   unvalued?: { currency: string; amount: number }[],
-) => ({ id, name: name ?? id, balance, status, unvalued });
+  valued?: { currency: string; amount: number; rate: number; usd: number }[],
+) => ({ id, name: name ?? id, balance, status, unvalued, valued });
 
 const props = (widgets: ReturnType<typeof w>[], totalBalance = 0) =>
   ({ widgets, totalBalance, reportDate: "2026-09-01", order: ORDER }) as never;
@@ -143,5 +144,75 @@ describe("unvalued holdings the provider gives no USD price for", () => {
     ).bank[0];
     const withoutNote = balancesRows(props([w("googlesheets_goldsouq", 184.46)])).bank[0];
     expect(withNote.value).toBe(withoutNote.value);
+  });
+});
+
+describe("holdings we priced ourselves", () => {
+  // wallet/cryptoRates.js prices what the provider's API will not. The row's
+  // total now CONTAINS that ETH, which is the opposite of the "excludes" case
+  // above -- and the note has to say so, and say at whose rate, because the
+  // provider's own screen uses different rates and will still differ by cents.
+  it("says the holding is included and names the rate we used", () => {
+    const { bank } = balancesRows(
+      props([
+        w("googlesheets_goldsouq", 191.29, "ok", undefined, [], [
+          { currency: "ETH", amount: 0.00288773, rate: 2367.12, usd: 6.835 },
+        ]),
+      ]),
+    );
+    expect(bank[0].note).toBe("includes 0.00288773 ETH at $2,367.12");
+  });
+
+  it("names both when one holding was priced and another was not", () => {
+    const { bank } = balancesRows(
+      props([
+        w("googlesheets_goldsouq", 191.29, "ok", undefined, [{ currency: "XYZ", amount: 4 }], [
+          { currency: "ETH", amount: 0.00288773, rate: 2367.12, usd: 6.835 },
+        ]),
+      ]),
+    );
+    expect(bank[0].note).toBe("includes 0.00288773 ETH at $2,367.12; excludes 4 XYZ");
+  });
+
+  it("names two priced holdings without a run-on", () => {
+    const { bank } = balancesRows(
+      props([
+        w("googlesheets_goldsouq", 100, "ok", undefined, [], [
+          { currency: "ETH", amount: 0.5, rate: 2367.12, usd: 1183.56 },
+          { currency: "BTC", amount: 0.01, rate: 64210.5, usd: 642.105 },
+        ]),
+      ]),
+    );
+    expect(bank[0].note).toBe("includes 0.5 ETH at $2,367.12 and 0.01 BTC at $64,210.50");
+  });
+
+  it("does not round a sub-dollar rate down to $0.00", () => {
+    // money() pins two decimals, which would present a real price as a zero.
+    const { bank } = balancesRows(
+      props([
+        w("googlesheets_goldsouq", 100, "ok", undefined, [], [
+          { currency: "SHIB", amount: 1000, rate: 0.00002415, usd: 0.02415 },
+        ]),
+      ]),
+    );
+    expect(bank[0].note).toBe("includes 1000 SHIB at $0.00002415");
+  });
+
+  it("ignores a zero-amount priced entry", () => {
+    const { bank } = balancesRows(
+      props([w("googlesheets_goldsouq", 100, "ok", undefined, [], [{ currency: "ETH", amount: 0, rate: 2367.12, usd: 0 }])]),
+    );
+    expect(bank[0].note).toBeUndefined();
+  });
+
+  // The degradation case as the panel sees it: the rate lookup failed, so the
+  // backend sent the holding back in `unvalued` with no `valued` list at all.
+  // The row must read exactly as it did before rates existed.
+  it("falls back to the excludes note when nothing was priced", () => {
+    const { bank } = balancesRows(
+      props([w("googlesheets_goldsouq", 184.46, "ok", undefined, [{ currency: "ETH", amount: 0.00288773 }], [])]),
+    );
+    expect(bank[0].note).toBe("excludes 0.00288773 ETH");
+    expect(bank[0].value).toBe("$184.46");
   });
 });

@@ -20,11 +20,12 @@ export interface BalancesRow {
   value: string;
   failed: boolean;
   kind: "row" | "subtotal" | "total";
-  // Names what `value` leaves out (e.g. "excludes 0.00288773 ETH"), so a
-  // provider figure that looks lower than the provider's own screen explains
+  // Names what `value` includes at our own rate (e.g. "includes 0.00288773
+  // ETH at $2,367.12") and what it still leaves out ("excludes 0.5 BTC"), so a
+  // provider figure that disagrees with the provider's own screen explains
   // itself instead of reading as a discrepancy. Undefined -- never an empty
-  // string -- when the widget carried no unvalued holdings, so the row
-  // renders no extra line at all.
+  // string -- when the widget carried neither, so the row renders no extra
+  // line at all.
   note?: string;
 }
 
@@ -43,20 +44,50 @@ function money(value: number): string {
   return value < 0 ? `-$${text}` : `$${text}`;
 }
 
-// The provider's API returns bare amounts for these holdings with no USD
-// value attached (see WalletWidgetEntry.unvalued) -- pricing them here would
-// mean this dashboard adopting its own exchange rate, which would then drift
-// from the provider's own screen at every refresh. So the row keeps its
-// provider-agreeing total and this note just names what was left out of it.
-// A zero amount is not an exclusion (nothing was left out), so it is
-// filtered rather than displayed as "excludes 0 ETH".
-function unvaluedNote(unvalued: WalletWidgetEntry["unvalued"]): string | undefined {
+function joinAnd(parts: string[]): string {
+  return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+// Rate text, not money text. money() pins two decimals, which is right for a
+// balance and wrong for a price: a sub-dollar token would render "$0.00" and
+// present an invented zero rate as fact. Two decimals above a dollar, up to
+// eight below it.
+function rateText(value: number): string {
+  const maximumFractionDigits = Math.abs(value) >= 1 ? 2 : 8;
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits })}`;
+}
+
+// The provider's API returns bare amounts for these holdings with no USD value
+// attached, and (see wallet/cryptoRates.js) exposes no conversion endpoint we
+// could ask. So `valued` holdings ARE in the row's total, priced at a Binance
+// spot rate of our own, and `unvalued` ones still are not -- either because
+// nothing lists that ticker or because the rate lookup failed.
+//
+// The note has to say WHICH, because the two have opposite meanings for
+// anyone comparing this row against the provider's screen. "includes ... at
+// $2,367.12" names the price as ours, so the remaining few cents of
+// disagreement reads as two rate sources rather than as a broken figure;
+// "excludes ..." still means money the total does not contain.
+//
+// A zero amount is neither included nor excluded -- nothing happened to it --
+// so it is filtered rather than displayed as "excludes 0 ETH".
+function holdingsNote(
+  unvalued: WalletWidgetEntry["unvalued"],
+  valued: WalletWidgetEntry["valued"],
+): string | undefined {
+  const parts: string[] = [];
+
+  const priced = (valued ?? []).filter((entry) => entry.amount > 0 && entry.rate > 0);
+  if (priced.length > 0) {
+    parts.push(`includes ${joinAnd(priced.map((e) => `${e.amount} ${e.currency} at ${rateText(e.rate)}`))}`);
+  }
+
   const held = (unvalued ?? []).filter((entry) => entry.amount > 0);
-  if (held.length === 0) return undefined;
-  const parts = held.map((entry) => `${entry.amount} ${entry.currency}`);
-  const list =
-    parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
-  return `excludes ${list}`;
+  if (held.length > 0) {
+    parts.push(`excludes ${joinAnd(held.map((e) => `${e.amount} ${e.currency}`))}`);
+  }
+
+  return parts.length === 0 ? undefined : parts.join("; ");
 }
 
 function buildGroupRows(
@@ -81,7 +112,7 @@ function buildGroupRows(
       value: money(Number(widget.balance) || 0),
       failed,
       kind: "row",
-      note: unvaluedNote(widget.unvalued),
+      note: holdingsNote(widget.unvalued, widget.valued),
     });
   }
   return rows;

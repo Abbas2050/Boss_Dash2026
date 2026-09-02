@@ -5,7 +5,7 @@
 // calls AbortSignal.timeout(). Node's AbortSignal has it, so run this file
 // under the node environment instead, the same way auth/routeCoverage.test.js
 // already does for its own reason.
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -13,8 +13,27 @@ import {
   LetKnowPayClient,
   BitpaceClient,
   valueDollarBalances,
+  applyUsdRates,
   LETKNOWPAY_DISCOVERY_CANDIDATES,
 } from "./pspClients.js";
+
+// The rate feed is stubbed at the module boundary rather than through
+// global.fetch, because the fetch stubs in this file already answer the
+// PROVIDER's URLs. Letting a Binance call fall through to those would make
+// every rate assertion depend on what a LetKnow Pay fixture happens to look
+// like when parsed as a ticker response -- true today by accident, and
+// unreadable the day it stops being true. cryptoRates.test.js exercises the
+// real HTTP path.
+const rateFeed = vi.hoisted(() => ({ getUsdRates: vi.fn() }));
+vi.mock("./cryptoRates.js", () => rateFeed);
+
+// Default: no rates available. That is deliberately the pre-existing
+// behaviour, so every assertion in this file that predates pricing keeps
+// testing what it always tested.
+beforeEach(() => {
+  rateFeed.getUsdRates.mockReset();
+  rateFeed.getUsdRates.mockResolvedValue({});
+});
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -275,6 +294,7 @@ describe("BitpaceClient", () => {
       balance: 0.437722,
       currencies: { USDT: 0.437722 },
       unvalued: [],
+      valued: [],
     });
   });
 
@@ -304,6 +324,7 @@ describe("BitpaceClient", () => {
       balance: 7.25,
       currencies: { USDT: 7.25, BTC: 0.001 },
       unvalued: [{ currency: "BTC", amount: 0.001 }],
+      valued: [],
     });
   });
 });
@@ -348,5 +369,179 @@ describe("valueDollarBalances()", () => {
     });
     expect(result.balance).toBe(14);
     expect(result.unvalued).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────
+// Pricing the holdings the provider will not price
+// ─────────────────────────────────────────────────────────
+//
+// LetKnow Pay's screen reads $191.24 while ours reads $184.46; the whole gap
+// is 0.00288773 ETH their API hands back as a bare amount with no rate and no
+// conversion endpoint (see LETKNOWPAY_DISCOVERY_CANDIDATES -- every one of
+// those method names 404s). So we price it from Binance.
+//
+// The tests that matter most in here are not the happy-path ones. They are the
+// ones that pin what happens when the rate feed does NOT answer, because the
+// failure mode this change could introduce -- a price API hiccup zeroing a
+// balance, or taking a whole PSP down with it -- would cost far more than the
+// $6.84 it recovers.
+describe("crypto holdings priced from a live rate", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete global.fetch;
+  });
+
+  // Same production body as the LetKnowPayClient suite above: $184.456944 of
+  // dollar-pegged holdings plus the one ETH line.
+  const productionRaw = {
+    result: "success",
+    balances: {
+      ETH: "0.00288773",
+      USD: "130.95",
+      USDC: "53.498525",
+      USDCSOL: "0.001932",
+      USDTTRC20: "0.006487",
+      BTC: "0.00000000",
+    },
+  };
+
+  const DOLLARS_ONLY = 184.456944;
+
+  function stubFetch(raw) {
+    global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => raw });
+  }
+
+  it("adds the ETH to the balance and records the rate it used", async () => {
+    rateFeed.getUsdRates.mockResolvedValue({ ETH: 2367.12 });
+    stubFetch(productionRaw);
+
+    const result = await new LetKnowPayClient().getBalance();
+
+    expect(result.balance).toBe(DOLLARS_ONLY + 0.00288773 * 2367.12);
+    expect(result.unvalued).toEqual([]);
+    expect(result.valued).toEqual([
+      { currency: "ETH", amount: 0.00288773, rate: 2367.12, usd: 0.00288773 * 2367.12 },
+    ]);
+    // The point of the exercise: the row stops reading ~$7 short of the
+    // provider's own screen.
+    expect(result.balance).toBeCloseTo(191.29, 2);
+  });
+
+  it("asks only about the holdings it could not already value", async () => {
+    rateFeed.getUsdRates.mockResolvedValue({ ETH: 2367.12 });
+    stubFetch(productionRaw);
+
+    await new LetKnowPayClient().getBalance();
+
+    // Not USD/USDC/USDTTRC20 (already dollars, and asking would invite a rate
+    // that disagrees with the 1:1 allowlist), and not the zero BTC.
+    expect(rateFeed.getUsdRates).toHaveBeenCalledWith(["ETH"]);
+  });
+
+  // THE degradation test. If the rate feed is down, rate-limited, or slow, the
+  // report must be byte-for-byte what it was before this feature existed --
+  // not a zeroed holding, not a lost dollar balance, not a failed PSP.
+  it("leaves the pre-pricing behaviour completely untouched when the rate lookup fails", async () => {
+    rateFeed.getUsdRates.mockRejectedValue(new Error("Binance HTTP 429"));
+    stubFetch(productionRaw);
+
+    const result = await new LetKnowPayClient().getBalance();
+
+    // The exact figure, not "not null": the dollar balances that resolved are
+    // all still there, to the cent.
+    expect(result.balance).toBe(DOLLARS_ONLY);
+    expect(result.unvalued).toEqual([{ currency: "ETH", amount: 0.00288773 }]);
+    expect(result.valued).toEqual([]);
+    expect(result.currencies).toEqual({
+      ETH: 0.00288773,
+      USD: 130.95,
+      USDC: 53.498525,
+      USDCSOL: 0.001932,
+      USDTTRC20: 0.006487,
+    });
+  });
+
+  it("does not turn a rate failure into a failed PSP", async () => {
+    rateFeed.getUsdRates.mockRejectedValue(new Error("fetch failed"));
+    stubFetch(productionRaw);
+
+    // walletMonitor reports `status: 'error'` and a $0 balance for anything
+    // that throws out of getBalance(). A price feed outage must not reach it.
+    await expect(new LetKnowPayClient().getBalance()).resolves.toBeTruthy();
+  });
+
+  it("values a listed ticker while leaving an unlisted one alone in the same response", async () => {
+    // Binance lists ETHUSDT; it does not list whatever WUSDX is, so that code
+    // is simply absent from the rate map -- not present as a zero.
+    rateFeed.getUsdRates.mockResolvedValue({ ETH: 2000 });
+    stubFetch({ result: "success", balances: { USD: "100", ETH: "0.5", WUSDX: "500" } });
+
+    const result = await new LetKnowPayClient().getBalance();
+
+    expect(result.balance).toBe(1100);
+    expect(result.valued).toEqual([{ currency: "ETH", amount: 0.5, rate: 2000, usd: 1000 }]);
+    expect(result.unvalued).toEqual([{ currency: "WUSDX", amount: 500 }]);
+  });
+
+  it("prices Bitpace's unvalued holdings by the same rule", async () => {
+    rateFeed.getUsdRates.mockResolvedValue({ BTC: 64000 });
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (String(url).includes("/auth/token")) {
+        return Promise.resolve({ ok: true, json: async () => ({ data: { token: "t" } }) });
+      }
+      return Promise.resolve({ ok: true, text: async () => JSON.stringify({ balances: { USDT: "7.25", BTC: "0.001" } }) });
+    });
+
+    const result = await new BitpaceClient().getBalance();
+
+    expect(result.balance).toBe(7.25 + 64);
+    expect(result.valued).toEqual([{ currency: "BTC", amount: 0.001, rate: 64000, usd: 64 }]);
+    expect(result.unvalued).toEqual([]);
+  });
+});
+
+// The rate application itself, exercised directly. The wire shapes above prove
+// it is wired in; these prove what it does with the awkward inputs.
+describe("applyUsdRates()", () => {
+  it("never prices a zero holding, and never lists one as valued", () => {
+    const result = applyUsdRates(
+      { balance: 100, currencies: {}, unvalued: [{ currency: "ETH", amount: 0 }] },
+      { ETH: 2367.12 },
+    );
+    expect(result.balance).toBe(100);
+    expect(result.valued).toEqual([]);
+    // It was not priced, so it is not "included" -- it stays exactly where the
+    // dollar valuation left it rather than quietly disappearing.
+    expect(result.unvalued).toEqual([{ currency: "ETH", amount: 0 }]);
+  });
+
+  it("leaves an unparseable amount unvalued even when a rate exists for its code", () => {
+    // valueDollarBalances deliberately keeps the provider's raw string here.
+    // Multiplying "n/a" by a rate would produce NaN and poison the total.
+    const result = applyUsdRates(
+      { balance: 100, currencies: {}, unvalued: [{ currency: "ETH", amount: "n/a" }] },
+      { ETH: 2367.12 },
+    );
+    expect(result.balance).toBe(100);
+    expect(result.unvalued).toEqual([{ currency: "ETH", amount: "n/a" }]);
+    expect(result.valued).toEqual([]);
+  });
+
+  it("refuses a zero or negative rate rather than multiplying a holding away", () => {
+    const zeroed = applyUsdRates(
+      { balance: 100, currencies: {}, unvalued: [{ currency: "ETH", amount: 2 }] },
+      { ETH: 0 },
+    );
+    expect(zeroed.balance).toBe(100);
+    expect(zeroed.unvalued).toEqual([{ currency: "ETH", amount: 2 }]);
+  });
+
+  it("returns an empty rate map's input unchanged, which is the failure path", () => {
+    const before = { balance: 184.456944, currencies: { ETH: 0.00288773 }, unvalued: [{ currency: "ETH", amount: 0.00288773 }] };
+    const after = applyUsdRates(before, {});
+    expect(after.balance).toBe(184.456944);
+    expect(after.unvalued).toEqual(before.unvalued);
+    expect(after.valued).toEqual([]);
   });
 });

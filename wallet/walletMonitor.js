@@ -54,9 +54,12 @@ export async function checkAllBalances() {
             balance: result.balance,
             currencies: result.currencies,
             // Non-zero holdings the client could not put a dollar figure on,
-            // so `balance` excluding them is visible rather than silent. The
-            // UI does not render this yet; it rides along so it can.
+            // so `balance` excluding them is visible rather than silent.
             unvalued: result.unvalued ?? [],
+            // The mirror image: holdings that WERE priced, carrying the rate
+            // we used. `balance` includes these, so the row has to be able to
+            // say whose rate it is -- ours, not the provider's.
+            valued: result.valued ?? [],
             status: 'ok',
             checked_at: now(),
           }]],
@@ -66,7 +69,7 @@ export async function checkAllBalances() {
         const message = e?.message || String(e);
         console.error('[WalletMonitor] Bitpace error:', message);
         return {
-          entries: [['bitpace', { name: 'Bitpace', balance: 0, currencies: {}, unvalued: [], status: 'error', error: message, checked_at: now() }]],
+          entries: [['bitpace', { name: 'Bitpace', balance: 0, currencies: {}, unvalued: [], valued: [], status: 'error', error: message, checked_at: now() }]],
           totalDelta: 0,
         };
       }
@@ -79,10 +82,13 @@ export async function checkAllBalances() {
             name: 'LetKnow Pay',
             balance: result.balance,
             currencies: result.currencies,
-            // The ETH that made the reported figure $184.46 instead of the
-            // provider's own $191.35: excluded from `balance` because we have
-            // no rate for it, and named here so it is reported, not lost.
+            // Whatever we still could not price -- excluded from `balance`
+            // and named here so it is reported, not lost.
             unvalued: result.unvalued ?? [],
+            // The ETH that used to make this row read $184.46 against LetKnow
+            // Pay's own $191.24 now lands here instead, priced at a Binance
+            // spot rate that rides along so the row can attribute it to us.
+            valued: result.valued ?? [],
             status: 'ok',
             checked_at: now(),
           }]],
@@ -92,7 +98,7 @@ export async function checkAllBalances() {
         const message = e?.message || String(e);
         console.error('[WalletMonitor] LetKnow Pay error:', message);
         return {
-          entries: [['letknowpay', { name: 'LetKnow Pay', balance: 0, currencies: {}, unvalued: [], status: 'error', error: message, checked_at: now() }]],
+          entries: [['letknowpay', { name: 'LetKnow Pay', balance: 0, currencies: {}, unvalued: [], valued: [], status: 'error', error: message, checked_at: now() }]],
           totalDelta: 0,
         };
       }

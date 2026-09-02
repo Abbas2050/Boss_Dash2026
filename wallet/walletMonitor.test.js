@@ -280,4 +280,32 @@ describe("checkAllBalances() carries each PSP client's unvalued list onto its wi
     expect(widget.status).toBe("error");
     expect(widget.unvalued).toEqual([]);
   });
+
+  // The mirror of the same seam. `valued` carries the rate WE used for a
+  // holding the provider priced differently or not at all, and the row is
+  // supposed to say so ("includes 0.00288773 ETH at $2,367.12"). If
+  // checkAllBalances() drops the rate, the panel can only say the amount, and
+  // a figure computed at our own rate silently poses as the provider's.
+  it("carries the priced holdings and their rates onto the letknowpay widget", async () => {
+    mockLetKnowPayGetBalance.mockResolvedValue({
+      balance: 191.2925,
+      currencies: { USD: 130.95, ETH: 0.00288773 },
+      unvalued: [],
+      valued: [{ currency: "ETH", amount: 0.00288773, rate: 2367.12, usd: 6.8356 }],
+    });
+
+    const report = await checkAllBalances();
+
+    const widget = report.data.widgets.find((w) => w.id === "letknowpay");
+    expect(widget.balance).toBe(191.2925);
+    expect(widget.valued).toEqual([{ currency: "ETH", amount: 0.00288773, rate: 2367.12, usd: 6.8356 }]);
+  });
+
+  it("emits valued as an empty list when nothing was priced, rather than omitting the field", async () => {
+    mockBitpaceGetBalance.mockResolvedValue({ balance: 0.437722, currencies: { USDT: 0.437722 }, unvalued: [] });
+
+    const report = await checkAllBalances();
+
+    expect(report.data.widgets.find((w) => w.id === "bitpace").valued).toEqual([]);
+  });
 });

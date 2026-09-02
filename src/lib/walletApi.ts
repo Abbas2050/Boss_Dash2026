@@ -10,13 +10,19 @@ export interface WalletWidgetEntry {
   currencies?: Record<string, unknown> | string[];
   status?: string;
   // wallet/pspClients.js + wallet/walletMonitor.js: holdings the provider
-  // reports in a non-USD currency with no exchange rate attached. `balance`
-  // deliberately excludes these -- pricing them here would mean this
-  // dashboard picking its own exchange rate, which would then drift from the
-  // provider's own screen at every refresh. Carried through so the UI can
-  // name what a figure leaves out instead of just disagreeing with the
+  // reports in a non-USD currency with no exchange rate attached, that we
+  // could not price either -- an unlisted ticker, or a rate lookup that
+  // failed. `balance` deliberately excludes these. Carried through so the UI
+  // can name what a figure leaves out instead of just disagreeing with the
   // provider silently.
   unvalued?: { currency: string; amount: number }[];
+  // wallet/cryptoRates.js: holdings the provider gave no price for that we
+  // priced ourselves from Binance spot, carrying the rate used. `balance`
+  // INCLUDES these, which is exactly why the rate travels with them -- the row
+  // has to be able to say the price is ours, not the provider's, so a few
+  // cents of disagreement with their screen reads as two rate sources rather
+  // than as an error.
+  valued?: { currency: string; amount: number; rate: number; usd: number }[];
 }
 
 export interface WalletBalancesResponse {
