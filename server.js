@@ -24,7 +24,7 @@ import { startHubWatcher } from './alerts/hubWatcher.js';
 import { authRequired, canManageUsers } from './auth/router.js';
 import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
-import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient } from './wallet/pspClients.js';
+import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient, LETKNOWPAY_DISCOVERY_CANDIDATES } from './wallet/pspClients.js';
 import { deepRedact } from './wallet/redactSecrets.js';
 import {
   loadGoogleSheetsMappingConfig,
@@ -660,10 +660,37 @@ app.get('/api/wallet/psp-debug', async (req, res) => {
     }
   }
 
-  const [letknowpay, bitpace] = await Promise.all([
+  // LetKnow-only: tries a short list of read-only candidate method names
+  // (see LETKNOWPAY_DISCOVERY_CANDIDATES in wallet/pspClients.js) through the
+  // same signed request get_balances already uses, to find whether their API
+  // exposes the converted USD total/rate their own merchant dashboard shows.
+  // We deliberately do not add a third-party price feed to compute that
+  // total ourselves -- that would give the dashboard its own exchange rate
+  // and guarantee it drifts from LetKnow Pay's own screen, so the only
+  // acceptable source for that figure is LetKnow's own conversion or rate.
+  // Each candidate is redacted (deepRedact) exactly like `raw`/`derived`
+  // above and reported independently, so a failing or hanging candidate
+  // neither breaks the others nor changes the existing raw/derived output.
+  async function discoverLetKnowMethods() {
+    try {
+      const client = new LetKnowPayClient();
+      const results = await client.discoverMethods(LETKNOWPAY_DISCOVERY_CANDIDATES);
+      return results.map((entry) => deepRedact(entry));
+    } catch (error) {
+      // discoverMethods() already catches per-candidate; this is a last-resort
+      // guard so a construction-time failure can't take down raw/derived too.
+      const message = error instanceof Error ? error.message : String(error);
+      return [{ method: null, status: null, body: deepRedact(message) }];
+    }
+  }
+
+  const [letknowpay, bitpace, letknowDiscovery] = await Promise.all([
     probe(LetKnowPayClient),
     probe(BitpaceClient),
+    discoverLetKnowMethods(),
   ]);
+
+  letknowpay.discovery = letknowDiscovery;
 
   return res.json({ ok: true, providers: { letknowpay, bitpace } });
 });

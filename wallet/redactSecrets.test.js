@@ -53,6 +53,27 @@ describe("deepRedact", () => {
     // Non-secret data must survive redaction untouched.
     expect(redacted.balances.USDTTRC20).toBe("0.006487");
   });
+
+  // The psp-debug route's LetKnow Pay method-discovery step (server.js)
+  // echoes back a raw response body per candidate method, same as `raw`
+  // above -- so a candidate's error body can just as easily echo a
+  // credential back, and it has to go through the same scrubbing.
+  it("scrubs a secret planted inside a discovery candidate's response body", () => {
+    const secrets = buildSecretList({ LETKNOWPAY_SHOP_ID: "shop_9f3a1c" });
+    const discovery = [
+      { method: "get_rates", status: 404, body: { error: "unknown method" } },
+      {
+        method: "get_balances",
+        status: 403,
+        body: { error_message: "signature mismatch for shop shop_9f3a1c" },
+      },
+    ];
+    const redacted = deepRedact(discovery, secrets);
+    expect(JSON.stringify(redacted)).not.toContain("shop_9f3a1c");
+    expect(redacted[1].body.error_message).toContain("[REDACTED]");
+    // A candidate with nothing sensitive in it must survive untouched.
+    expect(redacted[0]).toEqual({ method: "get_rates", status: 404, body: { error: "unknown method" } });
+  });
 });
 
 describe("buildSecretList", () => {

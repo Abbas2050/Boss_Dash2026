@@ -9,7 +9,12 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { LetKnowPayClient, BitpaceClient, valueDollarBalances } from "./pspClients.js";
+import {
+  LetKnowPayClient,
+  BitpaceClient,
+  valueDollarBalances,
+  LETKNOWPAY_DISCOVERY_CANDIDATES,
+} from "./pspClients.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -120,6 +125,89 @@ describe("LetKnowPayClient", () => {
   it("getBalance() throws when the API reports a non-success result, same as before", async () => {
     stubFetch({ result: "error", error_message: "bad signature" });
     await expect(new LetKnowPayClient().getBalance()).rejects.toThrow(/bad signature/);
+  });
+});
+
+// The /api/wallet/psp-debug discovery step (server.js), added to find whether
+// LetKnow Pay's API exposes the converted USD total/rate their own merchant
+// dashboard shows ("Total balance report -- 191.22 USD -- ..."), which
+// get_balances itself never returns. See the LETKNOWPAY_DISCOVERY_CANDIDATES
+// comment in pspClients.js for why we probe instead of inventing a rate.
+describe("LetKnowPayClient discovery", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete global.fetch;
+  });
+
+  it("LETKNOWPAY_DISCOVERY_CANDIDATES is exactly the specified read-only candidates, no others", () => {
+    // Locks the list down to precisely what was asked for: six new method
+    // names plus the existing get_balances call sent with the two JSON
+    // bodies, in case conversion is already available as a parameter. Any
+    // addition to this list has to change this test, which is the point --
+    // nothing that looks like it could create/send/withdraw/transfer/exchange
+    // money belongs here.
+    expect(LETKNOWPAY_DISCOVERY_CANDIDATES).toEqual([
+      { method: "get_rates", body: "" },
+      { method: "get_exchange_rates", body: "" },
+      { method: "get_balance_report", body: "" },
+      { method: "get_balances_report", body: "" },
+      { method: "get_total_balance", body: "" },
+      { method: "get_balances_usd", body: "" },
+      { method: "get_balances", body: JSON.stringify({ currency: "USD" }) },
+      { method: "get_balances", body: JSON.stringify({ convert_to: "USD" }) },
+    ]);
+  });
+
+  it("discoverMethods() sends each candidate as a POST to /api/2/<method> with the same signed headers get_balances uses", async () => {
+    const seen = [];
+    global.fetch = vi.fn().mockImplementation((url, opts) => {
+      seen.push({ url: String(url), opts });
+      return Promise.resolve({ status: 200, text: async () => JSON.stringify({ ok: true }) });
+    });
+
+    const client = new LetKnowPayClient();
+    await client.discoverMethods([{ method: "get_rates", body: "" }]);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].url).toBe("https://pay.letknow.com/api/2/get_rates");
+    expect(seen[0].opts.method).toBe("POST");
+    // Same header names the working get_balances request uses -- not a
+    // separately invented auth shape.
+    expect(Object.keys(seen[0].opts.headers).sort()).toEqual(
+      ["C-Request-Nonce", "C-Request-Signature", "C-Shop-Id", "Content-Type"].sort(),
+    );
+  });
+
+  it("discoverMethods() reports a throwing candidate as a failure entry, without aborting the others", async () => {
+    global.fetch = vi.fn().mockImplementation((url) => {
+      if (String(url).includes("/get_rates")) {
+        // Simulates a hung/network-failed candidate -- exactly the case the
+        // per-candidate try/catch in discoverMethods() exists for.
+        return Promise.reject(new Error("network unreachable"));
+      }
+      return Promise.resolve({
+        status: 404,
+        text: async () => JSON.stringify({ error: "unknown method" }),
+      });
+    });
+
+    const client = new LetKnowPayClient();
+    const results = await client.discoverMethods([
+      { method: "get_rates", body: "" },
+      { method: "get_total_balance", body: "" },
+    ]);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual({ method: "get_rates", status: null, body: "network unreachable" });
+    // The failing candidate must not have stopped the second one from running.
+    expect(results[1]).toEqual({ method: "get_total_balance", status: 404, body: { error: "unknown method" } });
+  });
+
+  it("discoverMethods() reports the HTTP status and body for a candidate that isn't valid JSON", async () => {
+    global.fetch = vi.fn().mockResolvedValue({ status: 500, text: async () => "Internal Server Error" });
+    const client = new LetKnowPayClient();
+    const results = await client.discoverMethods([{ method: "get_exchange_rates", body: "" }]);
+    expect(results).toEqual([{ method: "get_exchange_rates", status: 500, body: "Internal Server Error" }]);
   });
 });
 

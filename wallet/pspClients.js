@@ -253,6 +253,37 @@ export class BitpaceClient {
   }
 }
 
+// Candidate method names for the /api/wallet/psp-debug discovery step (see
+// server.js). LetKnow Pay's own merchant dashboard shows a converted total --
+// "Total balance report -- 191.22 USD -- Rates updated ..." -- that this
+// account's get_balances call cannot reproduce: it hands back bare amounts,
+// no rate, no total (see valueDollarBalances() above). Their API is
+// undocumented to us, so this is a guess at read-only method names that
+// might expose the same conversion their dashboard already computes, tried
+// against the one auth scheme we know actually works. We will not compute
+// that conversion ourselves from a third-party rate feed -- that would give
+// the dashboard its own exchange rate and guarantee it drifts from what
+// LetKnow Pay's own screen shows -- so the only acceptable answer here is
+// LetKnow's own converted figure or LetKnow's own rate.
+//
+// Every entry is a "get_*"/report read. Nothing that could create, send,
+// withdraw, transfer, exchange, or otherwise modify anything belongs on this
+// list -- if a name looks like it might move money, it does not go here.
+// The last two entries are not new method names at all: they are the
+// existing, working get_balances call sent with a JSON body instead of the
+// current empty one, in case the method already supports conversion via a
+// parameter.
+export const LETKNOWPAY_DISCOVERY_CANDIDATES = [
+  { method: 'get_rates', body: '' },
+  { method: 'get_exchange_rates', body: '' },
+  { method: 'get_balance_report', body: '' },
+  { method: 'get_balances_report', body: '' },
+  { method: 'get_total_balance', body: '' },
+  { method: 'get_balances_usd', body: '' },
+  { method: 'get_balances', body: JSON.stringify({ currency: 'USD' }) },
+  { method: 'get_balances', body: JSON.stringify({ convert_to: 'USD' }) },
+];
+
 // ─────────────────────────────────────────────────────────
 // LetKnow Pay Client
 // Auth: HMAC-SHA256 via headers C-Request-Nonce, C-Request-Signature, C-Shop-Id
@@ -298,6 +329,63 @@ export class LetKnowPayClient {
     }
 
     return data;
+  }
+
+  // Sends one discovery candidate through exactly the request shape
+  // getRawBalances() above uses -- same header names, same nonce/signature
+  // formula (nonce|shopId|apiKey), same POST verb and content-type -- because
+  // that shape is the only evidence we have of what LetKnow Pay's auth
+  // actually requires. A differently-shaped guess would leave us unable to
+  // tell "wrong method name" apart from "wrong request shape".
+  //
+  // Deliberately does NOT throw on a non-2xx or non-"success" body the way
+  // getRawBalances() does: a 404 or an error body IS the answer discovery is
+  // looking for, so it has to come back to the caller as data, not be turned
+  // into a thrown Error.
+  async _probeMethod(method, body) {
+    const nonce = Date.now().toString();
+    const signature = crypto
+      .createHmac('sha256', this.apiKey)
+      .update(`${nonce}|${this.shopId}|${this.apiKey}`)
+      .digest('hex');
+
+    const res = await fetch(`${this.baseUrl}/api/2/${method}`, {
+      method: 'POST',
+      headers: {
+        'C-Request-Nonce': nonce,
+        'C-Request-Signature': signature,
+        'C-Shop-Id': this.shopId,
+        'Content-Type': 'application/json',
+      },
+      body,
+      // Short and independent per candidate: one hanging or slow method name
+      // must not stall the whole psp-debug route or the candidates after it.
+      signal: AbortSignal.timeout(8000),
+    });
+
+    const rawText = await res.text();
+    let responseBody = rawText;
+    try { responseBody = JSON.parse(rawText); } catch { /* not JSON; report the raw text as-is */ }
+    return { status: res.status, body: responseBody };
+  }
+
+  // Tries every candidate in LETKNOWPAY_DISCOVERY_CANDIDATES independently
+  // and reports what each one did -- HTTP status plus body -- instead of
+  // picking a winner. A candidate that throws (timeout, network error) comes
+  // back as a failure entry (status: null) rather than aborting the rest;
+  // see the psp-debug route in server.js for how this result gets redacted
+  // and surfaced.
+  async discoverMethods(candidates = LETKNOWPAY_DISCOVERY_CANDIDATES) {
+    return Promise.all(
+      candidates.map(async ({ method, body }) => {
+        try {
+          const { status, body: responseBody } = await this._probeMethod(method, body);
+          return { method, status, body: responseBody };
+        } catch (error) {
+          return { method, status: null, body: error instanceof Error ? error.message : String(error) };
+        }
+      }),
+    );
   }
 
   // Pure: turns a raw LetKnow Pay response body into the { balance,
