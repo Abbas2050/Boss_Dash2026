@@ -16,14 +16,24 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 // never makes a network call, then control what the Google Sheets client
 // hands back.
 const mockGoogleSheetsGetBalance = vi.hoisted(() => vi.fn());
+// Seam 3 below drives these. They are left unconfigured for seams 1 and 2,
+// where an unconfigured vi.fn() returns undefined and the wrapper falls back
+// to the inert result -- so those suites keep behaving exactly as they did.
+const mockLetKnowPayGetBalance = vi.hoisted(() => vi.fn());
+const mockBitpaceGetBalance = vi.hoisted(() => vi.fn());
 
 vi.mock("./pspClients.js", () => {
+  const inert = () => ({ balance: 0, currencies: {}, unvalued: [] });
   const inertClient = () => ({
-    getBalance: async () => ({ balance: 0, currencies: {} }),
+    getBalance: async () => inert(),
   });
   return {
-    BitpaceClient: vi.fn().mockImplementation(inertClient),
-    LetKnowPayClient: vi.fn().mockImplementation(inertClient),
+    BitpaceClient: vi.fn().mockImplementation(() => ({
+      getBalance: async () => (await mockBitpaceGetBalance()) ?? inert(),
+    })),
+    LetKnowPayClient: vi.fn().mockImplementation(() => ({
+      getBalance: async () => (await mockLetKnowPayGetBalance()) ?? inert(),
+    })),
     OwnBitClient: vi.fn().mockImplementation(inertClient),
     HeroPaymentClient: vi.fn().mockImplementation(inertClient),
     GoogleSheetsClient: vi.fn().mockImplementation(() => ({
@@ -207,5 +217,67 @@ describe("checkAllBalances() timestamp survives frontend parsing across the date
 
     expect(report.timestamp).toMatch(/Z$/);
     expect(report.timestamp).toBe("2026-09-01T21:22:35.000Z");
+  });
+});
+
+// SEAM 3 (walletMonitor.js, the bitpace/letknowpay widget entries): the
+// `unvalued` list each PSP client now returns.
+//
+// LetKnowPayClient.deriveBalance() excludes any holding it has no dollar rate
+// for -- today an ETH balance the provider's own screen prices at ~$6.94 --
+// and names it so the exclusion is reported rather than silent. That list is
+// only useful if it survives the trip to the widget; if checkAllBalances()
+// drops it, the client is talking to nobody and the money goes missing again,
+// just one layer further out. The UI does not render it yet, which is exactly
+// why it needs a test: nothing else would notice it disappearing.
+describe("checkAllBalances() carries each PSP client's unvalued list onto its widget (seam 3)", () => {
+  beforeEach(() => {
+    mockGoogleSheetsGetBalance.mockReset();
+    mockGoogleSheetsGetBalance.mockResolvedValue(sheetResult());
+    mockLetKnowPayGetBalance.mockReset();
+    mockBitpaceGetBalance.mockReset();
+  });
+
+  afterEach(() => {
+    mockLetKnowPayGetBalance.mockReset();
+    mockBitpaceGetBalance.mockReset();
+  });
+
+  it("puts the LetKnow Pay unvalued ETH on the letknowpay widget", async () => {
+    mockLetKnowPayGetBalance.mockResolvedValue({
+      balance: 184.456944,
+      currencies: { USD: 130.95, USDC: 53.498525, USDCSOL: 0.001932, USDTTRC20: 0.006487, ETH: 0.00288773 },
+      unvalued: [{ currency: "ETH", amount: 0.00288773 }],
+    });
+
+    const report = await checkAllBalances();
+
+    const widget = report.data.widgets.find((w) => w.id === "letknowpay");
+    expect(widget.balance).toBe(184.456944);
+    expect(widget.unvalued).toEqual([{ currency: "ETH", amount: 0.00288773 }]);
+  });
+
+  it("puts Bitpace's empty unvalued list on the bitpace widget rather than omitting the field", async () => {
+    mockBitpaceGetBalance.mockResolvedValue({
+      balance: 0.437722,
+      currencies: { USDT: 0.437722 },
+      unvalued: [],
+    });
+
+    const report = await checkAllBalances();
+
+    const widget = report.data.widgets.find((w) => w.id === "bitpace");
+    expect(widget.balance).toBe(0.437722);
+    expect(widget.unvalued).toEqual([]);
+  });
+
+  it("still emits unvalued as an empty list when a provider call fails", async () => {
+    mockLetKnowPayGetBalance.mockRejectedValue(new Error("bad signature"));
+
+    const report = await checkAllBalances();
+
+    const widget = report.data.widgets.find((w) => w.id === "letknowpay");
+    expect(widget.status).toBe("error");
+    expect(widget.unvalued).toEqual([]);
   });
 });

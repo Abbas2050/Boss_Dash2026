@@ -16,7 +16,7 @@ const OWNBIT_NEW_ADDRESS = process.env.TRON_WALLET_ADDRESS_2 || 'TNteGan1r99nW3P
  * {
  *   ok: true,
  *   data: {
- *     widgets: { [id]: { name, balance, currencies, status, checked_at, ...extra } },
+ *     widgets: { [id]: { name, balance, currencies, unvalued, status, checked_at, ...extra } },
  *     total,
  *     bank_receivable, crypto_receivable,
  *     net_all_current_balance, net_balance_after_expected_funds,
@@ -49,14 +49,24 @@ export async function checkAllBalances() {
       try {
         const result = await new BitpaceClient().getBalance();
         return {
-          entries: [['bitpace', { name: 'Bitpace', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          entries: [['bitpace', {
+            name: 'Bitpace',
+            balance: result.balance,
+            currencies: result.currencies,
+            // Non-zero holdings the client could not put a dollar figure on,
+            // so `balance` excluding them is visible rather than silent. The
+            // UI does not render this yet; it rides along so it can.
+            unvalued: result.unvalued ?? [],
+            status: 'ok',
+            checked_at: now(),
+          }]],
           totalDelta: result.balance,
         };
       } catch (e) {
         const message = e?.message || String(e);
         console.error('[WalletMonitor] Bitpace error:', message);
         return {
-          entries: [['bitpace', { name: 'Bitpace', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          entries: [['bitpace', { name: 'Bitpace', balance: 0, currencies: {}, unvalued: [], status: 'error', error: message, checked_at: now() }]],
           totalDelta: 0,
         };
       }
@@ -65,14 +75,24 @@ export async function checkAllBalances() {
       try {
         const result = await new LetKnowPayClient().getBalance();
         return {
-          entries: [['letknowpay', { name: 'LetKnow Pay', balance: result.balance, currencies: result.currencies, status: 'ok', checked_at: now() }]],
+          entries: [['letknowpay', {
+            name: 'LetKnow Pay',
+            balance: result.balance,
+            currencies: result.currencies,
+            // The ETH that made the reported figure $184.46 instead of the
+            // provider's own $191.35: excluded from `balance` because we have
+            // no rate for it, and named here so it is reported, not lost.
+            unvalued: result.unvalued ?? [],
+            status: 'ok',
+            checked_at: now(),
+          }]],
           totalDelta: result.balance,
         };
       } catch (e) {
         const message = e?.message || String(e);
         console.error('[WalletMonitor] LetKnow Pay error:', message);
         return {
-          entries: [['letknowpay', { name: 'LetKnow Pay', balance: 0, currencies: {}, status: 'error', error: message, checked_at: now() }]],
+          entries: [['letknowpay', { name: 'LetKnow Pay', balance: 0, currencies: {}, unvalued: [], status: 'error', error: message, checked_at: now() }]],
           totalDelta: 0,
         };
       }

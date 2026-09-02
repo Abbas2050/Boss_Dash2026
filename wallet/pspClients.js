@@ -13,10 +13,113 @@ import { loadGoogleSheetsMappingConfig } from './googleSheetsMappingConfig.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─────────────────────────────────────────────────────────
+// Dollar valuation, shared by Bitpace and LetKnow Pay
+// ─────────────────────────────────────────────────────────
+
+// The currency codes whose unit we are willing to call one US dollar.
+//
+// This is an ALLOWLIST rather than a pattern, and that is the whole point of
+// it. Both providers hand back bare amounts and nothing else: no usdEstimate,
+// no exchange rate, no total. LetKnow Pay's own screen shows $191.35 because
+// it prices the holdings against live rates from an endpoint we do not have.
+// So the only holdings this file can honestly put a dollar figure on are the
+// ones that are dollar-pegged by construction -- actual USD, and the USDT /
+// USDC / PAX / TUSD stablecoins, each issued 1:1 against a dollar. Valuing
+// those at par is defensible. Valuing ETH or BTC or ADA would mean inventing
+// a rate, and this is a treasury page.
+//
+// A substring test such as `code.includes('USD')` is the tempting shortcut and
+// is wrong: it would quietly value any future ticker containing those three
+// letters at par, whatever it actually is. A code this list has never seen is
+// not a dollar -- it is something we cannot value, and it belongs in the
+// `unvalued` list where a person can see it, not folded into a total at a
+// guessed rate.
+export const DOLLAR_DENOMINATED_CURRENCIES = new Set([
+  'USD',
+  // Tether, across every chain the providers settle it on.
+  'USDT',
+  'USDTTRC20',
+  'USDTBEP20',
+  'USDTPOL',
+  'USDTSOL',
+  'USDTAVAX',
+  // USD Coin, likewise.
+  'USDC',
+  'USDCSOL',
+  'USDCPOL',
+  'USDCBASE',
+  'USDCAVAX',
+  // Paxos Standard and TrueUSD, the two other dollar-pegged tokens these
+  // accounts have ever been able to hold.
+  'PAX',
+  'TUSD',
+]);
+
+/**
+ * Turns a { currency: amount } map of bare provider amounts into the
+ * { balance, currencies, unvalued } shape the Closing Balance Report needs.
+ *
+ * Bitpace and LetKnow Pay disagree about the JSON shape their balance
+ * endpoints return -- one sends an array of { currency, balance } records, the
+ * other an object keyed by code -- so each client does its own parsing. What
+ * they must NOT disagree about is which of those amounts counts as dollars,
+ * because that is the judgement that lands on the treasury total. The rule
+ * therefore lives here once and both clients call it.
+ *
+ * Three deliberate behaviours:
+ *
+ *  - `balance` sums only the allowlisted, dollar-pegged codes. Anything else
+ *    is left out rather than valued at a rate we would have to make up.
+ *  - `unvalued` names every non-zero holding that was left out, so the money
+ *    is reported rather than silently disappearing. This is the same
+ *    "reports, does not correct" rule the Google Sheets reader follows with
+ *    its unreadable-cell list: the ETH is excluded from the figure AND said
+ *    out loud, instead of vanishing.
+ *  - An amount that will not parse is treated as unvaluable, not as zero.
+ *    `parseFloat(...) || 0` answers "no balance" and "unreadable" with the
+ *    same confident 0.00, which is exactly how a treasury figure loses a term
+ *    while still looking complete.
+ *
+ * Zero holdings are dropped entirely -- 21 of LetKnow Pay's 23 codes are zero,
+ * and listing them as "could not be valued" would bury the one line (ETH)
+ * that actually matters.
+ */
+export function valueDollarBalances(rawAmounts) {
+  let balance = 0;
+  const currencies = {};
+  const unvalued = [];
+
+  for (const [currency, rawAmount] of Object.entries(rawAmounts ?? {})) {
+    const amount = typeof rawAmount === 'number' ? rawAmount : parseFloat(rawAmount);
+
+    if (!Number.isFinite(amount)) {
+      // Unknown size, not zero. Keep it in the breakdown with whatever the
+      // provider actually sent so the holding cannot go missing, and flag it.
+      currencies[currency] = rawAmount;
+      unvalued.push({ currency, amount: rawAmount });
+      continue;
+    }
+
+    if (amount === 0) continue;
+
+    currencies[currency] = amount;
+
+    if (DOLLAR_DENOMINATED_CURRENCIES.has(currency)) {
+      balance += amount;
+    } else {
+      unvalued.push({ currency, amount });
+    }
+  }
+
+  return { balance, currencies, unvalued };
+}
+
+// ─────────────────────────────────────────────────────────
 // Bitpace Client
 // Auth: POST /api/v1/auth/token (merchant_code + password)
 // Balance: GET /api/v1/balance/currency (Bearer token)
-// Returns: USDT balance only
+// Returns: sum of the dollar-pegged currencies it holds, plus anything it
+// holds that we cannot value (see DOLLAR_DENOMINATED_CURRENCIES)
 // ─────────────────────────────────────────────────────────
 export class BitpaceClient {
   constructor() {
@@ -112,25 +215,36 @@ export class BitpaceClient {
     return data;
   }
 
-  // Pure: turns a raw Bitpace response body into the { balance, currencies }
-  // shape the Closing Balance Report widget expects. Kept separate from
-  // getRawBalances() (and static, not touching `this`) so the psp-debug route
-  // can show both the raw body and what we derive from it from a single real
-  // API call, without needing an instance.
+  // Pure: turns a raw Bitpace response body into the { balance, currencies,
+  // unvalued } shape the Closing Balance Report widget expects. Kept separate
+  // from getRawBalances() (and static, not touching `this`) so the psp-debug
+  // route can show both the raw body and what we derive from it from a single
+  // real API call, without needing an instance.
+  //
+  // Bitpace returns an ARRAY of { currency, balance } records, unlike LetKnow
+  // Pay's object map, so the flattening below is Bitpace-specific. The
+  // valuation itself is not: it goes through valueDollarBalances() so both
+  // providers agree on what counts as a dollar. Today the account holds only
+  // USDT and a zero EUR, so summing rather than picking 'USDT' happens to give
+  // the same number -- the point is that it stays right the day a USDC balance
+  // shows up, instead of quietly reverting to the LetKnow Pay failure.
   static deriveBalance(data) {
-    let balances = {};
+    const rawAmounts = {};
 
     if (Array.isArray(data?.data)) {
       for (const item of data.data) {
-        if (item.currency && item.balance != null) balances[item.currency] = parseFloat(item.balance);
+        // Keep the value as sent. Deciding whether it is a number is
+        // valueDollarBalances()'s job, so an unparseable amount is reported
+        // rather than dropped here.
+        if (item?.currency) rawAmounts[item.currency] = item.balance;
       }
     } else if (data?.balances && typeof data.balances === 'object') {
       for (const [cur, amt] of Object.entries(data.balances)) {
-        if (!isNaN(amt)) balances[cur] = parseFloat(amt);
+        rawAmounts[cur] = amt;
       }
     }
 
-    return { balance: balances['USDT'] ?? 0, currencies: balances['USDT'] != null ? { USDT: balances['USDT'] } : {} };
+    return valueDollarBalances(rawAmounts);
   }
 
   async getBalance() {
@@ -143,7 +257,8 @@ export class BitpaceClient {
 // LetKnow Pay Client
 // Auth: HMAC-SHA256 via headers C-Request-Nonce, C-Request-Signature, C-Shop-Id
 // Balance: POST https://pay.letknow.com/api/2/get_balances
-// Returns: USDTTRC20 balance only
+// Returns: sum of the dollar-pegged currencies it holds, plus anything it
+// holds that we cannot value (see DOLLAR_DENOMINATED_CURRENCIES)
 // ─────────────────────────────────────────────────────────
 export class LetKnowPayClient {
   constructor() {
@@ -186,16 +301,18 @@ export class LetKnowPayClient {
   }
 
   // Pure: turns a raw LetKnow Pay response body into the { balance,
-  // currencies } shape the Closing Balance Report widget expects. Kept
-  // separate from getRawBalances() (and static, not touching `this`) so the
-  // psp-debug route can show both the raw body and what we derive from it
+  // currencies, unvalued } shape the Closing Balance Report widget expects.
+  // Kept separate from getRawBalances() (and static, not touching `this`) so
+  // the psp-debug route can show both the raw body and what we derive from it
   // from a single real API call, without needing an instance.
+  //
+  // This is the understatement the allowlist exists for. The response is an
+  // object map of ~23 codes, and reading only `balances['USDTTRC20']` off it
+  // reported $0.01 for an account actually holding $130.95 in USD and $53.50
+  // in USDC. Everything the map holds now goes through valueDollarBalances(),
+  // which is also what Bitpace uses.
   static deriveBalance(data) {
-    const allBalances = data.balances ?? {};
-    return {
-      balance: parseFloat(allBalances['USDTTRC20'] ?? 0),
-      currencies: allBalances['USDTTRC20'] != null ? { USDTTRC20: parseFloat(allBalances['USDTTRC20']) } : {},
-    };
+    return valueDollarBalances(data?.balances ?? {});
   }
 
   async getBalance() {
