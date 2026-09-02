@@ -136,3 +136,83 @@ describe("_readWalletCells reports which fields it could not read", () => {
     expect(wallet.values.mbme).toBe(0);
   });
 });
+
+// The second half of the same argument. A blank BALANCE cell is a missing term
+// and must stay unreadable -- that is the rule above and it does not move. A
+// blank ADJUSTMENT cell is a complete answer: nothing was deducted. The mapping
+// says which is which with `required`, so the distinction lives in
+// configuration rather than in a conditional naming one field.
+describe("a blank cell in an optional field is a real zero", () => {
+  const OPTIONAL = "goldSouqDeductionJ31";
+
+  it("is the flag the default mapping actually sets, on exactly one field", () => {
+    expect(
+      DEFAULT_GOOGLE_SHEETS_FIELDS.filter((f) => f.required === false).map((f) => f.key),
+    ).toEqual([OPTIONAL]);
+  });
+
+  // Live production shape: J32 comes back with no valueRange at all (raw null).
+  it("keeps a blank optional deduction out of the unreadable list", async () => {
+    const wallet = await client()._readWalletCells(
+      fakeSheets({ ...allGood, [OPTIONAL]: undefined }),
+      "01/09/2026",
+    );
+    expect(wallet.unreadable).toEqual([]);
+    expect(wallet.values[OPTIONAL]).toBe(0);
+    // The debug endpoint shows this flag, so it must agree with the list above
+    // rather than say "unreadable" about a field nothing is complaining about.
+    expect(wallet.cells[OPTIONAL].readable).toBe(true);
+    expect(wallet.cells[OPTIONAL].required).toBe(false);
+  });
+
+  it("reads an empty string and a whitespace-only optional cell the same way", async () => {
+    for (const blank of ["", "   "]) {
+      const wallet = await client()._readWalletCells(
+        fakeSheets({ ...allGood, [OPTIONAL]: blank }),
+        "01/09/2026",
+      );
+      expect(wallet.unreadable).toEqual([]);
+      expect(wallet.values[OPTIONAL]).toBe(0);
+    }
+  });
+
+  // The guard the change must not weaken: K9 is a term of the total, and an
+  // empty K9 is a lost number however many optional fields exist beside it.
+  it("still calls a blank REQUIRED balance cell unreadable", async () => {
+    const wallet = await client()._readWalletCells(
+      fakeSheets({ ...allGood, match2pay: "", [OPTIONAL]: undefined }),
+      "01/09/2026",
+    );
+    expect(wallet.unreadable).toEqual(["match2pay"]);
+  });
+
+  // Absence is an answer; garbage is not. A #REF! in the deduction cell is the
+  // same shifted-row drift as a #REF! anywhere else and still has to be named.
+  it("still calls a non-blank unparseable optional cell unreadable", async () => {
+    for (const junk of ["#REF!", "#N/A", "N/A", "pending"]) {
+      const wallet = await client()._readWalletCells(
+        fakeSheets({ ...allGood, [OPTIONAL]: junk }),
+        "01/09/2026",
+      );
+      expect(wallet.unreadable).toEqual([OPTIONAL]);
+    }
+  });
+
+  it("leaves the accounting dash meaning zero in an optional cell too", async () => {
+    const wallet = await client()._readWalletCells(
+      fakeSheets({ ...allGood, [OPTIONAL]: "  -   " }),
+      "01/09/2026",
+    );
+    expect(wallet.unreadable).toEqual([]);
+    expect(wallet.values[OPTIONAL]).toBe(0);
+  });
+
+  it("subtracts a real deduction unchanged", async () => {
+    const wallet = await client()._readWalletCells(
+      fakeSheets({ ...allGood, goldSouq: "  50,694.96 ", [OPTIONAL]: "1,000.00" }),
+      "01/09/2026",
+    );
+    expect(wallet.unreadable).toEqual([]);
+    expect(wallet.values.goldSouq - wallet.values[OPTIONAL]).toBeCloseTo(49694.96, 2);
+  });
+});

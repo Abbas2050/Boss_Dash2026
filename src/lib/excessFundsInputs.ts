@@ -23,6 +23,14 @@ import type { WalletWidgetEntry } from "@/lib/walletApi";
 // goldSouq minus its J-column deduction, so losing either half of a pair is
 // losing the whole figure. Getting this map wrong reintroduces the silent zero
 // in a new place, so it is kept next to the test that pins it.
+//
+// goldSouqDeductionJ31 stays in the pair deliberately, even though a BLANK
+// deduction no longer reaches this list. The backend decides that question now:
+// the deduction cell is configured `required: false`, so an empty cell is
+// reported as the real zero it is, while a cell holding a #REF! is still named
+// unreadable -- and when it is named, Gold Souq must still go unavailable,
+// because a corrupted deduction corrupts the adjusted balance just as
+// completely as a corrupted K13 does.
 export const WIDGET_SHEET_FIELDS: Record<string, readonly string[]> = {
   googlesheets_match2pay: ["match2pay"],
   googlesheets_deusxpay: ["deusXpay"],

@@ -159,12 +159,22 @@ export async function checkAllBalances() {
         const goldSouqDeduction = Number(gs.goldSouqDeductionJ31 || 0);
         const goldSouqAdjusted = goldSouqOriginal - goldSouqDeduction;
         const deductionLabel = goldSouqDeduction.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        // Named from the mapping, never written out here. This label said J31
+        // while the configured cell had already moved to J32 -- the field KEY
+        // is goldSouqDeductionJ31 and is frozen (it is persisted and drives the
+        // legacy-cell migration), so anyone reading the key for the row number
+        // gets an address that was correct two shifts ago. Deriving it means
+        // the next inserted row cannot make this line lie again.
+        const deductionCell = gs.fieldCells?.goldSouqDeductionJ31 || '';
+        const goldSouqName = deductionCell
+          ? `Gold Souq (-$${deductionLabel} deducted, ${deductionCell})`
+          : `Gold Souq (-$${deductionLabel} deducted)`;
         return {
           entries: [
             ['googlesheets_match2pay', { name: 'Match2Pay', balance: gs.match2pay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_deusxpay', { name: 'DeusXpay', balance: gs.deusXpay, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_openpayed', { name: 'OpenPayed', balance: gs.openPayed, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
-            ['googlesheets_goldsouq', { name: `Gold Souq (-$${deductionLabel} deducted, J31)`, balance: goldSouqAdjusted, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
+            ['googlesheets_goldsouq', { name: goldSouqName, balance: goldSouqAdjusted, currencies: {}, status: 'ok', checked_at: now(), sheet_used: sheetUsed }],
             ['googlesheets_fab', {
               name: 'FAB Bank',
               balance: gs.fabTotal,

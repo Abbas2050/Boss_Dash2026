@@ -67,8 +67,8 @@ describe("missing widgets", () => {
   });
 
   it("prefers the widget's own name over the configured label", () => {
-    const { bank } = balancesRows(props([w("googlesheets_goldsouq", 5, "ok", "Gold Souq (-$30,000.00 deducted, J31)")]));
-    expect(bank[0].label).toBe("Gold Souq (-$30,000.00 deducted, J31)");
+    const { bank } = balancesRows(props([w("googlesheets_goldsouq", 5, "ok", "Gold Souq (-$30,000.00 deducted, J32)")]));
+    expect(bank[0].label).toBe("Gold Souq (-$30,000.00 deducted, J32)");
   });
 });
 

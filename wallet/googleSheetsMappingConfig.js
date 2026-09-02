@@ -22,7 +22,22 @@ export const DEFAULT_GOOGLE_SHEETS_FIELDS = [
   { key: 'netBalanceAfterExpectedFunds', label: 'Net Balance after expected funds', cell: 'J28', required: true },
   { key: 'differenceBetweenActualAndExpected', label: 'Difference between actual and expected', cell: 'J30', required: true },
   { key: 'creditByLPs', label: 'Credit by LPs', cell: 'J31', required: true },
-  { key: 'goldSouqDeductionJ31', label: 'Gold Souq Deduction (J31)', cell: 'J32', required: true },
+  // The one field that is not required, and the reason `required` now carries
+  // weight past the settings screen. Every other field above is a TERM of a
+  // balance: if its cell is blank we have lost a number and cannot say what the
+  // total is. This one is a subtractive ADJUSTMENT, so a blank cell is a real
+  // and complete answer -- nothing was deducted from Gold Souq today -- and
+  // reporting it as unreadable is what made the Excess Funds section say it
+  // "could not read Gold Souq" while the Closing Balance Report card directly
+  // above it showed the balance perfectly. Read `required: false` as "blank
+  // means zero"; further adjustment cells belong here with the same flag.
+  //
+  // The key still says J31 because it is persisted in
+  // storage/google_sheets_wallet_mapping.json and drives the legacy-cell
+  // migration below; the cell it actually reads is the `cell` property, and
+  // anything that shows a user which cell this came from must read it there --
+  // hence a label with no row number baked into it.
+  { key: 'goldSouqDeductionJ31', label: 'Gold Souq Deduction', cell: 'J32', required: false },
 ];
 
 // Cells as they stood before the 'Own Bit New' row was inserted at row 6.
@@ -78,7 +93,7 @@ const LEGACY_CELLS_BY_KEY = (() => {
   return byKey;
 })();
 
-const DEFAULT_REQUIRED_FIELD_BY_KEY = Object.fromEntries(
+const DEFAULT_FIELD_BY_KEY = Object.fromEntries(
   DEFAULT_GOOGLE_SHEETS_FIELDS.map((field) => [field.key, field])
 );
 
@@ -121,40 +136,51 @@ function mergeWithRequiredDefaults(fields) {
 
   for (const rawField of fields || []) {
     const f = validateField(rawField);
-    byKey.set(f.key, f);
+    byKey.set(f.key, { ...f, builtIn: false });
   }
 
-  for (const req of DEFAULT_GOOGLE_SHEETS_FIELDS) {
-    if (!byKey.has(req.key)) {
-      byKey.set(req.key, { ...req });
+  for (const def of DEFAULT_GOOGLE_SHEETS_FIELDS) {
+    if (!byKey.has(def.key)) {
+      byKey.set(def.key, { ...def, builtIn: true });
     } else {
-      const existing = byKey.get(req.key);
-      const legacyCells = LEGACY_CELLS_BY_KEY[req.key] || [];
+      const existing = byKey.get(def.key);
+      const legacyCells = LEGACY_CELLS_BY_KEY[def.key] || [];
       const normalizedExistingCell = normalizeCell(existing?.cell);
       const shouldMigrateLegacyCell = legacyCells.includes(normalizedExistingCell);
 
-      byKey.set(req.key, {
+      byKey.set(def.key, {
         ...existing,
-        cell: shouldMigrateLegacyCell ? DEFAULT_REQUIRED_FIELD_BY_KEY[req.key].cell : existing.cell,
-        required: true,
+        cell: shouldMigrateLegacyCell ? DEFAULT_FIELD_BY_KEY[def.key].cell : existing.cell,
+        // The default wins over whatever was saved, because `required` is no
+        // longer a cosmetic badge -- it decides whether a blank cell is a lost
+        // number or a real zero. A config written before the Gold Souq
+        // deduction became optional carries required:true for it, and honouring
+        // that would keep the old veto alive on every machine that ever saved.
+        required: DEFAULT_FIELD_BY_KEY[def.key].required,
+        // Separate from `required` on purpose: this one is "part of the
+        // standard mapping", which is what protects a row from being deleted or
+        // reduced to a custom field in the settings screen. Tying that
+        // protection to `required` would have unprotected the deduction row the
+        // moment blank-means-zero was expressed as required:false.
+        builtIn: true,
       });
     }
   }
 
-  const requiredOrder = DEFAULT_GOOGLE_SHEETS_FIELDS.map((f) => f.key);
-  const requiredFirst = [];
-  for (const reqKey of requiredOrder) {
-    requiredFirst.push(byKey.get(reqKey));
-    byKey.delete(reqKey);
+  const defaultOrder = DEFAULT_GOOGLE_SHEETS_FIELDS.map((f) => f.key);
+  const defaultsFirst = [];
+  for (const defKey of defaultOrder) {
+    defaultsFirst.push(byKey.get(defKey));
+    byKey.delete(defKey);
   }
 
   const custom = Array.from(byKey.values()).sort((a, b) => a.key.localeCompare(b.key));
-  return [...requiredFirst, ...custom];
+  return [...defaultsFirst, ...custom];
 }
 
 export function getDefaultGoogleSheetsMappingConfig() {
   return {
-    fields: DEFAULT_GOOGLE_SHEETS_FIELDS.map((f) => ({ ...f })),
+    fields: DEFAULT_GOOGLE_SHEETS_FIELDS.map((f) => ({ ...f, builtIn: true })),
     updatedAt: null,
     source: 'default',
   };

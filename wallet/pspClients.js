@@ -734,6 +734,30 @@ export class GoogleSheetsClient {
     return Number.isFinite(parseFloat(text.replace(/[^0-9.-]/g, '')));
   }
 
+  // The same question asked of a configured FIELD rather than a bare cell, and
+  // the only place the mapping's `required` flag changes an outcome.
+  //
+  // A required field is a term of a balance: no number in the cell means we
+  // have lost part of the total, so blank stays unreadable and the figure goes
+  // unavailable. That rule is what caught Match2Pay (K9) and MBME (K18) when
+  // rows shifted under them, and it is untouched here.
+  //
+  // A field configured `required: false` is a subtractive adjustment -- the
+  // Gold Souq deduction is the first -- where blank is a real and complete
+  // answer: nothing was deducted. walletMonitor.js already reads it that way
+  // (`goldSouqOriginal - (deduction || 0)`), so calling the blank cell
+  // unreadable put the two halves of the same page into open disagreement.
+  //
+  // Blank is the whole of the concession. A cell that actually HOLDS something
+  // we cannot parse -- a #REF! left by a deleted row, an 'N/A' -- is drift on
+  // an optional field exactly as much as on a required one, and stays
+  // unreadable: absence is an answer, garbage is not.
+  _isFieldReadable(field, value) {
+    const blank = value === null || value === undefined || String(value).trim() === '';
+    if (blank && field?.required === false) return true;
+    return this._isCellReadable(value);
+  }
+
   _todaySheetName(offsetDays = 0) {
     // Use Dubai date to match business reporting day.
     const nowDubai = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Dubai' }));
@@ -788,7 +812,7 @@ export class GoogleSheetsClient {
       const field = fields[i];
       const raw = vr[i]?.values?.[0]?.[0] ?? null;
       const parsed = this._parseCell(raw);
-      const readable = this._isCellReadable(raw);
+      const readable = this._isFieldReadable(field, raw);
       if (!readable) unreadable.push(field.key);
 
       const cellInfo = {
@@ -928,6 +952,15 @@ export class GoogleSheetsClient {
       // existing tile moves; a caller that must not confuse "empty cell" with
       // "zero balance" reads this list instead.
       unreadableFields: wallet.unreadable,
+      // The cell each field was actually read from, keyed the same way as the
+      // values above. A caller that wants to tell a user which cell a figure
+      // came from must look it up here rather than write the row into a string:
+      // the deduction key still says J31, it has been J30, J31 and now J32 as
+      // rows were inserted, and the widget label had been naming the wrong one
+      // ever since the last shift.
+      fieldCells: Object.fromEntries(
+        Object.entries(wallet.cells).map(([key, info]) => [key, info.cell])
+      ),
       customValues,
     };
   }

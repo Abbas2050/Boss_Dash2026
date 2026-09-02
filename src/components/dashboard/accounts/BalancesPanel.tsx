@@ -106,7 +106,7 @@ function buildGroupRows(
     rows.push({
       id: entry.key,
       // The widget's own name wins over the configured label: it can carry
-      // live annotations (e.g. "Gold Souq (-$30,000.00 deducted, J31)") that
+      // live annotations (e.g. "Gold Souq (-$30,000.00 deducted, J32)") that
       // the static PSP_ORDER label does not know about.
       label: widget.name || entry.label,
       value: money(Number(widget.balance) || 0),

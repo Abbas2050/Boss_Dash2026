@@ -10,7 +10,15 @@ type MappingField = {
   key: string;
   label: string;
   cell: string;
+  // Two different questions, and they used to share one answer.
+  // `builtIn` is "part of the standard mapping", which is what must not be
+  // deleted -- the backend re-adds it on save anyway, so removing it only
+  // throws away the cell you had configured.
+  // `required` is "a blank cell here means a lost number", which the backend
+  // uses to decide whether an empty cell is reported unreadable. The Gold Souq
+  // deduction is built in but NOT required: blank means nothing was deducted.
   required?: boolean;
+  builtIn?: boolean;
 };
 
 type MappingResponse = {
@@ -19,6 +27,10 @@ type MappingResponse = {
   updatedAt?: string | null;
   source?: string;
 };
+
+// Falls back to `required` so a response from a backend that predates the
+// `builtIn` flag still protects the rows it used to protect.
+const isBuiltIn = (field: MappingField) => Boolean(field.builtIn ?? field.required);
 
 const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const CELL_PATTERN = /^[A-Z]{1,3}[1-9][0-9]*$/;
@@ -114,7 +126,7 @@ export const GoogleSheetMappingPage: React.FC = () => {
   function removeField(index: number) {
     setFields((prev) => {
       const item = prev[index];
-      if (!item || item.required) return prev;
+      if (!item || isBuiltIn(item)) return prev;
       return prev.filter((_, i) => i !== index);
     });
   }
@@ -282,13 +294,13 @@ export const GoogleSheetMappingPage: React.FC = () => {
                         />
                       </td>
                       <td className="px-3 py-2 align-top text-xs text-muted-foreground">
-                        {field.required ? "Required" : "Custom"}
+                        {isBuiltIn(field) ? (field.required === false ? "Standard (optional)" : "Standard") : "Custom"}
                       </td>
                       <td className="px-3 py-2 align-top text-right">
                         <button
                           type="button"
                           onClick={() => removeField(index)}
-                          disabled={Boolean(field.required)}
+                          disabled={isBuiltIn(field)}
                           className="border border-destructive/40 text-destructive px-2 py-1 rounded disabled:opacity-40"
                         >
                           Remove
