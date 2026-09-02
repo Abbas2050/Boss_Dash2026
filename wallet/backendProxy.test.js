@@ -57,12 +57,21 @@ function upstreamReply(status, body = "{}", headers = {}) {
 }
 
 // A token endpoint that always issues one, so these tests are about the proxy
-// rather than about discovery (backendToken.test.js covers discovery).
+// rather than about discovery (backendToken.test.js covers discovery,
+// including the direct-Bearer candidate). The direct-Bearer candidate probes
+// the target endpoint directly with the raw key before ever reaching
+// /oauth/token, so that probe is rejected here to keep these tests on the
+// exchange path they were written to exercise.
 function tokenFetch(token = "backend-token-xyz") {
-  return vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    text: async () => JSON.stringify({ access_token: token, expires_in: 3600 }),
+  return vi.fn(async (url) => {
+    if (!String(url).includes("/oauth/token")) {
+      return { ok: false, status: 401, text: async () => '{"error":"invalid_token"}' };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ access_token: token, expires_in: 3600 }),
+    };
   });
 }
 

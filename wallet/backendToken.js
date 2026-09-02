@@ -1,26 +1,42 @@
 /**
- * Exchanges BACKEND_API_KEY for a Bearer token at api.skylinkscapital.com.
+ * Resolves a usable Bearer token for the trading backend from
+ * BACKEND_API_KEY, either by using it directly or by exchanging it at
+ * api.skylinkscapital.com.
  *
  * Why this exists: the trading backend was open until it wasn't. It now
  * answers every endpoint with 401 invalid_token, and the operator has put a
- * BACKEND_API_KEY in the server .env. That key is not itself the Bearer --
- * it has to be exchanged at POST /oauth/token, and the resulting short-lived
- * token is what the backend actually accepts.
+ * BACKEND_API_KEY in the server .env.
  *
- * What was established by probing the live endpoint (do not re-derive):
+ * What was established by probing the live /oauth/token endpoint (do not
+ * re-derive):
  *   GET  /oauth/token                          -> 405, so it exists and is POST-only
  *   POST /oauth/token with a JSON body         -> 415, so it wants form encoding
  *   POST form, grant_type=client_credentials,
- *        no credential at all                  -> 500 "Authenticated principal is
+ *        every credential shape tried          -> 500 "Authenticated principal is
  *                                                missing required claims."
+ *   POST form, grant_type=client_credentials,
+ *        no credential at all                  -> the SAME 500, same message
  * Everything else probed (/connect/token, /api/token, /api/auth/token, /token,
  * /.well-known/openid-configuration) is a 404.
  *
- * The one thing probing could NOT settle is the parameter name for the key,
- * because the key lives only in the server .env and is not readable from a
- * developer machine. So the first exchange walks an ordered list of the
- * standard shapes, and the shape that works is remembered for the life of the
- * process -- later refreshes go straight to it instead of re-probing.
+ * The identical response with and without a credential is the key fact: the
+ * endpoint is not reading whatever we send it, so /oauth/token is very likely
+ * not our path at all -- it wants a caller that is already an authenticated
+ * principal, which no client-credentials exchange we can construct will ever
+ * produce. The likelier reading is that BACKEND_API_KEY already IS the
+ * Bearer, with no exchange step. So that is tried first, but only adopted
+ * after a real authenticated request confirms it -- an operator could still
+ * be handed an /oauth/token-shaped key by mistake, and a key that merely gets
+ * past validation without being checked would silently break every backend
+ * call.
+ *
+ * If the direct-Bearer attempt is rejected, the code falls back to the
+ * six-shape /oauth/token exchange walk. The parameter name for that exchange
+ * could not be settled by probing, because the key lives only in the server
+ * .env and is not readable from a developer machine, so it tries an ordered
+ * list of standard shapes, and the shape that works is remembered for the
+ * life of the process -- later refreshes go straight to it instead of
+ * re-probing.
  */
 
 import { redactText, redactSecretValues, buildSecretList } from './redactSecrets.js';
@@ -37,14 +53,37 @@ const FALLBACK_LIFETIME_MS = 5 * 60_000;
 
 const TOKEN_PATH = '/oauth/token';
 
+// Cheap, already-authenticated endpoint used to validate the direct-Bearer
+// candidate before it is adopted: small, requires real auth to return 2xx
+// (so passing it is actual evidence, not a fluke), and already used
+// elsewhere in this codebase (reports/summaryCore.js), so it is known-good
+// against the live backend.
+const VALIDATION_PATH = '/Metrics/dashboard';
+
 /**
  * The shapes to try, in order, on the first exchange.
  *
- * Ordered by how likely each is to be what an OAuth2 client_credentials
- * server with a single opaque key expects. `form` is always
- * x-www-form-urlencoded because the JSON probe came back 415.
+ * The direct-Bearer candidate goes first: the token endpoint's identical
+ * response with and without a credential (see file header) means it is very
+ * likely not our path, and BACKEND_API_KEY is very likely the Bearer itself.
+ * It is a different kind of attempt from the rest -- no exchange, just a
+ * validation GET -- so it is marked `kind: 'direct-bearer'` and handled by a
+ * separate branch in attemptCandidate() rather than a `build()`.
+ *
+ * The remaining six are ordered by how likely each is to be what an OAuth2
+ * client_credentials server with a single opaque key expects, for use if the
+ * direct-Bearer attempt is rejected. `form` is always x-www-form-urlencoded
+ * because the JSON probe came back 415.
  */
 export const TOKEN_REQUEST_CANDIDATES = [
+  {
+    // Not an exchange: BACKEND_API_KEY is sent as-is as the Bearer against a
+    // real endpoint, and only adopted if that comes back 2xx. A 401/403 means
+    // the key is not a Bearer, and the walk falls through to the exchange
+    // shapes below exactly as it would have without this candidate.
+    name: 'direct Bearer (BACKEND_API_KEY as-is)',
+    kind: 'direct-bearer',
+  },
   {
     // Most .NET/IdentityServer-style deployments want both halves of a client
     // credential; with one opaque key the same value is usually issued as both.
@@ -171,7 +210,31 @@ function lifetimeMsFrom(payload) {
   return ms > REFRESH_SKEW_MS * 2 ? ms - REFRESH_SKEW_MS : ms / 2;
 }
 
+// Validates the direct-Bearer candidate with one GET against a real,
+// already-authenticated endpoint. This is not an exchange -- there is no
+// response payload to pull a token out of, because the token being tested
+// IS the key. A 2xx is the only thing that counts as proof: it means the
+// backend actually accepted this value as a Bearer, not merely that the
+// endpoint didn't complain about the shape of the request.
+async function attemptDirectBearer(key, fetchImpl) {
+  const url = `${backendBaseUrl()}${VALIDATION_PATH}`;
+  const res = await fetchImpl(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(20_000),
+  });
+  const raw = await res.text();
+  if (!res.ok) return { ok: false, status: res.status, body: raw };
+  // No expires_in exists for this path -- the key either works or it
+  // doesn't -- so it is treated as long-lived (Infinity) rather than given a
+  // guessed lifetime. It still goes through the normal invalidate-on-401
+  // path in fetchWithBackendToken, which re-validates (once) rather than
+  // trusting a key forever once the backend actually rejects it.
+  return { ok: true, status: res.status, token: key, lifetimeMs: Infinity, field: 'direct' };
+}
+
 async function attemptCandidate(candidate, key, fetchImpl) {
+  if (candidate.kind === 'direct-bearer') return attemptDirectBearer(key, fetchImpl);
   const { form, headers } = candidate.build(key);
   const url = `${backendBaseUrl()}${TOKEN_PATH}`;
   const res = await fetchImpl(url, {
@@ -210,8 +273,9 @@ function buildExhaustedError(attempts, secrets) {
       )}`,
   );
   const message =
-    `Could not obtain a backend token from POST ${backendBaseUrl()}${TOKEN_PATH}. ` +
-    `All ${attempts.length} credential shapes were rejected:\n${lines.join('\n')}\n` +
+    `Could not obtain a backend token. Tried BACKEND_API_KEY directly against ` +
+    `GET ${backendBaseUrl()}${VALIDATION_PATH} and every exchange shape at ` +
+    `POST ${backendBaseUrl()}${TOKEN_PATH}. All ${attempts.length} attempts were rejected:\n${lines.join('\n')}\n` +
     'The parameter name for BACKEND_API_KEY is a guess -- ask the backend team which ' +
     'of these the token endpoint expects, or for the exact form of a working request.';
   const error = new Error(redactSecretValues(message, secrets));

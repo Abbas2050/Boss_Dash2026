@@ -62,6 +62,9 @@ describe("candidate discovery", () => {
   // every later refresh.
   it("selects the first candidate that returns a token and remembers it", async () => {
     fetchMock
+      // 0. direct Bearer -> rejected, so the walk falls through to the
+      //    /oauth/token exchange shapes exactly as it would without it.
+      .mockResolvedValueOnce(reply(401, { error: "invalid_token" }))
       // 1. client_secret+client_id -> rejected outright
       .mockResolvedValueOnce(reply(400, { error: "invalid_client" }))
       // 2. client_secret -> 200 but no token in it, which must NOT count as
@@ -73,14 +76,17 @@ describe("candidate discovery", () => {
     const token = await getBackendToken();
 
     expect(token).toBe("tok-A");
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(getRememberedCandidateName()).toBe("form api_key");
 
     // The winning request really was form-encoded with the key under api_key.
-    expect(headersOfCall(2)["Content-Type"]).toBe("application/x-www-form-urlencoded");
-    expect(bodyOfCall(2)).toContain("grant_type=client_credentials");
-    expect(bodyOfCall(2)).toContain(`api_key=${encodeURIComponent(KEY)}`);
-    expect(fetchMock.mock.calls[2][0]).toBe("https://api.skylinkscapital.com/oauth/token");
+    expect(headersOfCall(3)["Content-Type"]).toBe("application/x-www-form-urlencoded");
+    expect(bodyOfCall(3)).toContain("grant_type=client_credentials");
+    expect(bodyOfCall(3)).toContain(`api_key=${encodeURIComponent(KEY)}`);
+    expect(fetchMock.mock.calls[3][0]).toBe("https://api.skylinkscapital.com/oauth/token");
+    // And the direct-Bearer attempt really did hit the validation endpoint,
+    // not the token endpoint.
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.skylinkscapital.com/Metrics/dashboard");
   });
 
   it("uses only the remembered shape on a later refresh instead of re-probing", async () => {
@@ -88,11 +94,12 @@ describe("candidate discovery", () => {
     vi.setSystemTime(new Date("2026-09-02T06:00:00Z"));
 
     fetchMock
+      .mockResolvedValueOnce(reply(401, { error: "invalid_token" })) // direct Bearer
       .mockResolvedValueOnce(reply(400, { error: "invalid_client" }))
       .mockResolvedValueOnce(reply(400, { error: "invalid_client" }))
       .mockResolvedValueOnce(reply(200, { access_token: "tok-A", expires_in: 3600 }));
     await getBackendToken();
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
     // Walk past the cached token's usable life so the next call must re-mint.
     vi.setSystemTime(new Date("2026-09-02T07:30:00Z"));
@@ -101,21 +108,25 @@ describe("candidate discovery", () => {
     const second = await getBackendToken();
 
     expect(second).toBe("tok-B");
-    // One more call, not four: the two shapes already known to fail are not
-    // tried again.
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(bodyOfCall(3)).toContain(`api_key=${encodeURIComponent(KEY)}`);
+    // One more call, not five: the direct-Bearer attempt and the two shapes
+    // already known to fail are not tried again.
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(bodyOfCall(4)).toContain(`api_key=${encodeURIComponent(KEY)}`);
   });
 
   it("accepts a response that names the token `token` rather than `access_token`", async () => {
-    fetchMock.mockResolvedValueOnce(reply(200, { token: "tok-plain" }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, { error: "invalid_token" })) // direct Bearer
+      .mockResolvedValueOnce(reply(200, { token: "tok-plain" }));
     expect(await getBackendToken()).toBe("tok-plain");
   });
 
   it("sends the key as a header for the header-shaped candidates", async () => {
-    // Force the walk down to candidate 4 (X-Api-Key) to prove the header
-    // candidates put the key in a header and not in the form body.
+    // Force the walk past the direct-Bearer attempt and the first three
+    // exchange shapes to prove the header candidates put the key in a header
+    // and not in the form body.
     fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer
       .mockResolvedValueOnce(reply(400, "no"))
       .mockResolvedValueOnce(reply(400, "no"))
       .mockResolvedValueOnce(reply(400, "no"))
@@ -124,8 +135,71 @@ describe("candidate discovery", () => {
     await getBackendToken();
 
     expect(getRememberedCandidateName()).toBe("header X-Api-Key");
-    expect(headersOfCall(3)["X-Api-Key"]).toBe(KEY);
-    expect(bodyOfCall(3)).not.toContain(KEY);
+    expect(headersOfCall(4)["X-Api-Key"]).toBe(KEY);
+    expect(bodyOfCall(4)).not.toContain(KEY);
+  });
+});
+
+describe("direct Bearer", () => {
+  // "First thing tried, before any exchange": BACKEND_API_KEY is sent as-is
+  // against a real endpoint, and only adopted if that comes back 2xx.
+  it("adopts BACKEND_API_KEY as-is when it validates, without ever contacting /oauth/token", async () => {
+    fetchMock.mockResolvedValueOnce(reply(200, { status: "ok" }));
+
+    const token = await getBackendToken();
+
+    expect(token).toBe(KEY);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.skylinkscapital.com/Metrics/dashboard");
+    expect(fetchMock.mock.calls[0][1].method).toBe("GET");
+    expect(headersOfCall(0).Authorization).toBe(`Bearer ${KEY}`);
+    expect(getRememberedCandidateName()).toBe("direct Bearer (BACKEND_API_KEY as-is)");
+    // The exchange endpoint was never hit at all.
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/oauth/token"))).toBe(false);
+  });
+
+  it("falls through to the exchange shapes when the direct Bearer gets a 401", async () => {
+    fetchMock
+      .mockResolvedValueOnce(reply(401, { error: "invalid_token" })) // direct Bearer: not a Bearer
+      .mockResolvedValueOnce(reply(400, { error: "invalid_client" })) // client_secret+client_id
+      .mockResolvedValueOnce(reply(200, { access_token: "tok-exchange", expires_in: 3600 })); // client_secret
+
+    const token = await getBackendToken();
+
+    expect(token).toBe("tok-exchange");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://api.skylinkscapital.com/Metrics/dashboard");
+    expect(fetchMock.mock.calls[2][0]).toBe("https://api.skylinkscapital.com/oauth/token");
+    expect(getRememberedCandidateName()).toBe("form client_secret");
+  });
+
+  it("caches the adopted direct key and does not re-validate on every call", async () => {
+    fetchMock.mockResolvedValueOnce(reply(200, { status: "ok" }));
+
+    expect(await getBackendToken()).toBe(KEY);
+    expect(await getBackendToken()).toBe(KEY);
+    expect(await getBackendToken()).toBe(KEY);
+
+    // Only the first call actually validated; the rest were served from cache.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-validates the direct Bearer exactly once on a 401 and does not loop", async () => {
+    fetchMock.mockResolvedValue(reply(200, {}));
+    await getBackendToken();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(getRememberedCandidateName()).toBe("direct Bearer (BACKEND_API_KEY as-is)");
+
+    // A backend that rejects the direct key on every call, which is exactly
+    // the shape that would send a naive implementation into a re-validation
+    // loop.
+    const call = vi.fn().mockResolvedValue({ status: 401 });
+    const response = await fetchWithBackendToken(call);
+
+    expect(response.status).toBe(401);
+    expect(call).toHaveBeenCalledTimes(2); // the original and ONE retry
+    expect(fetchMock).toHaveBeenCalledTimes(2); // the warm-up and ONE re-validation
+    expect(call.mock.calls[0][0]).toBe(KEY);
+    expect(call.mock.calls[1][0]).toBe(KEY);
   });
 });
 
@@ -133,14 +207,17 @@ describe("token caching", () => {
   it("reuses a cached token within its lifetime and refreshes before it expires", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-02T06:00:00Z"));
-    fetchMock.mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer rejected, so this exercises the exchange path
+      .mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
 
     expect(await getBackendToken()).toBe("tok-1");
     expect(await getBackendToken()).toBe("tok-1");
-    // Well inside the lifetime: still the same token, still one exchange.
+    // Well inside the lifetime: still the same token, still the one exchange
+    // beyond the rejected direct-Bearer attempt.
     vi.setSystemTime(new Date("2026-09-02T06:30:00Z"));
     expect(await getBackendToken()).toBe("tok-1");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // 59m30s in: BEFORE the stated 60m expiry, but inside the refresh skew.
     // A token must never be handed out this close to expiring, because a
@@ -148,13 +225,17 @@ describe("token caching", () => {
     fetchMock.mockResolvedValue(reply(200, { access_token: "tok-2", expires_in: 3600 }));
     vi.setSystemTime(new Date("2026-09-02T06:59:30Z"));
     expect(await getBackendToken()).toBe("tok-2");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // One more call: the remembered exchange shape re-mints; the direct
+    // Bearer (already known not to work) is not retried.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("assumes a short lifetime when the response omits expires_in", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-02T06:00:00Z"));
-    fetchMock.mockResolvedValue(reply(200, { access_token: "tok-1" }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer rejected
+      .mockResolvedValue(reply(200, { access_token: "tok-1" }));
     await getBackendToken();
 
     // Two minutes on, the assumed lifetime has not run out yet.
@@ -169,19 +250,25 @@ describe("token caching", () => {
   });
 
   it("does not fetch a token per caller when several arrive at once", async () => {
-    fetchMock.mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer rejected
+      .mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
     const tokens = await Promise.all([getBackendToken(), getBackendToken(), getBackendToken()]);
     expect(tokens).toEqual(["tok-1", "tok-1", "tok-1"]);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Only one exchange walk (direct Bearer + the winning shape) for all
+    // three concurrent callers, not three.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("401 refresh and retry", () => {
   it("retries a 401 exactly once and does not loop", async () => {
-    fetchMock.mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer rejected
+      .mockResolvedValue(reply(200, { access_token: "tok-1", expires_in: 3600 }));
     // Warm the cache: the retry only makes sense for a token we were holding.
     await getBackendToken();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     // A backend that rejects every token, which is exactly the shape that
     // would send a naive implementation into an infinite refresh loop.
@@ -190,7 +277,9 @@ describe("401 refresh and retry", () => {
 
     expect(response.status).toBe(401);
     expect(call).toHaveBeenCalledTimes(2); // the original and ONE retry
-    expect(fetchMock).toHaveBeenCalledTimes(2); // the warm-up and ONE re-mint
+    // One more fetch call: the remembered exchange shape re-mints, the
+    // direct-Bearer attempt (already known not to work) is not retried.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     // The retry used a token minted after the rejection, not the stale one.
     expect(call.mock.calls[0][0]).toBe("tok-1");
   });
@@ -254,7 +343,9 @@ describe("failure reporting", () => {
   it("does not echo the token it is already holding when a refresh fails", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-02T06:00:00Z"));
-    fetchMock.mockResolvedValueOnce(reply(200, { access_token: "tok-HELD-777", expires_in: 3600 }));
+    fetchMock
+      .mockResolvedValueOnce(reply(401, "no")) // direct Bearer rejected
+      .mockResolvedValueOnce(reply(200, { access_token: "tok-HELD-777", expires_in: 3600 }));
     await getBackendToken();
 
     // The refresh is rejected with a body that quotes the token it is
@@ -272,10 +363,12 @@ describe("failure reporting", () => {
 
   it("records a shape that failed at the transport layer and keeps walking", async () => {
     fetchMock
+      // The direct-Bearer validation itself is what hits the network blip
+      // here; the walk must still continue into the exchange shapes.
       .mockRejectedValueOnce(Object.assign(new Error("connect ECONNREFUSED"), { name: "TypeError" }))
       .mockResolvedValueOnce(reply(200, { access_token: "tok-A", expires_in: 60 }));
-    // A network blip on the first shape must not abort the walk before the
-    // shape that works is ever tried.
+    // A network blip on the first candidate must not abort the walk before
+    // the shape that works is ever tried.
     expect(await getBackendToken()).toBe("tok-A");
   });
 

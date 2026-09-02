@@ -42,6 +42,15 @@ function stubFetch(calls, { token = "issued-token" } = {}) {
         headers: { "content-type": "application/json" },
       });
     }
+    // backendToken.js's direct-Bearer candidate probes this same endpoint
+    // with the raw BACKEND_API_KEY before ever reaching /oauth/token; reject
+    // that probe (identifiable by the raw key on the Authorization header)
+    // so these tests keep exercising the exchange path they are named for --
+    // the direct-Bearer path itself is covered in wallet/backendToken.test.js.
+    const authHeader = init.headers?.Authorization || init.headers?.authorization;
+    if (authHeader === `Bearer ${process.env.BACKEND_API_KEY}`) {
+      return new Response(JSON.stringify({ error: "invalid_token" }), { status: 401 });
+    }
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -58,7 +67,10 @@ describe("backendFetch", () => {
     const resp = await backendFetch("/Metrics/dashboard");
     expect(resp.status).toBe(200);
 
-    const dataCall = calls.find((c) => c.url.includes("/Metrics/dashboard"));
+    // The direct-Bearer candidate probes this SAME path first (and is
+    // rejected here so the exchange runs) -- take the LAST call to it, which
+    // is the real, authenticated data request.
+    const dataCall = calls.filter((c) => c.url.includes("/Metrics/dashboard")).pop();
     expect(dataCall, "the backend call never happened").toBeTruthy();
     expect(dataCall.init.headers.Authorization).toBe("Bearer issued-token");
   });
