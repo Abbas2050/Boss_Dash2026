@@ -1,4 +1,5 @@
 import { DASHBOARD_HUB_URL } from '@/lib/backendBase';
+import { hubAccessTokenFactory } from '@/lib/hubAccessToken';
 import { useEffect, useRef, useState } from 'react';
 import { SignalRConnectionManager, SignalRStatus } from '@/lib/signalRConnectionManager';
 
@@ -89,16 +90,25 @@ export function useAccountAlerts() {
   });
 
   useEffect(() => {
-    const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || '';
-    const hubUrl = backendBaseUrl
-DASHBOARD_HUB_URL;
+    // Was:
+    //     const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || '';
+    //     const hubUrl = backendBaseUrl
+    //   DASHBOARD_HUB_URL;
+    // which is not the ternary it looks like. Automatic semicolon insertion
+    // ends the declaration after `backendBaseUrl`, leaving `DASHBOARD_HUB_URL;`
+    // as a dead expression statement on the next line. VITE_BACKEND_BASE_URL is
+    // undefined in production -- the credentials were renamed off the VITE_
+    // prefix and it went with them -- so hubUrl was the empty string and this
+    // connection could never work, with or without auth.
+    const hubUrl = DASHBOARD_HUB_URL;
 
     const manager = new SignalRConnectionManager({
       hubUrl,
       trackedEvents: TRACKED_EVENTS,
-      // No accessTokenFactory: the backend hub's negotiate endpoint answers
-      // unauthenticated. The old factory fetched /api/signalr/token, which
-      // exists only on this dashboard's own server and always returned 404.
+      // The hub's negotiate endpoint now returns 401 without a Bearer. The
+      // token comes from our own session-gated endpoint and is fetched again
+      // on every reconnect -- see src/lib/hubAccessToken.ts.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     const unsubStatus = manager.onStatusChange((s) => {

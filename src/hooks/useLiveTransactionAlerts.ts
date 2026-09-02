@@ -1,4 +1,5 @@
 import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import { useEffect } from "react";
 import { toast } from "@/hooks/use-toast";
 
@@ -15,7 +16,11 @@ export function useLiveTransactionAlerts() {
   useEffect(() => {
     // Connect to SignalR (adapt URL as needed)
     const connection = new (window as any).signalR.HubConnectionBuilder()
-      .withUrl(DASHBOARD_HUB_URL)
+      // Second argument, not just the URL: the hub's negotiate endpoint returns
+      // 401 without a Bearer, and SignalR only asks for one if a factory is
+      // configured here. Same shared helper as every other hub site, so the
+      // token is refetched on each reconnect rather than captured at mount.
+      .withUrl(DASHBOARD_HUB_URL, { accessTokenFactory: hubAccessTokenFactory })
       .withAutomaticReconnect([0, 2000, 5000, 10000])
       .build();
 

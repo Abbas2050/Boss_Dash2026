@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { SignalRConnectionManager, type SignalRStatus } from "@/lib/signalRConnectionManager";
 import { BACKEND_BASE_URL, DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import { authHeaders } from "@/lib/auth";
 
 const API_BASE = `${BACKEND_BASE_URL}/api/LpRiskAlert`;
@@ -280,14 +281,13 @@ export function LpRiskAlertsTab({ refreshKey }: { refreshKey: number }) {
     const manager = new SignalRConnectionManager({
       // Deliberately NOT BACKEND_BASE_URL. That is now the /api/backend HTTP
       // proxy, and a fetch-based proxy cannot carry a websocket upgrade, so the
-      // hub keeps talking to the backend origin directly. Live alerts stay
-      // broken until websocket auth is solved; failing here in the open is the
-      // intended state.
+      // hub keeps talking to the backend origin directly.
       hubUrl: DASHBOARD_HUB_URL,
       trackedEvents: ["LpRiskAlerts"],
-      // No accessTokenFactory: the backend hub's negotiate endpoint answers
-      // unauthenticated. The old factory fetched /api/signalr/token, which
-      // exists only on this dashboard's own server and always returned 404.
+      // Which is exactly why the token has to travel with the client: the
+      // browser presents it on negotiate and on the socket itself. It comes
+      // from our own session-gated endpoint, never from BACKEND_API_KEY.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     const unsubStatus = manager.onStatusChange((next) => setWsStatus(next));

@@ -56,10 +56,13 @@ export const BACKEND_BASE_URL = "/api/backend";
  * NOT repointed at the proxy, on purpose. /api/backend is an HTTP proxy built
  * on fetch(); it cannot carry a websocket upgrade, so routing the hub through
  * it would fail in a way that looks like a hub bug rather than a missing
- * feature. Live alerts therefore stay broken until websocket auth is handled
- * separately (the hub needs its own token, passed via SignalR's
- * accessTokenFactory or a ws-aware proxy). Failing visibly against the direct
- * origin is the intended state, not an oversight — do not "fix" it by pointing
- * this at BACKEND_BASE_URL.
+ * feature. Do not "fix" it by pointing this at BACKEND_BASE_URL.
+ *
+ * Because the hub is spoken to directly, its auth is the client's job, and
+ * that is now solved rather than outstanding: SignalR presents a Bearer on
+ * negotiate and as ?access_token= on the socket, obtained by every hub site
+ * from the one factory in src/lib/hubAccessToken.ts, which reads it from the
+ * session-gated /api/backend/hub-token on our own server. Only the SHORT-LIVED
+ * access token ever reaches the browser; BACKEND_API_KEY stays server-side.
  */
 export const DASHBOARD_HUB_URL = `${BACKEND_DIRECT_ORIGIN}/ws/dashboard`;

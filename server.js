@@ -27,6 +27,7 @@ import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient, LETKNOWPAY_DISCOVERY_CANDIDATES } from './wallet/pspClients.js';
 import { deepRedact } from './wallet/redactSecrets.js';
 import { backendProxy } from './wallet/backendProxy.js';
+import { hubTokenHandler } from './wallet/hubToken.js';
 import {
   loadGoogleSheetsMappingConfig,
   saveGoogleSheetsMappingConfig,
@@ -864,6 +865,23 @@ app.use('/api/wallet', (req, res) =>
 // above: requireSession already gates everything under /api and calls
 // authRequired itself, and listing it twice runs the JWT verify and a users
 // SELECT twice per request.
+// Declared BEFORE the /api/backend proxy mount below, and that order is
+// load-bearing: app.use('/api/backend', ...) matches by prefix, so if the
+// proxy came first it would swallow this path and forward "/hub-token" to the
+// trading backend, which has no such endpoint. Express matches in
+// registration order, so this exact GET wins.
+//
+// The handler hands the logged-in browser the short-lived access token the
+// SignalR hub needs. A websocket cannot go through the proxy below -- that is
+// built on fetch() and cannot carry an upgrade -- so the hub talks to
+// api.skylinkscapital.com directly and SignalR requires the CLIENT to present
+// the Bearer. wallet/hubToken.js explains why handing a browser THAT token is
+// safe while handing it BACKEND_API_KEY never would be.
+//
+// No authRequired here, same as the mounts around it: requireSession already
+// gates everything under /api and calls authRequired itself, so an anonymous
+// caller is refused before this handler runs.
+app.get('/api/backend/hub-token', (req, res) => hubTokenHandler(req, res));
 app.use('/api/backend', (req, res) => backendProxy(req, res));
 [
   '/Metrics',

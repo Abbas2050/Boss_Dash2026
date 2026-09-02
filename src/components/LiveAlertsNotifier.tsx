@@ -2,6 +2,7 @@ import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "@/components/ui/sonner";
 import { SignalRConnectionManager } from "@/lib/signalRConnectionManager";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import { getCurrentUser, hasAccess } from "@/lib/auth";
 import { Activity, AlertTriangle, CheckCircle, Info, ShoppingCart, X, XCircle } from "lucide-react";
 import {
@@ -120,17 +121,15 @@ function EventIcon(eventName: AlertEventKey) {
   return Info;
 }
 
-function getHubAndTokenUrls() {
-  const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
-  const explicitTokenUrl = (import.meta as any).env?.VITE_SIGNALR_TOKEN_URL || "";
-  const base = String(backendBaseUrl).replace(/\/+$/, "");
-  const tokenBase = String(explicitTokenUrl).trim();
-  return {
-    hubUrl: DASHBOARD_HUB_URL,
-    tokenUrls: tokenBase
-      ? [tokenBase]
-      : [],
-  };
+// The token-probing mechanism this replaced is gone on purpose, not by
+// oversight. It read VITE_SIGNALR_TOKEN_URL, walked a list of candidate URLs,
+// and returned null when the list was empty -- which in production it always
+// was, so the hub negotiated anonymously and got 401. Two ways of obtaining
+// the same credential is one too many: whichever one is broken, the symptom is
+// identical and you cannot tell from the failure which path ran. There is now
+// exactly one source, src/lib/hubAccessToken.ts, shared by every hub site.
+function getHubUrl() {
+  return DASHBOARD_HUB_URL;
 }
 
 function buildDescription(eventName: AlertEventKey, payload: any): string {
@@ -218,27 +217,13 @@ export function LiveAlertsNotifier() {
       managerRef.current = null;
     }
 
-    const { hubUrl, tokenUrls } = getHubAndTokenUrls();
     const manager = new SignalRConnectionManager({
-      hubUrl,
+      hubUrl: getHubUrl(),
       trackedEvents: enabledEvents,
-      accessTokenFactory: async () => {
-        if (tokenUrls.length === 0) {
-          // Tunnel hub can be public/no-token. Skip token probing unless explicitly configured.
-          return null;
-        }
-        for (const tokenUrl of tokenUrls) {
-          try {
-            const res = await fetch(tokenUrl);
-            if (!res.ok) continue;
-            const j = await res.json();
-            if (j?.token) return j.token;
-          } catch {
-            // Try the next token endpoint candidate.
-          }
-        }
-        return null;
-      },
+      // One shared source for the hub Bearer, refetched on every negotiate and
+      // reconnect. See src/lib/hubAccessToken.ts for why the browser may hold
+      // this token but never BACKEND_API_KEY.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     manager.onEvent((payload: unknown, eventName: string) => {

@@ -8,6 +8,7 @@ import { fetchAccountsByUserId, fetchDealsByLogin, fetchIbTree } from "@/lib/reb
 import { classifyLpBucket } from "@/lib/lpBuckets";
 import { authHeaders, hasAccess } from "@/lib/auth";
 import { BACKEND_BASE_URL, DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { BONUS_SUB_TABS, DEALING_TABS } from "@/lib/permissions";
 import { getRateForSymbol, normalizeRebateSymbol, REBATE_RULES_SAMPLE_CSV } from "@/pages/departments/dealing/rebateUtils";
@@ -900,17 +901,17 @@ const escapeCsv = (value: string | number | null | undefined) => {
 
 const ALERT_EVENT_SET = new Set<string>(ALERT_EVENT_KEYS as readonly string[]);
 type BonusSubTab = (typeof BONUS_SUB_TABS)[number];
-const getAlertsHubConfig = () => {
-  const explicitTokenUrl = (import.meta as any).env?.VITE_SIGNALR_TOKEN_URL || "";
-  const tokenBase = String(explicitTokenUrl).trim();
-  return {
-    // Not BACKEND_BASE_URL: that is the /api/backend HTTP proxy now, and a
-    // fetch-based proxy cannot carry a websocket upgrade. The hub keeps its
-    // direct-origin address so its failure stays visible and honest.
-    hubUrl: DASHBOARD_HUB_URL,
-    tokenUrls: tokenBase ? [tokenBase] : [],
-  };
-};
+// The VITE_SIGNALR_TOKEN_URL probe that used to live here is deliberately
+// gone. It was the second of two ways to obtain the same hub credential, was
+// unset in production, and so returned null and let negotiate 401. All hub
+// sites now take their Bearer from src/lib/hubAccessToken.ts.
+const getAlertsHubConfig = () => ({
+  // Not BACKEND_BASE_URL: that is the /api/backend HTTP proxy now, and a
+  // fetch-based proxy cannot carry a websocket upgrade. The hub keeps its
+  // direct-origin address, which is exactly why the token has to be presented
+  // by the client rather than injected server-side.
+  hubUrl: DASHBOARD_HUB_URL,
+});
 
 const buildAlertDescription = (eventName: AlertEventKey, payload: any): string => {
   if (eventName === "UserChangeAlert") {
@@ -1880,7 +1881,9 @@ export function DealingDepartmentPage() {
     const manager = new SignalRConnectionManager({
       hubUrl,
       trackedEvents: ["PositionMatchTableUpdate"],
-      accessTokenFactory: async () => null,
+      // Was `async () => null`, which told SignalR to negotiate anonymously.
+      // The backend requires a Bearer on negotiate now, so that returned 401.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     coverageSignalRRef.current = manager;
@@ -2033,8 +2036,9 @@ export function DealingDepartmentPage() {
     }
 
     const connection = new HubConnectionBuilder()
-      // Websocket, so it bypasses the HTTP proxy and keeps the direct origin.
-      .withUrl(DASHBOARD_HUB_URL)
+      // Websocket, so it bypasses the HTTP proxy and keeps the direct origin --
+      // and therefore has to carry its own Bearer, from the shared factory.
+      .withUrl(DASHBOARD_HUB_URL, { accessTokenFactory: hubAccessTokenFactory })
       .withAutomaticReconnect([0, 1000, 2000, 5000])
       .configureLogging(LogLevel.None)
       .build();
@@ -3820,24 +3824,13 @@ export function DealingDepartmentPage() {
       liveAlertsSignalRRef.current = null;
     }
 
-    const { hubUrl, tokenUrls } = getAlertsHubConfig();
+    const { hubUrl } = getAlertsHubConfig();
     const manager = new SignalRConnectionManager({
       hubUrl,
       trackedEvents: liveEnabledEvents,
-      accessTokenFactory: async () => {
-        if (tokenUrls.length === 0) return null;
-        for (const tokenUrl of tokenUrls) {
-          try {
-            const res = await fetch(tokenUrl);
-            if (!res.ok) continue;
-            const j = await res.json();
-            if (j?.token) return j.token;
-          } catch {
-            // Try next token URL.
-          }
-        }
-        return null;
-      },
+      // Shared factory, refetched per negotiate/reconnect: see
+      // src/lib/hubAccessToken.ts.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     const unsubEvent = manager.onEvent((payload: unknown, eventName: string) => {

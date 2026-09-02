@@ -1,4 +1,5 @@
 import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
 import { newBreaches } from "@/lib/alertBreaches";
@@ -111,10 +112,12 @@ export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       hubUrl: DASHBOARD_HUB_URL,
       trackedEvents: ["LpMarginAlerts"],
       reconnectDelaysMs: [0, 2000, 5000], // ~3 attempts before "disconnected"
-      // No accessTokenFactory: the backend hub authenticates on its own terms and
-      // its negotiate endpoint answers unauthenticated. The old factory fetched
-      // /api/signalr/token on THIS server, which never existed upstream and only
-      // ever returned 404 here.
+      // The hub's negotiate endpoint returns 401 without a Bearer now. The old
+      // factory here fetched /api/signalr/token, which never existed; the real
+      // one is /api/backend/hub-token, behind this dashboard's session gate.
+      // Shared so all hub sites agree, and called again on each reconnect so a
+      // tab open longer than the one-hour token still reauthenticates.
+      accessTokenFactory: hubAccessTokenFactory,
     });
 
     const unsubStatus = manager.onStatusChange((next) => {

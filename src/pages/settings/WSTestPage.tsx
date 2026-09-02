@@ -1,4 +1,5 @@
 import { DASHBOARD_HUB_URL } from "@/lib/backendBase";
+import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { SignalRConnectionManager, SignalRStatus } from "@/lib/signalRConnectionManager";
 
@@ -31,17 +32,25 @@ export const WSTestPage: React.FC = () => {
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [eventFilter, setEventFilter] = useState<string>("all");
 
-  const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
-  const hubUrl = backendBaseUrl
-DASHBOARD_HUB_URL;
+  // Was:
+  //     const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
+  //     const hubUrl = backendBaseUrl
+  //   DASHBOARD_HUB_URL;
+  // That reads as a ternary but is not one. Automatic semicolon insertion ends
+  // the declaration after `backendBaseUrl`, so `DASHBOARD_HUB_URL;` on the next
+  // line is a dead expression statement and the hub URL is discarded.
+  // VITE_BACKEND_BASE_URL is undefined in production, so this page was pointing
+  // SignalR at the empty string -- broken regardless of authentication.
+  const hubUrl = DASHBOARD_HUB_URL;
 
   useEffect(() => {
     const manager = new SignalRConnectionManager({
       hubUrl,
       trackedEvents: TRACKED_EVENTS,
-      // No accessTokenFactory: the backend hub's negotiate endpoint answers
-      // unauthenticated. The old factory fetched /api/signalr/token, which
-      // exists only on this dashboard's own server and always returned 404.
+      // The hub negotiate endpoint requires a Bearer now. One shared factory
+      // fetches it from our session-gated endpoint on every attempt; see
+      // src/lib/hubAccessToken.ts.
+      accessTokenFactory: hubAccessTokenFactory,
     });
     managerRef.current = manager;
 
@@ -69,7 +78,7 @@ DASHBOARD_HUB_URL;
       unsubEvents();
       manager.disconnect().catch(() => undefined);
     };
-  }, [hubUrl, backendBaseUrl]);
+  }, [hubUrl]);
 
   const filteredEvents = useMemo(() => {
     if (eventFilter === "all") return events;
