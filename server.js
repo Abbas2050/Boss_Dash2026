@@ -24,7 +24,8 @@ import { startHubWatcher } from './alerts/hubWatcher.js';
 import { authRequired, canManageUsers } from './auth/router.js';
 import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
-import { GoogleSheetsClient } from './wallet/pspClients.js';
+import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient } from './wallet/pspClients.js';
+import { deepRedact } from './wallet/redactSecrets.js';
 import {
   loadGoogleSheetsMappingConfig,
   saveGoogleSheetsMappingConfig,
@@ -624,6 +625,47 @@ app.get('/api/wallet/google-sheets-debug', async (req, res) => {
       message: error instanceof Error ? error.message : String(error),
     });
   }
+});
+
+// Read-only diagnostic for the LetKnow Pay $0.01 discrepancy: the Closing
+// Balance Report only ever sees one currency out of each provider's real
+// multi-currency balance (LetKnowPayClient/BitpaceClient.getBalance() both
+// pick a single currency key and discard the rest -- see wallet/pspClients.js).
+// Before fixing that, this shows exactly what each provider's balance API
+// actually returns, alongside what our client currently derives from it, so
+// a fix can be built on the real response shape instead of a guess.
+//
+// Admin-gated like the other internal report-testing routes (canManageUsers),
+// not just session-required like most /api/wallet/* reads, because it forces
+// two real calls to paid PSP APIs and -- despite the redaction below -- is
+// exactly the kind of endpoint that should stay off the surface a compromised
+// low-privilege session could reach.
+app.get('/api/wallet/psp-debug', async (req, res) => {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+
+  // Never let a provider's failure -- or its error message -- take down the
+  // other provider's slot or leak a credential. getRawBalances()/deriveBalance()
+  // are the same request/derivation code getBalance() itself uses (see
+  // wallet/pspClients.js), so what's shown here is guaranteed to match, not a
+  // second guess at what the provider returns.
+  async function probe(ClientClass) {
+    try {
+      const client = new ClientClass();
+      const raw = await client.getRawBalances();
+      const derived = ClientClass.deriveBalance(raw);
+      return { ok: true, raw: deepRedact(raw), derived: deepRedact(derived) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: deepRedact(message) };
+    }
+  }
+
+  const [letknowpay, bitpace] = await Promise.all([
+    probe(LetKnowPayClient),
+    probe(BitpaceClient),
+  ]);
+
+  return res.json({ ok: true, providers: { letknowpay, bitpace } });
 });
 
 app.get('/api/wallet/google-sheet-mapping', (_req, res) => {

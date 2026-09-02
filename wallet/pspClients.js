@@ -75,7 +75,13 @@ export class BitpaceClient {
     return this._token;
   }
 
-  async getBalance() {
+  // Does the actual HTTP work (auth, retry-once-on-401/403, parse) and hands
+  // back Bitpace's response body untouched. getBalance() below is the only
+  // caller in production, but the psp-debug route also needs the raw body --
+  // pulling the request out into its own method means both get it from the
+  // same one implementation instead of a second copy that can drift from
+  // whatever the first one is doing.
+  async getRawBalances() {
     const requestBalance = async (token) => {
       const res = await fetch(`${this.baseUrl}/api/v1/balance/currency`, {
         headers: { 'Accept': 'application/json', 'Authorization': `Bearer ${token}` },
@@ -103,6 +109,15 @@ export class BitpaceClient {
       throw new Error(`Bitpace balance HTTP ${res.status}: ${reason}`);
     }
 
+    return data;
+  }
+
+  // Pure: turns a raw Bitpace response body into the { balance, currencies }
+  // shape the Closing Balance Report widget expects. Kept separate from
+  // getRawBalances() (and static, not touching `this`) so the psp-debug route
+  // can show both the raw body and what we derive from it from a single real
+  // API call, without needing an instance.
+  static deriveBalance(data) {
     let balances = {};
 
     if (Array.isArray(data?.data)) {
@@ -116,6 +131,11 @@ export class BitpaceClient {
     }
 
     return { balance: balances['USDT'] ?? 0, currencies: balances['USDT'] != null ? { USDT: balances['USDT'] } : {} };
+  }
+
+  async getBalance() {
+    const data = await this.getRawBalances();
+    return BitpaceClient.deriveBalance(data);
   }
 }
 
@@ -132,7 +152,13 @@ export class LetKnowPayClient {
     this.baseUrl = 'https://pay.letknow.com';
   }
 
-  async getBalance() {
+  // Does the actual HTTP work and hands back LetKnow Pay's response body
+  // untouched. getBalance() below is the only caller in production, but the
+  // psp-debug route also needs the raw body -- pulling the request out into
+  // its own method means both get it from the same one implementation
+  // instead of a second copy that can drift from whatever the first one is
+  // doing.
+  async getRawBalances() {
     const nonce = Date.now().toString();
     const signature = crypto
       .createHmac('sha256', this.apiKey)
@@ -156,11 +182,25 @@ export class LetKnowPayClient {
       throw new Error(`LetKnow Pay API error: ${data.error_message ?? data.result ?? res.status}`);
     }
 
+    return data;
+  }
+
+  // Pure: turns a raw LetKnow Pay response body into the { balance,
+  // currencies } shape the Closing Balance Report widget expects. Kept
+  // separate from getRawBalances() (and static, not touching `this`) so the
+  // psp-debug route can show both the raw body and what we derive from it
+  // from a single real API call, without needing an instance.
+  static deriveBalance(data) {
     const allBalances = data.balances ?? {};
     return {
       balance: parseFloat(allBalances['USDTTRC20'] ?? 0),
       currencies: allBalances['USDTTRC20'] != null ? { USDTTRC20: parseFloat(allBalances['USDTTRC20']) } : {},
     };
+  }
+
+  async getBalance() {
+    const data = await this.getRawBalances();
+    return LetKnowPayClient.deriveBalance(data);
   }
 }
 
