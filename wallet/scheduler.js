@@ -45,6 +45,13 @@ let notifyQueue = Promise.resolve();
 
 const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
 
+// Holdings are amounts of a currency, not dollars, so they cannot share
+// roundMoney(). LetKnow Pay holds 0.00288773 ETH; rounded to cents that is
+// 0.00, which is also what 0.00388773 ETH rounds to, and every crypto balance
+// in the system would compare equal to every other. Eight places is what the
+// PSPs themselves publish and is finer than any deposit we would want to miss.
+const roundHolding = (value) => Number(Number(value || 0).toFixed(8));
+
 async function resolveWritableStateFile(preferredStateFile) {
   const candidates = [preferredStateFile, FALLBACK_STATE_FILE].filter(Boolean);
   let lastError = null;
@@ -75,19 +82,68 @@ function toWidgetMap(report) {
   return widgets;
 }
 
-function extractSnapshot(report) {
+// What a provider actually holds, as it reports it: a currency name against an
+// amount of that currency. Returns null when there is no breakdown to compare.
+//
+// The six Google Sheets rows publish `currencies: {}` because a sheet cell is a
+// dollar figure with no composition, and a provider whose API call failed
+// publishes `{}` too. Both must keep comparing dollars: a Gold Souq edit is a
+// deliberate human action and is precisely what the alert exists for.
+//
+// Keys are sorted so two polls that list the same holdings in a different order
+// still stringify identically, and so the snapshot hash does not churn.
+function extractHoldings(widget) {
+  const currencies = widget?.currencies;
+  if (!currencies || typeof currencies !== 'object' || Array.isArray(currencies)) return null;
+  const names = Object.keys(currencies).sort();
+  if (!names.length) return null;
+
+  const holdings = {};
+  for (const name of names) {
+    const raw = currencies[name];
+    const amount = Number(raw);
+    // Bitpace can report a holding it could not parse as the literal "n/a".
+    // Keeping the raw text means an amount that later becomes a number still
+    // reads as a change rather than as two unknowns comparing equal.
+    holdings[name] = Number.isFinite(amount) ? roundHolding(amount) : String(raw);
+  }
+  return holdings;
+}
+
+export function extractSnapshot(report) {
   const widgets = toWidgetMap(report);
   const widgetBalances = {};
+  const widgetHoldings = {};
   for (const id of TRACKED_WIDGET_IDS) {
     widgetBalances[id] = roundMoney(widgets[id]?.balance);
+    widgetHoldings[id] = extractHoldings(widgets[id]);
   }
   return {
+    // The USD figures stay exactly as they were. The email's before/after
+    // deltas are built from them and must keep showing real dollar movement;
+    // holdings are an addition alongside, not a replacement.
     total_balance: roundMoney(report?.data?.total_balance),
     widgets: widgetBalances,
+    holdings: widgetHoldings,
   };
 }
 
-function snapshotHash(snapshot) {
+// A saved snapshot written before holdings existed cannot answer "did the
+// holding change?", so comparing against it would name providers nobody
+// touched. Callers re-baseline instead of guessing.
+export function snapshotRecordsHoldings(snapshot) {
+  return !!snapshot
+    && typeof snapshot === 'object'
+    && !!snapshot.holdings
+    && typeof snapshot.holdings === 'object'
+    && !Array.isArray(snapshot.holdings);
+}
+
+function holdingsKey(holdings) {
+  return JSON.stringify(Object.keys(holdings).sort().map((name) => [name, holdings[name]]));
+}
+
+export function snapshotHash(snapshot) {
   return JSON.stringify(snapshot);
 }
 
@@ -109,7 +165,7 @@ function buildSendContext(report) {
   };
 }
 
-function buildChangeItems(previousSnapshot, currentSnapshot) {
+export function buildChangeItems(previousSnapshot, currentSnapshot) {
   const changes = [];
   const prevTotal = roundMoney(previousSnapshot?.total_balance);
   const currTotal = roundMoney(currentSnapshot?.total_balance);
@@ -139,7 +195,7 @@ function buildChangeItems(previousSnapshot, currentSnapshot) {
   return changes;
 }
 
-function filterIgnoredChangeItems(changeItems) {
+export function filterIgnoredChangeItems(changeItems) {
   // Identify any PSP (non-total) item that dropped to exactly 0 (API failure)
   // or recovered from exactly 0 (API recovery). Both are treated as noise.
   const noiseItems = changeItems.filter((item) => {
@@ -163,6 +219,76 @@ function filterIgnoredChangeItems(changeItems) {
     if (item?.key === 'total_balance' && roundMoney(item.delta) === noiseDeltaSum) return false;
     return true;
   });
+}
+
+// The second noise class. A row whose dollar value moved while the holding
+// behind it sat still has not seen money move -- the price did.
+//
+// Only Bitpace and LetKnow Pay can do this, because only they mark holdings to
+// market. LetKnow Pay holds 0.00288773 ETH; a $17 move in ETH, routine inside
+// one five-minute poll, shifts the row by $0.05 and clears the one-cent
+// comparison. The same lookup failing drops the row by the whole $6.81, which
+// is why no dollar threshold could sort this out: the two symptoms of one cause
+// sit on opposite sides of any line you could draw.
+function isPriceOnlyChange(item, previousSnapshot, currentSnapshot) {
+  if (!item?.key || item.key === 'total_balance') return false;
+
+  // A drop to exactly zero, or a recovery from it, is the API-failure class and
+  // filterIgnoredChangeItems() owns it. Declining it here keeps that filter's
+  // behaviour exactly what production has today.
+  const before = roundMoney(item.before);
+  const after = roundMoney(item.after);
+  if (before === 0 || after === 0) return false;
+
+  const previousHoldings = previousSnapshot?.holdings?.[item.key];
+  const currentHoldings = currentSnapshot?.holdings?.[item.key];
+  if (!previousHoldings || !currentHoldings) return false;
+
+  return holdingsKey(previousHoldings) === holdingsKey(currentHoldings);
+}
+
+// Both noise classes at one seam, so `total_balance` is settled once against
+// everything that was dropped rather than twice against half of it.
+//
+// The API-failure set is read back out of filterIgnoredChangeItems() rather
+// than re-derived here. That filter stays the sole author of what counts as
+// API noise, and can go on changing without this function needing to agree
+// with it.
+export function filterNoisyChangeItems(changeItems, previousSnapshot, currentSnapshot) {
+  const afterApiNoise = filterIgnoredChangeItems(changeItems);
+  const apiNoise = changeItems.filter(
+    (item) => item?.key !== 'total_balance' && !afterApiNoise.includes(item),
+  );
+  const priceNoise = afterApiNoise.filter(
+    (item) => isPriceOnlyChange(item, previousSnapshot, currentSnapshot),
+  );
+
+  const noiseItems = [...apiNoise, ...priceNoise];
+  if (noiseItems.length === 0) return changeItems;
+
+  const noiseKeys = new Set(noiseItems.map((item) => item.key));
+  const noiseDeltaSum = roundMoney(noiseItems.reduce((sum, item) => sum + (item.delta ?? 0), 0));
+
+  return changeItems.filter((item) => {
+    // Keep the total only while some part of its movement is still unaccounted
+    // for by the rows that were dropped.
+    if (item?.key === 'total_balance') return roundMoney(item.delta) !== noiseDeltaSum;
+    return !noiseKeys.has(item.key);
+  });
+}
+
+// The whole send decision, as a pure function of the two snapshots, so it can
+// be tested without a state file or a mail server.
+export function decideChangeItems(previousSnapshot, currentSnapshot) {
+  if (!snapshotRecordsHoldings(previousSnapshot) || !snapshotRecordsHoldings(currentSnapshot)) {
+    return { rebaseline: true, changeItems: [] };
+  }
+
+  const changeItems = buildChangeItems(previousSnapshot, currentSnapshot);
+  return {
+    rebaseline: false,
+    changeItems: filterNoisyChangeItems(changeItems, previousSnapshot, currentSnapshot),
+  };
 }
 
 async function loadState(stateFile) {
@@ -193,7 +319,7 @@ async function loadState(stateFile) {
   }
 }
 
-function sanitizeState(state) {
+export function sanitizeState(state) {
   const next = state || {
     channels: {
       email: { lastSentHash: null },
@@ -364,8 +490,22 @@ async function _runNotifyLogic(report, stateFile, date) {
     telegram: needsTelegram,
   });
 
-  const changeItems = buildChangeItems(state.lastSnapshot, snapshot);
-  const effectiveChangeItems = filterIgnoredChangeItems(changeItems);
+  const { rebaseline, changeItems: effectiveChangeItems } = decideChangeItems(state.lastSnapshot, snapshot);
+
+  // The live state file predates holdings. Comparing across that boundary
+  // cannot prove anything is price-only, so the first poll after deploy would
+  // email a change list naming providers nobody touched. Re-baselining costs at
+  // most one missed alert inside the restart window; the alternative is a
+  // guaranteed spurious email on every restart.
+  if (rebaseline) {
+    state.channels.email.lastSentHash = hash;
+    state.channels.telegram.lastSentHash = hash;
+    state.lastSnapshotHash = hash;
+    state.lastSnapshot = snapshot;
+    await saveState(stateFile, state);
+    console.log('[WalletScheduler] Saved snapshot predates holdings tracking — re-baselined without notifying.');
+    return { ok: true, status: 'baseline-initialized', hash, reason: 'snapshot-shape-migrated' };
+  }
 
   if (!effectiveChangeItems.length) {
     state.channels.email.lastSentHash = hash;
