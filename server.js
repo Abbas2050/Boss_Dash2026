@@ -26,6 +26,7 @@ import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient, LETKNOWPAY_DISCOVERY_CANDIDATES } from './wallet/pspClients.js';
 import { deepRedact } from './wallet/redactSecrets.js';
+import { probeUsdRateSources } from './wallet/cryptoRates.js';
 import { backendProxy } from './wallet/backendProxy.js';
 import { hubTokenHandler } from './wallet/hubToken.js';
 import {
@@ -694,7 +695,55 @@ app.get('/api/wallet/psp-debug', async (req, res) => {
 
   letknowpay.discovery = letknowDiscovery;
 
-  return res.json({ ok: true, providers: { letknowpay, bitpace } });
+  // Why a code went UNPRICED, which nothing used to record anywhere.
+  //
+  // getUsdRates() contains every per-source failure by design, so a holding
+  // that came back unvalued looked identical whether the coin has no market at
+  // all or whether Binance had answered our US-hosted IP with HTTP 451
+  // Unavailable For Legal Reasons. That ambiguity is what let LetKnow Pay read
+  // $184.46 against the provider's own $191.27 with no trail to follow. This
+  // section asks the same source chain from this server's own network position
+  // and reports each attempt, so the status is visible rather than inferred.
+  //
+  // It stays here after the fix rather than being pulled out as scaffolding:
+  // the failure it diagnoses is a third party's routing decision, so it can
+  // recur for the fallback exactly as it did for the primary.
+  //
+  // Codes come from what the two providers actually could not value on this
+  // very call, which is the only set that matters. `?rateCodes=ETH,BTC`
+  // overrides that for the case where the holding is momentarily zero and
+  // there is nothing to ask about.
+  async function probeRateSources() {
+    try {
+      const override = String(req.query.rateCodes ?? '')
+        .split(',')
+        .map((code) => code.trim())
+        .filter(Boolean);
+
+      const fromBalances = [letknowpay, bitpace]
+        .flatMap((provider) => provider?.derived?.unvalued ?? [])
+        .map((entry) => entry?.currency)
+        .filter((currency) => typeof currency === 'string' && currency !== '');
+
+      const codes = override.length > 0 ? override : fromBalances;
+      if (codes.length === 0) {
+        return { ok: true, note: 'no unvalued holdings to price; pass ?rateCodes=ETH to force a probe', codes: [] };
+      }
+
+      return { ok: true, ...deepRedact(await probeUsdRateSources(codes)) };
+    } catch (error) {
+      // Same rule as every other section of this route: one part failing must
+      // not cost the caller the parts that worked.
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, error: deepRedact(message) };
+    }
+  }
+
+  return res.json({
+    ok: true,
+    providers: { letknowpay, bitpace },
+    rateSources: await probeRateSources(),
+  });
 });
 
 app.get('/api/wallet/google-sheet-mapping', (_req, res) => {

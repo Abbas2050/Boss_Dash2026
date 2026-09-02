@@ -428,6 +428,27 @@ describe("crypto holdings priced from a live rate", () => {
     expect(result.balance).toBeCloseTo(191.29, 2);
   });
 
+  // The bug in one assertion. The live production response above sums to
+  // $184.456944 of dollar-pegged holdings, LetKnow's own merchant screen said
+  // $191.27, and the entire gap was one ETH line sitting in `unvalued` because
+  // the only price source we had was answering our US-hosted IP with HTTP 451.
+  // With a rate feed that actually reaches a source, the row reconciles.
+  it("reaches LetKnow Pay's own $191.27 once the ETH is priced", async () => {
+    rateFeed.getUsdRates.mockResolvedValue({ ETH: 2358.31 });
+    stubFetch(productionRaw);
+
+    const result = await new LetKnowPayClient().getBalance();
+
+    // Precision 1 is |diff| < 0.05, which is the tolerance this module has
+    // always admitted to: LetKnow marks the stablecoins to market and we hold
+    // them at par, so the last couple of cents are not ours to reproduce.
+    expect(result.balance).toBeCloseTo(191.27, 1);
+    expect(result.unvalued).toEqual([]);
+    expect(result.valued).toEqual([
+      { currency: "ETH", amount: 0.00288773, rate: 2358.31, usd: 0.00288773 * 2358.31 },
+    ]);
+  });
+
   it("asks only about the holdings it could not already value", async () => {
     rateFeed.getUsdRates.mockResolvedValue({ ETH: 2367.12 });
     stubFetch(productionRaw);
