@@ -26,6 +26,7 @@ import { requireSession } from './auth/requireSession.js';
 import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient, LETKNOWPAY_DISCOVERY_CANDIDATES } from './wallet/pspClients.js';
 import { deepRedact } from './wallet/redactSecrets.js';
+import { backendProxy } from './wallet/backendProxy.js';
 import {
   loadGoogleSheetsMappingConfig,
   saveGoogleSheetsMappingConfig,
@@ -856,6 +857,14 @@ app.use('/api/rest', (req, res) =>
 app.use('/api/wallet', (req, res) =>
   proxyHttp(req, res, { targetBase: WALLET_PROXY_TARGET, stripPrefix: '/api/wallet' })
 );
+// api.skylinkscapital.com now requires a Bearer, obtained by exchanging
+// BACKEND_API_KEY (wallet/backendToken.js). This route attaches that token
+// server-side so the browser never holds a credential for the trading
+// backend. No authRequired here for the same reason as the /rest mounts
+// above: requireSession already gates everything under /api and calls
+// authRequired itself, and listing it twice runs the JWT verify and a users
+// SELECT twice per request.
+app.use('/api/backend', (req, res) => backendProxy(req, res));
 [
   '/Metrics',
   '/Coverage',

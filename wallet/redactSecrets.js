@@ -23,6 +23,11 @@ export function buildSecretList(env = process.env) {
     env.LETKNOWPAY_SHOP_ID,
     env.BITPACE_MERCHANT_CODE,
     env.BITPACE_API_PASS,
+    // The trading backend's key (wallet/backendToken.js exchanges it for a
+    // Bearer). Its exchange errors quote the token endpoint's response body
+    // verbatim, and a gateway that rejects a credential frequently echoes the
+    // credential back in the complaint.
+    env.BACKEND_API_KEY,
   ].filter((v) => typeof v === 'string' && v.length > 0);
 }
 
@@ -45,7 +50,29 @@ function redactKnownPatterns(text) {
     // A bare 32+ char hex run is what both an API key and an HMAC-SHA256/512
     // signature look like on the wire; there is nothing else in a PSP
     // balance response that legitimately looks like this.
-    .replace(/\b[a-f0-9]{32,}\b/gi, '[REDACTED]');
+    .replace(/\b[a-f0-9]{32,}\b/gi, '[REDACTED]')
+    // The value sitting next to a credential-shaped key name, in either JSON
+    // ("access_token":"abc") or form (client_secret=abc) form. A minted OAuth
+    // token is the case that needs this: it is not in any env var, so
+    // buildSecretList cannot know it, and it usually looks nothing like hex.
+    // wallet/backendToken.js quotes the token endpoint's own error body back
+    // to the operator, and a gateway complaining about a credential very often
+    // echoes that credential in the complaint.
+    .replace(
+      /((?:access_token|refresh_token|id_token|client_secret|api[_-]?key|token|secret|password)\\?"?\s*[:=]\s*\\?"?)([^"'\s,&}\\]+)/gi,
+      '$1[REDACTED]',
+    );
+}
+
+// Literal-value scrubbing only, with none of the pattern rules. For text we
+// have COMPOSED ourselves out of already-redacted parts, where the pattern
+// rules would do damage: wallet/backendToken.js names each credential shape it
+// tried ("form api_key: HTTP 400 ..."), and the credential-key pattern above
+// reads that label as a key/value pair and eats the status -- destroying the
+// very diagnosis the message exists to carry. The parts are pattern-redacted
+// individually; this is the belt-and-braces pass over the whole.
+export function redactSecretValues(text, secrets = buildSecretList()) {
+  return redactKnownSecrets(String(text ?? ''), secrets);
 }
 
 export function redactText(text, secrets = buildSecretList()) {
