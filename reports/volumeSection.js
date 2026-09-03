@@ -33,12 +33,16 @@ export const VOLUME_RUN_TIMEOUT_MS = 180_000;
 // A scalar the backend did not send is null, never zero.
 //
 // `Number(undefined) || 0` collapses "absent" and "genuinely zero" into the same
-// confident 0.00, and a reader cannot tell them apart. That distinction is not
-// academic here: `totalShiftingRealizedLots` and `totalInternalAccountRealizedLots`
-// are the two of the ten that are NOT on the confirmed-under-lite=true list in
-// docs/dealing-reporting.md, so they may simply not arrive. A dash says "could
-// not read"; 0.00 says "the value is zero". Only one of those can be wrong
-// silently.
+// confident 0.00, and a reader cannot tell them apart. A dash says "could not
+// read"; 0.00 says "the value is zero". Only one of those can be wrong silently.
+//
+// All ten scalars are now confirmed present under `lite=true` -- including
+// `totalShiftingRealizedLots` and `totalInternalAccountRealizedLots`, which were
+// unverified when this file was written and were checked live on 2026-09-04 (see
+// docs/dealing-reporting.md). So no cell is expected to read "—" today. This
+// guard stays anyway: the payload is the backend's to change, and the failure it
+// prevents -- a dropped field silently becoming a real-looking 0.00 in a volume
+// report -- is exactly the kind that goes unnoticed for months.
 function scalar(report, key) {
   const raw = report?.[key];
   if (raw === null || raw === undefined || raw === "") return null;

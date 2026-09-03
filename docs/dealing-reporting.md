@@ -76,7 +76,24 @@ that was the old behaviour and it downloaded tens of MB it then discarded.
 Confirmed present under `lite=true`: `clientRevenueSummaries`, `totalMt5DealLots`,
 `totalShiftingMt5DealLots`, `totalRealizedLotsCfd`, `totalRealizedLotsEquity`,
 `totalMatchedLots`, `totalBridgeLots`, `totalInternalAccountLots`,
-`internalAccountBreakdown`.
+`internalAccountBreakdown`, `totalShiftingRealizedLots`,
+`totalInternalAccountRealizedLots`.
+
+The last two were added to this list on 2026-09-04. They are the "realized"
+halves of the shifting and internal buckets, and both arrive under `lite=true` —
+verified live for 2026-09-02, which returned `totalShiftingRealizedLots` 3.07 and
+`totalInternalAccountRealizedLots` 0.04. All ten lot metrics the dealing tab
+shows are therefore available without `lite=false`.
+
+Note the tab itself fetches `lite=false` (`src/lib/dealMatchApi.ts:88`) and types
+every scalar optional, so it can neither confirm nor deny what the lite payload
+carries. Only a live `lite=true` call settles that, which is why this list exists.
+
+`totalInternalAccountRealizedLots` is also **derivable** as the sum of
+`internalAccountBreakdown[].realized` — that sum reproduced the scalar exactly on
+2026-09-02 (0.04). Prefer the scalar. The derivation is documented only so nobody
+has to rediscover it if the field is ever dropped; computing it in parallel would
+create a second answer to a question the backend already answers.
 
 **Still unverified under `lite=true`: `totalShiftingRealizedLots` and
 `totalInternalAccountRealizedLots`.** They were not observed on 2026-07-27 /
