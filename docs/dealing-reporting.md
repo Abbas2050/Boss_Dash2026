@@ -95,13 +95,11 @@ carries. Only a live `lite=true` call settles that, which is why this list exist
 has to rediscover it if the field is ever dropped; computing it in parallel would
 create a second answer to a question the backend already answers.
 
-**Still unverified under `lite=true`: `totalShiftingRealizedLots` and
-`totalInternalAccountRealizedLots`.** They were not observed on 2026-07-27 /
-2026-08-02, and the attempt to settle them on 2026-09-04 could not reach the
-live API — this checkout has no `.env`, so there is no `BACKEND_API_KEY` to mint
-a token with, and the browser route needs someone to pick which Chrome to drive.
-Treat them as "may or may not arrive" until somebody re-runs the call with
-credentials and moves them into the list above.
+Those two were absent from the 2026-07-27 / 2026-08-02 observations, which is why
+they carried a "may not arrive" warning for a while. That warning is now
+withdrawn: the 2026-09-04 call above returned both. A field missing from an
+earlier sample means it was not seen, not that it is unavailable — the sample was
+of one week's payload, not of the contract.
 
 The MT5 Volume Funnel in the report emails reads all eleven of these. It renders
 an absent scalar as an em dash and a genuine zero as `0.00`, precisely because
