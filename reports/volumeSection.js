@@ -101,12 +101,17 @@ const THEMES = {
   dark: { muted: "#8ea4c6", track: "#1b2942" },
 };
 
+// One colour per funnel stage. Realized has none because it is not a stage: it
+// is drawn as a headline figure with no bar at all (see renderVolumeSection).
 const STAGE_COLORS = {
   total: "#0f766e",
-  realized: "#0891b2",
   bridge: "#b45309",
   matched: "#15803d",
 };
+
+// The headline figure's accent. Deliberately not one of the STAGE_COLORS, so a
+// reader does not group Realized with the bars below it by colour.
+const REALIZED_COLOR = "#0891b2";
 
 const lots = (value) => (value === null ? DASH : fmtNum(value, 2));
 
@@ -142,7 +147,9 @@ function bar(share, color, t) {
 
 // The vf-* classes are markers, not styling: no shell defines them. They name
 // the four cells so a test can address one without parsing around the nested
-// table a bar is made of.
+// table a bar is made of. They are also what makes "is this a funnel stage?"
+// a structural question rather than a question about wording: a figure carrying
+// a vf-label cell is a stage, and nothing else in the section carries one.
 function stageRow({ label, value, color, share, showPct }, t) {
   const pct = showPct ? (share === null ? DASH : `${Math.round(share)}%`) : "";
   return `<tr>
@@ -169,12 +176,23 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
   }
 
   const total = volume.totalDeals;
-  // Four stages, each a share of Total MT5 Deals. Internal lots are deliberately
-  // absent: they are a parallel bucket, not a subset, and drawing them here
-  // would assert a containment that does not hold.
+  // Three stages, each a share of Total MT5 Deals, and every one of them about
+  // where the deal flow was ROUTED. That is what makes the sequence real: deals
+  // arrive, some reach the bridge, and some of those pair with an LP order. The
+  // shares can only fall as you go down.
+  //
+  // Realized used to sit here as a second stage and it broke the shape. On
+  // 2026-09-02 the live figures were 497.10 total, 149.70 realized, 356.84
+  // bridge — a funnel that narrowed to 30% and then widened back to 72%.
+  // Realized is not downstream of anything: it is the SAME deal flow counted
+  // once per round trip instead of twice, a different unit on a different axis.
+  // It is now a headline figure beside the funnel rather than a stage in it.
+  //
+  // Internal lots are absent for a different reason: they are a parallel bucket,
+  // not a subset, so drawing them here would assert a containment that does not
+  // hold. They belong to the breakdown below.
   const stages = [
     { label: "Total MT5 Deals", value: total, color: STAGE_COLORS.total, share: shareOf(total, total), showPct: false },
-    { label: "Realized", value: volume.realizedTotal, color: STAGE_COLORS.realized, share: shareOf(volume.realizedTotal, total), showPct: true },
     { label: "Bridge Lots", value: volume.bridgeLots, color: STAGE_COLORS.bridge, share: shareOf(volume.bridgeLots, total), showPct: true },
     { label: "Matched Lots", value: volume.matchedLots, color: STAGE_COLORS.matched, share: shareOf(volume.matchedLots, total), showPct: true },
   ];
@@ -183,6 +201,29 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
     ? DASH
     : `${lots(volume.realizedCfd)} / ${lots(volume.realizedEquity)}`;
 
+  // Realized as its own headline, above the funnel and at the funnel's own type
+  // size, because it is one of the two numbers this section exists to report —
+  // and the only one that reconciles with ClientVolume/Run. Demoting it to a
+  // footnote would lose the figure a reader most often needs to quote. The
+  // vr-* markers keep it addressable; it carries no vf-label, so it is not a
+  // stage by the same structural test the funnel rows answer to.
+  const realized = `<table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 10px;">
+            <tr>
+              <td class="vr-label" style="padding:3px 8px 3px 0;font-size:12px;font-weight:700;color:${REALIZED_COLOR};">Realized</td>
+              <td class="vr-value" style="padding:3px 0 3px 8px;font-size:14px;font-weight:700;text-align:right;white-space:nowrap;">${lots(volume.realizedTotal)}</td>
+            </tr>
+            <tr>
+              <td style="padding:0 8px 0 0;font-size:12px;color:${t.muted};">CFD / Equity</td>
+              <td class="vr-split" style="padding:0 0 0 8px;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${cfdEquity}</td>
+            </tr>
+          </table>
+          <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
+            Realized is the same deal flow counted once per round trip rather than twice &mdash;
+            a parallel measure of the volume below, not a smaller part of it. It is the figure
+            that reconciles with client volume. Equity lots are share-based and dwarf CFD lots,
+            which is why the split is shown beside the total.
+          </p>`;
+
   const breakdownRow = (bucket, deals, realized) => `<tr>
                 ${dataCell("Bucket", escapeHtml(bucket), { nowrap: true })}
                 ${dataCell("Deals", deals, { align: "right" })}
@@ -190,14 +231,14 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
               </tr>`;
 
   return `${title}
+          ${realized}
           <table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 6px;">
             ${stages.map((s) => stageRow(s, t)).join("\n            ")}
           </table>
           <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
-            Percentages are of deal volume. Deal lots count both legs of a round trip;
-            realized counts the closed position once. Realized combines CFD and equity
-            lots and equity lots are share-based, so the total is dominated by equity &mdash;
-            the split is broken out below. Only Matched Lots reached an LP.
+            Percentages are of deal volume. The three rows follow one path: every MT5 deal
+            lot, the part of it that reached the bridge, and the part of that which paired
+            with an LP order. Only Matched Lots reached an LP.
           </p>
 
           <p class="section-title" style="margin-top:14px;">Volume Breakdown</p>

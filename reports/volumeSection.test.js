@@ -49,6 +49,26 @@ const PAYLOAD = {
   clientRevenueSummaries: [],
 };
 
+// 2026-09-02, read off the live DealMatch/Run response. This is the day that
+// exposed the original four-stage funnel: 497.10 total, 149.70 realized, 356.84
+// bridge, 356.76 matched. Drawn as stages in that order the third bar was WIDER
+// than the second, because Realized is not downstream of anything — it is the
+// same flow counted once per round trip, a different axis from where the flow
+// was routed.
+//
+// Realized has to be present in this fixture, not merely mentioned: the guard
+// below only bites if a reinserted Realized stage has a bar to draw. Only the
+// 149.70 total was recorded for this day, so the whole of it sits on the CFD
+// side here purely to reproduce that total. Nothing here asserts the real split.
+const LIVE_0902 = {
+  totalMt5DealLots: 497.1, // all of it client flow that day; no shifting lots
+  totalShiftingMt5DealLots: 0,
+  totalRealizedLotsCfd: 149.7,
+  totalRealizedLotsEquity: 0,
+  totalBridgeLots: 356.84,
+  totalMatchedLots: 356.76,
+};
+
 // ── HTML readers ─────────────────────────────────────────────────────────────
 
 const funnelOf = (html) => html.slice(0, html.indexOf("Volume Breakdown"));
@@ -57,8 +77,13 @@ const breakdownOf = (html) => html.slice(html.indexOf("Volume Breakdown"));
 // A funnel stage, read by its label. The bar cell holds a nested table, so the
 // cells are addressed by their vf-* marker classes rather than by counting
 // </td> boundaries.
+//
+// The anchor is the vf-label cell specifically, not the bare label text. That
+// is what makes "X is not a funnel stage" a structural claim: a figure rendered
+// anywhere else in the section — Realized's headline, a breakdown row — has no
+// vf-label, so it is invisible to this reader no matter how its label is worded.
 function stage(html, label) {
-  const at = html.indexOf(`>${label}</td>`);
+  const at = html.search(new RegExp(`<td class="vf-label"[^>]*>${label}</td>`));
   if (at === -1) return null;
   const rest = html.slice(at);
   const cell = (cls) => {
@@ -86,6 +111,24 @@ function breakdownCell(html, bucket, column) {
 }
 
 const barCount = (html) => (html.match(/table-layout:fixed/g) || []).length;
+
+// Every funnel stage in document order, with the share its bar actually draws.
+//
+// The bar width is read rather than the printed percentage because the printed
+// one is rounded to a whole number and would hide a one-point inversion. The
+// Total row draws a full bar, so its width is the 100% the rest are shares of.
+function stageLabels(html) {
+  return [...html.matchAll(/<td class="vf-label"[^>]*>([^<]*)</g)].map((m) => m[1]);
+}
+
+function stageShares(html) {
+  // Bounded by the vf-value cell that always follows, because a stage with no
+  // bar has an empty cell and "up to the next </table>" would run past its row.
+  return [...html.matchAll(/<td class="vf-bar"[^>]*>([\s\S]*?)<td class="vf-value"/g)].map((m) => {
+    const w = /<td width="(\d+\.\d)%"/.exec(m[1]);
+    return w ? Number(w[1]) : null;
+  });
+}
 
 // ── 1. extraction ────────────────────────────────────────────────────────────
 
@@ -192,8 +235,7 @@ describe("a genuine zero", () => {
 describe("funnel percentages", () => {
   const html = funnelOf(renderVolumeSection(extractVolume(PAYLOAD)));
 
-  it("are the documented 49% / 4% / 2% of deal volume", () => {
-    expect(stage(html, "Realized").pct).toBe("49%");
+  it("are the documented 4% / 2% of deal volume", () => {
     expect(stage(html, "Bridge Lots").pct).toBe("4%");
     expect(stage(html, "Matched Lots").pct).toBe("2%");
   });
@@ -204,9 +246,66 @@ describe("funnel percentages", () => {
 
   it("renders the figures the percentages were taken from", () => {
     expect(stage(html, "Total MT5 Deals").value).toBe("203,109.22");
-    expect(stage(html, "Realized").value).toBe("99,526.60");
     expect(stage(html, "Bridge Lots").value).toBe("8,410.15");
     expect(stage(html, "Matched Lots").value).toBe("4,300.00");
+  });
+});
+
+// ── 4b. the funnel only narrows ──────────────────────────────────────────────
+
+// This is the regression test for the defect. The original funnel put Realized
+// between Total and Bridge, and on 2026-09-02 that drew a third bar wider than
+// the second — a shape that asserts a sequence which does not exist. Every stage
+// must be a share of the one above it, so the shares can only fall.
+//
+// Reinstating Realized (or any other non-routing metric) as a stage fails this.
+describe("the funnel narrows at every stage", () => {
+  const shares = (payload) => stageShares(funnelOf(renderVolumeSection(extractVolume(payload))));
+
+  it("never widens on the live 2026-09-02 figures that exposed the defect", () => {
+    const drawn = shares(LIVE_0902);
+    expect(drawn).toEqual([100, 71.8, 71.8]); // 497.10 → 356.84 → 356.76
+    for (let i = 1; i < drawn.length; i += 1) {
+      expect(drawn[i]).toBeLessThanOrEqual(drawn[i - 1]);
+    }
+  });
+
+  it("never widens on the reference payload either", () => {
+    const drawn = shares(PAYLOAD);
+    for (let i = 1; i < drawn.length; i += 1) {
+      expect(drawn[i]).toBeLessThanOrEqual(drawn[i - 1]);
+    }
+  });
+
+  it("draws exactly the three routing stages, in routing order", () => {
+    const html = funnelOf(renderVolumeSection(extractVolume(LIVE_0902)));
+    expect(stageLabels(html)).toEqual(["Total MT5 Deals", "Bridge Lots", "Matched Lots"]);
+  });
+});
+
+// ── 4c. Realized is a parallel measure, not a stage ──────────────────────────
+
+describe("Realized", () => {
+  const html = funnelOf(renderVolumeSection(extractVolume(PAYLOAD)));
+
+  it("is still rendered, with its total and its CFD / Equity split", () => {
+    expect(html).toMatch(/<td class="vr-value"[^>]*>99,526\.60<\/td>/);
+    expect(html).toMatch(/<td class="vr-split"[^>]*>1,400\.60 \/ 98,126\.00<\/td>/);
+  });
+
+  // Structural, not a reading of the prose: a stage is a row carrying a
+  // vf-label cell, so this stays true through any rewording of the captions.
+  it("is not one of the funnel stages", () => {
+    expect(stage(html, "Realized")).toBeNull();
+    expect(stageLabels(html)).not.toContain("Realized");
+    expect(stageLabels(html)).toHaveLength(3);
+  });
+
+  it("still renders a dash, never 0.00, when the backend sent neither half", () => {
+    const { totalRealizedLotsCfd, totalRealizedLotsEquity, ...noRealized } = PAYLOAD;
+    const bare = funnelOf(renderVolumeSection(extractVolume(noRealized)));
+    expect(/<td class="vr-value"[^>]*>([\s\S]*?)<\/td>/.exec(bare)[1]).toBe("&mdash;");
+    expect(/<td class="vr-split"[^>]*>([\s\S]*?)<\/td>/.exec(bare)[1]).toBe("&mdash;");
   });
 });
 
@@ -221,7 +320,7 @@ describe("a zero or missing Total MT5 Deals", () => {
   for (const [name, payload] of cases) {
     it(`yields a dash for every percentage when the total is ${name}`, () => {
       const html = funnelOf(renderVolumeSection(extractVolume(payload)));
-      for (const label of ["Realized", "Bridge Lots", "Matched Lots"]) {
+      for (const label of ["Bridge Lots", "Matched Lots"]) {
         expect(stage(html, label).pct).toBe("&mdash;");
       }
     });
@@ -239,16 +338,23 @@ describe("a zero or missing Total MT5 Deals", () => {
 
 describe("bars", () => {
   it("draws one per stage when every stage has a value", () => {
-    expect(barCount(funnelOf(renderVolumeSection(extractVolume(PAYLOAD))))).toBe(4);
+    expect(barCount(funnelOf(renderVolumeSection(extractVolume(PAYLOAD))))).toBe(3);
   });
 
-  it("draws none for a stage whose value is unavailable", () => {
-    const { totalBridgeLots, ...noBridge } = PAYLOAD;
-    const html = funnelOf(renderVolumeSection(extractVolume(noBridge)));
-    expect(stage(html, "Bridge Lots").value).toBe("&mdash;");
-    expect(stage(html, "Bridge Lots").hasBar).toBe(false);
-    expect(barCount(html)).toBe(3);
-  });
+  // Bridge and Matched are the two stages that can go missing — Total is a sum
+  // of fields the funnel cannot be drawn without at all.
+  for (const [label, field] of [["Bridge Lots", "totalBridgeLots"], ["Matched Lots", "totalMatchedLots"]]) {
+    it(`draws none for ${label} when its value is unavailable`, () => {
+      const { [field]: _dropped, ...missing } = PAYLOAD;
+      const html = funnelOf(renderVolumeSection(extractVolume(missing)));
+      expect(stage(html, label).value).toBe("&mdash;");
+      expect(stage(html, label).pct).toBe("&mdash;");
+      expect(stage(html, label).hasBar).toBe(false);
+      expect(barCount(html)).toBe(2);
+      expect(html).not.toMatch(/NaN/);
+      expect(stageLabels(html)).toHaveLength(3); // the row stays, only the bar goes
+    });
+  }
 });
 
 // ── 7. internal lots are a parallel bucket ───────────────────────────────────
@@ -272,9 +378,8 @@ describe("internal accounts", () => {
     expect(funnelOf(html)).not.toMatch(/Internal/);
   });
 
-  it("leaves the funnel with exactly the four stages it is supposed to have", () => {
-    const labels = [...funnelOf(html).matchAll(/<td class="vf-label"[^>]*>([^<]*)</g)].map((m) => m[1]);
-    expect(labels).toEqual(["Total MT5 Deals", "Realized", "Bridge Lots", "Matched Lots"]);
+  it("leaves the funnel with exactly the three stages it is supposed to have", () => {
+    expect(stageLabels(funnelOf(html))).toEqual(["Total MT5 Deals", "Bridge Lots", "Matched Lots"]);
   });
 });
 
@@ -298,7 +403,7 @@ describe("email-safe markup", () => {
   it("builds its bars as nested tables with percentage widths and a background", () => {
     const html = renderVolumeSection(extractVolume(PAYLOAD));
     expect(html).toMatch(/<table role="presentation"[^>]*table-layout:fixed;"><tr><td width="\d+\.\d%"/);
-    expect(html).toMatch(/background:#0891b2/);
+    expect(html).toMatch(/background:#b45309/); // the Bridge Lots bar's fill
   });
 
   it("writes each HTML entity once, never double-escaped", () => {
@@ -409,7 +514,7 @@ describe("the Slippage report when DealMatch/Run fails", () => {
     expect(result.ok).toBe(true);
     expect(dealMatchCalls(urls)).toBe(1); // the one new call this report is allowed
     expect(sent[0].htmlContent).toMatch(/203,109\.22/);
-    expect(sent[0].htmlContent).toMatch(/>49%</);
+    expect(sent[0].htmlContent).toMatch(/>4%</); // Bridge Lots, the first stage carrying one
   });
 });
 

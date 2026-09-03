@@ -61,23 +61,55 @@ Verify both against the live API during implementation and record the answer in
 
 ### The funnel
 
-Four stages, each a share of Total MT5 Deals:
+Three stages, each a share of Total MT5 Deals, with Realized as a headline
+figure above them rather than a stage inside them:
 
 ```
 MT5 VOLUME FUNNEL
 
-Total MT5 Deals   ████████████████  203,109.22
-Realized          ████████           99,526.60   49%
-Bridge Lots       █                   8,410.15    4%
-Matched Lots      ▌                   4,300.00    2%
+Realized                              149.70
+CFD / Equity                   100.00 / 49.70
+  the same deal flow counted once per round trip
+
+Total MT5 Deals   ████████████████    497.10
+Bridge Lots       ███████████         356.84   72%
+Matched Lots      ███████████         356.76   72%
                                     └ of deal volume
 
 BREAKDOWN                  Deals       Realized
-Client                203,109.22      99,526.60
+Client                   (value)        (value)
 Shifting                 (value)        (value)
 Internal                 (value)        (value)
-CFD / Equity split           —      1,400.60 / 98,126.00
+CFD / Equity split           —         (split)
 ```
+
+**Realized was a stage until 2026-09-04, and that was wrong.** Rendered against
+the live figures for 2026-09-02 the four-stage funnel narrowed to 30% and then
+widened back to 72%:
+
+| Stage | Lots | Share |
+| --- | --- | --- |
+| Total MT5 Deals | 497.10 | 100% |
+| Realized | 149.70 | 30% |
+| Bridge Lots | 356.84 | 72% ← wider than the stage above it |
+| Matched Lots | 356.76 | 72% |
+
+A funnel that widens asserts a sequence that does not exist. The cause is not the
+drawing but the grouping: **Realized and the routing metrics are two different
+axes.** Realized is not downstream of the deal total — it is the *same* deal flow
+counted once per round trip instead of twice. Bridge and Matched are about where
+that flow was *routed*: volume that reached the bridge, and the part of that which
+paired with an LP order. Only the routing axis is a genuine funnel, and only it is
+monotonically non-increasing.
+
+The reference week hid this — 49% / 4% / 2% happens to fall — which is why the
+defect survived the original tests. The regression guard therefore asserts
+non-increasing bar widths against the 2026-09-02 figures specifically.
+
+Realized stays prominent: it is one of the two headline volume numbers and the
+only one that reconciles with `ClientVolume/Run`, so it is rendered above the
+funnel at a larger type size with its CFD / Equity split beneath it, captioned as
+a parallel measure. It is not a footnote and it is not a stage.
 
 **Internal accounts are deliberately not a funnel stage.**
 `totalInternalAccountLots` is a **parallel bucket, not a subset** of client lots
@@ -89,7 +121,7 @@ share-based: 98,126 equity against 1,400.60 CFD in one week. The backend itself
 sums them — `totalRealizedLotsCfd + totalRealizedLotsEquity` equals
 `ClientVolume/Run`'s `totalLots` exactly — so the combined figure is established
 rather than invented. But the split is what makes it readable, which is why it
-gets its own breakdown row rather than a footnote.
+appears both beneath the headline figure and as its own breakdown row.
 
 ### Rendering constraints
 
@@ -142,7 +174,13 @@ times across these reports, and this must not become the fourth thing that is.
    specifically for `totalShiftingRealizedLots` and
    `totalInternalAccountRealizedLots`, the two known to be at risk.
 3. **A genuine zero renders `0.00`**, not `—`.
-4. **Percentages** are correct against the live figures above (49% / 4% / 2%).
+4. **Percentages** are correct against the reference figures above (4% / 2%).
+4b. **The funnel never widens.** Each stage's share is ≤ the stage above it,
+   asserted on the 2026-09-02 figures, which is the day where a non-routing
+   stage shows up as an inversion. Reinstating Realized as a stage must fail
+   this. Realized itself must still render, with its total and its split, and
+   must carry no stage marker — asserted structurally, not on caption wording,
+   so a copy edit cannot break it.
 5. **A zero or missing Total MT5 Deals** yields `—` for every percentage, never
    `NaN` or a division by zero.
 6. **An unavailable stage draws no bar.**
@@ -168,6 +206,8 @@ Ask the backend team to include them in the lite payload.
 section can be dropped from that one report without touching the other two.
 
 **A funnel implies containment.** Bridge and matched volume are compared against
-deal lots because that is how the existing analysis frames the 2% figure, but
-they are not strictly a subset of it in the way "realized" is. The section says
-"of deal volume" beneath the percentages rather than implying a strict funnel.
+deal lots because that is how the existing analysis frames the 2% figure. The
+section says "of deal volume" beneath the percentages rather than implying a
+strict subset relation. The 2026-09-04 correction above is this risk landing:
+the stage that actually broke containment was Realized, which was assumed safe
+because it is "the same volume" — and it is, on a different axis.
