@@ -7,6 +7,7 @@ import {
   renderChartBuffer,
   crmPost,
 } from "./reportShared.js";
+import { extractVolume } from "./volumeSection.js";
 
 // The summary engine: everything the Business Summary computes, with none of
 // the weekly-specific email or schedule around it.
@@ -482,7 +483,11 @@ export async function attachClientNames(rows) {
 // The glance's trading headline. Fetched in its own try so a backend outage
 // renders the tile as a dash rather than losing the whole report.
 export async function fetchGlance(week) {
-  const glance = { totalRevenue: null };
+  // `volume` rides along on the DealMatch/Run response this function already
+  // fetches. It is a separate key rather than more fields on the glance because
+  // it feeds a whole section, not a tile -- and because a null here has to mean
+  // "the call failed", which is exactly what totalRevenue's null already means.
+  const glance = { totalRevenue: null, volume: null };
   // A dash with no explanation is indistinguishable from a genuine zero. Every
   // failure here is surfaced in the footer.
   const failures = [];
@@ -495,6 +500,10 @@ export async function fetchGlance(week) {
     const resp = await backendFetch(`/DealMatch/Run?${params}`, { timeoutMs: 180_000 });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const report = await resp.json();
+    // Same response, no second call: DealMatch/Run costs ~40s whatever window it
+    // is asked for, so a dedicated fetch for the volume funnel would double this
+    // report's slowest leg for data already parsed.
+    glance.volume = extractVolume(report);
     const rows = Array.isArray(report?.clientRevenueSummaries) ? report.clientRevenueSummaries : [];
     // Same maths as the Deal Match report: LP commission is a cost, so take its
     // magnitude. Net is gross minus IB commission, which that report computes

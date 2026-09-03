@@ -44,6 +44,7 @@ import {
   signCls,
   topInstruments,
 } from "./summaryCore.js";
+import { renderVolumeSection } from "./volumeSection.js";
 
 
 // Weekly Business Summary — money movement and account activity, with a glance
@@ -293,6 +294,8 @@ export function buildSummaryEmailHtml({
   const body = `
           <p class="section-title" style="margin-top:0;">${escapeHtml(glanceHeading)}</p>
           ${glanceCards}${afterGlance}
+
+          ${renderVolumeSection(glance.volume ?? null)}
 
           <p class="section-title">Equity Position <span style="font-weight:400;">&mdash; as at send time, not for the ${periodNoun}</span></p>
           <p class="note">Credit is the non-withdrawable part of an account. Withdrawable equity is equity with credit removed, which is why the difference can change sign between the two rows. Mirrors the Dealing &rsaquo; Metrics tab.</p>

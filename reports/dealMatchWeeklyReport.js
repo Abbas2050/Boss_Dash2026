@@ -15,6 +15,7 @@ import {
   CADENCES,
   resolveRecipients,
 } from "./reportShared.js";
+import { extractVolume, renderVolumeSection } from "./volumeSection.js";
 
 const CRM_API_VERSION = String(process.env.VITE_API_VERSION || "1.0.0");
 const CRM_API_TOKEN = String(process.env.VITE_API_TOKEN || process.env.API_TOKEN || "").trim();
@@ -903,7 +904,7 @@ function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
           )}`;
 }
 
-export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
+export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, mt5Volume = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -1104,6 +1105,8 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
 
           ${buildVolumeSection(volume, charts, volumeStats, periodNoun)}
 
+          ${renderVolumeSection(mt5Volume)}
+
           <p class="section-title" style="margin-top:18px;">Client Revenue Table</p>
           <div class="tscroll">
           <table class="data">
@@ -1251,6 +1254,10 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     bridgeLots: n(report?.totalBridgeLots),
     matchedLots: n(report?.totalMatchedLots),
   };
+  // The volume funnel reads the SAME response, deliberately. A second
+  // DealMatch/Run here would cost another ~40 seconds for a payload already in
+  // hand.
+  const mt5Volume = extractVolume(report);
   const baseRows = deriveClientRevenueRows(report)
     .filter((row) => (Number(row.lots) || 0) > 0)
     .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0));
@@ -1328,7 +1335,7 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     noticeParts.push(`${unresolved} login(s) could not be matched to a CRM client and appear as their own rows`);
   }
   const ibNotice = noticeParts.length ? noticeParts.join("; ") : null;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, charts: chartUrls, chartError, ibNotice, periodNoun: spec.noun, cadence });
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, mt5Volume, charts: chartUrls, chartError, ibNotice, periodNoun: spec.noun, cadence });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
 

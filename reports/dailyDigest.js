@@ -33,6 +33,7 @@ import {
   signCls,
   topInstruments,
 } from "./summaryCore.js";
+import { renderVolumeSection } from "./volumeSection.js";
 
 // Daily digest — yesterday, in five short sections.
 //
@@ -165,6 +166,8 @@ export function buildDailyDigestHtml({
   const body = `
           <p class="section-title" style="margin-top:0;">Yesterday at a Glance</p>
           ${glanceCards}
+
+          ${renderVolumeSection(glance.volume ?? null)}
 
           <p class="section-title">Closing Balance <span style="font-weight:400;">&mdash; as at send time, not for yesterday</span></p>
           ${closingBalanceCards || `<p class="note">Closing balance unavailable &mdash; the wallet monitor did not respond.</p>`}

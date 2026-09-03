@@ -12,6 +12,7 @@ import {
   CADENCES,
   resolveRecipients,
 } from "./reportShared.js";
+import { extractVolume, fetchVolumeReport, renderVolumeSection } from "./volumeSection.js";
 
 // The weekly key is bare because sends already recorded in the send log use it.
 // A daily that reused it would make Saturday's weekly skip as "already sent".
@@ -170,7 +171,7 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
   return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
-export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNoun = "week", cadence = "weekly" }) {
+export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, mt5Volume = null, volumeError = null, periodNoun = "week", cadence = "weekly" }) {
   const bodyRows = buckets
     .map(
       (b) => `<tr>
@@ -375,6 +376,8 @@ export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNo
           </table>
           </div>
 
+          ${renderVolumeSection(mt5Volume, { theme: "dark", unavailableReason: volumeError })}
+
           <p class="section-title" style="margin-top:16px;">Net Slippage by LP</p>
           <div class="chart-wrap" style="color:#8ea4c6;font-size:12px;">
             See the attached chart <strong>slippage-by-lp.png</strong> for Net Slippage by LP.
@@ -485,6 +488,22 @@ export async function runSlippageEmailReport({
   const { buckets } = aggregateByLp(rows);
   const kpis = computeKpis(buckets, rows);
 
+  // The volume funnel is the only figure in this report that needs
+  // DealMatch/Run, and it is supplementary. Its own try/catch, because a new
+  // enrichment must never be able to suppress a report that works today: if the
+  // call fails or times out the section says so by name and every slippage
+  // figure above it still goes out. It also roughly doubles this report's
+  // runtime -- DealMatch/Run costs ~40s whatever window it is asked for -- which
+  // is the accepted price of the answer.
+  let mt5Volume = null;
+  let volumeError = null;
+  try {
+    mt5Volume = extractVolume(await fetchVolumeReport(period.start, period.end));
+  } catch (error) {
+    volumeError = error?.message || String(error);
+    console.warn(`[${label}] volume lookup failed:`, volumeError);
+  }
+
   // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
   // An explicit recipient list means the on-demand test button, which must
   // always send. Everything else is the cron or a RUN_ON_START boot, and a
@@ -507,7 +526,7 @@ export async function runSlippageEmailReport({
   }
 
   const subject = slippageSubject(cadence, fromYmd, toYmd);
-  const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, periodNoun: spec.noun, cadence });
+  const html = buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, mt5Volume, volumeError, periodNoun: spec.noun, cadence });
   const attachments = await buildSlippageChartAttachments(buckets, fromYmd, toYmd);
   await sendBrevoEmail({ subject, html, recipients, attachments, senderName: "Slippage Reporter" });
 

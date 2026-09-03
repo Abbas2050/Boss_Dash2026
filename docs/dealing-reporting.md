@@ -78,6 +78,21 @@ Confirmed present under `lite=true`: `clientRevenueSummaries`, `totalMt5DealLots
 `totalMatchedLots`, `totalBridgeLots`, `totalInternalAccountLots`,
 `internalAccountBreakdown`.
 
+**Still unverified under `lite=true`: `totalShiftingRealizedLots` and
+`totalInternalAccountRealizedLots`.** They were not observed on 2026-07-27 /
+2026-08-02, and the attempt to settle them on 2026-09-04 could not reach the
+live API — this checkout has no `.env`, so there is no `BACKEND_API_KEY` to mint
+a token with, and the browser route needs someone to pick which Chrome to drive.
+Treat them as "may or may not arrive" until somebody re-runs the call with
+credentials and moves them into the list above.
+
+The MT5 Volume Funnel in the report emails reads all eleven of these. It renders
+an absent scalar as an em dash and a genuine zero as `0.00`, precisely because
+these two may not arrive: a shifting-realized of zero and a shifting-realized we
+never received are otherwise indistinguishable. See
+`reports/volumeSection.js`. Worth asking the backend team to add the two to the
+lite payload — the alternative, `lite=false`, is a ~45 MB download per report.
+
 ### `GET /DealMatch/ClientRevenueDetail?login=<login>`
 
 Per-client LP allocation detail. Fetched on row click.
