@@ -110,13 +110,30 @@ function extractHoldings(widget) {
   return holdings;
 }
 
+// Whether the provider answered at all. walletMonitor stamps a failed API call
+// `status: 'error'` and publishes `balance: 0` beside it -- and zero is not what
+// the provider holds, it is what we know about what it holds. Recording the
+// status is what lets the filters below tell those two apart without having to
+// guess from the number.
+//
+// A widget that carries no status at all is treated as healthy rather than as a
+// failure. walletMonitor always stamps one, so an absent status means a fixture
+// or a hand-built report, not an outage; reading silence as failure would make
+// the total permanently unknown and silence the alert for good.
+function extractStatus(widget) {
+  const status = widget?.status;
+  return typeof status === 'string' ? status : null;
+}
+
 export function extractSnapshot(report) {
   const widgets = toWidgetMap(report);
   const widgetBalances = {};
   const widgetHoldings = {};
+  const widgetStatuses = {};
   for (const id of TRACKED_WIDGET_IDS) {
     widgetBalances[id] = roundMoney(widgets[id]?.balance);
     widgetHoldings[id] = extractHoldings(widgets[id]);
+    widgetStatuses[id] = extractStatus(widgets[id]);
   }
   return {
     // The USD figures stay exactly as they were. The email's before/after
@@ -125,6 +142,7 @@ export function extractSnapshot(report) {
     total_balance: roundMoney(report?.data?.total_balance),
     widgets: widgetBalances,
     holdings: widgetHoldings,
+    statuses: widgetStatuses,
   };
 }
 
@@ -137,6 +155,51 @@ export function snapshotRecordsHoldings(snapshot) {
     && !!snapshot.holdings
     && typeof snapshot.holdings === 'object'
     && !Array.isArray(snapshot.holdings);
+}
+
+// The same reasoning as snapshotRecordsHoldings(), for statuses. A snapshot
+// saved before this change cannot say which providers were connected when it
+// was taken, so nothing compared against it can be shown to be a connection
+// event. Callers re-baseline rather than guess.
+//
+// The check is for the `statuses` key, not for a non-null status inside it: a
+// current snapshot records `null` for a provider the report described without a
+// status, and that is still a snapshot that knows what it was told.
+export function snapshotRecordsStatuses(snapshot) {
+  return !!snapshot
+    && typeof snapshot === 'object'
+    && !!snapshot.statuses
+    && typeof snapshot.statuses === 'object'
+    && !Array.isArray(snapshot.statuses);
+}
+
+// See extractStatus(): only a status the provider actually reported as
+// something other than 'ok' counts as unhealthy.
+function isUnhealthyIn(snapshot, id) {
+  const status = snapshot?.statuses?.[id];
+  return status != null && status !== 'ok';
+}
+
+// A provider is unusable for comparison if it was disconnected at either end of
+// the comparison, because one of the two numbers being subtracted was never
+// read from anywhere.
+function isDisconnectedProvider(id, previousSnapshot, currentSnapshot) {
+  return isUnhealthyIn(previousSnapshot, id) || isUnhealthyIn(currentSnapshot, id);
+}
+
+// The total is the sum of every tracked provider. If even one of them did not
+// answer, the sum is missing a term -- walletMonitor contributes 0 for it -- so
+// the total is not a smaller total, it is an unknown quantity, and the
+// difference between two unknowns says nothing at all.
+//
+// This is deliberately a property of the snapshots rather than an arithmetic
+// check on the total's delta. The delta-matching rule in
+// filterIgnoredChangeItems() is what let the 2026-09-03 alert out: two OwnBits
+// dropped and LetKnow Pay drifted on ETH price in the same poll, the sums did
+// not line up to the cent, and the total walked through a filter that was
+// looking at the wrong evidence.
+export function anyTrackedProviderDisconnected(previousSnapshot, currentSnapshot) {
+  return TRACKED_WIDGET_IDS.some((id) => isDisconnectedProvider(id, previousSnapshot, currentSnapshot));
 }
 
 function holdingsKey(holdings) {
@@ -195,6 +258,13 @@ export function buildChangeItems(previousSnapshot, currentSnapshot) {
   return changes;
 }
 
+// Infers an API failure from the figure: "the balance became exactly 0, so the
+// call must have failed". The report now records each provider's status
+// directly, and filterNoisyChangeItems() prefers that, so this is the fallback
+// for the one case where status is unavailable -- a saved snapshot written
+// before statuses were recorded. It is kept intact rather than removed because
+// it is also the sole author of what counts as API noise for the total's
+// delta-matching rule, which still applies whenever every provider is healthy.
 export function filterIgnoredChangeItems(changeItems) {
   // Identify any PSP (non-total) item that dropped to exactly 0 (API failure)
   // or recovered from exactly 0 (API recovery). Both are treated as noise.
@@ -283,9 +353,21 @@ export function filterNoisyChangeItems(changeItems, previousSnapshot, currentSna
   const priceNoise = afterApiNoise.filter(
     (item) => isPriceOnlyChange(item, previousSnapshot, currentSnapshot),
   );
+  // The third noise class, and the one the report itself already knows about: a
+  // provider that lost its connection. Its row moved because it stopped
+  // answering, not because money did. Unlike the API-failure class above this
+  // does not have to infer anything from the figure, so it also catches the
+  // failure that leaves a stale non-zero balance behind.
+  const connectionNoise = changeItems.filter(
+    (item) => item?.key !== 'total_balance'
+      && isDisconnectedProvider(item.key, previousSnapshot, currentSnapshot),
+  );
 
-  const noiseItems = [...apiNoise, ...priceNoise];
-  const noiseKeys = new Set(noiseItems.map((item) => item.key));
+  // Deduplicated by key: a provider can qualify as noise twice over (dropping
+  // to exactly $0 while also reporting status:'error'), and counting its delta
+  // twice would corrupt the accounting the total is settled against below.
+  const noiseKeys = new Set([...apiNoise, ...priceNoise, ...connectionNoise].map((item) => item.key));
+  const noiseItems = changeItems.filter((item) => item?.key !== 'total_balance' && noiseKeys.has(item.key));
   const noiseDeltaSum = roundMoney(noiseItems.reduce((sum, item) => sum + (item.delta ?? 0), 0));
 
   // The total can drift on its own, with no provider row beside it. Production
@@ -313,8 +395,13 @@ export function filterNoisyChangeItems(changeItems, previousSnapshot, currentSna
   const totalIsPriceOnly = !someProviderSurvives
     && everyTrackedHoldingIdentical(previousSnapshot, currentSnapshot);
 
+  // Checked before either accounting rule, because when this holds there is no
+  // arithmetic worth doing: neither total in the subtraction was a total.
+  const totalIsUnknown = anyTrackedProviderDisconnected(previousSnapshot, currentSnapshot);
+
   return changeItems.filter((item) => {
     if (item?.key === 'total_balance') {
+      if (totalIsUnknown) return false;
       if (totalIsPriceOnly) return false;
       // Otherwise keep the total only while some part of its movement is still
       // unaccounted for by the rows that were dropped.
@@ -327,14 +414,19 @@ export function filterNoisyChangeItems(changeItems, previousSnapshot, currentSna
 // The whole send decision, as a pure function of the two snapshots, so it can
 // be tested without a state file or a mail server.
 export function decideChangeItems(previousSnapshot, currentSnapshot) {
-  if (!snapshotRecordsHoldings(previousSnapshot) || !snapshotRecordsHoldings(currentSnapshot)) {
-    return { rebaseline: true, changeItems: [] };
+  if (!snapshotRecordsHoldings(previousSnapshot) || !snapshotRecordsHoldings(currentSnapshot)
+    || !snapshotRecordsStatuses(previousSnapshot) || !snapshotRecordsStatuses(currentSnapshot)) {
+    return { rebaseline: true, changeItems: [], totalUnavailable: false };
   }
 
   const changeItems = buildChangeItems(previousSnapshot, currentSnapshot);
   return {
     rebaseline: false,
     changeItems: filterNoisyChangeItems(changeItems, previousSnapshot, currentSnapshot),
+    // Reported separately from the change items because "the total did not
+    // change" and "there is no total" are different answers, and the send gate
+    // has to treat them differently.
+    totalUnavailable: anyTrackedProviderDisconnected(previousSnapshot, currentSnapshot),
   };
 }
 
@@ -537,7 +629,11 @@ async function _runNotifyLogic(report, stateFile, date) {
     telegram: needsTelegram,
   });
 
-  const { rebaseline, changeItems: effectiveChangeItems } = decideChangeItems(state.lastSnapshot, snapshot);
+  const {
+    rebaseline,
+    changeItems: effectiveChangeItems,
+    totalUnavailable,
+  } = decideChangeItems(state.lastSnapshot, snapshot);
 
   // The live state file predates holdings. Comparing across that boundary
   // cannot prove anything is price-only, so the first poll after deploy would
@@ -550,7 +646,7 @@ async function _runNotifyLogic(report, stateFile, date) {
     state.lastSnapshotHash = hash;
     state.lastSnapshot = snapshot;
     await saveState(stateFile, state);
-    console.log('[WalletScheduler] Saved snapshot predates holdings tracking — re-baselined without notifying.');
+    console.log('[WalletScheduler] Saved snapshot predates holdings/status tracking — re-baselined without notifying.');
     return { ok: true, status: 'baseline-initialized', hash, reason: 'snapshot-shape-migrated' };
   }
 
@@ -565,8 +661,19 @@ async function _runNotifyLogic(report, stateFile, date) {
   }
 
   // Only notify when the Total Combined balance actually changed — individual PSP movements alone are not enough.
+  //
+  // That gate exists to swallow offsetting provider movements: A up $100 and B
+  // down $100 is money shuffled between our own wallets, and the unchanged
+  // total is the proof. It only works because the total is an answer.
+  //
+  // While a provider is disconnected there is no total, so the gate would be
+  // ruling on a question nobody answered — and it would rule "do not send" for
+  // as long as the outage lasts, hiding a genuine deposit on a provider that
+  // was working the whole time. So the gate is applied only when the total is
+  // known; when it is not, a change item that survived every noise filter is by
+  // definition a healthy provider whose holdings moved, and it sends on its own.
   const totalCombinedChanged = effectiveChangeItems.some((item) => item.key === 'total_balance');
-  if (!totalCombinedChanged) {
+  if (!totalCombinedChanged && !totalUnavailable) {
     state.channels.email.lastSentHash = hash;
     state.channels.telegram.lastSentHash = hash;
     state.lastNotifiedHash = hash;

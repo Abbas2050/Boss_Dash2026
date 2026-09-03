@@ -6,10 +6,62 @@
 const CRYPTO_WIDGETS = ['bitpace', 'letknowpay', 'ownbit', 'ownbitnew', 'heropayment', 'googlesheets_match2pay', 'googlesheets_deusxpay', 'googlesheets_openpayed'];
 const BANK_WIDGETS   = ['googlesheets_goldsouq', 'googlesheets_fab', 'googlesheets_mbme'];
 
+// What a figure looks like when there is no figure. A dash means "could not
+// read"; "$0.00" means the balance is zero. Those are different facts and this
+// report used to print the second when it meant the first.
+const UNAVAILABLE = '—';
+
+// walletMonitor stamps a provider whose API call failed `status: 'error'` and
+// publishes `balance: 0` beside it. The ✗ already says the call failed; the
+// "$0.00" next to it asserted a balance nobody read, and it was that zero,
+// summed into the total, that sent the alert of 2026-09-03. The two now agree.
+//
+// Read exactly as the ✗ is, so a row can never disagree with its own tick.
+// (The scheduler reads an absent status the other way round -- as healthy --
+// because there it decides whether to stay silent, and silence on an ambiguity
+// loses alerts. Here the question is whether to assert a number, and asserting
+// one on an ambiguity prints a lie.)
+function isWidgetConnected(widget) {
+  return widget?.status === 'ok';
+}
+
+// A sum is only as knowable as its terms. If any provider in the set did not
+// answer, the subtotal is missing a term and is not a smaller subtotal -- it is
+// unknown, and printing it would understate the treasury by whatever the silent
+// provider holds.
+function sumOrUnavailable(widgets, ids) {
+  let sum = 0;
+  for (const id of ids) {
+    if (!widgets[id]) continue;
+    if (!isWidgetConnected(widgets[id])) return null;
+    sum += widgets[id].balance ?? 0;
+  }
+  return sum;
+}
+
+function disconnectedNames(widgets) {
+  return [...CRYPTO_WIDGETS, ...BANK_WIDGETS]
+    .filter((id) => widgets[id] && !isWidgetConnected(widgets[id]))
+    .map((id) => widgets[id].name || id);
+}
+
+// The subject line. The total leads because it is the one figure that is read
+// off a phone's notification preview without opening anything.
+//
+// When a provider is disconnected there is no total to lead with, and a precise
+// dollar figure in the preview would be the most-read lie in the whole report,
+// so it says so instead.
+export function buildEmailSubject(total, date, widgets = {}) {
+  const totalText = disconnectedNames(widgets).length
+    ? UNAVAILABLE
+    : `$${Number(total).toFixed(2)}`;
+  return `[Total: ${totalText}] Closing Balance - ${date}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Email via Brevo API
 // ─────────────────────────────────────────────────────────────────────────────
-function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
+export function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtDelta = (n) => {
     const v = Number(n || 0);
@@ -24,27 +76,32 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
   const changeMap = {};
   for (const item of changeItems) changeMap[item.key] = item;
 
+  // One row builder for both groups, so the disconnected rule cannot drift
+  // between the crypto half of the table and the bank half.
+  const providerRow = (id) => {
+    const ch = changeMap[id];
+    const connected = isWidgetConnected(widgets[id]);
+    const tick = connected ? '✓' : '✗';
+    const rowBg = ch ? (ch.delta > 0 ? 'background:#e8f5e9;' : 'background:#ffebee;') : '';
+    const valColor = ch ? (ch.delta > 0 ? 'color:#2e7d32;font-weight:bold;' : 'color:#c62828;font-weight:bold;') : '';
+    const deltaHtml = ch ? ` <span style="${valColor}font-size:11px;">(${fmtDelta(ch.delta)})</span>` : '';
+    const value = connected
+      ? `$${fmt(widgets[id].balance)}${deltaHtml}`
+      : `${UNAVAILABLE} <span style="color:#c62828;font-size:11px;">(not connected)</span>`;
+    return `<tr style="${rowBg}"><td>${tick} ${widgets[id].name}</td><td style="${connected ? valColor : ''}">${value}</td></tr>`;
+  };
+
   let rows = '';
-  let cryptoSubtotal = 0;
   for (const id of CRYPTO_WIDGETS) {
     if (!widgets[id]) continue;
-    cryptoSubtotal += widgets[id].balance ?? 0;
-    const tick = widgets[id].status === 'ok' ? '✓' : '✗';
-    const ch = changeMap[id];
-    const rowBg = ch ? (ch.delta > 0 ? 'background:#e8f5e9;' : 'background:#ffebee;') : '';
-    const valColor = ch ? (ch.delta > 0 ? 'color:#2e7d32;font-weight:bold;' : 'color:#c62828;font-weight:bold;') : '';
-    const deltaHtml = ch ? ` <span style="${valColor}font-size:11px;">(${fmtDelta(ch.delta)})</span>` : '';
-    rows += `<tr style="${rowBg}"><td>${tick} ${widgets[id].name}</td><td style="${valColor}">$${fmt(widgets[id].balance)}${deltaHtml}</td></tr>`;
+    rows += providerRow(id);
   }
-  rows += `<tr style="background:#fff3cd;font-weight:bold;"><td>🔐 SUBTOTAL CRYPTO</td><td>$${fmt(cryptoSubtotal)}</td></tr>`;
+  const cryptoSubtotal = sumOrUnavailable(widgets, CRYPTO_WIDGETS);
+  const cryptoSubtotalText = cryptoSubtotal === null ? UNAVAILABLE : `$${fmt(cryptoSubtotal)}`;
+  rows += `<tr style="background:#fff3cd;font-weight:bold;"><td>🔐 SUBTOTAL CRYPTO</td><td>${cryptoSubtotalText}</td></tr>`;
   for (const id of BANK_WIDGETS) {
     if (!widgets[id]) continue;
-    const tick = widgets[id].status === 'ok' ? '✓' : '✗';
-    const ch = changeMap[id];
-    const rowBg = ch ? (ch.delta > 0 ? 'background:#e8f5e9;' : 'background:#ffebee;') : '';
-    const valColor = ch ? (ch.delta > 0 ? 'color:#2e7d32;font-weight:bold;' : 'color:#c62828;font-weight:bold;') : '';
-    const deltaHtml = ch ? ` <span style="${valColor}font-size:11px;">(${fmtDelta(ch.delta)})</span>` : '';
-    rows += `<tr style="${rowBg}"><td>${tick} ${widgets[id].name}</td><td style="${valColor}">$${fmt(widgets[id].balance)}${deltaHtml}</td></tr>`;
+    rows += providerRow(id);
   }
 
   const updatedTime = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Dubai' });
@@ -62,6 +119,14 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
   const totalRowBg = chTotal ? (chTotal.delta > 0 ? '#e8f5e9' : '#ffebee') : '#e8f5e9';
   const totalRowColor = chTotal ? (chTotal.delta > 0 ? 'color:#2e7d32;' : 'color:#c62828;') : '';
   const totalDeltaHtml = chTotal ? ` <span style="${totalRowColor}font-size:11px;">(${fmtDelta(chTotal.delta)})</span>` : '';
+
+  // The same rule as the rows, one level up: the total is summed from every
+  // provider, so one silent provider makes it a sum with a missing term rather
+  // than a smaller total. Naming who is missing is the useful half of the row.
+  const offline = disconnectedNames(widgets);
+  const totalText = offline.length
+    ? `${UNAVAILABLE} <span style="color:#c62828;font-size:11px;">(not connected: ${offline.join(', ')})</span>`
+    : `$${fmt(total)}${totalDeltaHtml}`;
 
   return `<!DOCTYPE html>
 <html>
@@ -87,7 +152,7 @@ function buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, 
     <thead><tr><th>PSP Name</th><th>Balance</th></tr></thead>
     <tbody>
       ${rows}
-      <tr style="background:${totalRowBg};font-weight:bold;${totalRowColor}"><td>💎 TOTAL COMBINED</td><td style="${totalRowColor}">$${fmt(total)}${totalDeltaHtml}</td></tr>
+      <tr style="background:${totalRowBg};font-weight:bold;${totalRowColor}"><td>💎 TOTAL COMBINED</td><td style="${offline.length ? '' : totalRowColor}">${totalText}</td></tr>
     </tbody>
   </table>
   <div class="meta-info">
@@ -124,7 +189,7 @@ export async function sendDailyEmailReport(widgets, total, date, bankReceivable,
   }
 
   const recipients = recipientsCsv.split(',').map((r) => ({ email: r.trim() })).filter((r) => r.email);
-  const subject = `[WALLET] Closing Balance - ${date} - Total: $${Number(total).toFixed(2)}`;
+  const subject = buildEmailSubject(total, date, widgets);
   const html = buildEmailHtml(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras);
 
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -152,7 +217,7 @@ export async function sendDailyEmailReport(widgets, total, date, bankReceivable,
 // ─────────────────────────────────────────────────────────────────────────────
 // Telegram Bot API
 // ─────────────────────────────────────────────────────────────────────────────
-function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
+export function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceivable, netAllCurrent, netAfterExpected, extras = {}) {
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtDelta = (n) => {
     const v = Number(n || 0);
@@ -192,29 +257,38 @@ function buildTelegramMessage(widgets, total, date, bankReceivable, cryptoReceiv
     return ` ${trendBadge(item.delta)} \`${fmtDelta(item.delta)}\``;
   };
 
+  // Same rule as the email: a disconnected provider has no figure, and a dash
+  // is what this project prints when it could not read one.
+  const providerLine = (id) => {
+    const name = shortName[id] || widgets[id].name;
+    if (!isWidgetConnected(widgets[id])) return `• ${name} \`${UNAVAILABLE}\` ✗ not connected\n`;
+    return `• ${name} \`$${fmt(widgets[id].balance)}\`${changeSuffix(changeMap[id])}\n`;
+  };
+
   let msg = `*CRYPTO*\n`;
 
-  let cryptoSubtotal = 0;
   for (const id of CRYPTO_WIDGETS) {
     if (!widgets[id]) continue;
-    cryptoSubtotal += widgets[id].balance ?? 0;
-    const ch = changeMap[id];
-    msg += `• ${shortName[id] || widgets[id].name} \`$${fmt(widgets[id].balance)}\`${changeSuffix(ch)}\n`;
+    msg += providerLine(id);
   }
 
-  msg += `C-Total \`$${fmt(cryptoSubtotal)}\`\n`;
+  const cryptoSubtotal = sumOrUnavailable(widgets, CRYPTO_WIDGETS);
+  msg += `C-Total \`${cryptoSubtotal === null ? UNAVAILABLE : `$${fmt(cryptoSubtotal)}`}\`\n`;
   msg += `${line}\n`;
   msg += `*BANK*\n`;
 
   for (const id of BANK_WIDGETS) {
     if (!widgets[id]) continue;
-    const ch = changeMap[id];
-    msg += `• ${shortName[id] || widgets[id].name} \`$${fmt(widgets[id].balance)}\`${changeSuffix(ch)}\n`;
+    msg += providerLine(id);
   }
 
   msg += `${line}\n`;
-  const totalChange = changeMap.total_balance;
-  msg += `*TOTAL* \`$${fmt(total)}\`${changeSuffix(totalChange)}`;
+  const offline = disconnectedNames(widgets);
+  if (offline.length) {
+    msg += `*TOTAL* \`${UNAVAILABLE}\` ✗ not connected: ${offline.join(', ')}`;
+  } else {
+    msg += `*TOTAL* \`$${fmt(total)}\`${changeSuffix(changeMap.total_balance)}`;
+  }
 
   return msg;
 }

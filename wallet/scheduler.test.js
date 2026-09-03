@@ -306,3 +306,156 @@ describe("wallet alert: a price move is not a balance change", () => {
     expect(goldSouq).toMatchObject({ before: 50694.96, after: 50000, delta: -694.96 });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A disconnected provider is not a provider holding zero.
+//
+// The alert of 2026-09-03 -- "[WALLET] Closing Balance - Total: $638034.14" --
+// was sent by two OwnBits losing their connection. Their balances read as $0.00,
+// the total fell by what they hold, and the email said money left the treasury.
+// Nothing moved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// walletMonitor stamps every widget with a status. BASE_WIDGETS above predates
+// that and leaves the field off, which the scheduler reads as healthy; these
+// fixtures stamp it explicitly, so a test can say "this one was connected and
+// that one was not" instead of leaning on the absence of a field.
+const DISCONNECTED = { balance: 0, currencies: {}, status: "error", error: "request timed out" };
+
+// The sum of BASE_WIDGETS, which every total below is expressed relative to.
+const BASE_TOTAL = 90302.22;
+
+function connectedReport(overrides = {}, total = null) {
+  const widgets = {};
+  for (const [id, widget] of Object.entries(BASE_WIDGETS)) widgets[id] = { ...widget, status: "ok" };
+  for (const [id, patch] of Object.entries(overrides)) widgets[id] = { ...widgets[id], ...patch };
+  const entries = Object.entries(widgets).map(([id, w]) => ({ id, ...w }));
+  const summed = entries.reduce((sum, w) => sum + Number(w.balance || 0), 0);
+  return {
+    data: {
+      // Production sums the providers' UNROUNDED balances and rounds once at
+      // the end, so the total can land a cent away from the sum of the rounded
+      // rows. `total` overrides the fixture's own sum to reproduce that.
+      total_balance: total === null ? Number(summed.toFixed(2)) : total,
+      widgets: entries,
+    },
+  };
+}
+
+const connectedSnapshot = (overrides = {}, total = null) => extractSnapshot(connectedReport(overrides, total));
+
+describe("wallet alert: a disconnected provider is not a balance of zero", () => {
+  it("says nothing when two providers drop off while LetKnow Pay drifts on price", () => {
+    // The reported email, reconstructed. Two OwnBits lose their connection in
+    // the same poll that ETH moves LetKnow Pay five cents.
+    //
+    // The one cent between the after-total and the sum of the rounded rows is
+    // not decoration: it is why the old delta-matching rule failed to account
+    // the total against the rows it had dropped, and why this email was sent.
+    const before = connectedSnapshot({}, BASE_TOTAL);
+    const after = connectedSnapshot(
+      { ownbit: DISCONNECTED, ownbitnew: DISCONNECTED, letknowpay: { balance: 191.37 } },
+      51732.28,
+    );
+
+    // Every row really did move, so there is plenty for the filters to refuse.
+    expect(keysOf(buildChangeItems(before, after))).toEqual([
+      "letknowpay",
+      "ownbit",
+      "ownbitnew",
+      "total_balance",
+    ]);
+
+    const decision = decideChangeItems(before, after);
+
+    expect(decision.rebaseline).toBe(false);
+    expect(decision.totalUnavailable).toBe(true);
+    expect(decision.changeItems).toEqual([]);
+  });
+
+  it("drops a disconnected provider whose balance did not become exactly zero", () => {
+    // The zero-inference fallback cannot see this one: HeroPayment reports
+    // status:'error' while still carrying a stale non-zero figure, so there is
+    // no zero to infer a failure from.
+    const before = connectedSnapshot({});
+    const after = connectedSnapshot({
+      heropayment: { balance: 480, currencies: { USDT: 480 }, status: "error", error: "HTTP 502" },
+    });
+
+    expect(keysOf(buildChangeItems(before, after))).toEqual(["heropayment", "total_balance"]);
+    expect(decideChangeItems(before, after).changeItems).toEqual([]);
+  });
+
+  it("still reports a genuine deposit on a healthy provider while OwnBit is down", () => {
+    // Money really did arrive in Gold Souq. OwnBit being unreachable is a
+    // separate fact and must not swallow it. The total goes, because there is
+    // no total while a provider is silent -- but the row that moved survives.
+    const before = connectedSnapshot({}, BASE_TOTAL);
+    const after = connectedSnapshot(
+      { ownbit: DISCONNECTED, googlesheets_goldsouq: { balance: 60000 } },
+      99307.27,
+    );
+
+    const decision = decideChangeItems(before, after);
+
+    expect(decision.totalUnavailable).toBe(true);
+    expect(keysOf(decision.changeItems)).toEqual(["googlesheets_goldsouq"]);
+  });
+
+  it("does not treat a provider that genuinely reads $0.00 as disconnected", () => {
+    // Match2Pay's sheet cell is legitimately empty on both sides and its status
+    // is 'ok'. A real zero is a balance, so the total stays knowable and the
+    // Gold Souq deposit reports with it.
+    const before = connectedSnapshot({ googlesheets_match2pay: { balance: 0 } });
+    const after = connectedSnapshot({
+      googlesheets_match2pay: { balance: 0 },
+      googlesheets_goldsouq: { balance: 60000 },
+    });
+
+    const decision = decideChangeItems(before, after);
+
+    expect(decision.totalUnavailable).toBe(false);
+    expect(keysOf(decision.changeItems)).toEqual(["googlesheets_goldsouq", "total_balance"]);
+  });
+
+  it("says nothing when a provider reconnects", () => {
+    // Recovery is the same event running backwards and is just as much not
+    // money. The cent of mismatch again denies the delta-matching rule the
+    // exact equality it needs, so only the status rule can absorb this.
+    const before = connectedSnapshot({ ownbit: DISCONNECTED }, 89302.22);
+    const after = connectedSnapshot({}, 90302.23);
+
+    expect(keysOf(buildChangeItems(before, after))).toEqual(["ownbit", "total_balance"]);
+    expect(decideChangeItems(before, after).changeItems).toEqual([]);
+  });
+
+  it("re-baselines silently against a saved snapshot that records no statuses", () => {
+    // The state file on the running server has holdings but no statuses. It
+    // cannot say which providers were connected when it was written, so nothing
+    // compared against it can be shown to be a connection event.
+    const current = connectedSnapshot({});
+    const noStatuses = {
+      total_balance: current.total_balance,
+      widgets: current.widgets,
+      holdings: current.holdings,
+    };
+    const after = connectedSnapshot({ ownbit: DISCONNECTED });
+
+    const decision = decideChangeItems(noStatuses, after);
+
+    expect(decision.rebaseline).toBe(true);
+    expect(decision.changeItems).toEqual([]);
+  });
+
+  it("keeps the price-noise filter working while a provider is disconnected", () => {
+    // The two rules are independent: LetKnow Pay drifting on price is still
+    // price, whether or not OwnBit happens to be answering.
+    const before = connectedSnapshot({}, BASE_TOTAL);
+    const after = connectedSnapshot(
+      { ownbit: DISCONNECTED, letknowpay: { balance: 191.37 } },
+      89302.28,
+    );
+
+    expect(decideChangeItems(before, after).changeItems).toEqual([]);
+  });
+});
