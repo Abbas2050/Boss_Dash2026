@@ -42,7 +42,10 @@ import { runDailyDigest } from './reports/dailyDigest.js';
 import { runMonthlyReview } from './reports/monthlyReview.js';
 import { getChartDir, CHART_ROUTE } from './reports/reportShared.js';
 import { startAllReportSchedulers } from './reports/schedulers.js';
-import { parseTestPeriod } from './reports/parseTestPeriod.js';
+import {
+  parseTestRecipients,
+  makeReportTestSendHandler,
+} from './reports/testSendRequest.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1091,30 +1094,29 @@ app.put('/api/alarm-config', authRequired, (req, res) => {
   }
 });
 
-// Recipients for an on-demand weekly-report test send: accepts either an array
-// or a comma-separated string in the request body.
-function parseTestRecipients(body) {
-  const rawList = Array.isArray(body?.recipients)
-    ? body.recipients
-    : String(body?.recipients || '').split(',');
-  return rawList.map((e) => String(e).trim()).filter(Boolean);
+// The admin gate the report test-send routes used to repeat as their first
+// statement. It stays here, in front of the shared handler, so the gate is
+// visible at every route registration rather than buried in the handler.
+function adminOnly(req, res, next) {
+  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
+  next();
 }
 
-// On-demand test send of the weekly Slippage email (admin-only). Recipients
-// come from the request body and there is NO fallback to
-// SLIPPAGE_ALERT_RECIPIENTS -- an empty body is a 400. That is why a test send
-// can succeed while the scheduled run silently sends nothing.
-app.post('/api/reports/slippage-weekly/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  try {
-    const result = await runSlippageEmailReport({ recipients });
-    res.json(result);
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+// On-demand test send of the Slippage email (admin-only). Recipients come from
+// the request body and there is NO fallback to SLIPPAGE_ALERT_RECIPIENTS -- an
+// empty body is a 400. That is why a test send can succeed while the scheduled
+// run silently sends nothing.
+//
+// An optional body `cadence` ('daily' | 'weekly' | 'monthly') picks which
+// scheduled send is being rehearsed; omitting it keeps the weekly default this
+// route has always had. Six of the nine scheduled reports were previously
+// impossible to test-send at their real cadence.
+app.post(
+  '/api/reports/slippage-weekly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runSlippageEmailReport }),
+);
 
 // On-demand test send of the Weekly Business Summary (admin-only).
 app.post('/api/reports/summary-weekly/test', authRequired, async (req, res) => {
@@ -1157,55 +1159,44 @@ app.post('/api/reports/monthly-review/test', authRequired, async (req, res) => {
   }
 });
 
-// On-demand test send of the weekly Deal Match email (admin-only). Mirrors the
-// slippage test route: body recipients only, no env fallback.
-app.post('/api/reports/dealmatch-weekly/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  try {
-    const result = await runDealMatchEmailReport({ recipients });
-    res.json(result);
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+// On-demand test send of the Deal Match email (admin-only). Mirrors the
+// slippage test route: body recipients only, no env fallback, optional cadence.
+app.post(
+  '/api/reports/dealmatch-weekly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runDealMatchEmailReport }),
+);
 
 // Send a monthly for a period chosen by the caller. The four other test routes
 // always cover the current default period; these two exist because August's
 // monthlies were never sent -- the reports did not exist on 1 September -- and
 // the next automatic one is 1 October.
 //
-// parseTestPeriod itself lives in ./reports/parseTestPeriod.js (and is unit
-// tested there) rather than as a local function here, because importing
-// server.js triggers a real server.listen(...) and DB pool setup as a side
-// effect of module load -- unsafe to do from a test file.
+// These two keep their own routes now that the routes above accept a cadence:
+// a cadence chooses the PERIOD SHAPE and always means "the last complete one",
+// while these accept an arbitrary from/to window, which a cadence cannot
+// express. The two never combine -- a body cadence here is a 400, and a from/to
+// alongside a cadence there is a 400 -- so no request can ask for two periods.
+//
+// The parsing and the handler live in ./reports/testSendRequest.js and
+// ./reports/parseTestPeriod.js (unit tested there) rather than as local
+// functions here, because importing server.js triggers a real server.listen(...)
+// and DB pool setup as a side effect of module load -- unsafe from a test file.
 
-app.post('/api/reports/slippage-monthly/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  const period = parseTestPeriod(req.body);
-  if (period.error) return res.status(400).json({ error: 'bad_period', message: period.error });
-  try {
-    res.json(await runSlippageEmailReport({ cadence: 'monthly', recipients, ...period }));
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+app.post(
+  '/api/reports/slippage-monthly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runSlippageEmailReport, cadence: 'monthly', allowPeriod: true }),
+);
 
-app.post('/api/reports/dealmatch-monthly/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  const period = parseTestPeriod(req.body);
-  if (period.error) return res.status(400).json({ error: 'bad_period', message: period.error });
-  try {
-    res.json(await runDealMatchEmailReport({ cadence: 'monthly', recipients, ...period }));
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+app.post(
+  '/api/reports/dealmatch-monthly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runDealMatchEmailReport, cadence: 'monthly', allowPeriod: true }),
+);
 
 // Minimal SignalR-like negotiate + WebSocket mock, FOR LOCAL DEV ONLY.
 //
