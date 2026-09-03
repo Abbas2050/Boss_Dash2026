@@ -113,6 +113,48 @@ const STAGE_COLORS = {
 // reader does not group Realized with the bars below it by colour.
 const REALIZED_COLOR = "#0891b2";
 
+// One line per figure: what it means, and the arithmetic where there is any.
+//
+// WHY THE TEXT IS VISIBLE RATHER THAN A TOOLTIP: the dealing tab explains these
+// same ten numbers with `title` attributes
+// (src/pages/departments/dealing/DealMatchingTab.tsx:1316). A `title` renders
+// nowhere in a mail client, and nothing in these templates may depend on hover.
+//
+// WHY IT IS THE TAB'S WORDING: five of these sentences are lifted from those
+// tooltips verbatim, so the email and the dashboard remain one explanation of
+// one number rather than two that drift. Shifting Deals, Shifting Realized and
+// Internal Realized had no tooltip; those three are written from
+// docs/dealing-reporting.md §1 and §4, not invented.
+//
+// WHY THEY ARE SHORT: the reader is on a phone. These lines sit under ten
+// figures they came for; a paragraph each would bury them. Each explanation
+// also absorbs a caption that used to say the same thing further down — the
+// funnel's "the three rows follow one path", the breakdown's "internal accounts
+// are a separate bucket" — so the section carries the material once.
+const EXPLAIN = {
+  realized:
+    "The same deal flow counted once per round trip rather than twice &mdash; a parallel measure of the volume below, not a part of it. It reconciles with client volume.",
+  split: "Closed CFD and closed equity volume. Equity lots are share-based, so they dwarf CFD.",
+  totalDeals: "Client deal lots plus shifting deal lots. Counts every MT5 deal, so an open and its close each count.",
+  bridge: "Volume that reached the bridge to be hedged.",
+  matched: "Client volume matched to an LP order &mdash; the only part of the flow that reached an LP.",
+  client: "MT5 client deal lots (each leg counted), and the closed volume behind them.",
+  shifting: "Shifting-account deal lots and their closed volume. Counted inside Total MT5 Deals above.",
+  internal:
+    "Internal-account deal lots and their closed volume &mdash; a separate bucket, not part of client flow, so not a funnel stage. Excluded from the Slippage report; included here.",
+};
+
+// The vx class and data-exp are markers, not styling: no shell defines them.
+// They make "does this figure carry an explanation?" a structural question, so
+// the coverage test never reads the prose and a copy edit cannot break it.
+// data-exp pairs with the data-fig on the cell or row the line explains.
+function explain(key, t, { colspan = 1, pad = "0 0 8px" } = {}) {
+  // max-width:none overrides table.data's 156px cell cap inline, so an
+  // explanation inside the breakdown table runs the full width of its row
+  // instead of being squeezed into a fourth column.
+  return `<td class="vx" data-exp="${key}" colspan="${colspan}" style="max-width:none;width:100%;padding:${pad};font-size:11px;line-height:1.45;color:${t.muted};">${EXPLAIN[key]}</td>`;
+}
+
 const lots = (value) => (value === null ? DASH : fmtNum(value, 2));
 
 // Share of the denominator, or null when there is no denominator to divide by.
@@ -150,14 +192,18 @@ function bar(share, color, t) {
 // table a bar is made of. They are also what makes "is this a funnel stage?"
 // a structural question rather than a question about wording: a figure carrying
 // a vf-label cell is a stage, and nothing else in the section carries one.
-function stageRow({ label, value, color, share, showPct }, t) {
+// The explanation is its own <tr> rather than a second line inside vf-label,
+// because vf-label is the marker the stage tests read: keeping it a single text
+// node is what lets "these are the three stages" stay a structural assertion.
+function stageRow({ label, value, color, share, showPct, key }, t) {
   const pct = showPct ? (share === null ? DASH : `${Math.round(share)}%`) : "";
   return `<tr>
               <td class="vf-label" style="padding:3px 8px 3px 0;width:34%;font-size:12px;color:${t.muted};">${escapeHtml(label)}</td>
               <td class="vf-bar" style="padding:3px 0;width:24%;">${value === null ? "" : bar(share === null ? 0 : share, color, t)}</td>
-              <td class="vf-value" style="padding:3px 0 3px 8px;width:27%;font-size:12px;font-weight:700;text-align:right;white-space:nowrap;">${lots(value)}</td>
+              <td class="vf-value" data-fig="${key}" style="padding:3px 0 3px 8px;width:27%;font-size:12px;font-weight:700;text-align:right;white-space:nowrap;">${lots(value)}</td>
               <td class="vf-pct" style="padding:3px 0 3px 8px;width:15%;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${pct}</td>
-            </tr>`;
+            </tr>
+            <tr>${explain(key, t, { colspan: 4, pad: "0 0 9px" })}</tr>`;
 }
 
 /**
@@ -192,9 +238,9 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
   // not a subset, so drawing them here would assert a containment that does not
   // hold. They belong to the breakdown below.
   const stages = [
-    { label: "Total MT5 Deals", value: total, color: STAGE_COLORS.total, share: shareOf(total, total), showPct: false },
-    { label: "Bridge Lots", value: volume.bridgeLots, color: STAGE_COLORS.bridge, share: shareOf(volume.bridgeLots, total), showPct: true },
-    { label: "Matched Lots", value: volume.matchedLots, color: STAGE_COLORS.matched, share: shareOf(volume.matchedLots, total), showPct: true },
+    { key: "totalDeals", label: "Total MT5 Deals", value: total, color: STAGE_COLORS.total, share: shareOf(total, total), showPct: false },
+    { key: "bridge", label: "Bridge Lots", value: volume.bridgeLots, color: STAGE_COLORS.bridge, share: shareOf(volume.bridgeLots, total), showPct: true },
+    { key: "matched", label: "Matched Lots", value: volume.matchedLots, color: STAGE_COLORS.matched, share: shareOf(volume.matchedLots, total), showPct: true },
   ];
 
   const cfdEquity = volume.realizedCfd === null && volume.realizedEquity === null
@@ -207,27 +253,29 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
   // footnote would lose the figure a reader most often needs to quote. The
   // vr-* markers keep it addressable; it carries no vf-label, so it is not a
   // stage by the same structural test the funnel rows answer to.
-  const realized = `<table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 10px;">
+  const realized = `<table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 4px;">
             <tr>
               <td class="vr-label" style="padding:3px 8px 3px 0;font-size:12px;font-weight:700;color:${REALIZED_COLOR};">Realized</td>
-              <td class="vr-value" style="padding:3px 0 3px 8px;font-size:14px;font-weight:700;text-align:right;white-space:nowrap;">${lots(volume.realizedTotal)}</td>
+              <td class="vr-value" data-fig="realized" style="padding:3px 0 3px 8px;font-size:14px;font-weight:700;text-align:right;white-space:nowrap;">${lots(volume.realizedTotal)}</td>
             </tr>
+            <tr>${explain("realized", t, { colspan: 2, pad: "0 0 8px" })}</tr>
             <tr>
               <td style="padding:0 8px 0 0;font-size:12px;color:${t.muted};">CFD / Equity</td>
-              <td class="vr-split" style="padding:0 0 0 8px;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${cfdEquity}</td>
+              <td class="vr-split" data-fig="split" style="padding:0 0 0 8px;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${cfdEquity}</td>
             </tr>
-          </table>
-          <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
-            Realized is the same deal flow counted once per round trip rather than twice &mdash;
-            a parallel measure of the volume below, not a smaller part of it. It is the figure
-            that reconciles with client volume. Equity lots are share-based and dwarf CFD lots,
-            which is why the split is shown beside the total.
-          </p>`;
+            <tr>${explain("split", t, { colspan: 2, pad: "2px 0 0" })}</tr>
+          </table>`;
 
-  const breakdownRow = (bucket, deals, realized) => `<tr>
+  // The explanation is a fourth cell of the same row rather than a row of its
+  // own. table.data renders every row as a stacked card with inline-block cells,
+  // so a full-width cell simply wraps onto the next line inside the card — where
+  // a separate <tr> would add a zebra stripe and a rule, and read as seven rows
+  // instead of four.
+  const breakdownRow = (key, bucket, deals, realized) => `<tr data-fig="${key}">
                 ${dataCell("Bucket", escapeHtml(bucket), { nowrap: true })}
                 ${dataCell("Deals", deals, { align: "right" })}
                 ${dataCell("Realized", realized, { align: "right" })}
+                ${explain(key, t, { pad: "0 8px 4px" })}
               </tr>`;
 
   return `${title}
@@ -236,25 +284,19 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
             ${stages.map((s) => stageRow(s, t)).join("\n            ")}
           </table>
           <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
-            Percentages are of deal volume. The three rows follow one path: every MT5 deal
-            lot, the part of it that reached the bridge, and the part of that which paired
-            with an LP order. Only Matched Lots reached an LP.
+            Percentages are of deal volume.
           </p>
 
           <p class="section-title" style="margin-top:14px;">Volume Breakdown</p>
-          <p style="font-size:11px;color:${t.muted};margin:0 0 8px;">
-            Internal accounts are a separate bucket rather than part of client flow, which
-            is why they are listed here and not drawn as a stage of the funnel above.
-          </p>
           <table class="data narrow">
             <thead>
               <tr><th width="40%">Bucket</th><th width="30%">Deals</th><th width="30%">Realized</th></tr>
             </thead>
             <tbody>
-              ${breakdownRow("Client", lots(volume.clientDeals), lots(volume.realizedTotal))}
-              ${breakdownRow("Shifting", lots(volume.shiftingDeals), lots(volume.shiftingRealized))}
-              ${breakdownRow("Internal", lots(volume.internalDeals), lots(volume.internalRealized))}
-              <tr>
+              ${breakdownRow("client", "Client", lots(volume.clientDeals), lots(volume.realizedTotal))}
+              ${breakdownRow("shifting", "Shifting", lots(volume.shiftingDeals), lots(volume.shiftingRealized))}
+              ${breakdownRow("internal", "Internal", lots(volume.internalDeals), lots(volume.internalRealized))}
+              <tr data-fig="split">
                 ${dataCell("Bucket", "CFD / Equity split", { nowrap: true })}
                 ${dataCell("Deals", DASH, { align: "right" })}
                 ${dataCell("Realized", cfdEquity, { align: "right" })}

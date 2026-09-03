@@ -561,3 +561,125 @@ describe("fetchVolumeReport", () => {
     await expect(fetchVolumeReport(PERIOD.fromDate, PERIOD.toDate)).rejects.toThrow(/HTTP 503/);
   });
 });
+
+// ── 11. every figure carries its explanation ─────────────────────────────────
+//
+// The dealing tab explains these numbers with `title` tooltips, which render
+// nowhere in a mail client. The email therefore carries the same sentences as
+// visible text — and this is the test that keeps them attached to the figures.
+//
+// It is deliberately blind to the wording. A figure cell (or breakdown row)
+// carries data-fig="<key>"; its explanation carries data-exp="<key>". Comparing
+// the two SETS means a copy edit is invisible here, while a figure that arrives
+// without a line, or a line orphaned from its figure, is not.
+
+const attrs = (html, name) => [...html.matchAll(new RegExp(`data-${name}="([^"]+)"`, "g"))].map((m) => m[1]);
+const figKeys = (html) => [...new Set(attrs(html, "fig"))].sort();
+const expKeys = (html) => [...new Set(attrs(html, "exp"))].sort();
+
+describe("every figure is explained inline", () => {
+  const html = renderVolumeSection(extractVolume(PAYLOAD));
+
+  it("pairs every rendered figure with an explanation, and every explanation with a figure", () => {
+    expect(figKeys(html)).toEqual(expKeys(html));
+    // Realized, its CFD/Equity split, the three funnel stages, and the three
+    // breakdown buckets. Named so that adding a figure without a line fails
+    // here rather than shipping an unexplained number.
+    expect(figKeys(html)).toEqual([
+      "bridge", "client", "internal", "matched", "realized", "shifting", "split", "totalDeals",
+    ]);
+  });
+
+  it("explains each funnel stage next to the stage itself", () => {
+    for (const key of ["totalDeals", "bridge", "matched"]) {
+      const fig = html.indexOf(`data-fig="${key}"`);
+      const exp = html.indexOf(`data-exp="${key}"`);
+      expect(fig).toBeGreaterThan(-1);
+      expect(exp).toBeGreaterThan(fig); // the line follows the number it explains
+    }
+  });
+
+  it("carries no explanation at all when the whole section is unavailable", () => {
+    const bare = renderVolumeSection(null, { unavailableReason: "boom" });
+    expect(figKeys(bare)).toEqual([]);
+    expect(expKeys(bare)).toEqual([]);
+  });
+});
+
+// A dash tells the reader a number is missing; only the line beside it tells
+// them WHAT is missing. So the explanations must not be attached to the value.
+describe("an unavailable figure keeps its explanation", () => {
+  const EMPTY = {};
+
+  it("explains all eight even when every scalar is absent", () => {
+    const html = renderVolumeSection(extractVolume(EMPTY));
+    expect(expKeys(html)).toEqual(expKeys(renderVolumeSection(extractVolume(PAYLOAD))));
+    expect(figKeys(html)).toEqual(expKeys(html));
+  });
+
+  it("still explains the two stages that render a dash and draw no bar", () => {
+    const { totalBridgeLots, totalMatchedLots, ...missing } = PAYLOAD;
+    const html = funnelOf(renderVolumeSection(extractVolume(missing)));
+    expect(stage(html, "Bridge Lots").value).toBe("&mdash;");
+    expect(stage(html, "Bridge Lots").hasBar).toBe(false);
+    expect(html).toMatch(/data-exp="bridge"/);
+    expect(html).toMatch(/data-exp="matched"/);
+  });
+
+  it("still explains a breakdown cell that could not be read", () => {
+    const { totalShiftingRealizedLots, ...lite } = PAYLOAD;
+    const html = breakdownOf(renderVolumeSection(extractVolume(lite)));
+    expect(breakdownCell(html, "Shifting", "Realized")).toBe("&mdash;");
+    expect(html).toMatch(/data-exp="shifting"/);
+  });
+});
+
+// The reason the text is visible in the first place. `title` does not render in
+// Outlook, Zoho or Gmail, and the primary reader is on a phone where there is
+// no hover to begin with.
+describe("nothing in the section depends on hover", () => {
+  it("uses no title attribute anywhere", () => {
+    for (const html of [
+      renderVolumeSection(extractVolume(PAYLOAD)),
+      renderVolumeSection(extractVolume(PAYLOAD), { theme: "dark" }),
+      renderVolumeSection(extractVolume({})),
+      renderVolumeSection(null, { unavailableReason: "boom" }),
+    ]) {
+      expect(html).not.toMatch(/\stitle\s*=/i);
+    }
+  });
+});
+
+// ── 12. every report family mounts the section ───────────────────────────────
+//
+// The section is worth nothing in the reports that forget it. Four families
+// send it across nine scheduled sends, and the Business Summary alone covers
+// three cadences through one shared builder — so a cadence added later inherits
+// the mount, and a family added later fails here instead of shipping without it.
+
+describe("every report family renders the volume section", () => {
+  const families = [
+    ["Daily Digest", async () => (await import("./dailyDigest.js")).runDailyDigest],
+    ["Weekly Business Summary", async () => (await import("./weeklyBusinessSummary.js")).runWeeklyBusinessSummary],
+    ["Monthly Review", async () => (await import("./monthlyReview.js")).runMonthlyReview],
+    ["Deal Match", async () => (await import("./dealMatchWeeklyReport.js")).runDealMatchEmailReport],
+    ["Slippage", async () => (await import("./slippageWeeklyReport.js")).runSlippageEmailReport],
+  ];
+
+  for (const [name, load] of families) {
+    it(`${name} sends the funnel, its figures and its explanations`, async () => {
+      const run = await load();
+      const { sent } = stubFetch();
+
+      const result = await run({ ...PERIOD, recipients: ["ops@example.com"] });
+
+      expect(result.ok).toBe(true);
+      expect(sent).toHaveLength(1);
+      const html = sent[0].htmlContent;
+      expect(html).toMatch(/MT5 Volume Funnel/);
+      expect(html).toMatch(/203,109\.22/); // the figures, not just the heading
+      expect(figKeys(html)).toEqual(expKeys(html)); // and the lines beside them
+      expect(expKeys(html)).toHaveLength(8);
+    });
+  }
+});

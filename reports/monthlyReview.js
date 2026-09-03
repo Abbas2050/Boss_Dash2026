@@ -208,6 +208,14 @@ function weekSection(agg) {
 
 // ── the email ───────────────────────────────────────────────────────────────
 
+// The MT5 Volume Funnel is NOT mounted here, and deliberately so: it is
+// rendered once inside buildSummaryEmailHtml (weeklyBusinessSummary.js:298),
+// which this function delegates to. `fetchGlance` fills `glance.volume` for the
+// month exactly as it does for a week, so the monthly send already carries the
+// section — adding a `renderVolumeSection` call here would print it twice. The
+// daily digest builds its own shell, which is why that one has its own mount.
+// `every report family renders the volume section` in volumeSection.test.js
+// pins all three cadences plus the two dealing reports.
 export function buildMonthlyReviewHtml({
   fromYmd,
   toYmd,
