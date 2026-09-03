@@ -1323,11 +1323,14 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
               title="Closed CFD volume, counted once per round trip. Together with Equity this equals ClientVolume/Run totalLots." />
             <LotTile label="MT5 Realized (Equity)" value={num(report.totalRealizedLotsEquity)} tone="cyan"
               title="Closed equity volume, counted once per round trip. Equity lots are share-based, so this number dwarfs CFD." />
-            <LotTile label="Shifting Deals" value={num(report.totalShiftingMt5DealLots)} tone="amber" />
-            <LotTile label="Shifting Realized" value={num(report.totalShiftingRealizedLots)} tone="amber" />
+            <LotTile label="Shifting Deals" value={num(report.totalShiftingMt5DealLots)} tone="amber"
+              title="Shifting-account deal lots, each leg counted. Included inside Total MT5 Deals." />
+            <LotTile label="Shifting Realized" value={num(report.totalShiftingRealizedLots)} tone="amber"
+              title="The closed volume behind those shifting deals, counted once per round trip." />
             <LotTile label="Internal Deals" value={num(report.totalInternalAccountLots)} tone="amber"
               title="Internal-account deal lots. Excluded from the Slippage report; included here." />
-            <LotTile label="Internal Realized" value={num(report.totalInternalAccountRealizedLots)} tone="amber" />
+            <LotTile label="Internal Realized" value={num(report.totalInternalAccountRealizedLots)} tone="amber"
+              title="The closed internal-account volume, counted once per round trip. A separate bucket, not part of client flow." />
           </div>
 
           <div className="text-[10px] uppercase tracking-wide text-slate-500 dark:text-slate-400">Bridge / Matched (lots)</div>
