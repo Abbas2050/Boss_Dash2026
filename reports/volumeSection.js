@@ -165,12 +165,19 @@ function shareOf(value, total) {
 // test that could only read the rounded text. This replaces the bar width the
 // guard used to measure.
 //
-// The denominator row prints no percentage — its share of itself says nothing —
-// but still carries its data-share, so the guard has an anchor at the top of the
-// column to measure the rows below against.
+// The denominator row prints 100%, not an empty cell. When this was a bar chart
+// a full-width bar said that on the total's behalf; in a table it does not, and
+// table.data stacks each row into a card on a phone — so an empty cell there
+// renders as the label "Share" with nothing beneath it, which reads as a figure
+// that failed to load rather than as one that is self-evident. The reader has
+// already lost this section once to a rendering problem; an empty labelled cell
+// is not a risk worth taking to avoid stating the obvious.
+//
+// `show` therefore no longer suppresses the text, only the rounding path: the
+// total is exactly 100 by construction, never 99.96 rounded up.
 function shareCell(share, { show }) {
   const exact = share === null ? "" : share.toFixed(1);
-  const text = !show ? "" : share === null ? DASH : `${Math.round(share)}%`;
+  const text = share === null ? DASH : show ? `${Math.round(share)}%` : "100%";
   return dataCell("Share", `<span class="vs" data-share="${exact}">${text}</span>`, { align: "right" });
 }
 

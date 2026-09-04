@@ -290,8 +290,10 @@ describe("flow percentages", () => {
     expect(stage(html, "Matched Lots").pct).toBe("2%");
   });
 
-  it("leaves the total itself without one, because it is the denominator", () => {
-    expect(stage(html, "Total MT5 Deals").pct).toBe("");
+  it("states the total as 100%, because an empty labelled cell reads as missing", () => {
+    // Not cosmetic: table.data stacks into a card per row on a phone, so an
+    // empty Share cell shows its label with nothing under it.
+    expect(stage(html, "Total MT5 Deals").pct).toBe("100%");
   });
 
   it("renders the figures the percentages were taken from", () => {
@@ -335,7 +337,7 @@ describe("the flow table narrows at every row", () => {
 
   it("prints that as a column of percentages that never climbs", () => {
     const html = flowOf(renderVolumeSection(extractVolume(LIVE_0903)));
-    expect(stage(html, "Total MT5 Deals").pct).toBe(""); // the denominator itself
+    expect(stage(html, "Total MT5 Deals").pct).toBe("100%"); // the denominator itself
     expect(stage(html, "Bridge Lots").pct).toBe("88%");
     expect(stage(html, "Matched Lots").pct).toBe("88%");
   });
