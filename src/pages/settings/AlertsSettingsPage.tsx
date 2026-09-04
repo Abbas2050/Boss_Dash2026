@@ -11,37 +11,11 @@ import {
 } from "@/lib/alertPreferences";
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
 import LpMarginAlerts from "@/components/dashboard/LpMarginAlerts";
-import { hasAccess, getUsers, refreshUsers, getCurrentUser, authHeaders, type AuthUser } from "@/lib/auth";
+import { ReportTestSendPanel } from "@/components/settings/ReportTestSendPanel";
+import { hasAccess, getUsers, refreshUsers, type AuthUser } from "@/lib/auth";
 import { primeAudio, playAlarm } from "@/lib/alertSound";
 import { AlarmConfig, getAlarmConfig, saveAlarmConfig } from "@/lib/alarmConfig";
 
-// Weekly report emails that can be test-sent on demand. Each entry maps to the
-// matching /api/reports/<endpoint>/test route on the server.
-const WEEKLY_REPORTS = [
-  {
-    key: "slippage",
-    label: "Slippage Report",
-    endpoint: "/api/reports/slippage-weekly/test",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    summary: (d: any) => `${d?.lps ?? 0} LPs`,
-  },
-  {
-    key: "dealmatch",
-    label: "Deal Match Report",
-    endpoint: "/api/reports/dealmatch-weekly/test",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    summary: (d: any) => `${d?.rows ?? 0} clients`,
-  },
-  {
-    key: "summary",
-    label: "Business Summary",
-    endpoint: "/api/reports/summary-weekly/test",
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.depositors ?? 0} active accounts`,
-  },
-] as const;
-
-type WeeklyReportKey = (typeof WEEKLY_REPORTS)[number]["key"];
 
 export const AlertsSettingsPage: React.FC = () => {
   const allowedEventKeys = useMemo(
@@ -54,10 +28,6 @@ export const AlertsSettingsPage: React.FC = () => {
   const [alarmUsers, setAlarmUsers] = useState<AuthUser[]>(() => getUsers());
   const [alarmSaving, setAlarmSaving] = useState(false);
   const [alarmMsg, setAlarmMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [reportTestEmail, setReportTestEmail] = useState<string>(() => getCurrentUser()?.email || "");
-  const [reportTestSending, setReportTestSending] = useState(false);
-  const [reportTestMsg, setReportTestMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [reportTestKind, setReportTestKind] = useState<WeeklyReportKey>("slippage");
 
   useEffect(() => {
     getAlarmConfig().then(setAlarmCfg).catch(() => undefined);
@@ -86,35 +56,6 @@ export const AlertsSettingsPage: React.FC = () => {
       setAlarmMsg({ text: `Failed: ${e?.message || "error"}`, ok: false });
     } finally {
       setAlarmSaving(false);
-    }
-  };
-
-  const selectedReport = WEEKLY_REPORTS.find((r) => r.key === reportTestKind) ?? WEEKLY_REPORTS[0];
-
-  const sendReportTest = async () => {
-    setReportTestSending(true);
-    setReportTestMsg(null);
-    try {
-      const recipients = reportTestEmail.split(",").map((s) => s.trim()).filter(Boolean);
-      const res = await fetch(selectedReport.endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ recipients }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        setReportTestMsg({ text: data?.message || data?.error || `Failed (${res.status})`, ok: false });
-      } else {
-        setReportTestMsg({
-          text: `${selectedReport.label} sent to ${recipients.join(", ")} · ${selectedReport.summary(data)} · ${data.fromYmd}→${data.toYmd}`,
-          ok: true,
-        });
-      }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      setReportTestMsg({ text: e?.message || "error", ok: false });
-    } finally {
-      setReportTestSending(false);
     }
   };
 
@@ -327,48 +268,7 @@ export const AlertsSettingsPage: React.FC = () => {
           </div>
         </section>
 
-        <section className="rounded-2xl border border-border/40 bg-card/70 p-5">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-foreground">Weekly Reports</h2>
-              <p className="text-xs text-muted-foreground">
-                Pick a report and send an on-demand test of its weekly email (last full week's data) so you don't have to
-                wait for the Friday schedule. Uses the same Brevo pipeline as the live report.
-              </p>
-            </div>
-            {reportTestMsg && (
-              <span className={`text-xs ${reportTestMsg.ok ? "text-success" : "text-destructive"}`}>{reportTestMsg.text}</span>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <select
-              value={reportTestKind}
-              onChange={(e) => setReportTestKind(e.target.value as WeeklyReportKey)}
-              className="rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-foreground"
-            >
-              {WEEKLY_REPORTS.map((r) => (
-                <option key={r.key} value={r.key}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-            <input
-              type="text"
-              value={reportTestEmail}
-              onChange={(e) => setReportTestEmail(e.target.value)}
-              placeholder="recipient@example.com (comma-separated for several)"
-              className="min-w-[280px] flex-1 rounded-md border border-border bg-background/70 px-3 py-2 text-sm text-foreground"
-            />
-            <button
-              type="button"
-              onClick={sendReportTest}
-              disabled={reportTestSending || !reportTestEmail.trim()}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-            >
-              {reportTestSending ? "Sending…" : `Send ${selectedReport.label} test`}
-            </button>
-          </div>
-        </section>
+        <ReportTestSendPanel />
 
         <section>
           <div className="mb-3">

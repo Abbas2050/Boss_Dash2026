@@ -45,6 +45,7 @@ import { startAllReportSchedulers } from './reports/schedulers.js';
 import {
   parseTestRecipients,
   makeReportTestSendHandler,
+  makeCadenceRunner,
 } from './reports/testSendRequest.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1111,25 +1112,36 @@ function adminOnly(req, res, next) {
 // scheduled send is being rehearsed; omitting it keeps the weekly default this
 // route has always had. Six of the nine scheduled reports were previously
 // impossible to test-send at their real cadence.
+//
+// `allowPeriod` additionally accepts a from/to window INSTEAD of a cadence --
+// all five run functions already take fromDate/toDate. Cadence and period never
+// combine: the shared handler 400s cadence_period_conflict.
 app.post(
   '/api/reports/slippage-weekly/test',
   authRequired,
   adminOnly,
-  makeReportTestSendHandler({ run: runSlippageEmailReport }),
+  makeReportTestSendHandler({ run: runSlippageEmailReport, allowPeriod: true }),
 );
 
-// On-demand test send of the Weekly Business Summary (admin-only).
-app.post('/api/reports/summary-weekly/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  try {
-    const result = await runWeeklyBusinessSummary({ recipients });
-    res.json(result);
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+// On-demand test send of the Business Summary (admin-only).
+//
+// Unlike the two dealing reports, this family is three separate run functions
+// rather than one that takes a cadence, so the cadence is resolved to a runner
+// by makeCadenceRunner. No cadence in the body still means runWeeklyBusinessSummary
+// with recipients only, which is exactly what this route did before.
+app.post(
+  '/api/reports/summary-weekly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({
+    run: makeCadenceRunner({
+      daily: runDailyDigest,
+      weekly: runWeeklyBusinessSummary,
+      monthly: runMonthlyReview,
+    }),
+    allowPeriod: true,
+  }),
+);
 
 // On-demand test send of the Daily Digest (admin-only). Same contract as the
 // weekly routes: body recipients only, no env fallback, so a green test send
@@ -1165,7 +1177,7 @@ app.post(
   '/api/reports/dealmatch-weekly/test',
   authRequired,
   adminOnly,
-  makeReportTestSendHandler({ run: runDealMatchEmailReport }),
+  makeReportTestSendHandler({ run: runDealMatchEmailReport, allowPeriod: true }),
 );
 
 // Send a monthly for a period chosen by the caller. The four other test routes

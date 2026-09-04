@@ -74,6 +74,35 @@ export function parseTestCadence(body) {
  * test send could fall back to SLIPPAGE_ALERT_RECIPIENTS, a green test would
  * imply the scheduled run has somewhere to go when it may have nowhere.
  */
+/**
+ * Fans one cadence-aware route out across a FAMILY OF SEPARATE RUN FUNCTIONS.
+ *
+ * The two dealing reports take `cadence` as an argument, so a single run
+ * function covers all three cadences and this is not needed for them. The
+ * Business Summary family is not built that way: its daily, weekly and monthly
+ * sends are three different modules producing three different emails
+ * (runDailyDigest, runWeeklyBusinessSummary, runMonthlyReview), and none of the
+ * three accepts a `cadence` argument at all -- see reports/schedulers.js, where
+ * each is registered as its own scheduled job. There is no single runner to
+ * pass a cadence to, so the cadence is resolved to a runner HERE rather than
+ * pretending the family has the shape the dealing reports have.
+ *
+ * `cadence` is consumed, not forwarded: the three runners would ignore it, and
+ * dropping it keeps "what reached the runner" an exact assertion in tests.
+ *
+ * The default matters as much as the mapping. With no cadence in the body this
+ * must call the weekly runner with recipients and nothing else, because that is
+ * literally what /api/reports/summary-weekly/test did before it accepted a
+ * cadence at all.
+ */
+export function makeCadenceRunner(runners, { defaultCadence = "weekly" } = {}) {
+  return function runForCadence({ cadence = defaultCadence, ...rest } = {}) {
+    const run = runners[cadence];
+    if (!run) throw new Error(`no runner registered for cadence "${cadence}"`);
+    return run(rest);
+  };
+}
+
 export function makeReportTestSendHandler({ run, cadence: fixedCadence, allowPeriod = false }) {
   return async function reportTestSendHandler(req, res) {
     const recipients = parseTestRecipients(req.body);

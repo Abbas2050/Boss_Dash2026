@@ -9,6 +9,7 @@ import {
   parseTestCadence,
   parseTestRecipients,
   makeReportTestSendHandler,
+  makeCadenceRunner,
   VALID_CADENCES,
 } from "./testSendRequest.js";
 import { CADENCES } from "./reportShared.js";
@@ -272,6 +273,89 @@ describe("makeReportTestSendHandler -- fixed-cadence monthly backfill routes", (
   });
 });
 
+// The Business Summary family is three separate run functions, not one that
+// takes a cadence, so the cadence-to-runner mapping is the thing to test: a
+// request for the monthly review must not quietly rehearse the weekly summary.
+describe("makeCadenceRunner -- the Business Summary family", () => {
+  const runners = () => ({
+    daily: fakeRun({ ok: true, which: "daily" }),
+    weekly: fakeRun({ ok: true, which: "weekly" }),
+    monthly: fakeRun({ ok: true, which: "monthly" }),
+  });
+
+  const summaryHandler = (map) =>
+    makeReportTestSendHandler({ run: makeCadenceRunner(map), allowPeriod: true });
+
+  it.each(["daily", "weekly", "monthly"])("routes cadence %s to that cadence's own runner, and to no other", async (cadence) => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)({ body: { recipients: RECIPIENTS, cadence } }, res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true, which: cadence });
+    for (const [key, run] of Object.entries(map)) {
+      expect(run).toHaveBeenCalledTimes(key === cadence ? 1 : 0);
+    }
+  });
+
+  it("hands the runner recipients only -- the cadence is consumed here, not forwarded to a runner that has no use for it", async () => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)({ body: { recipients: RECIPIENTS, cadence: "monthly" } }, res);
+    expect(map.monthly.mock.calls[0][0]).toEqual({ recipients: RECIPIENTS });
+  });
+
+  it("with no cadence, calls the WEEKLY runner with recipients only -- exactly what this route did before it took a cadence", async () => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)({ body: { recipients: RECIPIENTS } }, res);
+
+    expect(map.weekly).toHaveBeenCalledTimes(1);
+    expect(map.weekly.mock.calls[0][0]).toEqual({ recipients: RECIPIENTS });
+    expect(map.daily).not.toHaveBeenCalled();
+    expect(map.monthly).not.toHaveBeenCalled();
+  });
+
+  it("passes a caller-chosen from/to window through to the default runner", async () => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)(
+      { body: { recipients: RECIPIENTS, from: "2026-08-01", to: "2026-08-31" } },
+      res,
+    );
+    const args = map.weekly.mock.calls[0][0];
+    expect(args.fromDate.toISOString()).toBe("2026-08-01T00:00:00.000Z");
+    expect(args.toDate.toISOString()).toBe("2026-08-31T23:59:59.000Z");
+    expect("cadence" in args).toBe(false);
+  });
+
+  it("400s a cadence sent alongside a period, and no runner is called at all", async () => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)(
+      { body: { recipients: RECIPIENTS, cadence: "daily", from: "2026-08-01", to: "2026-08-31" } },
+      res,
+    );
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toBe("cadence_period_conflict");
+    for (const run of Object.values(map)) expect(run).not.toHaveBeenCalled();
+  });
+
+  it("400s an unknown cadence at the handler, so a missing runner never becomes a 502", async () => {
+    const map = runners();
+    const res = fakeRes();
+    await summaryHandler(map)({ body: { recipients: RECIPIENTS, cadence: "quarterly" } }, res);
+    expect(res.statusCode).toBe(400);
+    expect(res.body.error).toBe("bad_cadence");
+    for (const run of Object.values(map)) expect(run).not.toHaveBeenCalled();
+  });
+
+  it("throws rather than silently sending something else when a family has no runner for a cadence", () => {
+    const partial = makeCadenceRunner({ weekly: fakeRun() });
+    expect(() => partial({ cadence: "daily", recipients: RECIPIENTS })).toThrow(/daily/);
+  });
+});
+
 // The gate itself lives in server.js (it needs canManageUsers), so it is
 // checked the way auth/routeCoverage.test.js checks routes: by reading the
 // source. Booting the app to assert it is not an option here -- see the header.
@@ -297,7 +381,17 @@ describe("admin gating on the report test-send routes", () => {
   });
 
   it("keeps the cadence-aware routes on the shared handler", () => {
-    expect(SERVER).toMatch(/'\/api\/reports\/slippage-weekly\/test',[\s\S]{0,120}makeReportTestSendHandler\(\{ run: runSlippageEmailReport \}\)/);
-    expect(SERVER).toMatch(/'\/api\/reports\/dealmatch-weekly\/test',[\s\S]{0,120}makeReportTestSendHandler\(\{ run: runDealMatchEmailReport \}\)/);
+    expect(SERVER).toMatch(/'\/api\/reports\/slippage-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runSlippageEmailReport, allowPeriod: true \}\)/);
+    expect(SERVER).toMatch(/'\/api\/reports\/dealmatch-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runDealMatchEmailReport, allowPeriod: true \}\)/);
+  });
+
+  it("puts the Business Summary route on the same handler, fanned out over its three runners", () => {
+    const registration = SERVER.slice(SERVER.indexOf("'/api/reports/summary-weekly/test'"));
+    const body = registration.slice(0, registration.indexOf("));") + 3);
+    expect(body).toContain("makeReportTestSendHandler");
+    expect(body).toContain("makeCadenceRunner");
+    expect(body).toMatch(/daily: runDailyDigest/);
+    expect(body).toMatch(/weekly: runWeeklyBusinessSummary/);
+    expect(body).toMatch(/monthly: runMonthlyReview/);
   });
 });
