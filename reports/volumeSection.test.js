@@ -4,7 +4,7 @@
 // reach backendFetch(), which calls AbortSignal.timeout() -- the same reason
 // backendFetch.test.js opts out.
 //
-// The MT5 Volume Funnel. Three things here are worth more than the rest:
+// The MT5 volume section. Three things here are worth more than the rest:
 //
 //   1. A missing scalar must render a dash, never 0.00. Two of the ten figures
 //      are not on the confirmed-under-lite=true list, so this is the case that
@@ -69,66 +69,96 @@ const LIVE_0902 = {
   totalMatchedLots: 356.76,
 };
 
-// ── HTML readers ─────────────────────────────────────────────────────────────
+// 2026-09-03, read off the live DealMatch/Run response, and the day the rebuilt
+// section is asserted against: 296.09 deal lots, 260.25 of them to the bridge,
+// 259.95 matched. Those are 87.9% and 87.8%, which BOTH print as 88% -- which is
+// why the guard reads the unrounded share and not the text.
+//
+// Realized was 56.76 that day, all of it CFD. Shifting was genuinely zero on
+// both axes, so this fixture is also where "a real zero is 0.00" is asserted
+// against figures that were actually sent rather than constructed.
+const LIVE_0903 = {
+  totalMt5DealLots: 296.09,
+  totalShiftingMt5DealLots: 0,
+  totalShiftingRealizedLots: 0,
+  totalRealizedLotsCfd: 56.76,
+  totalRealizedLotsEquity: 0,
+  totalBridgeLots: 260.25,
+  totalMatchedLots: 259.95,
+};
 
-const funnelOf = (html) => html.slice(0, html.indexOf("Volume Breakdown"));
+// ── HTML readers ─────────────────────────────────────────────────
+
+const flowOf = (html) => html.slice(0, html.indexOf("Volume Breakdown"));
 const breakdownOf = (html) => html.slice(html.indexOf("Volume Breakdown"));
 
-// A funnel stage, read by its label. The bar cell holds a nested table, so the
-// cells are addressed by their vf-* marker classes rather than by counting
-// </td> boundaries.
+// One table.data row, addressed by the value of its first cell. Both tables are
+// built the same way, so one reader serves both.
 //
-// The anchor is the vf-label cell specifically, not the bare label text. That
-// is what makes "X is not a funnel stage" a structural claim: a figure rendered
-// anywhere else in the section — Realized's headline, a breakdown row — has no
-// vf-label, so it is invisible to this reader no matter how its label is worded.
-function stage(html, label) {
-  const at = html.search(new RegExp(`<td class="vf-label"[^>]*>${label}</td>`));
+// The anchor is a `<span class="val">` specifically — the visible value of a
+// cell, never a `<span class="lbl">` column label — so "X is not a flow row"
+// stays a structural claim: a figure rendered in the other table is invisible to
+// a reader pointed at this one no matter how its label is worded.
+function row(html, key) {
+  const at = html.indexOf(`<span class="val">${key}</span>`);
   if (at === -1) return null;
-  const rest = html.slice(at);
-  const cell = (cls) => {
-    const m = new RegExp(`<td class="${cls}"[^>]*>([\\s\\S]*?)</td>`).exec(rest);
-    return m ? m[1].trim() : null;
-  };
-  const barAt = rest.indexOf('class="vf-bar"');
-  const valueAt = rest.indexOf('class="vf-value"');
+  const end = html.indexOf("</tr>", at);
+  return html.slice(at, end === -1 ? html.length : end);
+}
+
+// One cell of a row, by its column label.
+function cellOf(rowHtml, column) {
+  if (rowHtml === null) return null;
+  const idx = rowHtml.indexOf(`data-label="${column}"`);
+  if (idx === -1) return null;
+  const open = rowHtml.indexOf('<span class="val', idx);
+  const gt = rowHtml.indexOf(">", open);
+  return rowHtml.slice(gt + 1, rowHtml.indexOf("</span>", gt)).trim();
+}
+
+// A flow row: its lots, the percentage a reader sees, and the unrounded share
+// behind that percentage. The share is read separately because the printed one
+// is rounded to a whole number and would hide a one-point inversion — the same
+// reason the guard used to measure bar widths rather than the printed text.
+function stage(html, label) {
+  const r = row(html, label);
+  if (r === null) return null;
+  const printed = /<span class="vs" data-share="[^"]*">([\s\S]*?)<\/span>/.exec(r);
+  const exact = /data-share="([^"]*)"/.exec(r);
   return {
-    value: cell("vf-value"),
-    pct: cell("vf-pct"),
-    hasBar: barAt !== -1 && valueAt > barAt && rest.slice(barAt, valueAt).includes("<table"),
+    value: cellOf(r, "Lots"),
+    pct: printed ? printed[1].trim() : null,
+    share: exact && exact[1] !== "" ? Number(exact[1]) : null,
   };
 }
 
 // One cell of a breakdown row, by bucket name and column label.
-function breakdownCell(html, bucket, column) {
-  const at = html.indexOf(`<span class="val">${bucket}</span>`);
-  if (at === -1) return null;
-  const idx = html.indexOf(`data-label="${column}"`, at);
-  if (idx === -1) return null;
-  const open = html.indexOf('<span class="val', idx);
-  const gt = html.indexOf(">", open);
-  return html.slice(gt + 1, html.indexOf("</span>", gt)).trim();
-}
+const breakdownCell = (html, bucket, column) => cellOf(row(html, bucket), column);
 
-const barCount = (html) => (html.match(/table-layout:fixed/g) || []).length;
-
-// Every funnel stage in document order, with the share its bar actually draws.
-//
-// The bar width is read rather than the printed percentage because the printed
-// one is rounded to a whole number and would hide a one-point inversion. The
-// Total row draws a full bar, so its width is the 100% the rest are shares of.
+// Every flow row in document order.
 function stageLabels(html) {
-  return [...html.matchAll(/<td class="vf-label"[^>]*>([^<]*)</g)].map((m) => m[1]);
+  return [...html.matchAll(/data-label="Stage"[^>]*>[\s\S]*?<span class="val">([^<]*)<\/span>/g)].map((m) => m[1]);
 }
 
+// The shares the flow table actually renders, in document order. The
+// denominator row carries 100 even though it prints no percentage, so the
+// sequence starts where the reader's eye does.
 function stageShares(html) {
-  // Bounded by the vf-value cell that always follows, because a stage with no
-  // bar has an empty cell and "up to the next </table>" would run past its row.
-  return [...html.matchAll(/<td class="vf-bar"[^>]*>([\s\S]*?)<td class="vf-value"/g)].map((m) => {
-    const w = /<td width="(\d+\.\d)%"/.exec(m[1]);
-    return w ? Number(w[1]) : null;
-  });
+  return [...html.matchAll(/data-share="([^"]*)"/g)].map((m) => (m[1] === "" ? null : Number(m[1])));
 }
+
+// A bar was a nested <table role="presentation"> with table-layout:fixed inside
+// a vf-bar cell. Nothing in the section may build one again.
+function barMarkup(html) {
+  return {
+    presentationTables: (html.match(/role="presentation"/g) || []).length,
+    fixedLayouts: (html.match(/table-layout:fixed/g) || []).length,
+    barCells: (html.match(/vf-bar/g) || []).length,
+  };
+}
+
+// The tables the section renders, by class attribute.
+const tableClasses = (html) => [...html.matchAll(/<table([^>]*)>/g)].map((m) => m[1].trim());
 
 // ── 1. extraction ────────────────────────────────────────────────────────────
 
@@ -220,20 +250,40 @@ describe("a genuine zero", () => {
 
   it("renders 0.00, not a dash", () => {
     const html = renderVolumeSection(extractVolume(ZERO));
-    expect(stage(funnelOf(html), "Matched Lots").value).toBe("0.00");
-    expect(stage(funnelOf(html), "Matched Lots").value).not.toBe("&mdash;");
+    expect(stage(flowOf(html), "Matched Lots").value).toBe("0.00");
+    expect(stage(flowOf(html), "Matched Lots").value).not.toBe("&mdash;");
     expect(breakdownCell(breakdownOf(html), "Internal", "Realized")).toBe("0.00");
   });
 
-  it("still draws the stage's track, so an empty bar and an absent bar differ", () => {
-    expect(stage(funnelOf(renderVolumeSection(extractVolume(ZERO))), "Matched Lots").hasBar).toBe(true);
+  // A zero and an absence must not look alike. With the bars gone, the share
+  // column is what tells them apart: a genuine zero is 0% of a real total, an
+  // unreadable value is a dash on both axes.
+  it("stays distinguishable from an absent value", () => {
+    const zero = stage(flowOf(renderVolumeSection(extractVolume(ZERO))), "Matched Lots");
+    expect(zero.value).toBe("0.00");
+    expect(zero.pct).toBe("0%");
+
+    const { totalMatchedLots: _dropped, ...missing } = PAYLOAD;
+    const absent = stage(flowOf(renderVolumeSection(extractVolume(missing))), "Matched Lots");
+    expect(absent.value).toBe("&mdash;");
+    expect(absent.pct).toBe("&mdash;");
+  });
+
+  // 2026-09-03 had no shifting activity at all: both figures were sent as zero,
+  // not omitted. They must read 0.00.
+  it("renders the live 2026-09-03 shifting zeros as 0.00", () => {
+    const html = breakdownOf(renderVolumeSection(extractVolume(LIVE_0903)));
+    expect(breakdownCell(html, "Shifting", "Deals")).toBe("0.00");
+    expect(breakdownCell(html, "Shifting", "Realized")).toBe("0.00");
+    expect(breakdownCell(html, "Shifting", "Deals")).not.toBe("&mdash;");
+    expect(breakdownCell(html, "Shifting", "Realized")).not.toBe("&mdash;");
   });
 });
 
 // ── 4. percentages ───────────────────────────────────────────────────────────
 
-describe("funnel percentages", () => {
-  const html = funnelOf(renderVolumeSection(extractVolume(PAYLOAD)));
+describe("flow percentages", () => {
+  const html = flowOf(renderVolumeSection(extractVolume(PAYLOAD)));
 
   it("are the documented 4% / 2% of deal volume", () => {
     expect(stage(html, "Bridge Lots").pct).toBe("4%");
@@ -251,16 +301,21 @@ describe("funnel percentages", () => {
   });
 });
 
-// ── 4b. the funnel only narrows ──────────────────────────────────────────────
+// ── 4b. the flow table only narrows ──────────────────────────────────────────
 
-// This is the regression test for the defect. The original funnel put Realized
+// This is the regression test for the defect. The original section put Realized
 // between Total and Bridge, and on 2026-09-02 that drew a third bar wider than
-// the second — a shape that asserts a sequence which does not exist. Every stage
+// the second — a shape that asserts a sequence which does not exist. Every row
 // must be a share of the one above it, so the shares can only fall.
 //
-// Reinstating Realized (or any other non-routing metric) as a stage fails this.
-describe("the funnel narrows at every stage", () => {
-  const shares = (payload) => stageShares(funnelOf(renderVolumeSection(extractVolume(payload))));
+// The bars are gone, so the guard reads the rendered share column instead of
+// measuring widths. It reads the unrounded data-share rather than the printed
+// percentage because the printed one is a whole number: on 2026-09-03 both 87.9
+// and 87.8 print as 88%, and an inversion smaller than a point would vanish.
+//
+// Reinstating Realized (or any other non-routing metric) as a row fails this.
+describe("the flow table narrows at every row", () => {
+  const shares = (payload) => stageShares(flowOf(renderVolumeSection(extractVolume(payload))));
 
   it("never widens on the live 2026-09-02 figures that exposed the defect", () => {
     const drawn = shares(LIVE_0902);
@@ -270,6 +325,21 @@ describe("the funnel narrows at every stage", () => {
     }
   });
 
+  it("never widens on the live 2026-09-03 figures either", () => {
+    const drawn = shares(LIVE_0903);
+    expect(drawn).toEqual([100, 87.9, 87.8]); // 296.09 → 260.25 → 259.95
+    for (let i = 1; i < drawn.length; i += 1) {
+      expect(drawn[i]).toBeLessThanOrEqual(drawn[i - 1]);
+    }
+  });
+
+  it("prints that as a column of percentages that never climbs", () => {
+    const html = flowOf(renderVolumeSection(extractVolume(LIVE_0903)));
+    expect(stage(html, "Total MT5 Deals").pct).toBe(""); // the denominator itself
+    expect(stage(html, "Bridge Lots").pct).toBe("88%");
+    expect(stage(html, "Matched Lots").pct).toBe("88%");
+  });
+
   it("never widens on the reference payload either", () => {
     const drawn = shares(PAYLOAD);
     for (let i = 1; i < drawn.length; i += 1) {
@@ -277,35 +347,48 @@ describe("the funnel narrows at every stage", () => {
     }
   });
 
-  it("draws exactly the three routing stages, in routing order", () => {
-    const html = funnelOf(renderVolumeSection(extractVolume(LIVE_0902)));
+  it("lists exactly the three routing rows, in routing order", () => {
+    const html = flowOf(renderVolumeSection(extractVolume(LIVE_0902)));
     expect(stageLabels(html)).toEqual(["Total MT5 Deals", "Bridge Lots", "Matched Lots"]);
   });
 });
 
-// ── 4c. Realized is a parallel measure, not a stage ──────────────────────────
+// ── 4c. Realized is a parallel measure, not a step in the flow ───────────
 
 describe("Realized", () => {
-  const html = funnelOf(renderVolumeSection(extractVolume(PAYLOAD)));
+  const flow = flowOf(renderVolumeSection(extractVolume(PAYLOAD)));
+  const breakdown = breakdownOf(renderVolumeSection(extractVolume(PAYLOAD)));
 
   it("is still rendered, with its total and its CFD / Equity split", () => {
-    expect(html).toMatch(/<td class="vr-value"[^>]*>99,526\.60<\/td>/);
-    expect(html).toMatch(/<td class="vr-split"[^>]*>1,400\.60 \/ 98,126\.00<\/td>/);
+    expect(breakdownCell(breakdown, "Realized", "Realized")).toBe("99,526.60");
+    expect(breakdownCell(breakdown, "CFD / Equity split", "Realized")).toBe("1,400.60 / 98,126.00");
   });
 
-  // Structural, not a reading of the prose: a stage is a row carrying a
-  // vf-label cell, so this stays true through any rewording of the captions.
-  it("is not one of the funnel stages", () => {
-    expect(stage(html, "Realized")).toBeNull();
-    expect(stageLabels(html)).not.toContain("Realized");
-    expect(stageLabels(html)).toHaveLength(3);
+  // The live figures for 2026-09-03. Realized reconciles with ClientVolume/Run
+  // and is one of the two numbers this section exists to report, so it leads the
+  // breakdown table — but it is on a different axis from where the flow was
+  // routed, so it must not appear in the flow table at all.
+  it("leads the breakdown table on the live 2026-09-03 figures, and is absent from the flow table", () => {
+    const html = renderVolumeSection(extractVolume(LIVE_0903));
+    expect(breakdownCell(breakdownOf(html), "Realized", "Realized")).toBe("56.76");
+    expect(breakdownCell(breakdownOf(html), "CFD / Equity split", "Realized")).toBe("56.76 / 0.00");
+    expect(flowOf(html)).not.toMatch(/Realized/);
+    expect(flowOf(html)).not.toMatch(/56\.76/);
+  });
+
+  // Structural, not a reading of the prose: a flow row is a row carrying a Stage
+  // cell, so this stays true through any rewording of the labels.
+  it("is not one of the flow rows", () => {
+    expect(stage(flow, "Realized")).toBeNull();
+    expect(stageLabels(flow)).not.toContain("Realized");
+    expect(stageLabels(flow)).toHaveLength(3);
   });
 
   it("still renders a dash, never 0.00, when the backend sent neither half", () => {
     const { totalRealizedLotsCfd, totalRealizedLotsEquity, ...noRealized } = PAYLOAD;
-    const bare = funnelOf(renderVolumeSection(extractVolume(noRealized)));
-    expect(/<td class="vr-value"[^>]*>([\s\S]*?)<\/td>/.exec(bare)[1]).toBe("&mdash;");
-    expect(/<td class="vr-split"[^>]*>([\s\S]*?)<\/td>/.exec(bare)[1]).toBe("&mdash;");
+    const bare = breakdownOf(renderVolumeSection(extractVolume(noRealized)));
+    expect(breakdownCell(bare, "Realized", "Realized")).toBe("&mdash;");
+    expect(breakdownCell(bare, "CFD / Equity split", "Realized")).toBe("&mdash;");
   });
 });
 
@@ -319,7 +402,7 @@ describe("a zero or missing Total MT5 Deals", () => {
 
   for (const [name, payload] of cases) {
     it(`yields a dash for every percentage when the total is ${name}`, () => {
-      const html = funnelOf(renderVolumeSection(extractVolume(payload)));
+      const html = flowOf(renderVolumeSection(extractVolume(payload)));
       for (const label of ["Bridge Lots", "Matched Lots"]) {
         expect(stage(html, label).pct).toBe("&mdash;");
       }
@@ -329,30 +412,49 @@ describe("a zero or missing Total MT5 Deals", () => {
       const html = renderVolumeSection(extractVolume(payload));
       expect(html).not.toMatch(/NaN/);
       expect(html).not.toMatch(/Infinity/);
-      expect(funnelOf(html)).not.toMatch(/>0%</);
+      expect(flowOf(html)).not.toMatch(/>0%</);
     });
   }
 });
 
-// ── 6. an unavailable stage draws no bar ─────────────────────────────────────
+// ── 6. there are no bars, and an unavailable row keeps its place ──────────
+//
+// The bars are gone. They were nested <table role="presentation"> blocks inside
+// a vf-bar cell, sized by inline widths and marked with class names no shell
+// stylesheet defines — and on the morning of 2026-09-04 the reader opened the
+// Daily Digest on a phone in Zoho and saw the two headings with no figures under
+// them. These assertions replace the ones that used to count bars.
 
-describe("bars", () => {
-  it("draws one per stage when every stage has a value", () => {
-    expect(barCount(funnelOf(renderVolumeSection(extractVolume(PAYLOAD))))).toBe(3);
+describe("the section draws no bars", () => {
+  it("builds no nested presentation table and keeps no vf-bar cell", () => {
+    for (const payload of [PAYLOAD, LIVE_0903, {}]) {
+      const m = barMarkup(renderVolumeSection(extractVolume(payload)));
+      expect(m.presentationTables).toBe(0);
+      expect(m.fixedLayouts).toBe(0);
+      expect(m.barCells).toBe(0);
+    }
   });
 
-  // Bridge and Matched are the two stages that can go missing — Total is a sum
-  // of fields the funnel cannot be drawn without at all.
+  // This is the regression. The section did not render because it was built out
+  // of markup no shell styles; the one part that did render was the breakdown,
+  // which was already table.data. Both tables must now be that same class.
+  it("builds both tables as table.data, the class the rest of the report uses", () => {
+    const classes = tableClasses(renderVolumeSection(extractVolume(PAYLOAD)));
+    expect(classes).toEqual(['class="data narrow"', 'class="data narrow"']);
+    expect(tableClasses(renderVolumeSection(extractVolume(PAYLOAD), { theme: "dark" }))).toEqual(classes);
+  });
+
+  // Bridge and Matched are the two rows that can go missing — Total is a sum of
+  // fields the table cannot be drawn without at all.
   for (const [label, field] of [["Bridge Lots", "totalBridgeLots"], ["Matched Lots", "totalMatchedLots"]]) {
-    it(`draws none for ${label} when its value is unavailable`, () => {
+    it(`keeps ${label}'s row, dashed on both axes, when its value is unavailable`, () => {
       const { [field]: _dropped, ...missing } = PAYLOAD;
-      const html = funnelOf(renderVolumeSection(extractVolume(missing)));
+      const html = flowOf(renderVolumeSection(extractVolume(missing)));
       expect(stage(html, label).value).toBe("&mdash;");
       expect(stage(html, label).pct).toBe("&mdash;");
-      expect(stage(html, label).hasBar).toBe(false);
-      expect(barCount(html)).toBe(2);
+      expect(stage(html, label).share).toBeNull();
       expect(html).not.toMatch(/NaN/);
-      expect(stageLabels(html)).toHaveLength(3); // the row stays, only the bar goes
+      expect(stageLabels(html)).toHaveLength(3); // the row stays
     });
   }
 });
@@ -364,22 +466,22 @@ describe("internal accounts", () => {
 
   // totalInternalAccountLots is a separate bucket, not a subset of client lots
   // (docs/dealing-reporting.md §4): internal logins do not appear in
-  // clientRevenueSummaries at all. Drawing it as a funnel stage would assert a
+  // clientRevenueSummaries at all. Listing it as a flow row would assert a
   // containment that does not hold. This test exists so nobody later
-  // "completes" the funnel with it.
+  // "completes" the flow table with it.
   it("appear in the breakdown", () => {
     expect(breakdownCell(breakdownOf(html), "Internal", "Deals")).toBe("512.40");
     expect(breakdownCell(breakdownOf(html), "Internal", "Realized")).toBe("250.00");
   });
 
-  it("are not a funnel stage", () => {
-    expect(stage(funnelOf(html), "Internal Deals")).toBeNull();
-    expect(stage(funnelOf(html), "Internal")).toBeNull();
-    expect(funnelOf(html)).not.toMatch(/Internal/);
+  it("are not a flow row", () => {
+    expect(stage(flowOf(html), "Internal Deals")).toBeNull();
+    expect(stage(flowOf(html), "Internal")).toBeNull();
+    expect(flowOf(html)).not.toMatch(/Internal/);
   });
 
-  it("leaves the funnel with exactly the three stages it is supposed to have", () => {
-    expect(stageLabels(funnelOf(html))).toEqual(["Total MT5 Deals", "Bridge Lots", "Matched Lots"]);
+  it("leaves the flow table with exactly the three rows it is supposed to have", () => {
+    expect(stageLabels(flowOf(html))).toEqual(["Total MT5 Deals", "Bridge Lots", "Matched Lots"]);
   });
 });
 
@@ -400,10 +502,12 @@ describe("email-safe markup", () => {
     }
   });
 
-  it("builds its bars as nested tables with percentage widths and a background", () => {
-    const html = renderVolumeSection(extractVolume(PAYLOAD));
-    expect(html).toMatch(/<table role="presentation"[^>]*table-layout:fixed;"><tr><td width="\d+\.\d%"/);
-    expect(html).toMatch(/background:#b45309/); // the Bridge Lots bar's fill
+  it("adds no table markup of its own beyond the two data tables", () => {
+    for (const html of samples) {
+      expect(html).not.toMatch(/role="presentation"/);
+      expect(html).not.toMatch(/table-layout:fixed/);
+      expect(html).not.toMatch(/<table(?! class="data narrow">)/);
+    }
   });
 
   it("writes each HTML entity once, never double-escaped", () => {
@@ -499,13 +603,13 @@ describe("the Slippage report when DealMatch/Run fails", () => {
     await runSlippageEmailReport({ ...PERIOD, recipients: ["ops@example.com"] });
 
     const html = sent[0].htmlContent;
-    expect(html).toMatch(/MT5 Volume Funnel/);
+    expect(html).toMatch(/MT5 Volume Flow/);
     expect(html).toMatch(/Volume data was unavailable/);
     expect(html).toMatch(/DealMatch\/Run HTTP 500/);
     expect(html).not.toMatch(/203,109\.22/); // no invented figures
   });
 
-  it("renders the funnel when the call succeeds", async () => {
+  it("renders the flow table when the call succeeds", async () => {
     const { runSlippageEmailReport } = await import("./slippageWeeklyReport.js");
     const { urls, sent } = stubFetch();
 
@@ -514,7 +618,7 @@ describe("the Slippage report when DealMatch/Run fails", () => {
     expect(result.ok).toBe(true);
     expect(dealMatchCalls(urls)).toBe(1); // the one new call this report is allowed
     expect(sent[0].htmlContent).toMatch(/203,109\.22/);
-    expect(sent[0].htmlContent).toMatch(/>4%</); // Bridge Lots, the first stage carrying one
+    expect(sent[0].htmlContent).toMatch(/>4%</); // Bridge Lots, the first row carrying one
   });
 });
 
@@ -527,8 +631,8 @@ describe("no report gains an extra DealMatch/Run call", () => {
 
     expect(result.ok).toBe(true);
     expect(dealMatchCalls(urls)).toBe(1);
-    // ...and it is the same response that fed the funnel, not a second one.
-    expect(sent[0].htmlContent).toMatch(/MT5 Volume Funnel/);
+    // ...and it is the same response that fed the section, not a second one.
+    expect(sent[0].htmlContent).toMatch(/MT5 Volume Flow/);
     expect(sent[0].htmlContent).toMatch(/203,109\.22/);
   });
 
@@ -540,7 +644,7 @@ describe("no report gains an extra DealMatch/Run call", () => {
 
     expect(result.ok).toBe(true);
     expect(dealMatchCalls(urls)).toBe(1);
-    expect(sent[0].htmlContent).toMatch(/MT5 Volume Funnel/);
+    expect(sent[0].htmlContent).toMatch(/MT5 Volume Flow/);
     expect(sent[0].htmlContent).toMatch(/203,109\.22/);
   });
 });
@@ -582,7 +686,7 @@ describe("every figure is explained inline", () => {
 
   it("pairs every rendered figure with an explanation, and every explanation with a figure", () => {
     expect(figKeys(html)).toEqual(expKeys(html));
-    // Realized, its CFD/Equity split, the three funnel stages, and the three
+    // Realized, its CFD/Equity split, the three flow rows, and the three
     // breakdown buckets. Named so that adding a figure without a line fails
     // here rather than shipping an unexplained number.
     expect(figKeys(html)).toEqual([
@@ -590,7 +694,7 @@ describe("every figure is explained inline", () => {
     ]);
   });
 
-  it("explains each funnel stage next to the stage itself", () => {
+  it("explains each flow row next to the figure itself", () => {
     for (const key of ["totalDeals", "bridge", "matched"]) {
       const fig = html.indexOf(`data-fig="${key}"`);
       const exp = html.indexOf(`data-exp="${key}"`);
@@ -617,11 +721,10 @@ describe("an unavailable figure keeps its explanation", () => {
     expect(figKeys(html)).toEqual(expKeys(html));
   });
 
-  it("still explains the two stages that render a dash and draw no bar", () => {
+  it("still explains the two rows that render a dash", () => {
     const { totalBridgeLots, totalMatchedLots, ...missing } = PAYLOAD;
-    const html = funnelOf(renderVolumeSection(extractVolume(missing)));
+    const html = flowOf(renderVolumeSection(extractVolume(missing)));
     expect(stage(html, "Bridge Lots").value).toBe("&mdash;");
-    expect(stage(html, "Bridge Lots").hasBar).toBe(false);
     expect(html).toMatch(/data-exp="bridge"/);
     expect(html).toMatch(/data-exp="matched"/);
   });
@@ -667,7 +770,7 @@ describe("every report family renders the volume section", () => {
   ];
 
   for (const [name, load] of families) {
-    it(`${name} sends the funnel, its figures and its explanations`, async () => {
+    it(`${name} sends the section, its figures and its explanations`, async () => {
       const run = await load();
       const { sent } = stubFetch();
 
@@ -676,7 +779,7 @@ describe("every report family renders the volume section", () => {
       expect(result.ok).toBe(true);
       expect(sent).toHaveLength(1);
       const html = sent[0].htmlContent;
-      expect(html).toMatch(/MT5 Volume Funnel/);
+      expect(html).toMatch(/MT5 Volume Flow/);
       expect(html).toMatch(/203,109\.22/); // the figures, not just the heading
       expect(figKeys(html)).toEqual(expKeys(html)); // and the lines beside them
       expect(expKeys(html)).toHaveLength(8);

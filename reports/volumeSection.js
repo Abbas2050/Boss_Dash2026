@@ -1,4 +1,4 @@
-// The MT5 Volume Funnel — one section, mounted by all three report families.
+// The MT5 volume section — one section, mounted by all three report families.
 //
 // WHY IT EXISTS: the ten lot metrics on the Deal Matching tab appear nowhere in
 // the emails, and the single most useful fact about the week's volume is
@@ -72,7 +72,7 @@ export function extractVolume(report) {
 
   return {
     // Deal lots count every MT5 deal, so a round trip appears twice. This is the
-    // denominator for every percentage in the funnel.
+    // denominator for every percentage in the flow table.
     totalDeals: sumOrNull(clientDeals, shiftingDeals),
     clientDeals,
     shiftingDeals,
@@ -93,25 +93,16 @@ export function extractVolume(report) {
 
 // ── rendering ────────────────────────────────────────────────────────────────
 
-// Only the text and track colours differ between the three shells; the bar fills
-// are the same in both, because they are read as categories rather than as part
-// of the surrounding palette.
+// Only the muted text colour differs between the three shells. Nothing else in
+// the section needs a colour of its own any more: every figure now sits in a
+// table.data cell, and all three shells already style those for their theme.
+//
+// There used to be a track colour and a palette of stage colours here, for bars
+// drawn as nested tables. They are gone — see the note above renderVolumeSection.
 const THEMES = {
-  light: { muted: "#64748b", track: "#e8eef6" },
-  dark: { muted: "#8ea4c6", track: "#1b2942" },
+  light: { muted: "#64748b" },
+  dark: { muted: "#8ea4c6" },
 };
-
-// One colour per funnel stage. Realized has none because it is not a stage: it
-// is drawn as a headline figure with no bar at all (see renderVolumeSection).
-const STAGE_COLORS = {
-  total: "#0f766e",
-  bridge: "#b45309",
-  matched: "#15803d",
-};
-
-// The headline figure's accent. Deliberately not one of the STAGE_COLORS, so a
-// reader does not group Realized with the bars below it by colour.
-const REALIZED_COLOR = "#0891b2";
 
 // One line per figure: what it means, and the arithmetic where there is any.
 //
@@ -129,8 +120,8 @@ const REALIZED_COLOR = "#0891b2";
 // WHY THEY ARE SHORT: the reader is on a phone. These lines sit under ten
 // figures they came for; a paragraph each would bury them. Each explanation
 // also absorbs a caption that used to say the same thing further down — the
-// funnel's "the three rows follow one path", the breakdown's "internal accounts
-// are a separate bucket" — so the section carries the material once.
+// flow table's "the three rows follow one path", the breakdown's "internal
+// accounts are a separate bucket" — so the section carries the material once.
 const EXPLAIN = {
   realized:
     "The same deal flow counted once per round trip rather than twice &mdash; a parallel measure of the volume below, not a part of it. It reconciles with client volume.",
@@ -148,10 +139,10 @@ const EXPLAIN = {
 // They make "does this figure carry an explanation?" a structural question, so
 // the coverage test never reads the prose and a copy edit cannot break it.
 // data-exp pairs with the data-fig on the cell or row the line explains.
-function explain(key, t, { colspan = 1, pad = "0 0 8px" } = {}) {
+function explain(key, t, { colspan = 1, pad = "0 8px 4px" } = {}) {
   // max-width:none overrides table.data's 156px cell cap inline, so an
-  // explanation inside the breakdown table runs the full width of its row
-  // instead of being squeezed into a fourth column.
+  // explanation runs the full width of its row instead of being squeezed into
+  // the width of a fourth column.
   return `<td class="vx" data-exp="${key}" colspan="${colspan}" style="max-width:none;width:100%;padding:${pad};font-size:11px;line-height:1.45;color:${t.muted};">${EXPLAIN[key]}</td>`;
 }
 
@@ -165,45 +156,22 @@ function shareOf(value, total) {
   return (value / total) * 100;
 }
 
-// One bar: a nested table split into a filled cell and the remaining track.
+// The share cell of a flow row.
 //
-// NOT a pseudo-element, not flex, not a grid. Outlook drops all three, and these
-// templates already avoid ::before and @media deliberately — the row labels are
-// real text for the same reason. A percentage width on a <td> is the one bar
-// technique every mail client still honours.
+// The visible text is a whole number because that is how the figure is quoted —
+// "about 2% of deal volume reaches an LP". data-share carries the same share to
+// one decimal, and it exists for the monotonicity guard: 87.9% and 87.8% both
+// print as 88%, so an inversion of less than a point would be invisible to a
+// test that could only read the rounded text. This replaces the bar width the
+// guard used to measure.
 //
-// A stage whose value is unavailable gets no table at all (see stageRow). A
-// stage that is genuinely zero still gets its track, so an empty bar and an
-// absent bar never look alike.
-function bar(share, color, t) {
-  const width = Math.max(0, Math.min(100, Number.isFinite(share) ? share : 0));
-  const filled = width > 0
-    ? `<td width="${width.toFixed(1)}%" style="width:${width.toFixed(1)}%;background:${color};font-size:0;line-height:12px;height:12px;">&nbsp;</td>`
-    : "";
-  const rest = 100 - width;
-  const remainder = rest > 0
-    ? `<td width="${rest.toFixed(1)}%" style="width:${rest.toFixed(1)}%;background:${t.track};font-size:0;line-height:12px;height:12px;">&nbsp;</td>`
-    : "";
-  return `<table role="presentation" width="100%" style="width:100%;border-collapse:collapse;table-layout:fixed;"><tr>${filled}${remainder}</tr></table>`;
-}
-
-// The vf-* classes are markers, not styling: no shell defines them. They name
-// the four cells so a test can address one without parsing around the nested
-// table a bar is made of. They are also what makes "is this a funnel stage?"
-// a structural question rather than a question about wording: a figure carrying
-// a vf-label cell is a stage, and nothing else in the section carries one.
-// The explanation is its own <tr> rather than a second line inside vf-label,
-// because vf-label is the marker the stage tests read: keeping it a single text
-// node is what lets "these are the three stages" stay a structural assertion.
-function stageRow({ label, value, color, share, showPct, key }, t) {
-  const pct = showPct ? (share === null ? DASH : `${Math.round(share)}%`) : "";
-  return `<tr>
-              <td class="vf-label" style="padding:3px 8px 3px 0;width:34%;font-size:12px;color:${t.muted};">${escapeHtml(label)}</td>
-              <td class="vf-bar" style="padding:3px 0;width:24%;">${value === null ? "" : bar(share === null ? 0 : share, color, t)}</td>
-              <td class="vf-value" data-fig="${key}" style="padding:3px 0 3px 8px;width:27%;font-size:12px;font-weight:700;text-align:right;white-space:nowrap;">${lots(value)}</td>
-              <td class="vf-pct" style="padding:3px 0 3px 8px;width:15%;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${pct}</td>
-            </tr>
-            <tr>${explain(key, t, { colspan: 4, pad: "0 0 9px" })}</tr>`;
+// The denominator row prints no percentage — its share of itself says nothing —
+// but still carries its data-share, so the guard has an anchor at the top of the
+// column to measure the rows below against.
+function shareCell(share, { show }) {
+  const exact = share === null ? "" : share.toFixed(1);
+  const text = !show ? "" : share === null ? DASH : `${Math.round(share)}%`;
+  return dataCell("Share", `<span class="vs" data-share="${exact}">${text}</span>`, { align: "right" });
 }
 
 /**
@@ -213,7 +181,7 @@ function stageRow({ label, value, color, share, showPct, key }, t) {
  */
 export function renderVolumeSection(volume, { theme = "light", unavailableReason = null } = {}) {
   const t = THEMES[theme] || THEMES.light;
-  const title = `<p class="section-title" style="margin-top:18px;">MT5 Volume Funnel</p>`;
+  const title = `<p class="section-title" style="margin-top:18px;">MT5 Volume Flow</p>`;
 
   if (!volume) {
     const why = unavailableReason ? ` &mdash; ${escapeHtml(unavailableReason)}` : "";
@@ -222,66 +190,79 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
   }
 
   const total = volume.totalDeals;
-  // Three stages, each a share of Total MT5 Deals, and every one of them about
+  // Three rows, each a share of Total MT5 Deals, and every one of them about
   // where the deal flow was ROUTED. That is what makes the sequence real: deals
   // arrive, some reach the bridge, and some of those pair with an LP order. The
   // shares can only fall as you go down.
   //
   // Realized used to sit here as a second stage and it broke the shape. On
   // 2026-09-02 the live figures were 497.10 total, 149.70 realized, 356.84
-  // bridge — a funnel that narrowed to 30% and then widened back to 72%.
+  // bridge — a sequence that narrowed to 30% and then widened back to 72%.
   // Realized is not downstream of anything: it is the SAME deal flow counted
   // once per round trip instead of twice, a different unit on a different axis.
-  // It is now a headline figure beside the funnel rather than a stage in it.
+  // It is therefore in the breakdown table below, not in this one.
   //
   // Internal lots are absent for a different reason: they are a parallel bucket,
-  // not a subset, so drawing them here would assert a containment that does not
-  // hold. They belong to the breakdown below.
+  // not a subset, so listing them here would assert a containment that does not
+  // hold. They belong to the breakdown too.
   const stages = [
-    { key: "totalDeals", label: "Total MT5 Deals", value: total, color: STAGE_COLORS.total, share: shareOf(total, total), showPct: false },
-    { key: "bridge", label: "Bridge Lots", value: volume.bridgeLots, color: STAGE_COLORS.bridge, share: shareOf(volume.bridgeLots, total), showPct: true },
-    { key: "matched", label: "Matched Lots", value: volume.matchedLots, color: STAGE_COLORS.matched, share: shareOf(volume.matchedLots, total), showPct: true },
+    { key: "totalDeals", label: "Total MT5 Deals", value: total, share: shareOf(total, total), showPct: false },
+    { key: "bridge", label: "Bridge Lots", value: volume.bridgeLots, share: shareOf(volume.bridgeLots, total), showPct: true },
+    { key: "matched", label: "Matched Lots", value: volume.matchedLots, share: shareOf(volume.matchedLots, total), showPct: true },
   ];
 
   const cfdEquity = volume.realizedCfd === null && volume.realizedEquity === null
     ? DASH
     : `${lots(volume.realizedCfd)} / ${lots(volume.realizedEquity)}`;
 
-  // Realized as its own headline, above the funnel and at the funnel's own type
-  // size, because it is one of the two numbers this section exists to report —
-  // and the only one that reconciles with ClientVolume/Run. Demoting it to a
-  // footnote would lose the figure a reader most often needs to quote. The
-  // vr-* markers keep it addressable; it carries no vf-label, so it is not a
-  // stage by the same structural test the funnel rows answer to.
-  const realized = `<table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 4px;">
-            <tr>
-              <td class="vr-label" style="padding:3px 8px 3px 0;font-size:12px;font-weight:700;color:${REALIZED_COLOR};">Realized</td>
-              <td class="vr-value" data-fig="realized" style="padding:3px 0 3px 8px;font-size:14px;font-weight:700;text-align:right;white-space:nowrap;">${lots(volume.realizedTotal)}</td>
-            </tr>
-            <tr>${explain("realized", t, { colspan: 2, pad: "0 0 8px" })}</tr>
-            <tr>
-              <td style="padding:0 8px 0 0;font-size:12px;color:${t.muted};">CFD / Equity</td>
-              <td class="vr-split" data-fig="split" style="padding:0 0 0 8px;font-size:12px;color:${t.muted};text-align:right;white-space:nowrap;">${cfdEquity}</td>
-            </tr>
-            <tr>${explain("split", t, { colspan: 2, pad: "2px 0 0" })}</tr>
-          </table>`;
-
+  // WHY BOTH TABLES ARE table.data, AND WHY NOTHING HERE DRAWS A BAR.
+  //
+  // Until 2026-09-04 this section drew its flow rows and its Realized headline
+  // as hand-rolled `<table role="presentation">` blocks, sized by inline <td>
+  // widths and marked with vf-* / vr-* class names that no shell stylesheet
+  // defines. The bars were nested tables inside those cells. On the morning of
+  // 2026-09-04 the reader opened the Daily Digest on a phone in Zoho and saw the
+  // two headings and nothing else — no figures at all. The one part of the
+  // section that did render was the breakdown, which was already table.data.
+  //
+  // So the section is now built only out of the construction every other table
+  // in every one of these reports uses: `table.data` rows of `dataCell()`. That
+  // markup is styled by all three shells, and it is the markup that is known to
+  // survive this reader's client. The bars are gone with it — they were always
+  // the fragile element, and the reader asked for a table instead.
+  //
   // The explanation is a fourth cell of the same row rather than a row of its
   // own. table.data renders every row as a stacked card with inline-block cells,
   // so a full-width cell simply wraps onto the next line inside the card — where
-  // a separate <tr> would add a zebra stripe and a rule, and read as seven rows
-  // instead of four.
+  // a separate <tr> would add a zebra stripe and a rule, and read as twice as
+  // many rows.
+  const flowRow = ({ key, label, value, share, showPct }) => `<tr data-fig="${key}">
+                ${dataCell("Stage", escapeHtml(label), { nowrap: true })}
+                ${dataCell("Lots", lots(value), { align: "right" })}
+                ${shareCell(share, { show: showPct })}
+                ${explain(key, t)}
+              </tr>`;
+
   const breakdownRow = (key, bucket, deals, realized) => `<tr data-fig="${key}">
                 ${dataCell("Bucket", escapeHtml(bucket), { nowrap: true })}
                 ${dataCell("Deals", deals, { align: "right" })}
                 ${dataCell("Realized", realized, { align: "right" })}
-                ${explain(key, t, { pad: "0 8px 4px" })}
+                ${explain(key, t)}
               </tr>`;
 
+  // Realized leads the breakdown, immediately followed by its CFD / Equity
+  // split, because it is one of the two numbers this section exists to report
+  // and the only one that reconciles with ClientVolume/Run. It sits at the head
+  // of a table of buckets rather than anywhere in the flow table, so it can be
+  // read first without ever reading as a step the flow passes through.
   return `${title}
-          ${realized}
-          <table role="presentation" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 6px;">
-            ${stages.map((s) => stageRow(s, t)).join("\n            ")}
+          <table class="data narrow">
+            <thead>
+              <tr><th width="40%">Stage</th><th width="30%">Lots</th><th width="30%">Share</th></tr>
+            </thead>
+            <tbody>
+              ${stages.map(flowRow).join("\n              ")}
+            </tbody>
           </table>
           <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
             Percentages are of deal volume.
@@ -293,14 +274,11 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
               <tr><th width="40%">Bucket</th><th width="30%">Deals</th><th width="30%">Realized</th></tr>
             </thead>
             <tbody>
+              ${breakdownRow("realized", "Realized", DASH, lots(volume.realizedTotal))}
+              ${breakdownRow("split", "CFD / Equity split", DASH, cfdEquity)}
               ${breakdownRow("client", "Client", lots(volume.clientDeals), lots(volume.realizedTotal))}
               ${breakdownRow("shifting", "Shifting", lots(volume.shiftingDeals), lots(volume.shiftingRealized))}
               ${breakdownRow("internal", "Internal", lots(volume.internalDeals), lots(volume.internalRealized))}
-              <tr data-fig="split">
-                ${dataCell("Bucket", "CFD / Equity split", { nowrap: true })}
-                ${dataCell("Deals", DASH, { align: "right" })}
-                ${dataCell("Realized", cfdEquity, { align: "right" })}
-              </tr>
             </tbody>
           </table>`;
 }

@@ -208,7 +208,7 @@ function weekSection(agg) {
 
 // ── the email ───────────────────────────────────────────────────────────────
 
-// The MT5 Volume Funnel is NOT mounted here, and deliberately so: it is
+// The MT5 volume section is NOT mounted here, and deliberately so: it is
 // rendered once inside buildSummaryEmailHtml (weeklyBusinessSummary.js:298),
 // which this function delegates to. `fetchGlance` fills `glance.volume` for the
 // month exactly as it does for a week, so the monthly send already carries the

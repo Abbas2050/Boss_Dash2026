@@ -101,7 +101,7 @@ withdrawn: the 2026-09-04 call above returned both. A field missing from an
 earlier sample means it was not seen, not that it is unavailable — the sample was
 of one week's payload, not of the contract.
 
-The MT5 Volume Funnel in the report emails reads all eleven of these. It renders
+The MT5 volume section in the report emails reads all eleven of these. It renders
 an absent scalar as an em dash and a genuine zero as `0.00`, precisely because
 these two may not arrive: a shifting-realized of zero and a shifting-realized we
 never received are otherwise indistinguishable. See

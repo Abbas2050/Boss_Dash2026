@@ -1,7 +1,13 @@
 # Volume section for the three reports
 
 **Date:** 2026-09-04
-**Status:** approved, not yet implemented
+**Status:** implemented; revised the same day after the first real send
+
+> **Revision, 2026-09-04 (afternoon).** The section is now **two tables and no
+> bars**, and the first heading is **MT5 Volume Flow**, not "MT5 Volume Funnel".
+> The funnel diagram and the bar-rendering constraints below describe markup that
+> no longer exists; they are kept because they explain the two-axis grouping,
+> which does still hold. See "Why the bars were removed" at the end.
 
 ## Problem
 
@@ -14,9 +20,9 @@ than a normal one.
 
 ## Scope
 
-One **MT5 Volume Funnel** section added to all three reports — Business Summary,
-Slippage, and Deal Match — across all three cadences (daily, weekly, monthly),
-so nine sends in total.
+One **MT5 volume** section ("MT5 Volume Flow" plus "Volume Breakdown") added to
+all three reports — Business Summary, Slippage, and Deal Match — across all three
+cadences (daily, weekly, monthly), so nine sends in total.
 
 Not in scope: changing any existing figure, tile or table in any report; changing
 the dealing tab; adding volume to the wallet alert.
@@ -59,29 +65,48 @@ Verify both against the live API during implementation and record the answer in
 
 ## Design
 
-### The funnel
+### The two tables
 
-Three stages, each a share of Total MT5 Deals, with Realized as a headline
-figure above them rather than a stage inside them:
+Two `table.data` tables. The first is the routing axis, the second is every
+bucket. **Superseded shape** (the bars and the Realized headline are gone; see
+"Why the bars were removed"):
 
 ```
-MT5 VOLUME FUNNEL
+MT5 VOLUME FUNNEL                       ← superseded, kept for the argument below
 
 Realized                              149.70
 CFD / Equity                   100.00 / 49.70
-  the same deal flow counted once per round trip
-
 Total MT5 Deals   ████████████████    497.10
 Bridge Lots       ███████████         356.84   72%
 Matched Lots      ███████████         356.76   72%
-                                    └ of deal volume
-
-BREAKDOWN                  Deals       Realized
-Client                   (value)        (value)
-Shifting                 (value)        (value)
-Internal                 (value)        (value)
-CFD / Equity split           —         (split)
 ```
+
+**What is rendered now**, on the live figures for 2026-09-03:
+
+```
+MT5 VOLUME FLOW           Stage        Lots     Share
+                Total MT5 Deals      296.09
+                    Bridge Lots      260.25       88%
+                   Matched Lots      259.95       88%
+                └ percentages are of deal volume
+
+VOLUME BREAKDOWN         Bucket       Deals   Realized
+                       Realized           —      56.76
+             CFD / Equity split           —   56.76 / 0.00
+                         Client      296.09      56.76
+                       Shifting        0.00       0.00
+                       Internal     (value)    (value)
+```
+
+Every row carries its one-line explanation as a fourth cell of the same row —
+`table.data` stacks cells inside one card, so a full-width cell wraps under the
+figures instead of opening a second striped row.
+
+**The two tables stay two tables.** Merging them would reassert exactly the
+sequence the morning's correction removed: Realized is the same deal flow counted
+once per round trip, not a stage downstream of the deal total, and Internal is a
+parallel bucket rather than a subset. Realized leads the breakdown — prominent,
+and on the bucket axis where it belongs — and appears nowhere in the flow table.
 
 **Realized was a stage until 2026-09-04, and that was wrong.** Rendered against
 the live figures for 2026-09-02 the four-stage funnel narrowed to 30% and then
@@ -104,12 +129,15 @@ monotonically non-increasing.
 
 The reference week hid this — 49% / 4% / 2% happens to fall — which is why the
 defect survived the original tests. The regression guard therefore asserts
-non-increasing bar widths against the 2026-09-02 figures specifically.
+non-increasing shares against the 2026-09-02 figures specifically, and against
+2026-09-03 as well, where the two lower shares differ by a tenth of a point and
+so catch a reordering that equal shares would not. (It measured bar widths until
+the bars were removed; it now reads the rendered share cells.)
 
 Realized stays prominent: it is one of the two headline volume numbers and the
-only one that reconciles with `ClientVolume/Run`, so it is rendered above the
-funnel at a larger type size with its CFD / Equity split beneath it, captioned as
-a parallel measure. It is not a footnote and it is not a stage.
+only one that reconciles with `ClientVolume/Run`, so it is the **first row of the
+breakdown table**, immediately above its CFD / Equity split. It is not a footnote
+and it is not a step in the flow.
 
 **Internal accounts are deliberately not a funnel stage.**
 `totalInternalAccountLots` is a **parallel bucket, not a subset** of client lots
@@ -121,17 +149,28 @@ share-based: 98,126 equity against 1,400.60 CFD in one week. The backend itself
 sums them — `totalRealizedLotsCfd + totalRealizedLotsEquity` equals
 `ClientVolume/Run`'s `totalLots` exactly — so the combined figure is established
 rather than invented. But the split is what makes it readable, which is why it
-appears both beneath the headline figure and as its own breakdown row.
+appears as its own breakdown row directly under the Realized row.
 
 ### Rendering constraints
 
-The bars are **nested tables with fixed percentage widths and a background
-colour** — not CSS shapes, not pseudo-elements, not flex or grid. The report
-templates already avoid `::before` and `@media` because Outlook drops them, and
-that decision stands.
+**Both tables are `table.data` built from `dataCell()`** — the one table
+construction every shell in this repo already styles. Nothing in the section may
+introduce markup of its own: no `<table role="presentation">`, no
+`table-layout:fixed`, no class name that is not defined in all three shells.
+`::before`, `::after`, flex and grid remain banned, as everywhere else in these
+templates.
 
-A stage whose value is unavailable shows `—` with **no bar at all**. A zero-width
-bar and a zero-value bar must never look the same.
+~~The bars are nested tables with fixed percentage widths and a background
+colour.~~ **Removed 2026-09-04** — there are no bars.
+
+A row whose value is unavailable shows `—` for both its lots and its share, and
+keeps its place in the table. A genuine zero shows `0.00` and a real share.
+
+The share column prints a whole-number percentage and carries the same share to
+one decimal in a `data-share` attribute. The attribute exists for the
+monotonicity guard, which used to measure bar widths: 87.9% and 87.8% both print
+as 88%, so a test that could only read the printed text would miss an inversion
+of less than a point.
 
 Percentages are computed against Total MT5 Deals and omitted when that total is
 unavailable or zero — a denominator of zero yields `—`, not `0%` and not `NaN`.
@@ -175,22 +214,26 @@ times across these reports, and this must not become the fourth thing that is.
    `totalInternalAccountRealizedLots`, the two known to be at risk.
 3. **A genuine zero renders `0.00`**, not `—`.
 4. **Percentages** are correct against the reference figures above (4% / 2%).
-4b. **The funnel never widens.** Each stage's share is ≤ the stage above it,
+4b. **The flow table never widens.** Each row's share is ≤ the row above it,
    asserted on the 2026-09-02 figures, which is the day where a non-routing
    stage shows up as an inversion. Reinstating Realized as a stage must fail
-   this. Realized itself must still render, with its total and its split, and
-   must carry no stage marker — asserted structurally, not on caption wording,
-   so a copy edit cannot break it.
+   this. Realized itself must still render, with its total and its split, in
+   the breakdown table and nowhere in the flow table — asserted structurally,
+   not on caption wording, so a copy edit cannot break it.
 5. **A zero or missing Total MT5 Deals** yields `—` for every percentage, never
    `NaN` or a division by zero.
-6. **An unavailable stage draws no bar.**
-7. **Internal lots appear in the breakdown and NOT as a funnel stage** — this
+6. **There are no bars.** No `role="presentation"`, no `table-layout:fixed`,
+   no `vf-bar`, and both tables carry `class="data narrow"` — this is the
+   regression that stopped the section rendering. An unavailable row still
+   keeps its place, dashed on both axes.
+7. **Internal lots appear in the breakdown and NOT as a flow row** — this
    exists so nobody later "completes" the funnel with them.
 8. **The Slippage report still sends when `DealMatch/Run` fails**, with the
    section marked unavailable and every existing slippage figure intact.
 9. **No report gains an extra `DealMatch/Run` call.** Deal Match and Business
    Summary must make exactly the number they make today.
-10. **The rendered HTML contains no `::before`, `::after`, flex, or grid.**
+10. **The rendered HTML contains no `::before`, `::after`, flex, or grid**, and
+   no table markup of its own beyond the two `table.data` tables.
 
 Every test must be shown to fail by mutation. Tests 2, 8 and 9 are the ones most
 likely to pass for the wrong reason.
@@ -211,3 +254,33 @@ section says "of deal volume" beneath the percentages rather than implying a
 strict subset relation. The 2026-09-04 correction above is this risk landing:
 the stage that actually broke containment was Realized, which was assumed safe
 because it is "the same volume" — and it is, on a different axis.
+
+## Why the bars were removed (2026-09-04, afternoon)
+
+**A real send did not render.** The reader opened that morning's Daily Digest on
+his phone in Zoho and saw two headings — "MT5 Volume Funnel", the word
+"Realized", and "Volume Breakdown" — with no figures under either. He asked for
+the whole section as a table, and said plainly that a table is better than cards.
+
+**The cause was the markup, not the client.** The flow rows and the Realized
+headline were hand-rolled `<table role="presentation">` blocks held together by
+inline `<td>` widths and `vf-*` / `vr-*` class names that **no shell stylesheet
+defines**. The bars were nested tables inside those cells. The one part of the
+section that rendered correctly was the Volume Breakdown — the one part already
+built as `table.data` from `dataCell()`, the construction every other table in
+every one of these reports uses and every shell styles.
+
+So the section is rebuilt out of that construction alone, and the bars go with
+it. Bars in email were always the fragile element: a bar is a nested table whose
+only job is to be a shape, and shape is the first thing a mail client discards.
+The information a bar carried is in the share column, which is text.
+
+**Do not reintroduce them.** A bar here has failed for this reader once, on a
+send he was actually reading. If a future change wants proportion shown visually,
+it needs a fresh answer to "does this render in Zoho on Android", not a revival
+of the nested-table bar.
+
+The guards that keep this from regressing live in `reports/volumeSection.test.js`:
+the section must contain no `role="presentation"`, no `table-layout:fixed` and no
+`vf-bar`; both tables must carry `class="data narrow"`; and the flow table's
+shares, read off the rendered cells, must never increase down the column.
