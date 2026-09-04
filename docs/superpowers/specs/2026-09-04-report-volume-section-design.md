@@ -91,12 +91,33 @@ MT5 VOLUME FLOW           Stage        Lots     Share
                 └ percentages are of deal volume
 
 VOLUME BREAKDOWN         Bucket       Deals   Realized
-                       Realized           —      56.76
-             CFD / Equity split           —   56.76 / 0.00
                          Client      296.09      56.76
+                                └ CFD / Equity split: 56.76 / 0.00
                        Shifting        0.00       0.00
                        Internal     (value)    (value)
+                └ Client’s Realized is the headline figure
 ```
+
+**Corrected again the same evening: the breakdown lost two rows.** It carried a
+`Realized` row and a `CFD / Equity split` row above the three buckets, and both
+were the wrong shape for a table whose columns are Deals and Realized:
+
+* Neither row *had* a Deals figure — Realized is not a deals metric, and a split
+  of realized volume has no deals equivalent — and both filled that cell with
+  `—`. In this project `—` means "could not read", so those two cells asserted a
+  read failure that never happened, on a column that does not apply.
+* The `Realized` row rendered `realizedTotal`, and so did the `Client` row two
+  lines below it. The reader saw the same 59.66 twice in a five-row table, once
+  labelled "Realized" and once as Client’s realized volume.
+
+A friendlier placeholder would not have fixed either: `table.data` stacks a row
+into a card on a phone, so any empty or apologetic cell renders as its label with
+nothing real beneath it — the same reason the flow table’s total states `100%`.
+So the shape changed instead. The breakdown now carries only buckets that have
+**both** figures — Client, Shifting, Internal — and every cell in it is a real
+number. The CFD / Equity split rides inside the Client card as a second
+full-width `explain()` line, attached to the value it divides, keeping its own
+sentence and both components readable.
 
 Every row carries its one-line explanation as a fourth cell of the same row —
 `table.data` stacks cells inside one card, so a full-width cell wraps under the
@@ -135,9 +156,12 @@ so catch a reordering that equal shares would not. (It measured bar widths until
 the bars were removed; it now reads the rendered share cells.)
 
 Realized stays prominent: it is one of the two headline volume numbers and the
-only one that reconciles with `ClientVolume/Run`, so it is the **first row of the
-breakdown table**, immediately above its CFD / Equity split. It is not a footnote
-and it is not a step in the flow.
+only one that reconciles with `ClientVolume/Run`. It is the **Client row’s
+Realized value** — on the bucket axis, named as the headline figure both in that
+row’s explanation and in the caption under the table. It is not a footnote and
+it is not a step in the flow. (It had a headline row of its own until the evening
+of 2026-09-04; that row duplicated this cell and dashed a Deals column that does
+not apply to it.)
 
 **Internal accounts are deliberately not a funnel stage.**
 `totalInternalAccountLots` is a **parallel bucket, not a subset** of client lots
@@ -148,8 +172,8 @@ containment that does not hold. It belongs in the breakdown only.
 share-based: 98,126 equity against 1,400.60 CFD in one week. The backend itself
 sums them — `totalRealizedLotsCfd + totalRealizedLotsEquity` equals
 `ClientVolume/Run`'s `totalLots` exactly — so the combined figure is established
-rather than invented. But the split is what makes it readable, which is why it
-appears as its own breakdown row directly under the Realized row.
+rather than invented. But the split is what makes it readable, which is why it is
+rendered inside the Client row’s card, on the line below its Realized value.
 
 ### Rendering constraints
 
@@ -228,6 +252,12 @@ times across these reports, and this must not become the fourth thing that is.
    keeps its place, dashed on both axes.
 7. **Internal lots appear in the breakdown and NOT as a flow row** — this
    exists so nobody later "completes" the funnel with them.
+7b. **No cell dashes a figure that is present.** The converse of test 2, and the
+   defect of 2026-09-04 evening: scan the rendered cells and assert `—` appears
+   only where the underlying scalar is genuinely null. With it: the breakdown
+   has exactly three body rows (Client, Shifting, Internal); `realizedTotal` is
+   rendered exactly once in the whole section; and the CFD / Equity split is
+   still there with both components readable.
 8. **The Slippage report still sends when `DealMatch/Run` fails**, with the
    section marked unavailable and every existing slippage figure intact.
 9. **No report gains an extra `DealMatch/Run` call.** Deal Match and Business

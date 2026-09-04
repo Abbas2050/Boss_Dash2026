@@ -135,6 +135,29 @@ function stage(html, label) {
 // One cell of a breakdown row, by bucket name and column label.
 const breakdownCell = (html, bucket, column) => cellOf(row(html, bucket), column);
 
+// Every labelled cell the section renders, as {label, value}, in document
+// order. The value is the cell's visible text with inner markup stripped, so a
+// share cell (which nests a <span class="vs">) reads the same way as a plain
+// lots cell, and an HTML entity survives as itself.
+//
+// This reads CELLS, not the whole document: the explanations are prose and use
+// an em dash as punctuation. A dash is only a claim about a value when it is
+// the value of a labelled cell.
+function cells(html) {
+  return [...html.matchAll(/<td[^>]*data-label="([^"]*)"[^>]*>([\s\S]*?)<\/td>/g)].map((m) => ({
+    label: m[1],
+    value: m[2]
+      .replace(/^[\s\S]*?<span class="val[^"]*">/, "")
+      .replace(/<[^>]*>/g, "")
+      .trim(),
+  }));
+}
+
+// Every breakdown row in document order, by the bucket it names.
+function bucketLabels(html) {
+  return [...html.matchAll(/data-label="Bucket"[^>]*>[\s\S]*?<span class="val">([^<]*)<\/span>/g)].map((m) => m[1]);
+}
+
 // Every flow row in document order.
 function stageLabels(html) {
   return [...html.matchAll(/data-label="Stage"[^>]*>[\s\S]*?<span class="val">([^<]*)<\/span>/g)].map((m) => m[1]);
@@ -357,23 +380,31 @@ describe("the flow table narrows at every row", () => {
 
 // ── 4c. Realized is a parallel measure, not a step in the flow ───────────
 
+// Realized had a headline row of its own until 2026-09-04, and a second row for
+// its CFD / Equity split. Both are gone: neither had a Deals figure, so both
+// filled that cell with a dash — asserting a read failure on a column that does
+// not apply — and the Realized row's value was the same number the Client row
+// already carried. The claim these tests protect is unchanged: Realized lives on
+// the bucket axis and never in the flow table. It is now the Client row's
+// Realized value.
 describe("Realized", () => {
   const flow = flowOf(renderVolumeSection(extractVolume(PAYLOAD)));
   const breakdown = breakdownOf(renderVolumeSection(extractVolume(PAYLOAD)));
 
-  it("is still rendered, with its total and its CFD / Equity split", () => {
-    expect(breakdownCell(breakdown, "Realized", "Realized")).toBe("99,526.60");
-    expect(breakdownCell(breakdown, "CFD / Equity split", "Realized")).toBe("1,400.60 / 98,126.00");
+  it("is still rendered, as the Client row's Realized, with its CFD / Equity split", () => {
+    expect(breakdownCell(breakdown, "Client", "Realized")).toBe("99,526.60");
+    expect(breakdown).toMatch(/CFD \/ Equity split: 1,400\.60 \/ 98,126\.00/);
   });
 
   // The live figures for 2026-09-03. Realized reconciles with ClientVolume/Run
-  // and is one of the two numbers this section exists to report, so it leads the
-  // breakdown table — but it is on a different axis from where the flow was
-  // routed, so it must not appear in the flow table at all.
-  it("leads the breakdown table on the live 2026-09-03 figures, and is absent from the flow table", () => {
+  // and is one of the two numbers this section exists to report, so it is a
+  // breakdown figure with a caption pointing at it — but it is on a different
+  // axis from where the flow was routed, so it must not appear in the flow
+  // table at all.
+  it("is a breakdown figure on the live 2026-09-03 figures, and is absent from the flow table", () => {
     const html = renderVolumeSection(extractVolume(LIVE_0903));
-    expect(breakdownCell(breakdownOf(html), "Realized", "Realized")).toBe("56.76");
-    expect(breakdownCell(breakdownOf(html), "CFD / Equity split", "Realized")).toBe("56.76 / 0.00");
+    expect(breakdownCell(breakdownOf(html), "Client", "Realized")).toBe("56.76");
+    expect(breakdownOf(html)).toMatch(/CFD \/ Equity split: 56\.76 \/ 0\.00/);
     expect(flowOf(html)).not.toMatch(/Realized/);
     expect(flowOf(html)).not.toMatch(/56\.76/);
   });
@@ -386,11 +417,96 @@ describe("Realized", () => {
     expect(stageLabels(flow)).toHaveLength(3);
   });
 
+  // Prominence, asserted rather than assumed. Removing the headline row must
+  // not leave the reader hunting for the figure they quote most: the Client
+  // row's explanation says what Realized is, and a caption under the table says
+  // which cell it is and what it reconciles with.
+  it("is still named as the headline figure, so the reader knows which cell it is", () => {
+    expect(breakdown).toMatch(/reconciles with client volume/i);
+    expect(breakdown).toMatch(/Client&rsquo;s Realized is the section&rsquo;s headline figure/);
+  });
+
   it("still renders a dash, never 0.00, when the backend sent neither half", () => {
     const { totalRealizedLotsCfd, totalRealizedLotsEquity, ...noRealized } = PAYLOAD;
     const bare = breakdownOf(renderVolumeSection(extractVolume(noRealized)));
-    expect(breakdownCell(bare, "Realized", "Realized")).toBe("&mdash;");
-    expect(breakdownCell(bare, "CFD / Equity split", "Realized")).toBe("&mdash;");
+    expect(breakdownCell(bare, "Client", "Realized")).toBe("&mdash;");
+    expect(bare).toMatch(/CFD \/ Equity split: &mdash;/);
+  });
+});
+
+// ── 4d. the breakdown carries only rows the columns apply to ─────────────
+//
+// This is the regression for the 2026-09-04 reader report. Two of the five
+// breakdown rows had no Deals figure — Realized is not a deals metric, and a
+// CFD / Equity split has no deals equivalent — and both printed a dash there.
+// Throughout this project a dash means "could not read", so those two cells
+// reported a failure that never happened. The fix is the shape, not a nicer
+// placeholder: only buckets with both figures get a row.
+
+describe("the breakdown table", () => {
+  it("has exactly three body rows, one per bucket", () => {
+    const html = breakdownOf(renderVolumeSection(extractVolume(PAYLOAD)));
+    expect(bucketLabels(html)).toEqual(["Client", "Shifting", "Internal"]);
+  });
+
+  it("keeps all three even when every scalar is absent", () => {
+    expect(bucketLabels(breakdownOf(renderVolumeSection(extractVolume({}))))).toEqual([
+      "Client", "Shifting", "Internal",
+    ]);
+  });
+
+  // The duplication the reader saw: 99,526.60 rendered once as the "Realized"
+  // row and again as Client's realized volume, two rows apart in a short table.
+  it("renders the realized total exactly once", () => {
+    const html = renderVolumeSection(extractVolume(PAYLOAD));
+    expect((html.match(/99,526\.60/g) || []).length).toBe(1);
+  });
+
+  it("still shows what CFD and equity each contributed", () => {
+    const html = breakdownOf(renderVolumeSection(extractVolume(PAYLOAD)));
+    expect(html).toMatch(/CFD \/ Equity split: 1,400\.60 \/ 98,126\.00/);
+    expect(html).toMatch(/data-exp="split"/);
+    expect(html).toMatch(/Closed CFD and closed equity volume/);
+  });
+});
+
+// ── 4e. no cell dashes a figure that is present ──────────────────────────
+//
+// The dash rule cuts both ways. "A missing scalar renders —" is asserted above;
+// this is its converse, and it is the one that was broken: a dash on a cell
+// whose figure is not missing but simply does not exist tells the reader a read
+// failed. Every labelled cell either shows a real value or corresponds to a
+// scalar that is genuinely null.
+
+describe("a dash means the value could not be read, and nothing else", () => {
+  it("renders no dashed cell at all on the reference week, where every scalar is present", () => {
+    const html = renderVolumeSection(extractVolume(PAYLOAD));
+    expect(cells(html).filter((c) => c.value === "&mdash;")).toEqual([]);
+  });
+
+  // LIVE_0903 is a partial fixture: the two internal scalars were not recorded
+  // that day. Its dashes are therefore correct, and naming them exactly is a
+  // stronger claim than "none" — every dash the section prints has to be one of
+  // them, so a dash on any present figure fails here too.
+  it("dashes only the scalars the live 2026-09-03 fixture actually omits", () => {
+    const v = extractVolume(LIVE_0903);
+    expect(v.internalDeals).toBeNull();
+    expect(v.internalRealized).toBeNull();
+
+    const dashed = cells(renderVolumeSection(v)).filter((c) => c.value === "&mdash;");
+    expect(dashed.map((c) => c.label)).toEqual(["Deals", "Realized"]);
+  });
+
+  // The rule itself, unchanged: a scalar the backend did not send still dashes.
+  // totalInternalAccountRealizedLots is the one to assert on — it is one of the
+  // two fields not on the confirmed-under-lite=true list.
+  it("still dashes the cell of a scalar the backend did not send", () => {
+    const { totalInternalAccountRealizedLots: _dropped, ...missing } = PAYLOAD;
+    const html = renderVolumeSection(extractVolume(missing));
+    expect(breakdownCell(breakdownOf(html), "Internal", "Realized")).toBe("&mdash;");
+    const dashed = cells(html).filter((c) => c.value === "&mdash;");
+    expect(dashed).toHaveLength(1);
+    expect(dashed[0].label).toBe("Realized");
   });
 });
 
@@ -688,11 +804,12 @@ describe("every figure is explained inline", () => {
 
   it("pairs every rendered figure with an explanation, and every explanation with a figure", () => {
     expect(figKeys(html)).toEqual(expKeys(html));
-    // Realized, its CFD/Equity split, the three flow rows, and the three
-    // breakdown buckets. Named so that adding a figure without a line fails
-    // here rather than shipping an unexplained number.
+    // The three flow rows, the three breakdown buckets, and the CFD / Equity
+    // split, which carries its figures inside the Client row rather than in a
+    // row of its own. Named so that adding a figure without a line fails here
+    // rather than shipping an unexplained number.
     expect(figKeys(html)).toEqual([
-      "bridge", "client", "internal", "matched", "realized", "shifting", "split", "totalDeals",
+      "bridge", "client", "internal", "matched", "shifting", "split", "totalDeals",
     ]);
   });
 
@@ -717,7 +834,7 @@ describe("every figure is explained inline", () => {
 describe("an unavailable figure keeps its explanation", () => {
   const EMPTY = {};
 
-  it("explains all eight even when every scalar is absent", () => {
+  it("explains all seven even when every scalar is absent", () => {
     const html = renderVolumeSection(extractVolume(EMPTY));
     expect(expKeys(html)).toEqual(expKeys(renderVolumeSection(extractVolume(PAYLOAD))));
     expect(figKeys(html)).toEqual(expKeys(html));
@@ -784,7 +901,7 @@ describe("every report family renders the volume section", () => {
       expect(html).toMatch(/MT5 Volume Flow/);
       expect(html).toMatch(/203,109\.22/); // the figures, not just the heading
       expect(figKeys(html)).toEqual(expKeys(html)); // and the lines beside them
-      expect(expKeys(html)).toHaveLength(8);
+      expect(expKeys(html)).toHaveLength(7);
     });
   }
 });

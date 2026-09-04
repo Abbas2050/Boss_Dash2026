@@ -123,13 +123,16 @@ const THEMES = {
 // flow table's "the three rows follow one path", the breakdown's "internal
 // accounts are a separate bucket" — so the section carries the material once.
 const EXPLAIN = {
-  realized:
-    "The same deal flow counted once per round trip rather than twice &mdash; a parallel measure of the volume below, not a part of it. It reconciles with client volume.",
   split: "Closed CFD and closed equity volume. Equity lots are share-based, so they dwarf CFD.",
   totalDeals: "Client deal lots plus shifting deal lots. Counts every MT5 deal, so an open and its close each count.",
   bridge: "Volume that reached the bridge to be hedged.",
   matched: "Client volume matched to an LP order &mdash; the only part of the flow that reached an LP.",
-  client: "MT5 client deal lots (each leg counted), and the closed volume behind them.",
+  // Realized used to have a headline row of its own, and this line used to be
+  // its explanation. The row is gone (it duplicated the figure below it) but
+  // the sentence is not: Realized is the number the reader quotes, so what it
+  // means still has to be said, and it is said where the number now lives.
+  client:
+    "MT5 client deal lots (each leg counted), and the closed volume behind them. That Realized figure is the same flow counted once per round trip rather than twice &mdash; a parallel measure of the deals beside it, not a part of them &mdash; and it is the one that reconciles with client volume.",
   shifting: "Shifting-account deal lots and their closed volume. Counted inside Total MT5 Deals above.",
   internal:
     "Internal-account deal lots and their closed volume &mdash; a separate bucket, not part of client flow, so not a funnel stage. Excluded from the Slippage report; included here.",
@@ -139,11 +142,18 @@ const EXPLAIN = {
 // They make "does this figure carry an explanation?" a structural question, so
 // the coverage test never reads the prose and a copy edit cannot break it.
 // data-exp pairs with the data-fig on the cell or row the line explains.
-function explain(key, t, { colspan = 1, pad = "0 8px 4px" } = {}) {
+//
+// `lead` puts a figure in front of the sentence, and `fig` then marks the cell
+// as carrying a figure of its own. Only the CFD / Equity split uses them: it is
+// a breakdown of one cell's value rather than a bucket, so it has no row of its
+// own to hang a data-fig on, but it does render numbers and must still pair.
+function explain(key, t, { colspan = 1, pad = "0 8px 4px", lead = "", fig = false } = {}) {
   // max-width:none overrides table.data's 156px cell cap inline, so an
   // explanation runs the full width of its row instead of being squeezed into
   // the width of a fourth column.
-  return `<td class="vx" data-exp="${key}" colspan="${colspan}" style="max-width:none;width:100%;padding:${pad};font-size:11px;line-height:1.45;color:${t.muted};">${EXPLAIN[key]}</td>`;
+  const marker = fig ? ` data-fig="${key}"` : "";
+  const prefix = lead ? `${lead} &mdash; ` : "";
+  return `<td class="vx" data-exp="${key}"${marker} colspan="${colspan}" style="max-width:none;width:100%;padding:${pad};font-size:11px;line-height:1.45;color:${t.muted};">${prefix}${EXPLAIN[key]}</td>`;
 }
 
 const lots = (value) => (value === null ? DASH : fmtNum(value, 2));
@@ -207,7 +217,8 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
   // bridge — a sequence that narrowed to 30% and then widened back to 72%.
   // Realized is not downstream of anything: it is the SAME deal flow counted
   // once per round trip instead of twice, a different unit on a different axis.
-  // It is therefore in the breakdown table below, not in this one.
+  // It is therefore in the breakdown table below, as the Client row's Realized
+  // value, and not in this one.
   //
   // Internal lots are absent for a different reason: they are a parallel bucket,
   // not a subset, so listing them here would assert a containment that does not
@@ -250,18 +261,42 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
                 ${explain(key, t)}
               </tr>`;
 
-  const breakdownRow = (key, bucket, deals, realized) => `<tr data-fig="${key}">
+  // `extra` is an additional full-width line inside the row's card. Only Client
+  // uses it, for the CFD / Equity split of its Realized value.
+  const breakdownRow = (key, bucket, deals, realized, extra = "") => `<tr data-fig="${key}">
                 ${dataCell("Bucket", escapeHtml(bucket), { nowrap: true })}
                 ${dataCell("Deals", deals, { align: "right" })}
                 ${dataCell("Realized", realized, { align: "right" })}
-                ${explain(key, t)}
+                ${explain(key, t)}${extra}
               </tr>`;
 
-  // Realized leads the breakdown, immediately followed by its CFD / Equity
-  // split, because it is one of the two numbers this section exists to report
-  // and the only one that reconciles with ClientVolume/Run. It sits at the head
-  // of a table of buckets rather than anywhere in the flow table, so it can be
-  // read first without ever reading as a step the flow passes through.
+  // WHY THE BREAKDOWN IS THREE BUCKETS AND NOTHING ELSE.
+  //
+  // It carried two more rows until 2026-09-04, and both were shaped wrong for a
+  // table whose columns are Deals and Realized:
+  //
+  //   "Realized" had no Deals figure, because Realized is not a deals metric,
+  //   and its Realized value was `realizedTotal` — the very same number the
+  //   Client row already renders. So the reader saw one figure twice in a
+  //   five-row table, once labelled Realized and once as Client's realized.
+  //
+  //   "CFD / Equity split" had no Deals figure either, because a split of
+  //   realized volume has no deals equivalent at all.
+  //
+  // Both filled that empty Deals cell with a dash, and in this project a dash
+  // means "could not read". They were therefore reporting a read failure that
+  // never happened, on a column that does not apply — the one thing the dash
+  // rule exists to prevent. A friendlier placeholder would not have fixed it:
+  // table.data stacks a row into a card on a phone, so any empty or apologetic
+  // cell renders as its label with nothing real beneath it.
+  //
+  // What survives: every row here is a bucket with both figures, so every cell
+  // is a real number. Realized keeps its prominence as the Client row's
+  // Realized value, named in that row's explanation and in the caption below,
+  // and the split rides inside the Client card as a second full-width line —
+  // attached to the number it divides rather than floating beside it.
+  const splitLine = explain("split", t, { lead: `CFD / Equity split: ${cfdEquity}`, fig: true });
+
   return `${title}
           <table class="data narrow">
             <thead>
@@ -281,13 +316,14 @@ export function renderVolumeSection(volume, { theme = "light", unavailableReason
               <tr><th width="40%">Bucket</th><th width="30%">Deals</th><th width="30%">Realized</th></tr>
             </thead>
             <tbody>
-              ${breakdownRow("realized", "Realized", DASH, lots(volume.realizedTotal))}
-              ${breakdownRow("split", "CFD / Equity split", DASH, cfdEquity)}
-              ${breakdownRow("client", "Client", lots(volume.clientDeals), lots(volume.realizedTotal))}
+              ${breakdownRow("client", "Client", lots(volume.clientDeals), lots(volume.realizedTotal), splitLine)}
               ${breakdownRow("shifting", "Shifting", lots(volume.shiftingDeals), lots(volume.shiftingRealized))}
               ${breakdownRow("internal", "Internal", lots(volume.internalDeals), lots(volume.internalRealized))}
             </tbody>
-          </table>`;
+          </table>
+          <p style="font-size:11px;color:${t.muted};margin:0 0 12px;">
+            Realized is closed volume, counted once per round trip; Client&rsquo;s Realized is the section&rsquo;s headline figure, the one that reconciles with client volume.
+          </p>`;
 }
 
 // ── the one fetch ────────────────────────────────────────────────────────────
