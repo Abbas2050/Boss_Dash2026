@@ -32,15 +32,15 @@ export const WSTestPage: React.FC = () => {
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [eventFilter, setEventFilter] = useState<string>("all");
 
-  // Was:
-  //     const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || "";
-  //     const hubUrl = backendBaseUrl
-  //   DASHBOARD_HUB_URL;
-  // That reads as a ternary but is not one. Automatic semicolon insertion ends
-  // the declaration after `backendBaseUrl`, so `DASHBOARD_HUB_URL;` on the next
-  // line is a dead expression statement and the hub URL is discarded.
-  // VITE_BACKEND_BASE_URL is undefined in production, so this page was pointing
-  // SignalR at the empty string -- broken regardless of authentication.
+  // This used to read a base URL from the browser-visible env, assign it to
+  // `hubUrl`, and leave DASHBOARD_HUB_URL alone on the following line. It
+  // looked like a ternary and was not one: automatic semicolon insertion ended
+  // the declaration early, so the real hub URL was a dead expression statement
+  // and got discarded. The env var it read is undefined in production -- the
+  // credentials were renamed off the browser-visible prefix and it went with
+  // them -- so SignalR was pointed at the empty string, broken regardless of
+  // authentication. The variable is not named here on purpose: a commented-out
+  // copy of that line is exactly what somebody pastes back in.
   const hubUrl = DASHBOARD_HUB_URL;
 
   useEffect(() => {

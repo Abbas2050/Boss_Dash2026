@@ -47,9 +47,10 @@ const AlertsHubContext = createContext<AlertsHubValue>({
 
 export const useAlertsHub = () => useContext(AlertsHubContext);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-const apiUrl = (path: string) => (backendBaseUrl ? `${backendBaseUrl}${path}` : path);
+// This file used to carry its own base-URL helper. Nothing calls it any more —
+// the hub URL comes from DASHBOARD_HUB_URL and the token from
+// hubAccessTokenFactory — and leaving it would only be a shape for the next
+// person to copy, so it is gone rather than kept "just in case".
 
 export const AlertsHubProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [status, setStatus] = useState<SignalRStatus>("disconnected");

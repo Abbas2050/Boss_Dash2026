@@ -1,20 +1,20 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAlertsHub, type LpMarginAlertRow } from "@/components/AlertsHubProvider";
 import { SignalRStatus } from "@/lib/signalRConnectionManager";
-// /api/AlertSettings sits behind requireSession (server.js denies every /api
-// and /rest route by default); every call here must carry the session bearer
-// token or it 401s the moment the deny-by-default gate is live, even though
-// apiUrl() targets this same origin.
+// /api/AlertSettings is a route on the trading backend, so it has to go
+// through the same-origin proxy prefix; the doubled "api" in
+// /api/backend/api/AlertSettings is correct, because /api/backend is the proxy
+// mount and /api/AlertSettings is the backend's own path.
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+// That prefix sits behind requireSession (server.js denies every /api and
+// /rest route by default); every call here must carry the session bearer token
+// or it 401s on our own server before it ever reaches the backend.
 import { authHeaders } from "@/lib/auth";
 
 type AlertSettings = {
   marginAlertThreshold: number;
   marginAlertIntervalSeconds: number;
 };
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-const apiUrl = (path: string) => (backendBaseUrl ? `${backendBaseUrl}${path}` : path);
 
 const fmtNum = (v: unknown, dp = 2) => {
   const n = Number(v);
@@ -66,7 +66,7 @@ export const LpMarginAlerts: React.FC = () => {
     let active = true;
     (async () => {
       try {
-        const resp = await fetch(apiUrl("/api/AlertSettings"), { headers: { ...authHeaders() } });
+        const resp = await fetch(`${BACKEND_BASE_URL}/api/AlertSettings`, { headers: { ...authHeaders() } });
         if (!resp.ok) throw new Error(await resp.text());
         const data = (await resp.json()) as AlertSettings;
         if (active) applySettings(data);
@@ -113,7 +113,7 @@ export const LpMarginAlerts: React.FC = () => {
       return;
     }
     try {
-      const resp = await fetch(apiUrl("/api/AlertSettings"), {
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/AlertSettings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ marginAlertThreshold: t, marginAlertIntervalSeconds: i }),

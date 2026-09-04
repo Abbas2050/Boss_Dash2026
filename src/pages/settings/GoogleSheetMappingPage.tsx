@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-// /api/wallet/google-sheet-mapping sits behind requireSession (server.js
-// denies every /api and /rest route by default); every call here must carry
-// the session bearer token or it 401s the moment the deny-by-default gate is
-// live, even in the same-origin branch apiUrl() takes when isLocalhost/host
-// checks fall through.
+// UNLIKE the other settings pages, /api/wallet/google-sheet-mapping is a route
+// on THIS server (wallet/*), not on the trading backend. So it is deliberately
+// a plain same-origin path and must NOT be moved onto BACKEND_BASE_URL: the
+// proxy would forward it to the backend, which 404s it.
+//
+// It still sits behind requireSession (server.js denies every /api and /rest
+// route by default), so every call here must carry the session bearer token.
 import { authHeaders } from "@/lib/auth";
 
 type MappingField = {
@@ -36,26 +38,18 @@ const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 const CELL_PATTERN = /^[A-Z]{1,3}[1-9][0-9]*$/;
 
 export const GoogleSheetMappingPage: React.FC = () => {
-  const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
+  // Everything that used to sit here — a base URL read from the browser bundle
+  // and a host comparison built on it — was dead weight: the variable it read
+  // is undefined in production, so every branch already collapsed to the plain
+  // same-origin path, which is the right answer for these routes anyway. Only
+  // the dev-server detour below was ever load-bearing, so only it survives.
   const isLocalhost =
     typeof window !== "undefined" &&
     ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-  const shouldUseSameOrigin = (() => {
-    if (typeof window === "undefined") return true;
-    if (isLocalhost) return true;
-    if (!backendBaseUrl) return true;
-    try {
-      const configuredHost = new URL(backendBaseUrl).hostname;
-      return configuredHost !== window.location.hostname;
-    } catch {
-      return true;
-    }
-  })();
-  const apiUrl = (path: string) => {
-    if (isLocalhost) return `http://localhost:3001${path}`;
-    if (shouldUseSameOrigin) return path;
-    return backendBaseUrl ? `${backendBaseUrl}${path}` : path;
-  };
+  // In dev the Vite proxy sends /api/wallet to the CRM (see vite.config.ts), so
+  // naming our own server's port is the only way to reach the route this page
+  // actually wants. In production the path is served from this very origin.
+  const apiUrl = (path: string) => (isLocalhost ? `http://localhost:3001${path}` : path);
 
   const [fields, setFields] = useState<MappingField[]>([]);
   const [loading, setLoading] = useState(false);

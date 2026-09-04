@@ -1,9 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "../../components/ui/SortableTable";
-// /api/LpInfo, /api/LpAccount and /api/LpCentroidAlias sit behind requireSession
-// (server.js denies every /api and /rest route by default); every call here
-// must carry the session bearer token or it 401s the moment the deny-by-default
-// gate is live, even though apiUrl() targets this same origin.
+// /api/LpInfo, /api/LpAccount and /api/LpCentroidAlias are routes on the
+// trading backend, not on this server, so they have to go through the
+// same-origin proxy prefix. The doubled "api" in /api/backend/api/LpInfo is
+// correct: /api/backend is where the proxy is mounted and /api/LpInfo is the
+// backend's own path.
+import { BACKEND_BASE_URL } from "@/lib/backendBase";
+// That prefix sits behind requireSession (server.js denies every /api and
+// /rest route by default); every call here must carry the session bearer token
+// or it 401s on our own server before it ever reaches the backend.
 import { authHeaders } from "@/lib/auth";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -120,10 +125,6 @@ function defaultModal(lpName = "", info: LpInfo | null = null): ModalState {
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export const LpInfoPage: React.FC = () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || "").replace(/\/+$/, "");
-  const apiUrl = (p: string) => (backendBaseUrl ? backendBaseUrl + p : p);
-
   // ── Data State ───────────────────────────────────────────────────────────────
   const [rows, setRows] = useState<TableRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -187,9 +188,9 @@ export const LpInfoPage: React.FC = () => {
     setLoading(true);
     try {
       const [accResp, infoResp, aliasResp] = await Promise.all([
-        fetch(apiUrl("/api/LpAccount?all=true"), { headers: { Accept: "application/json", ...authHeaders() } }),
-        fetch(apiUrl("/api/LpInfo"), { headers: { Accept: "application/json", ...authHeaders() } }),
-        fetch(apiUrl("/api/LpCentroidAlias"), { headers: { Accept: "application/json", ...authHeaders() } }),
+        fetch(`${BACKEND_BASE_URL}/api/LpAccount?all=true`, { headers: { Accept: "application/json", ...authHeaders() } }),
+        fetch(`${BACKEND_BASE_URL}/api/LpInfo`, { headers: { Accept: "application/json", ...authHeaders() } }),
+        fetch(`${BACKEND_BASE_URL}/api/LpCentroidAlias`, { headers: { Accept: "application/json", ...authHeaders() } }),
       ]);
       const accounts: LpAccount[] = await accResp.json();
       const infos: LpInfo[] = await infoResp.json();
@@ -275,7 +276,7 @@ export const LpInfoPage: React.FC = () => {
   async function loadAliases(infoId: number) {
     setAliasLoading(true);
     try {
-      const resp = await fetch(apiUrl(`/api/LpCentroidAlias?lpInfoId=${infoId}`), {
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/LpCentroidAlias?lpInfoId=${infoId}`, {
         headers: { Accept: "application/json", ...authHeaders() },
       });
       const data: LpCentroidAlias[] = await resp.json();
@@ -294,7 +295,7 @@ export const LpInfoPage: React.FC = () => {
     const alias = newAlias.trim();
     if (!alias) { setAliasMsg({ text: "Enter an alias", ok: false }); return; }
     try {
-      const resp = await fetch(apiUrl("/api/LpCentroidAlias"), {
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/LpCentroidAlias`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ lpInfoId: infoId, alias }),
@@ -317,7 +318,7 @@ export const LpInfoPage: React.FC = () => {
     if (!confirm("Remove this alias?")) return;
     const infoId = modal.infoId;
     try {
-      const resp = await fetch(apiUrl(`/api/LpCentroidAlias/${id}`), { method: "DELETE", headers: { ...authHeaders() } });
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/LpCentroidAlias/${id}`, { method: "DELETE", headers: { ...authHeaders() } });
       if (resp.ok) {
         setAliasMsg({ text: "Removed", ok: true });
         if (infoId) loadAliases(infoId);
@@ -353,12 +354,12 @@ export const LpInfoPage: React.FC = () => {
     setSaving(true);
     try {
       const resp = infoId
-        ? await fetch(apiUrl(`/api/LpInfo/${infoId}`), {
+        ? await fetch(`${BACKEND_BASE_URL}/api/LpInfo/${infoId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify(body),
           })
-        : await fetch(apiUrl("/api/LpInfo"), {
+        : await fetch(`${BACKEND_BASE_URL}/api/LpInfo`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify(body),
@@ -385,7 +386,7 @@ export const LpInfoPage: React.FC = () => {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
     try {
-      const resp = await fetch(apiUrl("/api/lpinfo/bulk-update"), {
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/lpinfo/bulk-update`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ ids, patch }),
@@ -421,7 +422,7 @@ export const LpInfoPage: React.FC = () => {
     if (!text) { setImportMsg({ text: "Paste CSV content first", ok: false }); return; }
     setImporting(true);
     try {
-      const resp = await fetch(apiUrl("/api/LpInfo/import"), {
+      const resp = await fetch(`${BACKEND_BASE_URL}/api/LpInfo/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ csvText: text }),

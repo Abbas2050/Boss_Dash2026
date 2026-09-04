@@ -114,11 +114,13 @@ const inputClass =
   "rounded border border-border bg-background/70 p-2 text-sm transition outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20";
 
 export const LPManagerPage: React.FC = () => {
-  // Shared so the fallback cannot drift: an empty base collapsed these calls
-  // to a relative path against this dashboard, which does not host the
-  // trading API.
-  const backendBaseUrl = BACKEND_BASE_URL;
-  const apiUrl = (path: string) => (backendBaseUrl ? `${backendBaseUrl}${path}` : path);
+  // Written without a fallback branch on purpose. The earlier shape here was
+  // `base ? base + path : path`, which is harmless while the base is a
+  // constant but is the exact line that, copied into a file whose base came
+  // from the browser env, silently aimed three settings pages at this
+  // dashboard's own index.html. There is nothing to fall back to: the trading
+  // backend is only reachable through the proxy prefix.
+  const apiUrl = (path: string) => `${BACKEND_BASE_URL}${path}`;
 
   const [accounts, setAccounts] = useState<LPAccount[]>([]);
   const [coverageRows, setCoverageRows] = useState<CoverageItem[]>([]);

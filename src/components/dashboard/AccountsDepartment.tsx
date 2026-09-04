@@ -554,7 +554,6 @@ export function AccountsDepartment({
 
     const fetchLpOverview = async () => {
       try {
-        const backendBaseUrl = String((import.meta as any).env?.VITE_BACKEND_BASE_URL || '').replace(/\/+$/, '');
         const now = getDubaiDate();
         const startDate = new Date(now);
         startDate.setHours(0, 0, 0, 0);

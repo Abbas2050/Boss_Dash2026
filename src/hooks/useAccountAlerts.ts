@@ -90,16 +90,15 @@ export function useAccountAlerts() {
   });
 
   useEffect(() => {
-    // Was:
-    //     const backendBaseUrl = (import.meta as any).env?.VITE_BACKEND_BASE_URL || '';
-    //     const hubUrl = backendBaseUrl
-    //   DASHBOARD_HUB_URL;
-    // which is not the ternary it looks like. Automatic semicolon insertion
-    // ends the declaration after `backendBaseUrl`, leaving `DASHBOARD_HUB_URL;`
-    // as a dead expression statement on the next line. VITE_BACKEND_BASE_URL is
-    // undefined in production -- the credentials were renamed off the VITE_
-    // prefix and it went with them -- so hubUrl was the empty string and this
-    // connection could never work, with or without auth.
+    // This used to read a base URL from the browser-visible env, assign it to
+    // `hubUrl`, and leave DASHBOARD_HUB_URL alone on the following line: not
+    // the ternary it looked like. Automatic semicolon insertion ended the
+    // declaration early, leaving the real hub URL as a dead expression
+    // statement. The env var it read is undefined in production -- the
+    // credentials were renamed off the browser-visible prefix and it went with
+    // them -- so hubUrl was the empty string and this connection could never
+    // work, with or without auth. The variable is deliberately not named here:
+    // a commented-out copy of that line is what gets pasted back in.
     const hubUrl = DASHBOARD_HUB_URL;
 
     const manager = new SignalRConnectionManager({
