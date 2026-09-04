@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import {
   SLIPPAGE_GUARD_KEYS,
   SLIPPAGE_RECIPIENT_VARS,
@@ -102,5 +104,155 @@ describe("period wording", () => {
 describe("HTML entities are written once, not twice", () => {
   it("contains no double-escaped entities", () => {
     expect(html()).not.toMatch(/&amp;(mdash|ndash|minus|nbsp|rsquo|middot);/);
+  });
+});
+
+// ── the shared shell ─────────────────────────────────────────────────────────
+//
+// The Slippage report used to carry its own <style> block, hard-coded to a dark
+// palette, while the Business Summary family ran on emailShell's light theme.
+// The reader opens all of them on a phone in Zoho and complained about exactly
+// the one that had drifted. These tests hold the migration in place: the report
+// is the shared shell, in light, and nothing it renders depends on a rule that
+// does not ship with it.
+
+const VOLUME = {
+  totalDeals: 203109.22,
+  clientDeals: 190000,
+  shiftingDeals: 13109.22,
+  shiftingRealized: 400.5,
+  internalDeals: 88.25,
+  internalRealized: 44.125,
+  realizedCfd: 1200.5,
+  realizedEquity: 48000.25,
+  realizedTotal: 49200.75,
+  bridgeLots: 4100.1,
+  matchedLots: 4050.4,
+};
+
+const richHtml = (over = {}) =>
+  buildSlippageEmailHtml({
+    fromYmd: "2026-08-24",
+    toYmd: "2026-08-30",
+    buckets: [
+      // Two LPs so both sign classes render, and "Unattributed" so the
+      // muted-key class is exercised rather than assumed.
+      { key: "LP One", count: 3, lots: 45.5, netSlipUsd: -320.25, netPosUsd: 10, netNegUsd: -330.25, avgSlipPts: -1.2, lpAvgSlipUsd: -2.67, clientAvgSlipPts: 0.4, clientAvgSlipUsd: 1.1, clientTotalSlipUsd: 3.3, clientTotalCostUsd: 4.4, sumSlipPts: -3.6, slipPtsCount: 3, clientSumUsd: 3.3, clientCostSumUsd: 4.4, clientSumPts: 1.2 },
+      // Every figure zero, so slipCls returns "muted" and that class appears.
+      { key: "Unattributed", count: 1, lots: 0, netSlipUsd: 0, netPosUsd: 0, netNegUsd: 0, avgSlipPts: 0, lpAvgSlipUsd: 0, clientAvgSlipPts: 0, clientAvgSlipUsd: 0, clientTotalSlipUsd: 0, clientTotalCostUsd: 0, sumSlipPts: 0, slipPtsCount: 0, clientSumUsd: 0, clientCostSumUsd: 0, clientSumPts: 0 },
+    ],
+    kpis: {
+      totalLots: 45.5,
+      totalNetSlipUsd: -320.25,
+      bestLp: { key: "LP One", costPerLot: 1.1 },
+      worstLp: { key: "LP Two", costPerLot: 9.9 },
+      worstClient: "10218",
+      worstClientCost: 12.5,
+    },
+    mt5Volume: VOLUME,
+    ...over,
+  });
+
+// Every colour the old private shell painted the page, the card, its border and
+// its zebra stripes with. One of these surviving anywhere means a piece of the
+// black email came back.
+const DARK_LITERALS = ["#0b1220", "#111a2c", "#1f2a44", "#101c33", "#16233f"];
+
+describe("the Slippage email is light, not dark", () => {
+  it("contains none of the old dark-palette colours anywhere", () => {
+    for (const variant of [richHtml(), richHtml({ mt5Volume: null }), emptyHtml()]) {
+      const found = DARK_LITERALS.filter((hex) => variant.includes(hex));
+      expect(found).toEqual([]);
+    }
+  });
+
+  it("paints the page and the card with the light theme's own colours", () => {
+    const out = richHtml();
+    expect(out).toMatch(/background:#f3f7fb/); // page
+    expect(out).toMatch(/background:#ffffff/); // card
+  });
+});
+
+describe("the Slippage email is built through the shared shell", () => {
+  const source = readFileSync(path.resolve("reports/slippageWeeklyReport.js"), "utf8");
+
+  it("defines no shell of its own — no stylesheet, no document, no <body>", () => {
+    expect(source).not.toMatch(/<style>/);
+    expect(source).not.toMatch(/<!doctype/i);
+    expect(source).not.toMatch(/<body>/);
+  });
+
+  it("imports the shell and the cell helpers instead of hand-copying them", () => {
+    expect(source).toMatch(/^\s+emailShell,$/m);
+    // The two helpers this file used to keep private copies of.
+    expect(source).not.toMatch(/^function (dataCell|spanCell)\(/m);
+  });
+
+  it("still emits the shell's document and the tscroll wrapper that keeps a phone from scrolling sideways", () => {
+    const out = richHtml();
+    expect(out).toMatch(/^<!doctype html>/);
+    expect(out).toMatch(/<div class="tscroll">/);
+  });
+});
+
+// ── class coverage ───────────────────────────────────────────────────────────
+//
+// The regression this exists for: on 2026-09-04 the volume section reached the
+// reader's phone as two headings and no figures, because its markup used class
+// names no shell stylesheet defined. A body class with no rule behind it is
+// invisible until someone opens the email.
+//
+// vx and vs are the two documented exceptions, and they are exceptions by
+// construction rather than by oversight (volumeSection.js): vx carries every
+// declaration it needs inline on the element, and vs is a bare marker that
+// pairs a data-share attribute with a value the monotonicity guard reads. They
+// are named here individually so a third undefined class cannot join them.
+const MARKER_CLASSES = ["vs", "vx"];
+
+function classesUsed(html) {
+  const used = new Set();
+  for (const m of html.matchAll(/class="([^"]*)"/g)) {
+    for (const c of m[1].trim().split(/\s+/)) if (c) used.add(c);
+  }
+  return used;
+}
+
+function classesDefined(html) {
+  const style = /<style>([\s\S]*?)<\/style>/.exec(html);
+  expect(style).not.toBeNull();
+  return new Set([...style[1].matchAll(/\.([A-Za-z][\w-]*)/g)].map((m) => m[1]));
+}
+
+describe("every class in the Slippage body has a rule in the stylesheet that ships with it", () => {
+  it.each([
+    ["with volume", () => richHtml()],
+    ["with volume unavailable", () => richHtml({ mt5Volume: null, volumeError: "boom" })],
+    ["with no slippage rows", () => emptyHtml()],
+  ])("%s", (_label, build) => {
+    const out = build();
+    const defined = classesDefined(out);
+    const undefinedClasses = [...classesUsed(out)]
+      .filter((c) => !defined.has(c) && !MARKER_CLASSES.includes(c))
+      .sort();
+    expect(undefinedClasses).toEqual([]);
+  });
+
+  it("allows exactly the two documented marker classes and no others", () => {
+    expect(MARKER_CLASSES).toEqual(["vs", "vx"]);
+  });
+});
+
+describe("the volume section inside the Slippage email renders light", () => {
+  it("uses the light muted colour and never the dark one", () => {
+    const out = richHtml();
+    expect(out).toMatch(/MT5 Volume Flow/);
+    expect(out).toMatch(/color:#64748b/); // volumeSection THEMES.light.muted
+    expect(out).not.toMatch(/#8ea4c6/); // THEMES.dark.muted
+  });
+
+  it("says so when volume is unavailable, still in the light colour", () => {
+    const out = richHtml({ mt5Volume: null, volumeError: "boom" });
+    expect(out).toMatch(/Volume data was unavailable[\s\S]*?boom/);
+    expect(out).not.toMatch(/#8ea4c6/);
   });
 });

@@ -11,6 +11,11 @@ import {
   renderChartBuffer,
   CADENCES,
   resolveRecipients,
+  emailShell,
+  kpiGrid,
+  dataTable,
+  dataCell,
+  spanCell,
 } from "./reportShared.js";
 import { extractVolume, fetchVolumeReport, renderVolumeSection } from "./volumeSection.js";
 
@@ -147,28 +152,25 @@ function computeKpis(buckets, rows) {
   return { totalLots, totalNetSlipUsd, bestLp, worstLp, worstClient, worstClientCost };
 }
 
-// ── email HTML (dark theme) ──────────────────────────────────────────────────
+// ── email HTML ───────────────────────────────────────────────────────────────
+//
+// This report used to carry its own hand-rolled stylesheet pinned to a dark
+// palette. The reader opens these on a phone in Zoho and asked for it to stop
+// being a black page; the Business Summary family, which he does not complain
+// about, has always been the shared light shell. So the private shell is gone
+// and everything below composes `emailShell` from reportShared.js instead —
+// the same stylesheet, the same cell helpers, one place to fix a rendering bug.
+//
+// The private `dataCell` and `spanCell` copies went with it. They were
+// character-for-character the shared ones minus the `bold` option, and a
+// hand-copied helper is exactly how the two shells drifted apart in the first
+// place.
 
 function slipCls(value) {
   const n = Number(value) || 0;
   if (n > 0) return "pos";
   if (n < 0) return "neg";
   return "muted";
-}
-
-// Builds one table cell carrying its own visible row label. The label span is
-// hidden at the desktop breakpoint, where the real <thead> takes over.
-// Right-aligned cells are numeric and get `num` (never wraps); everything else
-// gets `txt` (wraps between words only).
-function dataCell(label, value, { align = "left", cls = "", nowrap = false } = {}) {
-  const kind = align === "right" ? "num" : nowrap ? "key" : "txt";
-  const valueCls = cls ? ` ${cls}` : "";
-  return `<td class="${kind}" data-label="${escapeHtml(label)}"><span class="lbl">${escapeHtml(label)}</span><span class="val${valueCls}">${value}</span></td>`;
-}
-
-// Full-width cell (TOTAL label, empty-state notice) — no label/value split.
-function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
-  return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
 export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, mt5Volume = null, volumeError = null, periodNoun = "week", cadence = "weekly" }) {
@@ -211,155 +213,7 @@ export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, mt5Volum
   const totalClientAvgPts = rollupTotals.count > 0 ? rollupTotals.clientSumPts / rollupTotals.count : 0;
   const totalClientAvgUsd = rollupTotals.count > 0 ? rollupTotals.clientSumUsd / rollupTotals.count : 0;
 
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      /* ── Mobile-first base: stacked & fluid so it stays responsive even in
-         clients that honor <style> but strip @media (Gmail app for non-Google
-         accounts, several webmail clients). Desktop layout is restored in the
-         @media (min-width) block below. ── */
-      body { margin:0; padding:0; background:#0b1220; color:#e2e8f0; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
-      /* box-sizing on the layout wrappers: without it, width:100% + padding
-         overflows the viewport and the whole email scrolls sideways. */
-      .outer, .wrap, .header, .content { box-sizing:border-box; }
-      .outer { width:100%; background:#0b1220; padding:8px 4px; }
-      /* 980px is what Zoho actually gives the message body; pinning the canvas
-         there makes the card-per-row maths deterministic instead of depending
-         on the reader's window size. */
-      .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#111a2c; border:1px solid #1f2a44; border-radius:10px; overflow:hidden; }
-      .header { padding:14px 16px; background:linear-gradient(135deg,#0b1a33,#132a4f); color:#eaf4ff; }
-      .header-grid { width:100%; border-collapse:collapse; }
-      .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
-      .header-left { vertical-align:top; text-align:left; }
-      .header-right { vertical-align:top; text-align:left; margin-top:10px; }
-      .title { margin:0; font-size:19px; font-weight:700; letter-spacing:0.2px; }
-      .subtitle { margin:6px 0 0; font-size:12px; color:#93c5fd; }
-      .header-meta { margin:0; font-size:11px; line-height:1.55; color:#9fb8d6; }
-      .content { padding:16px; }
-      /* ── Single layout, NO @media ────────────────────────────────────────
-         Zoho strips @media entirely, so there is no breakpoint to switch on and
-         one layout has to read well at both 375px and desktop width.
-         Card grids use inline-block cells with a px cap: several fit a desktop
-         row and collapse to one per line on a phone. That trick only works for
-         small counts — a 10-across row can never also be 1-across — so the data
-         is split into narrower tables instead. */
-      /* Five cards, and one of them holds "-$12,480.55" — too wide for a fifth
-         of a phone screen. Capped at 150px they sit five-across on desktop and
-         fall to two-across (filling the width) on a phone. */
-      .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; max-width:182px; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; }
-      .kpi { background:#0f1a30; border:1px solid #223255; border-radius:10px; padding:10px 12px; }
-      .kpi-label { font-size:11px; text-transform:uppercase; letter-spacing:0.4px; color:#8ea4c6; margin:0 0 6px; }
-      .kpi-value { font-size:17px; font-weight:700; color:#e2e8f0; margin:0; }
-      .kpi-sub { font-size:11px; color:#8ea4c6; margin:4px 0 0; }
-      .section-title { margin: 2px 0 8px; font-size:14px; color:#e2e8f0; font-weight:700; }
-      /* The full table needs ~940px to stay legible. On a desktop-width email it
-         simply fills the width; on a phone the wrapper scrolls sideways rather
-         than crushing ten columns into 375px, which mangled the figures.
-         Numeric cells never wrap. */
-      /* BASE = the real table. Zoho ignores @media (verified in production from
-         both directions), so there is no breakpoint to switch on — the table has
-         to be the default or a desktop reader never gets one. The wrapper keeps
-         a phone usable: it scrolls sideways instead of crushing 10 columns. */
-      /* Cells flow instead of scrolling. Zoho strips overscroll-behavior and
-         touch-action, so a horizontally scrolling table could not be made
-         safe on Android -- the swipe chained out and flipped to the next
-         email. inline-block cells line up in columns on a wide screen and
-         stack on a phone, with no media query. See reportShared.js. */
-      .tscroll { width:100%; overflow-x:auto; margin:0 0 16px; }
-      table.data { border-collapse:collapse; width:100%; font-size:12px; }
-      table.data thead { display:none; }
-      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid #223255; padding:4px 0; }
-      table.data tbody tr:nth-child(even) { background:#101c33; }
-      table.data tr.total-row { background:#16233f; }
-      table.data tr.total-row td { font-weight:700; color:#e2e8f0; }
-      table.data td, table.data th { display:inline-block; box-sizing:border-box; width:100%; max-width:156px; vertical-align:top; border:0; padding:4px 8px; text-align:left; }
-      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; color:#8ea4c6; }
-      table.data td .val { display:block; font-size:12px; }
-      table.data td.num .val { white-space:nowrap; }
-      table.data td.key .val { white-space:nowrap; }
-      .muted-key { font-style:italic; color:#7186a8; }
-      .pos { color:#34d399; font-weight:700; }
-      .neg { color:#f87171; font-weight:700; }
-      .muted { color:#7186a8; }
-      .chart-wrap { margin: 6px 0 16px; text-align:center; }
-      .chart-wrap img { max-width:100%; border-radius:8px; border:1px solid #223255; }
-      .foot { border-top:1px solid #223255; margin-top:14px; padding-top:10px; color:#8ea4c6; font-size:12px; line-height:1.5; }
-    </style>
-  </head>
-  <body>
-    <div class="outer">
-      <div class="wrap">
-        <div class="header">
-          <table class="header-grid" role="presentation">
-            <tr>
-              <td class="header-left" width="48%">
-                <div class="header-meta">
-                  Period: <strong>${escapeHtml(fromYmd)}</strong> to <strong>${escapeHtml(toYmd)}</strong><br/>
-                  Scope: all groups, all logins, all symbols<br/>
-                  Excludes internal accounts (matches Slippage tab)
-                </div>
-              </td>
-              <td class="header-right" width="52%">
-                <h1 class="title">${CADENCES[cadence].subjectWord} Slippage Report</h1>
-                <div class="subtitle">Management Reporting | LP Slippage Analytics</div>
-              </td>
-            </tr>
-          </table>
-        </div>
-        <div class="content">
-          <table class="kpis" role="presentation">
-            <tr>
-              <td class="kpi" width="20%">
-                <p class="kpi-label">Total Lots</p>
-                <p class="kpi-value">${fmtNum(kpis.totalLots, 2)}</p>
-              </td>
-              <td class="kpi" width="20%">
-                <p class="kpi-label">Total Net LP Slippage USD</p>
-                <p class="kpi-value ${slipCls(kpis.totalNetSlipUsd)}">${money(kpis.totalNetSlipUsd)}</p>
-              </td>
-              <td class="kpi" width="20%">
-                <p class="kpi-label">Best LP (lowest USD/lot)</p>
-                <p class="kpi-value">${kpis.bestLp ? escapeHtml(kpis.bestLp.key) : "-"}</p>
-                <p class="kpi-sub">${kpis.bestLp ? `${fmtNum(kpis.bestLp.costPerLot, 2)} USD/lot` : "0.00 USD/lot"}</p>
-              </td>
-              <td class="kpi" width="20%">
-                <p class="kpi-label">Worst LP (highest USD/lot)</p>
-                <p class="kpi-value">${kpis.worstLp ? escapeHtml(kpis.worstLp.key) : "-"}</p>
-                <p class="kpi-sub">${kpis.worstLp ? `${fmtNum(kpis.worstLp.costPerLot, 2)} USD/lot` : "0.00 USD/lot"}</p>
-              </td>
-              <td class="kpi" width="20%">
-                <p class="kpi-label">Worst Client (highest USD slippage)</p>
-                <p class="kpi-value">${kpis.worstClient ? escapeHtml(kpis.worstClient) : "-"}</p>
-                <p class="kpi-sub">${kpis.worstClient ? `${money(kpis.worstClientCost)}` : "0.00 USD"}</p>
-              </td>
-            </tr>
-          </table>
-
-          <p class="section-title">By-LP Summary</p>
-          <div class="tscroll">
-          <table class="data">
-            <thead>
-              <tr>
-                <th width="10%">LP</th>
-                <th width="8%">Lots</th>
-                <th width="9%">LP Avg Slip (pts)</th>
-                <th width="9%">LP Avg Slip (USD)</th>
-                <th width="10%">LP Total Slip (USD)</th>
-                <th width="9%">Client Avg Slip (pts)</th>
-                <th width="9%">Client Avg Slip (USD)</th>
-                <th width="10%">Client Total Slip (USD)</th>
-                <th width="10%">Client Cost (USD)</th>
-                <th width="8%">Net Positive USD</th>
-                <th width="8%">Net Negative USD</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr class="total-row">
-                ${spanCell("TOTAL")}
+  const totalRow = `${spanCell("TOTAL")}
                 ${dataCell("Lots", fmtNum(rollupTotals.lots, 2), { align: "right" })}
                 ${dataCell("LP Avg Slip (pts)", fmtNum(totalLpAvgPts, 2), { align: "right", cls: slipCls(totalLpAvgPts) })}
                 ${dataCell("LP Avg Slip (USD)", money(totalLpAvgUsd), { align: "right", cls: slipCls(totalLpAvgUsd) })}
@@ -369,32 +223,104 @@ export function buildSlippageEmailHtml({ fromYmd, toYmd, buckets, kpis, mt5Volum
                 ${dataCell("Client Total Slip (USD)", money(rollupTotals.clientSumUsd), { align: "right", cls: slipCls(rollupTotals.clientSumUsd) })}
                 ${dataCell("Client Cost (USD)", money(rollupTotals.clientCostSumUsd), { align: "right", cls: slipCls(rollupTotals.clientCostSumUsd) })}
                 ${dataCell("Net Positive USD", money(rollupTotals.netPosUsd), { align: "right", cls: "pos" })}
-                ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}
-              </tr>
-              ${bodyRows || `<tr>${spanCell(`No slippage rows for this ${periodNoun}.`, { colspan: 11, align: "center" })}</tr>`}
-            </tbody>
-          </table>
-          </div>
+                ${dataCell("Net Negative USD", money(rollupTotals.netNegUsd), { align: "right", cls: "neg" })}`;
 
-          ${renderVolumeSection(mt5Volume, { theme: "dark", unavailableReason: volumeError })}
+  // Five cards, and one of them holds "-$12,480.55" — too wide for a fifth of a
+  // phone screen. Capped at 182px they sit five-across on a desktop row and
+  // fall to two-across, filling the width, on a phone. No media query: Zoho
+  // strips them, so the single layout has to read at both widths.
+  const cards = kpiGrid(
+    [
+      { label: "Total Lots", value: fmtNum(kpis.totalLots, 2) },
+      { label: "Total Net LP Slippage USD", value: money(kpis.totalNetSlipUsd), cls: slipCls(kpis.totalNetSlipUsd) },
+      {
+        label: "Best LP (lowest USD/lot)",
+        value: kpis.bestLp ? escapeHtml(kpis.bestLp.key) : "-",
+        note: kpis.bestLp ? `${fmtNum(kpis.bestLp.costPerLot, 2)} USD/lot` : "0.00 USD/lot",
+      },
+      {
+        label: "Worst LP (highest USD/lot)",
+        value: kpis.worstLp ? escapeHtml(kpis.worstLp.key) : "-",
+        note: kpis.worstLp ? `${fmtNum(kpis.worstLp.costPerLot, 2)} USD/lot` : "0.00 USD/lot",
+      },
+      {
+        label: "Worst Client (highest USD slippage)",
+        value: kpis.worstClient ? escapeHtml(kpis.worstClient) : "-",
+        note: kpis.worstClient ? `${money(kpis.worstClientCost)}` : "0.00 USD",
+      },
+    ],
+    { maxWidth: 182 },
+  );
+
+  const body = `
+          ${cards}
+
+          <p class="section-title">By-LP Summary</p>
+          ${dataTable({
+            headers: [
+              { label: "LP", width: "10%" },
+              { label: "Lots", width: "8%" },
+              { label: "LP Avg Slip (pts)", width: "9%" },
+              { label: "LP Avg Slip (USD)", width: "9%" },
+              { label: "LP Total Slip (USD)", width: "10%" },
+              { label: "Client Avg Slip (pts)", width: "9%" },
+              { label: "Client Avg Slip (USD)", width: "9%" },
+              { label: "Client Total Slip (USD)", width: "10%" },
+              { label: "Client Cost (USD)", width: "10%" },
+              { label: "Net Positive USD", width: "8%" },
+              { label: "Net Negative USD", width: "8%" },
+            ],
+            totalRow,
+            bodyRows,
+            emptyText: `No slippage rows for this ${periodNoun}.`,
+          })}
+
+          ${renderVolumeSection(mt5Volume, { theme: "light", unavailableReason: volumeError })}
 
           <p class="section-title" style="margin-top:16px;">Net Slippage by LP</p>
-          <div class="chart-wrap" style="color:#8ea4c6;font-size:12px;">
+          <p class="note">
             See the attached chart <strong>slippage-by-lp.png</strong> for Net Slippage by LP.
-          </div>
+          </p>`;
 
-          <div class="foot">
-            Automated report generated by the Slippage Reporting pipeline.<br/>
-            Net Slippage USD = &Sigma; LP P/L impact per LP. Avg Slip pts averaged only over rows with an LP fill (lpPrice &gt; 0).
-          </div>
-        </div>
-      </div>
-    </div>
-  </body>
-</html>`;
+  return emailShell({
+    theme: "light",
+    title: `${CADENCES[cadence].subjectWord} Slippage Report`,
+    subtitle: "Management Reporting | LP Slippage Analytics",
+    metaLines: [
+      `Period: <strong>${escapeHtml(fromYmd)}</strong> to <strong>${escapeHtml(toYmd)}</strong>`,
+      "Scope: all groups, all logins, all symbols",
+      "Excludes internal accounts (matches Slippage tab)",
+    ],
+    body,
+    footerLines: [
+      "Automated report generated by the Slippage Reporting pipeline.",
+      "Net Slippage USD = &Sigma; LP P/L impact per LP. Avg Slip pts averaged only over rows with an LP fill (lpPrice &gt; 0).",
+    ],
+  });
 }
 
 // ── chart attachment ─────────────────────────────────────────────────────────
+
+// The chart's palette, matching the light email around it.
+//
+// It was drawn for a dark card: a #111a2c canvas fill, #cfe0fb ticks, and
+// pastel #f87171 / #34d399 bars. Two things were wrong with that. The canvas
+// fill never applied — `renderChartBuffer` hands ChartJSNodeCanvas a white
+// backgroundColour and `options.backgroundColor` is not a Chart.js root option
+// — so the pale-blue ticks and washed pastel bars were already being drawn on
+// white, which is most of why the attachment looked as bad as the email.
+//
+// These are the same semantic values the Deal Match charts use (its CH map) and
+// the same red and green the shared stylesheet gives .neg and .pos, so a bar
+// and a table cell reporting the same loss are now the same colour.
+const CH = {
+  ink: "#0f172a",
+  grid: "#e2e8f0",
+  axis: "#334155",
+  muted: "#64748b",
+  loss: "#b91c1c",
+  gain: "#15803d",
+};
 
 async function buildSlippageChartAttachments(buckets, fromYmd, toYmd) {
   const top = [...buckets]
@@ -411,7 +337,7 @@ async function buildSlippageChartAttachments(buckets, fromYmd, toYmd) {
         {
           label: "Net Slippage USD",
           data: top.map((b) => Number(b.netSlipUsd) || 0),
-          backgroundColor: top.map((b) => (Number(b.netSlipUsd) || 0) < 0 ? "#f87171" : "#34d399"),
+          backgroundColor: top.map((b) => ((Number(b.netSlipUsd) || 0) < 0 ? CH.loss : CH.gain)),
           borderRadius: 5,
         },
       ],
@@ -420,26 +346,25 @@ async function buildSlippageChartAttachments(buckets, fromYmd, toYmd) {
       indexAxis: "y",
       responsive: false,
       animation: false,
-      backgroundColor: "#111a2c",
       scales: {
         x: {
-          ticks: { color: "#cfe0fb", callback: (v) => `$${Math.round(v).toLocaleString()}` },
-          grid: { color: "#223255" },
+          ticks: { color: CH.axis, callback: (v) => `$${Math.round(v).toLocaleString()}` },
+          grid: { color: CH.grid },
         },
-        y: { ticks: { color: "#cfe0fb" }, grid: { display: false } },
+        y: { ticks: { color: CH.axis }, grid: { display: false } },
       },
       plugins: {
         legend: { display: false },
         title: {
           display: true,
           text: `Net Slippage by LP (${fromYmd} to ${toYmd})`,
-          color: "#e2e8f0",
+          color: CH.ink,
           font: { size: 20, weight: "700" },
         },
         subtitle: {
           display: true,
           text: "Top 15 LPs by |Net Slippage USD| - worst (red) to best (green)",
-          color: "#9fb8d6",
+          color: CH.muted,
           font: { size: 12 },
         },
       },

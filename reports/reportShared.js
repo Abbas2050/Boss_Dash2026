@@ -621,7 +621,11 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       .section-title { margin:14px 0 8px; font-size:14px; color:${t.totalFg}; font-weight:700; }
       .note { margin:0 0 10px; font-size:11px; color:${t.muted}; }
       .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
-      .kpis td { display:inline-block; width:100%; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; background:${t.kpiBg}; border:1px solid ${t.kpiBorder}; border-radius:10px; padding:10px 12px; }
+      /* .kpi is named as well as ".kpis td" because that is the class the
+         markup actually carries. A class the HTML uses but the stylesheet only
+         reaches by descendant selector is invisible to a coverage scan, and a
+         card moved out of its table would silently lose every declaration. */
+      .kpis td, .kpi { display:inline-block; width:100%; margin:0 3px 6px; vertical-align:top; box-sizing:border-box; font-size:12px; text-align:left; background:${t.kpiBg}; border:1px solid ${t.kpiBorder}; border-radius:10px; padding:10px 12px; }
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:${t.muted}; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:${t.kpiValue}; margin:0; white-space:nowrap; }
       .kpi-note-sm { font-size:10px; color:${t.muted}; margin:4px 0 0; }
@@ -653,10 +657,23 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       table.data td .val { display:block; font-size:12px; }
       table.data td.num .val { white-space:nowrap; }
       table.data td.key .val { white-space:nowrap; }
+      /* The third kind of cell. It is the wrapping one, and it is written out
+         rather than left to the default so that all three kinds dataCell can
+         emit are declared here — and so a txt cell cannot inherit a nowrap
+         from anywhere and quietly widen a table on a phone. */
+      table.data td.txt .val { white-space:normal; }
       .ch-img { margin:0 0 16px; }
       .ch-img img { display:block; width:100%; max-width:100%; height:auto; border:1px solid ${t.line}; border-radius:8px; }
       .pos { color:#15803d; font-weight:700; }
       .neg { color:#b91c1c; font-weight:700; }
+      /* The third outcome. A sign classifier that returns pos/neg for a figure
+         has to return something for exactly zero too, and that something must
+         be styled or the cell renders in whatever the surrounding weight is and
+         reads as a value rather than as an absence of one. */
+      .muted { color:${t.muted}; }
+      /* An identifier that is not a real name — the "Unattributed" LP bucket.
+         Italic so it is visibly not one of the LPs beside it. */
+      .muted-key { font-style:italic; color:${t.muted}; }
       .cost { color:#b45309; }
       .badge { display:inline-block; font-size:9px; font-weight:700; color:#15803d; border:1px solid #86efac; background:#f0fdf4; border-radius:4px; padding:1px 4px; margin-left:4px; }
       .foot { border-top:1px solid ${t.line}; margin-top:14px; padding-top:10px; color:${t.muted}; font-size:12px; line-height:1.5; }
