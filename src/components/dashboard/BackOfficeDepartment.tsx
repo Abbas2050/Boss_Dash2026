@@ -2617,10 +2617,14 @@ export function BackOfficeDepartment({
                 <div className="flex items-center gap-2 text-[11px] text-violet-800 dark:text-violet-300">
                   <Users className="h-3.5 w-3.5" /> CRM Applications (Pending)
                 </div>
-                <div className="mt-2 font-mono text-2xl font-semibold text-violet-900 dark:text-violet-100">{docusignOverview?.pendingApplicationsCount ?? 0}</div>
+                {/* A dash, not a zero: zero is a fact about the CRM, and we only
+                    know it when we actually managed to ask. */}
+                <div className="mt-2 font-mono text-2xl font-semibold text-violet-900 dark:text-violet-100">{docusignOverview?.pendingApplicationsCount ?? '—'}</div>
                 {docusignOverview?.system.pendingApplicationsError && (
                   <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-                    Pending applications fetch issue: {docusignOverview.system.pendingApplicationsError}
+                    {docusignOverview.system.pendingApplicationsConfigured === false
+                      ? 'Not configured — the server has no CRM API_TOKEN, so pending applications cannot be counted.'
+                      : `Pending applications fetch issue: ${docusignOverview.system.pendingApplicationsError}`}
                   </div>
                 )}
               </div>

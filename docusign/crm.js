@@ -1,12 +1,71 @@
-function required(name) {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
+/**
+ * This module talks to the same CRM (FXBO) as reports/reportShared.js and the
+ * /rest proxy in server.js, so it reads the same variable names they do.
+ *
+ * It did not, and that was the whole defect. It asked for VITE_API_URL and
+ * VITE_API_TOKEN -- server-side code reading VITE_-prefixed names. Those names
+ * were deliberately retired from the server environment because Vite compiles
+ * anything VITE_-prefixed into the browser bundle, which had put the CRM
+ * credential in the shipped JavaScript where any logged-in user could read it.
+ * Everything else moved to the unprefixed names; this module was missed, so it
+ * threw "VITE_API_URL is required" on every call and the Back Office panel
+ * displayed that failure next to a count of 0.
+ *
+ * The VITE_ names are still accepted as a legacy fallback so a server whose
+ * .env has not been migrated keeps working; drop them once production is clean.
+ */
+
+// First non-empty value among the given variable names, in preference order.
+// Trimming matters: a .env edited on Windows leaves a trailing CR on the value,
+// which the CRM rejects with a 403 that says nothing about whitespace.
+function envValue(...names) {
+  for (const name of names) {
+    const value = String(process.env[name] ?? "").trim();
+    if (value) return value;
+  }
+  return "";
 }
 
+const CRM_DEFAULT_ORIGIN = "https://portal.skylinkscapital.com";
+
+/** The CRM bearer token, or "" when none is configured. Never logged. */
+export function getCrmApiToken() {
+  return envValue("API_TOKEN", "VITE_API_TOKEN");
+}
+
+/**
+ * Is this module able to reach the CRM at all?
+ *
+ * Callers use this to render "not configured" rather than a count. A missing
+ * variable is a fact about us; zero pending applications is a fact about the
+ * CRM. Showing the first as the second is how the panel came to claim there
+ * were no pending applications while it was in fact never asking.
+ */
+export function isCrmConfigured() {
+  return Boolean(getCrmApiToken());
+}
+
+export class CrmNotConfiguredError extends Error {
+  constructor(message = "CRM API token not configured (API_TOKEN)") {
+    super(message);
+    this.name = "CrmNotConfiguredError";
+    this.code = "crm_not_configured";
+  }
+}
+
+/**
+ * The `/rest` base every endpoint below is hung off.
+ *
+ * Two shapes arrive here and both must work. REST_PROXY_TARGET is a bare origin
+ * (that is how server.js and reportShared.js define it), while the legacy
+ * VITE_API_URL was a full path that could already end in /rest or even
+ * /rest/transactions. Each previously-handled path shape resolves to exactly the
+ * base it always did; only a bare origin -- which never worked, because callers
+ * append "/users" -- gains its "/rest".
+ */
 export function getCrmBaseUrl() {
-  const apiUrl = required("VITE_API_URL");
-  const trimmed = String(apiUrl).replace(/\/+$/, "");
+  const configured = envValue("REST_PROXY_TARGET", "VITE_API_URL") || CRM_DEFAULT_ORIGIN;
+  const trimmed = configured.replace(/\/+$/, "");
   if (trimmed.includes("/rest/transactions")) {
     return trimmed.replace(/\/rest\/transactions$/, "/rest");
   }
@@ -14,11 +73,16 @@ export function getCrmBaseUrl() {
     return trimmed.replace(/\/transactions$/, "");
   }
   if (trimmed.endsWith("/rest")) return trimmed;
+  // Origin with no path of its own, e.g. "https://portal.skylinkscapital.com".
+  if (/^[a-z][a-z0-9+.-]*:\/\/[^/]+$/i.test(trimmed)) return `${trimmed}/rest`;
   return trimmed;
 }
 
 export function authHeaders() {
-  const token = required("VITE_API_TOKEN");
+  const token = getCrmApiToken();
+  // The thrown message names the VARIABLE, never the value: this error reaches
+  // an HTTP response body and the Back Office panel.
+  if (!token) throw new CrmNotConfiguredError();
   return {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -27,7 +91,7 @@ export function authHeaders() {
 }
 
 export function versionQuery() {
-  return `version=${encodeURIComponent(process.env.VITE_API_VERSION || "1.0.0")}`;
+  return `version=${encodeURIComponent(envValue("API_VERSION", "VITE_API_VERSION") || "1.0.0")}`;
 }
 
 function readFirstNonEmpty(...values) {

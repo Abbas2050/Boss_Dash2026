@@ -25,13 +25,16 @@ export type DocusignOverview = {
   completedClients: DocusignClientItem[];
   needsAttentionClients?: DocusignClientItem[];
   pendingApplications: DocusignPendingApplicationItem[];
-  pendingApplicationsCount: number;
+  /** `null` when the CRM could not be asked at all — a dash, never a zero. */
+  pendingApplicationsCount: number | null;
   system: {
     status: "operational" | "configuration_required" | string;
     hasCoreConfig: boolean;
     oauthEnabled: boolean;
     connectHmacEnabled: boolean;
     latestUpdatedAt: string | null;
+    /** False when the server has no CRM credential, so the count above is unknowable. */
+    pendingApplicationsConfigured?: boolean;
     pendingApplicationsError?: string | null;
   };
   webhook?: {

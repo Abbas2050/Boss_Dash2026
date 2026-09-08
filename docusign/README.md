@@ -39,6 +39,13 @@ AUTH_TOKEN_EXPIRES_IN_SECONDS=3600
 # Optional override if your public app URL differs from the request host
 # AUTH_TOKEN_ISSUER=https://app.skylinkscapital.com/oauth/token
 
+# CRM (FXBO) access — same names as server.js and reports/reportShared.js.
+# The VITE_-prefixed spellings are a legacy fallback only: Vite compiles anything
+# VITE_-prefixed into the browser bundle, so the credential must not live there.
+REST_PROXY_TARGET=https://portal.skylinkscapital.com
+API_TOKEN=
+API_VERSION=1.0.0
+
 # Optional automatic sync of approved CRM docusign applications
 DOCUSIGN_AUTO_SYNC_ENABLED=false
 DOCUSIGN_AUTO_SYNC_INTERVAL_SECONDS=300

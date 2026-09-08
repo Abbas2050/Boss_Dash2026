@@ -1,7 +1,8 @@
 import crypto from "crypto";
 import express from "express";
 import { createEnvelopeFromTemplate } from "./client.js";
-import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
+import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmUserById, isCrmConfigured } from "./crm.js";
+import { redactText } from "../wallet/redactSecrets.js";
 import { verifyOAuthBearerToken } from "../oauth/router.js";
 import { normalizeApplicationId } from "./appId.js";
 import {
@@ -110,6 +111,44 @@ function buildPendingApplicationsQuery() {
       limit: Math.max(10, Number(process.env.DOCUSIGN_PENDING_APPS_LIMIT || 100) || 100),
       offset: 0,
     },
+  };
+}
+
+/**
+ * Shape the pending-CRM-applications part of the overview.
+ *
+ * The distinction this exists to preserve: a count of 0 is a fact about the
+ * CRM ("nothing is pending"), whereas missing configuration is a fact about us
+ * ("we never asked"). Rendering the second as the first is what let the panel
+ * show `0` beside "VITE_API_URL is required" for weeks. When we cannot ask, the
+ * count is null and the panel renders a dash — the same rule the wallet and
+ * volume work already follow.
+ */
+export function buildPendingApplicationsSection({ configured, applications, error } = {}) {
+  if (!configured) {
+    return {
+      pendingApplications: [],
+      pendingApplicationsCount: null,
+      pendingApplicationsConfigured: false,
+      pendingApplicationsError: "crm_not_configured",
+    };
+  }
+  if (error) {
+    return {
+      pendingApplications: [],
+      pendingApplicationsCount: null,
+      pendingApplicationsConfigured: true,
+      // Redacted because the CRM's own error body is quoted verbatim by crm.js
+      // and a gateway rejecting a credential frequently echoes it back.
+      pendingApplicationsError: redactText(error instanceof Error ? error.message : String(error)),
+    };
+  }
+  const rows = Array.isArray(applications) ? applications : [];
+  return {
+    pendingApplications: rows,
+    pendingApplicationsCount: rows.length,
+    pendingApplicationsConfigured: true,
+    pendingApplicationsError: null,
   };
 }
 
@@ -236,25 +275,38 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
       crmUploadStatus: row.crm_upload_status,
     }));
 
-    let pendingApplications = [];
-    let pendingApplicationsError = null;
-    try {
-      const query = buildPendingApplicationsQuery();
-      const crmApplications = await fetchCrmApplicationsByType("docusign", query);
-      pendingApplications = crmApplications
-        .filter((app) => String(app?.status || "").trim().toLowerCase() === "pending")
-        .slice(0, 20)
-        .map((app) => ({
-          applicationId: String(app?.id || ""),
-          userId: Number(app?.userId || 0) || null,
-          status: String(app?.status || "pending"),
-          createdAt: String(app?.createdAt || ""),
-          createdBy: String(app?.createdBy || "").trim(),
-          fullName: getApplicationFullName(app),
-        }));
-    } catch (error) {
-      pendingApplicationsError = error instanceof Error ? error.message : String(error);
+    const crmConfigured = isCrmConfigured();
+    let crmApplicationRows = [];
+    let crmApplicationsError = null;
+    if (crmConfigured) {
+      try {
+        const query = buildPendingApplicationsQuery();
+        const crmApplications = await fetchCrmApplicationsByType("docusign", query);
+        crmApplicationRows = crmApplications
+          .filter((app) => String(app?.status || "").trim().toLowerCase() === "pending")
+          .slice(0, 20)
+          .map((app) => ({
+            applicationId: String(app?.id || ""),
+            userId: Number(app?.userId || 0) || null,
+            status: String(app?.status || "pending"),
+            createdAt: String(app?.createdAt || ""),
+            createdBy: String(app?.createdBy || "").trim(),
+            fullName: getApplicationFullName(app),
+          }));
+      } catch (error) {
+        crmApplicationsError = error;
+      }
     }
+    const {
+      pendingApplications,
+      pendingApplicationsCount,
+      pendingApplicationsConfigured,
+      pendingApplicationsError,
+    } = buildPendingApplicationsSection({
+      configured: crmConfigured,
+      applications: crmApplicationRows,
+      error: crmApplicationsError,
+    });
 
     const needsAttentionClients = attentionRows.slice(0, 8).map((row) => ({
       applicationId: row.application_id,
@@ -279,13 +331,14 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
       completedClients,
       needsAttentionClients,
       pendingApplications,
-      pendingApplicationsCount: pendingApplications.length,
+      pendingApplicationsCount,
       system: {
         status: hasCoreConfig ? "operational" : "configuration_required",
         hasCoreConfig,
         oauthEnabled: Boolean(process.env.AUTH_CLIENT_ID && process.env.AUTH_CLIENT_SECRET),
         connectHmacEnabled: Boolean(process.env.DOCUSIGN_CONNECT_HMAC_SECRET),
         latestUpdatedAt,
+        pendingApplicationsConfigured,
         pendingApplicationsError,
       },
       webhook: {
