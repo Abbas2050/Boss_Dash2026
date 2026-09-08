@@ -37,10 +37,20 @@ export type DocusignOverview = {
   webhook?: {
     lastReceivedAt: string | null;
     lastOutcome: string | null;
+    /** Reason code of the newest row — `placeholder_not_substituted` means a Test webhook press. */
+    lastError?: string | null;
     ageHours: number | null;
     stale: boolean;
     rejected7d: number;
-    recent?: Array<{ receivedAt: string; outcome: string; error: string | null; applicationId: string | null }>;
+    /** Test webhook presses in the last 7 days; excluded from `rejected7d` because they are not faults. */
+    placeholderTests7d?: number;
+    recent?: Array<{
+      receivedAt: string;
+      outcome: string;
+      error: string | null;
+      applicationId: string | null;
+      isPlaceholderTest?: boolean;
+    }>;
   };
 };
 

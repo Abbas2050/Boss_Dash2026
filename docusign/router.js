@@ -4,6 +4,13 @@ import { createEnvelopeFromTemplate } from "./client.js";
 import { fetchCrmApplicationApplicantById, fetchCrmApplicationsByType, fetchCrmUserById } from "./crm.js";
 import { verifyOAuthBearerToken } from "../oauth/router.js";
 import { normalizeApplicationId } from "./appId.js";
+import {
+  PLACEHOLDER_NOT_SUBSTITUTED,
+  describePlaceholderRejection,
+  detectUnsubstitutedPlaceholder,
+  isFxboPlaceholderLabel,
+  isPlaceholderToken,
+} from "./fxboPlaceholder.js";
 import { onEnvelopeStatus } from "./reconcile.js";
 import { authRequired, hasAccessPermission } from "../auth/router.js";
 import {
@@ -133,7 +140,10 @@ export function describeWebhookPayload(req, merged) {
       type: typeof value,
       value: text.slice(0, 160),
       empty: text.trim() === "",
-      looksUnresolved: isLikelyPlaceholder(text) || /^[A-Z][A-Za-z ]+ \+ [A-Za-z ]+$/.test(text.trim()),
+      looksUnresolved:
+        isPlaceholderToken(text) ||
+        isFxboPlaceholderLabel(text) ||
+        /^[A-Z][A-Za-z ]+ \+ [A-Za-z ]+$/.test(text.trim()),
     };
   }
   return {
@@ -144,10 +154,12 @@ export function describeWebhookPayload(req, merged) {
   };
 }
 
+// Delegates to fxboPlaceholder.js so the "is this a raw token" question has one
+// answer. This one is intentionally token-only: normalizeWebhookText() below
+// blanks whatever it flags, and blanking a field merely because its text happens
+// to equal an FXBO label would silently discard a real client's name.
 function isLikelyPlaceholder(value) {
-  const v = String(value || "").trim();
-  if (!v) return false;
-  return /^%[^%]+%$/.test(v) || /^\{\{[^}]+\}\}$/.test(v);
+  return isPlaceholderToken(value);
 }
 
 function normalizeWebhookText(value) {
@@ -283,6 +295,10 @@ router.get("/overview", authRequired, requireBackoffice, async (_req, res) => {
           outcome: r.outcome,
           error: r.error,
           applicationId: r.application_id,
+          // Flagged explicitly rather than left for the reader to recognise the
+          // code: a row that says "rejected" reads as a fault, and this one is a
+          // Test webhook press, which is not.
+          isPlaceholderTest: String(r.error) === PLACEHOLDER_NOT_SUBSTITUTED,
         })),
       },
     });
@@ -355,14 +371,36 @@ router.post("/webhooks/fxbo/application-approved", async (req, res) => {
       // Echo back exactly what arrived so a misconfigured/unresolved placeholder can be
       // identified from the webhook response alone, without guesswork.
       const debug = describeWebhookPayload(req, p);
+
+      // The REJECTION here is deliberate and unchanged — a placeholder label was
+      // once accepted as the idempotency key and cost clients duplicate envelopes.
+      // Only the reported CODE differs, because an FXBO "Test webhook" press and a
+      // genuinely broken rule used to be indistinguishable in the log, and reading
+      // one as the other wasted a morning. Anything the detector does not
+      // recognise keeps reporting applicationId_invalid exactly as before.
+      const detection = rawApplicationId ? detectUnsubstitutedPlaceholder(p, "applicationId") : null;
+      const errorCode = !rawApplicationId
+        ? "applicationId_required"
+        : detection?.placeholder
+          ? PLACEHOLDER_NOT_SUBSTITUTED
+          : "applicationId_invalid";
+      const message = detection?.placeholder ? describePlaceholderRejection(detection) : undefined;
+
       console.warn(
-        `[docusign-webhook] rejected: ${!rawApplicationId ? "applicationId_required" : "applicationId_invalid"} ` +
-        `received=${JSON.stringify(rawApplicationId)} payload=${JSON.stringify(debug)}`
+        `[docusign-webhook] rejected: ${errorCode} ` +
+        `received=${JSON.stringify(rawApplicationId)}` +
+        (message ? ` note=${JSON.stringify(message)}` : "") +
+        ` payload=${JSON.stringify(debug)}`
       );
-      const errorCode = !rawApplicationId ? "applicationId_required" : "applicationId_invalid";
       return logAndRespond(res, {
         status: 400,
-        body: { ok: false, error: errorCode, received: rawApplicationId.slice(0, 120), debug },
+        body: {
+          ok: false,
+          error: errorCode,
+          ...(message ? { message, placeholderFields: [detection.field, ...detection.corroborating.map((c) => c.field)] } : {}),
+          received: rawApplicationId.slice(0, 120),
+          debug,
+        },
         outcome: "rejected",
         error: errorCode,
         applicationId: rawApplicationId,

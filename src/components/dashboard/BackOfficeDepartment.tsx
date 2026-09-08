@@ -2599,8 +2599,15 @@ export function BackOfficeDepartment({
                 }`}>
                   {w.stale
                     ? `⚠ Rule webhook: ${w.lastReceivedAt ? `none in ${age}` : 'never received'} — the FXBO rule may have stopped firing`
-                    : `Rule webhook: last received ${age} ago (${w.lastOutcome})`}
+                    : `Rule webhook: last received ${age} ago (${
+                        // A Test webhook press is logged as "rejected" but is not a
+                        // fault; saying so here stops a test being read as a broken rule.
+                        w.lastError === 'placeholder_not_substituted'
+                          ? 'test webhook — placeholders not substituted'
+                          : w.lastOutcome
+                      })`}
                   {w.rejected7d > 0 && ` · ${w.rejected7d} rejected in 7d`}
+                  {(w.placeholderTests7d ?? 0) > 0 && ` · ${w.placeholderTests7d} test webhook${w.placeholderTests7d === 1 ? '' : 's'} in 7d`}
                 </div>
               );
             })()}

@@ -1,3 +1,5 @@
+import { PLACEHOLDER_NOT_SUBSTITUTED } from "./fxboPlaceholder.js";
+
 export const WEBHOOK_STALE_HOURS = 72;
 export const WEBHOOK_REJECTION_WINDOW_DAYS = 7;
 export const WEBHOOK_LOG_RETENTION = 500;
@@ -45,18 +47,36 @@ export function summariseWebhookHealth(rows, now = new Date()) {
     .sort((a, b) => b.ts - a.ts);
 
   if (!parsed.length) {
-    return { lastReceivedAt: null, lastOutcome: null, ageHours: null, stale: true, rejected7d: 0 };
+    return {
+      lastReceivedAt: null,
+      lastOutcome: null,
+      lastError: null,
+      ageHours: null,
+      stale: true,
+      rejected7d: 0,
+      placeholderTests7d: 0,
+    };
   }
 
   const newest = parsed[0];
   const ageHours = (nowMs - newest.ts) / 3_600_000;
   const windowStart = nowMs - WEBHOOK_REJECTION_WINDOW_DAYS * 24 * 3_600_000;
+  const inWindow = parsed.filter((r) => r.ts >= windowStart);
+  const isPlaceholderTest = (r) => String(r.error) === PLACEHOLDER_NOT_SUBSTITUTED;
 
   return {
     lastReceivedAt: new Date(newest.ts).toISOString(),
     lastOutcome: String(newest.outcome || ""),
+    // The reason code of the newest row, so a reader can tell WHY the last call
+    // ended the way it did without opening the log — specifically, whether the
+    // last "rejected" was somebody pressing FXBO's Test webhook button.
+    lastError: newest.error == null ? null : String(newest.error),
     ageHours,
     stale: ageHours > WEBHOOK_STALE_HOURS,
-    rejected7d: parsed.filter((r) => r.ts >= windowStart && String(r.outcome) === "rejected").length,
+    // A test press is a rejection in the HTTP sense but not a fault, so it is
+    // counted separately. Rolling it into rejected7d made the panel read as
+    // though the rule were failing when nothing was wrong with it.
+    rejected7d: inWindow.filter((r) => String(r.outcome) === "rejected" && !isPlaceholderTest(r)).length,
+    placeholderTests7d: inWindow.filter(isPlaceholderTest).length,
   };
 }

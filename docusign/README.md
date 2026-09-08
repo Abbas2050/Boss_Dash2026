@@ -119,7 +119,12 @@ CRM rule owns the decision.
 
 Each inbound webhook call is recorded in `docusign_webhook_log`
 (`outcome` = `sent` | `skipped` | `rejected`, with a reason code, bounded to the
-newest 500 rows). `GET /api/docusign/overview` exposes a `webhook` health summary
+newest 500 rows). One reason code is a non-fault: `placeholder_not_substituted`
+means somebody pressed FXBO's **Test webhook** button, which substitutes each
+parameter's label ("Application ID + Link", "Client Email", …) instead of a
+value. It is refused exactly like any other unusable id — nothing stored, nothing
+sent — but it is reported, counted and rendered separately from a rule that is
+genuinely broken. See `fxboPlaceholder.js` for the recognition rule. `GET /api/docusign/overview` exposes a `webhook` health summary
 (`lastReceivedAt`, `ageHours`, `stale`, `rejected7d`) which the Back Office panel
 renders as a "last received / stale" line — so a rule that stops firing is visible
 rather than silent.

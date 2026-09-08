@@ -118,6 +118,31 @@ describe("summariseWebhookHealth", () => {
     expect(s.lastOutcome).toBe("sent");
   });
 
+  it("counts a Test webhook press separately from a real rejection", () => {
+    const s = summariseWebhookHealth(
+      [
+        row("2026-07-21T17:00:00Z", "rejected", "placeholder_not_substituted"),
+        row("2026-07-20T10:00:00Z", "rejected", "applicationId_invalid"),
+      ],
+      now
+    );
+    // A test press is not a fault, so it must not inflate the rejection count
+    // the panel renders as a warning.
+    expect(s.rejected7d).toBe(1);
+    expect(s.placeholderTests7d).toBe(1);
+    expect(s.lastError).toBe("placeholder_not_substituted");
+  });
+
+  it("reports lastError as null after a successful send", () => {
+    expect(summariseWebhookHealth([row("2026-07-21T17:00:00Z", "sent")], now).lastError).toBeNull();
+  });
+
+  it("reports zero placeholder tests when there are no rows", () => {
+    const s = summariseWebhookHealth([], now);
+    expect(s.placeholderTests7d).toBe(0);
+    expect(s.lastError).toBeNull();
+  });
+
   it("ignores rows with an unparseable timestamp", () => {
     const s = summariseWebhookHealth([row("not-a-date"), row("2026-07-21T17:00:00Z")], now);
     expect(s.lastOutcome).toBe("sent");
