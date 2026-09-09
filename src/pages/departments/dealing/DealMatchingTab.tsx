@@ -1,6 +1,15 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { lpCommPerMillion } from "@/lib/dealMatchApi";
+import { COMM_SOURCE_TOOLTIP, type ClientLpSymbolCommission } from "@/lib/dealMatchCommSource";
+import {
+  buildClientLpDetailRows,
+  computeClientLpDetailTotals,
+  isDetailRow,
+  lpDetailExpansionKey,
+  withDetailRowsFollowingParents,
+  type LpDetailDisplayRow,
+} from "@/lib/dealMatchLpDetailDrilldown";
 import { authHeaders } from "@/lib/auth";
 
 type Row = Record<string, any>;
@@ -41,6 +50,9 @@ type DealMatchResponse = {
   fixApiOrders?: Row[];
   coverageLps?: Row[];
   clientRevenueSummaries?: Row[];
+  /** Per (client, symbol, LP) LP-commission rows. The Client LP Allocation
+   *  Detail table's per-symbol drilldown filters these client-side. */
+  clientLpSymbolCommissions?: ClientLpSymbolCommission[];
   clientSystems?: Row[];
 };
 
@@ -449,9 +461,70 @@ const clientRevenueColumns: SortableTableColumn<RevenueRow>[] = [
   },
 ];
 
-const clientRevenueDetailColumns: SortableTableColumn<Row>[] = [
-  { key: "lpsid", label: "LP", sortValue: (r) => String(r.lpsid || ""), render: (r) => safe(r.lpsid) },
-  { key: "lpName", label: "TEM", sortValue: (r) => String(r.lpName || ""), render: (r) => safe(r.lpName) },
+// Which rule branch produced a row's LP Commission. Colours mirror the
+// reference page: green Actual, amber PerMillion, rose NoCoverage, cyan Mixed,
+// muted italic Stock.
+function commSourceClass(value: any): string {
+  switch (String(value || "")) {
+    case "Actual":
+      return "text-emerald-700 dark:text-emerald-300";
+    case "PerMillion":
+      return "text-amber-700 dark:text-amber-300";
+    case "NoCoverage":
+      return "font-semibold text-rose-700 dark:text-rose-300";
+    case "Mixed":
+      return "text-cyan-700 dark:text-cyan-300";
+    case "Stock":
+      return "italic text-slate-500 dark:text-slate-400";
+    default:
+      return "text-slate-500 dark:text-slate-400";
+  }
+}
+
+// Built per component instance because the LP column needs the expand/collapse
+// callback. Everything else is the same static definition it always was.
+function makeClientRevenueDetailColumns(onToggleExpand: (row: LpDetailDisplayRow) => void): SortableTableColumn<Row>[] {
+  return [
+  {
+    key: "lpsid",
+    label: "LP",
+    sortValue: (r) => String(r.lpsid || ""),
+    // Parents get an expand chevron only when the last report actually carried
+    // per-symbol rows for them; children render the symbol indented underneath.
+    render: (r) => {
+      if (isDetailRow(r)) {
+        return <span className="pl-4 text-slate-500 dark:text-slate-400">|-- {String(r.__symKey || "")}</span>;
+      }
+      if (!r.__hasChildren) {
+        return (
+          <span>
+            <span className="mr-1 inline-block w-6 text-slate-400 dark:text-slate-600">&nbsp;</span>
+            {safe(r.lpsid)}
+          </span>
+        );
+      }
+      return (
+        <span>
+          <button
+            type="button"
+            aria-expanded={Boolean(r.__expanded)}
+            aria-label={`${r.__expanded ? "Collapse" : "Expand"} per-symbol detail for ${safe(r.lpsid)}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleExpand(r as LpDetailDisplayRow);
+            }}
+            className="mr-1 inline-block w-6 cursor-pointer font-mono text-cyan-700 hover:text-cyan-500 dark:text-cyan-300"
+          >
+            {r.__expanded ? "[-]" : "[+]"}
+          </button>
+          {safe(r.lpsid)}
+        </span>
+      );
+    },
+  },
+  // Blank on a child: the LP is the parent's, repeating it down the block only
+  // adds noise.
+  { key: "lpName", label: "TEM", sortValue: (r) => String(r.lpName || ""), render: (r) => (isDetailRow(r) ? "" : safe(r.lpName)) },
   { key: "tradeCount", label: "Trades", headerClassName: "text-right", cellClassName: "text-right", sortValue: (r) => num(r.tradeCount), render: (r) => fmtInt(r.tradeCount) },
   { key: "symbols", label: "Symbols", sortValue: (r) => String(r.symbols || ""), render: (r) => safe(r.symbols) },
   {
@@ -534,6 +607,14 @@ const clientRevenueDetailColumns: SortableTableColumn<Row>[] = [
     render: (r) => <span className="text-rose-700 dark:text-rose-300">{money(r.lpCommissionUsd)}</span>,
   },
   {
+    // Labels the LP Commission cell to its left; it changes no figure.
+    key: "lpCommissionSource",
+    label: "Comm Source",
+    headerTitle: COMM_SOURCE_TOOLTIP,
+    sortValue: (r) => String(r.lpCommissionSource || ""),
+    render: (r) => <span className={commSourceClass(r.lpCommissionSource)}>{safe(r.lpCommissionSource)}</span>,
+  },
+  {
     // Net Revenue = Gross - LP Commission — always computed client-side (ignores any server field).
     key: "netRevenueUsd",
     label: "Net Revenue",
@@ -545,7 +626,8 @@ const clientRevenueDetailColumns: SortableTableColumn<Row>[] = [
       return <span className={`font-semibold ${signedClass(net)}`}>{money(net)}</span>;
     },
   },
-];
+  ];
+}
 
 const coverageLpColumns: SortableTableColumn<CoverageLpRow>[] = [
   { key: "lpName", label: "LP", sortValue: (r) => String(r.lpName || ""), render: (r) => <span className="font-semibold">{safe(r.lpName)}</span> },
@@ -861,6 +943,29 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
   const [clientRevenueDetailRows, setClientRevenueDetailRows] = useState<Row[]>([]);
   const [clientRevenueDetailLabel, setClientRevenueDetailLabel] = useState("");
   const [clientRevenueDetailLoading, setClientRevenueDetailLoading] = useState(false);
+  const [clientRevenueDetailLogin, setClientRevenueDetailLogin] = useState("");
+
+  // Which (login, lpsid) rows are expanded into their per-symbol detail. Held
+  // outside the fetched data on purpose: re-running the report or re-opening
+  // the same client reopens the same rows instead of collapsing everything.
+  // Keys carry the login, so a key left over from another client cannot expand
+  // the wrong row.
+  const [expandedLpDetailKeys, setExpandedLpDetailKeys] = useState<ReadonlySet<string>>(() => new Set<string>());
+
+  const toggleLpDetailExpansion = useCallback((row: LpDetailDisplayRow) => {
+    const key = row.__expansionKey || lpDetailExpansionKey(row);
+    setExpandedLpDetailKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const clientRevenueDetailColumns = useMemo(
+    () => withDetailRowsFollowingParents<Row>(makeClientRevenueDetailColumns(toggleLpDetailExpansion)),
+    [toggleLpDetailExpansion],
+  );
 
   const [selectedLpDetail, setSelectedLpDetail] = useState<CoverageLpRow | null>(null);
   const [selectedPartial, setSelectedPartial] = useState<Row | null>(null);
@@ -1171,6 +1276,7 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
 
     setClientRevenueDetailLoading(true);
     setClientRevenueDetailRows([]);
+    setClientRevenueDetailLogin(selectedLogin);
     setClientRevenueDetailLabel(`${selectedLogin} | ${safe(row.name)} | loading...`);
 
     try {
@@ -1185,7 +1291,9 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
       const totalClientLots = (rows || []).reduce((s, r) => s + num(r.clientLotsPlaced), 0);
       const totalLpComm = (rows || []).reduce((s, r) => s + num(r.lpCommissionUsd), 0);
       setClientRevenueDetailRows(Array.isArray(rows) ? rows : []);
-      setClientRevenueDetailLabel(`${selectedLogin} | ${safe(row.name)} | ${fmtNum(totalClientLots)} lots | LP comm ${money(totalLpComm)}`);
+      setClientRevenueDetailLabel(
+        `${selectedLogin} | ${safe(row.name)} | ${fmtNum(totalClientLots)} lots | LP comm ${money(totalLpComm)} | Click [+] to drill into per-symbol detail`,
+      );
     } catch (e: any) {
       setClientRevenueDetailRows([]);
       setClientRevenueDetailLabel(`${selectedLogin} | ${safe(row.name)} | Error: ${e?.message || "failed"}`);
@@ -1216,21 +1324,26 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
     [clientRevenueRows],
   );
 
-  const clientRevenueDetailTotals = useMemo(() => {
-    const gross = clientRevenueDetailRows.reduce((s, r) => s + num(r.grossRevenueUsd), 0);
-    const lpComm = clientRevenueDetailRows.reduce((s, r) => s + num(r.lpCommissionUsd), 0);
-    return {
-      tradeCount: clientRevenueDetailRows.reduce((s, r) => s + num(r.tradeCount), 0),
-      clientLotsPlaced: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientLotsPlaced), 0),
-      clientMillionsUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientMillionsUsd), 0),
-      lpLotsSent: clientRevenueDetailRows.reduce((s, r) => s + num(r.lpLotsSent), 0),
-      markupRevenueUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.markupRevenueUsd), 0),
-      clientCommissionUsd: clientRevenueDetailRows.reduce((s, r) => s + num(r.clientCommissionUsd), 0),
-      grossRevenueUsd: gross,
-      lpCommissionUsd: lpComm,
-      netRevenueUsd: gross - lpComm,
-    };
-  }, [clientRevenueDetailRows]);
+  // The per-symbol rows the report already returned. No second request is made:
+  // an expansion is a filter over this array.
+  const symbolCommissionRows = useMemo(
+    () => (report?.clientLpSymbolCommissions || []) as ClientLpSymbolCommission[],
+    [report],
+  );
+
+  // Parents in their fetched order, each followed by its per-symbol children
+  // when expanded.
+  const clientRevenueDetailDisplayRows = useMemo(
+    () => buildClientLpDetailRows(clientRevenueDetailRows, symbolCommissionRows, expandedLpDetailKeys, clientRevenueDetailLogin),
+    [clientRevenueDetailRows, symbolCommissionRows, expandedLpDetailKeys, clientRevenueDetailLogin],
+  );
+
+  // Totals are taken from the DISPLAY rows -- computeClientLpDetailTotals drops
+  // the per-symbol children, which restate the parent's money split by symbol.
+  const clientRevenueDetailTotals = useMemo(
+    () => computeClientLpDetailTotals(clientRevenueDetailDisplayRows),
+    [clientRevenueDetailDisplayRows],
+  );
 
   const coverageLpTotals = useMemo(
     () => ({
@@ -1425,10 +1538,13 @@ export function DealMatchingTab({ baseUrl }: { baseUrl: string }) {
                       <div>
                         <SortableTable
                           tableId="deal-matching-client-revenue-detail"
-                          rows={clientRevenueDetailRows}
+                          rows={clientRevenueDetailDisplayRows}
                           columns={clientRevenueDetailColumns}
                           tableClassName="min-w-full text-[11px]"
                           emptyText="Select a client row to view LP allocation detail."
+                          rowClassName={(row) =>
+                            isDetailRow(row) ? "bg-sky-50/70 dark:bg-sky-500/5" : "bg-slate-50 dark:bg-slate-950/30"
+                          }
                         />
                         {clientRevenueDetailRows.length > 0 && (
                           <TotalsBar

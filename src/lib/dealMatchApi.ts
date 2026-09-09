@@ -1,4 +1,6 @@
 import { authHeaders } from "@/lib/auth";
+import type { ClientLpSymbolCommission } from "@/lib/dealMatchCommSource";
+export type { ClientLpSymbolCommission };
 export { CRM_API_VERSION } from "./crmConfig";
 import { CRM_API_VERSION } from "./crmConfig";
 // Sent with no credential: the /rest proxy attaches the CRM token server-side.
@@ -38,6 +40,10 @@ export type DealMatchResponse = {
     lpCommPerMillionRateUsd?: number;
     lpCommPerMillionUsd?: number;
   }>;
+  /** Per (client, symbol, LP) commission rows. Present under lite=true as well
+   *  as lite=false; the Deal Matching tab's per-symbol drilldown filters this
+   *  client-side rather than making a second request. */
+  clientLpSymbolCommissions?: ClientLpSymbolCommission[];
   matches?: Array<{
     clientLogin?: string | number;
     clientName?: string;
