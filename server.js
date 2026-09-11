@@ -47,6 +47,7 @@ import {
   makeReportTestSendHandler,
   makeCadenceRunner,
 } from './reports/testSendRequest.js';
+import { makeReportScheduleHandler } from './reports/reportScheduleRoute.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1209,6 +1210,19 @@ app.post(
   adminOnly,
   makeReportTestSendHandler({ run: runDealMatchEmailReport, cadence: 'monthly', allowPeriod: true }),
 );
+
+// Who actually receives the nine scheduled reports (admin-only, read-only).
+//
+// Answering "are all reports going to talat@?" used to mean opening the
+// server's .env, and even then the answer is not a grep: resolveRecipients
+// takes the FIRST non-empty variable in a report's chain and ignores the rest,
+// so a shared *_ALERT_RECIPIENTS line can look right and do nothing. This
+// route reports the whole chain with the winner marked.
+//
+// There is deliberately no write counterpart. Those values live in .env and
+// only take effect on a restart, so editing them is an operator action on the
+// server, not a dashboard one.
+app.get('/api/reports/schedule', authRequired, adminOnly, makeReportScheduleHandler({ canManage: canManageUsers }));
 
 // Minimal SignalR-like negotiate + WebSocket mock, FOR LOCAL DEV ONLY.
 //

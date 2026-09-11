@@ -12,6 +12,7 @@ import {
 import AccountAlerts from "@/components/dashboard/AccountAlerts";
 import LpMarginAlerts from "@/components/dashboard/LpMarginAlerts";
 import { ReportTestSendPanel } from "@/components/settings/ReportTestSendPanel";
+import { ReportScheduleRecipientsPanel } from "@/components/settings/ReportScheduleRecipientsPanel";
 import { hasAccess, getUsers, refreshUsers, type AuthUser } from "@/lib/auth";
 import { primeAudio, playAlarm } from "@/lib/alertSound";
 import { AlarmConfig, getAlarmConfig, saveAlarmConfig } from "@/lib/alarmConfig";
@@ -269,6 +270,11 @@ export const AlertsSettingsPage: React.FC = () => {
         </section>
 
         <ReportTestSendPanel />
+
+        {/* Directly beneath the test-send panel on purpose: a green test send says
+            nothing about the scheduled one, because a test send takes its
+            recipients from the form and the schedule takes them from .env. */}
+        <ReportScheduleRecipientsPanel />
 
         <section>
           <div className="mb-3">
