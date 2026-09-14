@@ -211,6 +211,14 @@ export const SETTINGS_MENU_ITEMS = [
     requiredPermissions: ["Settings", "Auth:ManageUsers"],
   },
   {
+    key: "finalto-admin",
+    name: "Finalto Admin",
+    path: "/settings/finalto-admin",
+    icon: "ShieldCheck",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
+  {
     key: "user-management",
     name: "User Management",
     path: "/settings/user-management",
