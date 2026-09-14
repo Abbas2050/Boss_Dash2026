@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - Swaps Report</title>
+    <style>
+body { padding: 0; }
+        .page { max-width: 1400px; margin: 0 auto; }
+        .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        @media (max-width: 900px) {
+            .panels { grid-template-columns: 1fr; }
+        }
+        .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+        .panel-head h2 { color: var(--neon); }
+        .panel-grid { height: 55vh; }
+        .detail-panel { margin-top: 8px; padding: 8px; }
+        .detail-head {
+            display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .detail-head h2 { color: var(--neon); margin: 0; }
+        .detail-summary { font-size: 12px; color: var(--fg-dim); }
+        .detail-summary strong { color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; }
+        .detail-close {
+            margin-left: auto; background: none; border: 1px solid var(--line);
+            color: var(--fg-dim); border-radius: 3px; cursor: pointer; padding: 3px 8px; font-size: 11px;
+        }
+        .detail-close:hover { color: var(--fg); border-color: var(--fg-dim); }
+        .detail-subpanels { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        @media (max-width: 900px) { .detail-subpanels { grid-template-columns: 1fr; } }
+        .detail-sub-head { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+        .detail-grid { height: 42vh; }
+        a.login-link { color: var(--blue); text-decoration: none; font-weight: 600; }
+        a.login-link:hover { text-decoration: underline; }
+        .info-bar {
+            font-size: 11px; color: var(--amber);
+            background: rgba(224,175,104,0.1); border: 1px solid rgba(224,175,104,0.3);
+            border-radius: 4px; padding: 5px 10px;
+        }
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+</head>
+<body>
+<div class="page">
+    <h1>Swaps Report</h1>
+
+    <!-- Control Header -->
+    <div class="glass" style="padding:8px 10px;">
+        <div class="flex flex-wrap items-center gap-4" style="display:flex; flex-wrap:wrap; align-items:center; gap:14px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span class="text-xs text-muted">From:</span>
+                <input type="date" id="sw-from">
+            </div>
+            <div style="display:flex; align-items:center; gap:6px;">
+                <span class="text-xs text-muted">To:</span>
+                <input type="date" id="sw-to">
+            </div>
+            <button onclick="runSwaps()" id="sw-runBtn" class="btn btn-primary">Run</button>
+            <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--fg-dim);" title="Off: read cached FinaltoCosts and only live-fetch missing (sub, day) tuples. On: bypass cache entirely and hit Finalto CFDCost for every business day.">
+                <input type="checkbox" id="sw-live-finalto">
+                <span>Raw Finalto (bypass DB cache)</span>
+            </label>
+            <button onclick="downloadCsv('client')" id="sw-csvClientBtn" class="btn btn-secondary" disabled>CSV - Client</button>
+            <button onclick="downloadCsv('lp')" id="sw-csvLpBtn" class="btn btn-secondary" disabled>CSV - LP</button>
+            <span id="sw-stats" class="text-xs text-muted" style="margin-left:auto;"></span>
+        </div>
+    </div>
+
+    <div id="sw-info" class="info-bar" style="display:none; margin-top:6px;"></div>
+    <div id="sw-error" class="error" style="display:none; margin-top:6px;"></div>
+
+    <div class="panels" style="margin-top:8px;">
+        <div class="glass panel" style="padding:8px;">
+            <div class="panel-head">
+                <h2>Client Swaps</h2>
+                <span id="sw-client-meta" class="text-xs text-muted"></span>
+            </div>
+            <div id="sw-client-grid" class="ag-theme-alpine-dark panel-grid"></div>
+        </div>
+
+        <div class="glass panel" style="padding:8px;">
+            <div class="panel-head">
+                <h2>LP Swaps Charged To Us</h2>
+                <span id="sw-lp-meta" class="text-xs text-muted"></span>
+            </div>
+            <div id="sw-lp-grid" class="ag-theme-alpine-dark panel-grid"></div>
+        </div>
+    </div>
+
+    <div id="sw-detail" class="glass detail-panel" style="display:none;">
+        <div class="detail-head">
+            <h2 id="sw-detail-title">Client detail</h2>
+            <span id="sw-detail-summary" class="detail-summary"></span>
+            <button class="detail-close" onclick="closeDetail()">Close</button>
+        </div>
+        <div id="sw-detail-status" class="text-xs text-muted" style="margin-bottom:6px;"></div>
+        <div class="detail-subpanels" id="sw-mt5-panels">
+            <div>
+                <div class="detail-sub-head">Realized - per-position (grouped by PositionID, closed in range)</div>
+                <div id="sw-position-grid" class="ag-theme-alpine-dark detail-grid"></div>
+            </div>
+            <div>
+                <div class="detail-sub-head">Realized - per-deal (raw, Buy/Sell only, closed in range)</div>
+                <div id="sw-deal-grid" class="ag-theme-alpine-dark detail-grid"></div>
+            </div>
+        </div>
+        <div id="sw-mt5-open-wrap" style="margin-top:12px;">
+            <div class="detail-sub-head" id="sw-open-head">
+                Unrealized - currently open positions (live snapshot, matches the vendor's trade view)
+            </div>
+            <div id="sw-open-grid" class="ag-theme-alpine-dark detail-grid" style="height:32vh;"></div>
+        </div>
+        <div id="sw-finalto-wrap" style="display:none; margin-top:12px;">
+            <div class="detail-sub-head">
+                Realized - per-instrument per-day (from Finalto GetCFDCost)
+            </div>
+            <div class="info-bar" style="margin-bottom:6px;">
+                <strong>Caveat:</strong> LongPosCost / ShortPosCost may be per-unit financing <em>rates</em>, not the actual charged dollar amounts. Precision (numeric(28,10)), the DayToFinance window, and the sibling GetTomNextSwapRates endpoint all suggest rate semantics. Verify against Finalto's own portal on a known position before treating these as booked swap. Actual charged swap likely lives in FinaltoCashActivity with a CashActivityType like "Swap" / "Storage".
+            </div>
+            <div id="sw-finalto-grid" class="ag-theme-alpine-dark detail-grid" style="height:56vh;"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let _clientGridApi;
+    let _lpGridApi;
+    let _positionGridApi;
+    let _dealGridApi;
+    let _openGridApi;
+    let _finaltoGridApi;
+    let _lastRange = null;
+
+    const nf2 = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const nfInt = new Intl.NumberFormat();
+
+    function fmtSwap(p) {
+        return p.value != null ? nf2.format(Number(p.value)) : '';
+    }
+
+    function swapStyle(p) {
+        const v = Number(p.value) || 0;
+        if (v > 0) return { color: 'var(--pos)' };
+        if (v < 0) return { color: 'var(--neg)' };
+        return { color: 'var(--fg-dim)' };
+    }
+
+    // Inverted vs swapStyle: negative on a client account is broker income (green).
+    function clientSwapStyle(p) {
+        const v = Number(p.value) || 0;
+        if (v > 0) return { color: 'var(--neg)' };
+        if (v < 0) return { color: 'var(--pos)' };
+        return { color: 'var(--fg-dim)' };
+    }
+
+    function totalRowStyle(baseStyle) {
+        return p => {
+            const base = baseStyle ? (baseStyle(p) || {}) : {};
+            if (p.node && p.node.rowPinned === 'bottom') {
+                return { ...base, fontWeight: 'bold', background: 'rgba(255,255,255,0.04)' };
+            }
+            return base;
+        };
+    }
+
+    function loginLinkRenderer(p) {
+        if (p.node && p.node.rowPinned) return p.value;
+        if (p.value == null) return '';
+        const login = String(p.value);
+        return '<a class="login-link" href="/client-profile.html?login=' + encodeURIComponent(login)
+            + '" target="_blank" rel="noopener">' + login + '</a>';
+    }
+
+    function defaultDates() {
+        const now = new Date();
+        const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+        const from = new Date(to.getTime() - 30 * 86400000);
+        document.getElementById('sw-from').value = from.toISOString().slice(0, 10);
+        document.getElementById('sw-to').value = to.toISOString().slice(0, 10);
+    }
+
+    function utcMidnightUnix(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        return Date.UTC(y, m - 1, d) / 1000;
+    }
+
+    // "to" date is inclusive of the whole day, so upper bound is midnight UTC of the day AFTER.
+    function dateRangeToUnix(fromStr, toStr) {
+        return {
+            fromUnixSec: utcMidnightUnix(fromStr),
+            toUnixSec: utcMidnightUnix(toStr) + 86400,
+        };
+    }
+
+    function fmtLots(p) {
+        return p.value != null ? nf2.format(Number(p.value)) : '';
+    }
+
+    function buildClientGrid(rows, totals) {
+        if (_clientGridApi) _clientGridApi.destroy();
+        const pinned = { login: 'TOTAL', name: '', totalSwap: totals.totalSwap, unrealizedSwap: totals.unrealizedSwap };
+        _clientGridApi = SLC.createGrid(document.getElementById('sw-client-grid'), {
+            columnDefs: [
+                { headerName: 'Login', field: 'login', minWidth: 120, cellRenderer: loginLinkRenderer },
+                { headerName: 'Name', field: 'name', minWidth: 160 },
+                { headerName: 'Realized Swap', field: 'totalSwap', minWidth: 140, type: 'numericColumn',
+                    headerTooltip: 'Sum of deal Storage on closed deals in the selected date range',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(clientSwapStyle) },
+                { headerName: 'Unrealized Swap', field: 'unrealizedSwap', minWidth: 150, type: 'numericColumn',
+                    headerTooltip: 'Sum of currently-open positions accrued swap (live from MT5, matches Trade tab)',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(clientSwapStyle) },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+            onRowClicked: (e) => {
+                if (!e.data || e.node.rowPinned) return;
+                openClientDetail(e.data.login, e.data.name);
+            },
+        });
+        document.getElementById('sw-client-meta').textContent =
+            `${nfInt.format(totals.accountCount)} account(s) - click a row for per-position + per-deal breakdown`;
+    }
+
+    async function openClientDetail(login, name) {
+        if (!_lastRange) return;
+        const panel = document.getElementById('sw-detail');
+        const status = document.getElementById('sw-detail-status');
+        const title = document.getElementById('sw-detail-title');
+        const summary = document.getElementById('sw-detail-summary');
+        panel.style.display = '';
+        title.textContent = `Client ${login}` + (name ? ` - ${name}` : '');
+        summary.textContent = '';
+        status.textContent = 'Loading...';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        try {
+            const url = `/api/SwapsReport/client/${encodeURIComponent(login)}`
+                + `?from=${_lastRange.fromUnixSec}&to=${_lastRange.toUnixSec}`;
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                status.textContent = `Error ${resp.status}: ${await shortErr(resp)}`;
+                return;
+            }
+            const data = await resp.json();
+            const s = clientSwapStyleValue(data.totalSwap);
+            const openColor = clientSwapStyleValue(data.openSwapAccrued);
+            summary.innerHTML =
+                `Total Swap (deals in range) <strong style="color:${s}">${nf2.format(data.totalSwap)}</strong>`
+                + ` &middot; Open Swap Accrued (now) <strong style="color:${openColor}">${nf2.format(data.openSwapAccrued || 0)}</strong>`
+                + ` &middot; Deal Volume <strong>${nf2.format(data.dealVolume)}</strong>`
+                + ` &middot; Realized Volume <strong>${nf2.format(data.realizedVolume)}</strong>`
+                + ` &middot; ${nfInt.format(data.positions.length)} closed pos, ${nfInt.format(data.deals.length)} deal(s), ${nfInt.format((data.openPositions || []).length)} open pos`;
+            status.textContent = '';
+            document.getElementById('sw-open-head').textContent =
+                'Unrealized - currently open positions (live from MT5, matches the MT5 trade tab)';
+            buildPositionGrid(data.positions, /* isLp */ false);
+            buildDealGrid(data.deals, /* isLp */ false);
+            buildOpenPositionsGrid(data.openPositions || [], /* isLp */ false);
+        } catch (e) {
+            status.textContent = 'Failed to load client detail. Check the server logs.';
+        }
+    }
+
+    function closeDetail() {
+        document.getElementById('sw-detail').style.display = 'none';
+        if (_positionGridApi) { _positionGridApi.destroy(); _positionGridApi = null; }
+        if (_dealGridApi) { _dealGridApi.destroy(); _dealGridApi = null; }
+        if (_openGridApi) { _openGridApi.destroy(); _openGridApi = null; }
+        if (_finaltoGridApi) { _finaltoGridApi.destroy(); _finaltoGridApi = null; }
+        const mt5PanelsEl = document.getElementById('sw-mt5-panels');
+        const mt5OpenEl = document.getElementById('sw-mt5-open-wrap');
+        const finaltoWrapEl = document.getElementById('sw-finalto-wrap');
+        if (mt5PanelsEl) mt5PanelsEl.style.display = '';
+        if (mt5OpenEl) mt5OpenEl.style.display = '';
+        if (finaltoWrapEl) finaltoWrapEl.style.display = 'none';
+    }
+
+    function clientSwapStyleValue(v) {
+        v = Number(v) || 0;
+        if (v > 0) return 'var(--neg)';
+        if (v < 0) return 'var(--pos)';
+        return 'var(--fg-dim)';
+    }
+
+    function fmtUtc(p) {
+        if (p.value == null) return '';
+        const d = new Date(Number(p.value) * 1000);
+        return d.toISOString().replace('T', ' ').slice(0, 19);
+    }
+
+    function buildPositionGrid(rows, isLp) {
+        if (_positionGridApi) _positionGridApi.destroy();
+        const swapCellStyle = isLp ? swapStyle : clientSwapStyle;
+        const pinned = {
+            positionId: 'TOTAL',
+            symbol: '',
+            dealCount: rows.reduce((s, r) => s + (Number(r.dealCount) || 0), 0),
+            totalSwap: rows.reduce((s, r) => s + (Number(r.totalSwap) || 0), 0),
+            dealVolume: rows.reduce((s, r) => s + (Number(r.dealVolume) || 0), 0),
+            realizedVolume: rows.reduce((s, r) => s + (Number(r.realizedVolume) || 0), 0),
+            firstDealUnixSec: null,
+            lastDealUnixSec: null,
+        };
+        _positionGridApi = SLC.createGrid(document.getElementById('sw-position-grid'), {
+            columnDefs: [
+                { headerName: 'Position ID', field: 'positionId', minWidth: 130 },
+                { headerName: 'Symbol', field: 'symbol', minWidth: 110 },
+                { headerName: 'Deals', field: 'dealCount', minWidth: 70, type: 'numericColumn',
+                    cellStyle: totalRowStyle() },
+                { headerName: 'Total Swap', field: 'totalSwap', minWidth: 120, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapCellStyle) },
+                { headerName: 'Deal Volume', field: 'dealVolume', minWidth: 110, type: 'numericColumn',
+                    valueFormatter: fmtLots, cellStyle: totalRowStyle() },
+                { headerName: 'Realized Volume', field: 'realizedVolume', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtLots, cellStyle: totalRowStyle() },
+                { headerName: 'First (UTC)', field: 'firstDealUnixSec', minWidth: 160, valueFormatter: fmtUtc },
+                { headerName: 'Last (UTC)', field: 'lastDealUnixSec', minWidth: 160, valueFormatter: fmtUtc },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+    }
+
+    function buildOpenPositionsGrid(rows, isLp) {
+        if (_openGridApi) _openGridApi.destroy();
+        const swapCellStyle = isLp ? swapStyle : clientSwapStyle;
+        const totalSwap = rows.reduce((s, r) => s + (Number(r.swap) || 0), 0);
+        const totalProfit = rows.reduce((s, r) => s + (Number(r.profit) || 0), 0);
+        const pinned = { ticket: null, symbol: 'TOTAL', type: '', lots: null, timeCreateUtc: '', swap: totalSwap, profit: totalProfit };
+        _openGridApi = SLC.createGrid(document.getElementById('sw-open-grid'), {
+            columnDefs: [
+                { headerName: 'Ticket', field: 'ticket', minWidth: 130 },
+                { headerName: 'Symbol', field: 'symbol', minWidth: 100 },
+                { headerName: 'Type', field: 'type', minWidth: 70 },
+                { headerName: 'Lots', field: 'lots', minWidth: 80, type: 'numericColumn', valueFormatter: fmtLots },
+                { headerName: 'Opened (UTC)', field: 'timeCreateUtc', minWidth: 170 },
+                { headerName: 'Swap (accrued)', field: 'swap', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapCellStyle) },
+                { headerName: 'Floating P&L', field: 'profit', minWidth: 120, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(isLp ? swapStyle : swapStyle) },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+    }
+
+    function buildDealGrid(rows, isLp) {
+        if (_dealGridApi) _dealGridApi.destroy();
+        const swapCellStyle = isLp ? swapStyle : clientSwapStyle;
+        const pinned = {
+            dealId: 'TOTAL',
+            timeUtc: '',
+            positionId: '',
+            symbol: '',
+            action: '',
+            entry: '',
+            lots: rows.reduce((s, r) => s + (Number(r.lots) || 0), 0),
+            closedLegLots: rows.reduce((s, r) => s + (Number(r.closedLegLots) || 0), 0),
+            storage: rows.reduce((s, r) => s + (Number(r.storage) || 0), 0),
+        };
+        _dealGridApi = SLC.createGrid(document.getElementById('sw-deal-grid'), {
+            columnDefs: [
+                { headerName: 'Deal ID', field: 'dealId', minWidth: 110 },
+                { headerName: 'Time (UTC)', field: 'timeUtc', minWidth: 160 },
+                { headerName: 'Position ID', field: 'positionId', minWidth: 130 },
+                { headerName: 'Symbol', field: 'symbol', minWidth: 100 },
+                { headerName: 'Action', field: 'action', minWidth: 70 },
+                { headerName: 'Entry', field: 'entry', minWidth: 80 },
+                { headerName: 'Lots', field: 'lots', minWidth: 80, type: 'numericColumn',
+                    valueFormatter: fmtLots, cellStyle: totalRowStyle() },
+                { headerName: 'Closed-leg Lots', field: 'closedLegLots', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtLots, cellStyle: totalRowStyle() },
+                { headerName: 'Storage (Swap)', field: 'storage', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapCellStyle) },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+    }
+
+    function buildLpGrid(rows, totals) {
+        if (_lpGridApi) _lpGridApi.destroy();
+        const statementSwapTotal = (rows || []).reduce((acc, r) => acc + (Number(r.statementSwap) || 0), 0);
+        const pinned = {
+            lpName: 'TOTAL',
+            totalSwap: totals.totalSwap,
+            unrealizedSwap: totals.unrealizedSwap,
+            statementSwap: statementSwapTotal,
+        };
+        _lpGridApi = SLC.createGrid(document.getElementById('sw-lp-grid'), {
+            columnDefs: [
+                { headerName: 'LP Name', field: 'lpName', minWidth: 140, cellStyle: totalRowStyle(() => ({ fontWeight: 'bold' })) },
+                { headerName: 'Login', field: 'login', minWidth: 110 },
+                { headerName: 'Source', field: 'source', minWidth: 90,
+                    cellRenderer: p => p.value ? `<span class="badge">${p.value}</span>` : '' },
+                { headerName: 'Realized Swap (Coverage acc)', field: 'totalSwap', minWidth: 180, type: 'numericColumn',
+                    headerTooltip: 'SOURCE: MT5 coverage account deals. Sum of Storage on closed deals for this LP in the selected date range.',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'Unrealized Swap (Coverage acc)', field: 'unrealizedSwap', minWidth: 190, type: 'numericColumn',
+                    headerTooltip: 'SOURCE: MT5 coverage account open positions. Sum of live accrued swap on positions currently open. Terminal LPs: blank (no live worker positions API).',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'Swap (Statement DB)', field: 'statementSwap', minWidth: 170, type: 'numericColumn',
+                    headerTooltip: 'SOURCE: LP Statement DB (uploaded broker PDFs). Sum of TotalSwaps across LpStatement rows whose StatementDate falls in the report window. Blank if no LP statements uploaded for this LP + range. Cell tooltip shows the row-count contributing.',
+                    valueFormatter: fmtSwap,
+                    tooltipValueGetter: p => (p.data && p.data.statementRowCount)
+                        ? `${p.data.statementRowCount} statement row(s) summed`
+                        : null,
+                    cellStyle: totalRowStyle(swapStyle) },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+            onRowClicked: (e) => {
+                if (!e.data || e.node.rowPinned) return;
+                if (!e.data.id) return;
+                openLpDetail(e.data.id, e.data.login, e.data.lpName, e.data.source);
+            },
+        });
+        document.getElementById('sw-lp-meta').textContent =
+            `${nfInt.format(totals.accountCount)} account(s) - click a row for per-position + per-deal breakdown`;
+    }
+
+    async function openLpDetail(lpAccountId, login, lpName, source) {
+        if (!_lastRange) return;
+        const panel = document.getElementById('sw-detail');
+        const status = document.getElementById('sw-detail-status');
+        const title = document.getElementById('sw-detail-title');
+        const summary = document.getElementById('sw-detail-summary');
+        panel.style.display = '';
+        var loginLabel = login && Number(login) > 0 ? String(login) : `id ${lpAccountId}`;
+        title.textContent = `LP ${lpName || ''} (${loginLabel})` + (source ? ` - ${source}` : '');
+        summary.textContent = '';
+        status.textContent = (source === 'Api')
+            ? 'Loading (Api LP - Finalto pulls from vendor SOAP, one call per (sub-account, day); may take a minute for wide ranges)...'
+            : 'Loading...';
+        panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        try {
+            const liveFinalto = document.getElementById('sw-live-finalto').checked;
+            const url = `/api/SwapsReport/lp-by-id/${encodeURIComponent(lpAccountId)}`
+                + `?from=${_lastRange.fromUnixSec}&to=${_lastRange.toUnixSec}&liveFinalto=${liveFinalto}`;
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                status.textContent = `Error ${resp.status}: ${await shortErr(resp)}`;
+                return;
+            }
+            const data = await resp.json();
+            status.textContent = '';
+            if (data.isFinalto) {
+                const mt5Panels = document.getElementById('sw-mt5-panels');
+                const mt5Open = document.getElementById('sw-mt5-open-wrap');
+                const finaltoWrap = document.getElementById('sw-finalto-wrap');
+                if (!finaltoWrap) {
+                    status.textContent = 'Finalto grid missing from the page - hard-refresh the browser (Ctrl+F5) to pick up the latest swaps-report.html.';
+                    return;
+                }
+                if (mt5Panels) mt5Panels.style.display = 'none';
+                if (mt5Open) mt5Open.style.display = 'none';
+                finaltoWrap.style.display = '';
+                const s = swapStyleValue(data.totalSwap);
+                const rows = data.finaltoDailyCosts || [];
+                const emptyNote = rows.length === 0
+                    ? ' &middot; <span style="color:var(--amber)">No cost rows returned - check LP credentials, IsActive sub-accounts, or that the range includes business days</span>'
+                    : '';
+                summary.innerHTML =
+                    `Realized Swap (live from Finalto) <strong style="color:${s}">${nf2.format(data.totalSwap)}</strong>`
+                    + ` &middot; ${nfInt.format(rows.length)} instrument-day row(s)`
+                    + ` &middot; Unrealized: not exposed by Finalto`
+                    + emptyNote;
+                buildFinaltoGrid(rows);
+                return;
+            }
+            const mt5PanelsEl = document.getElementById('sw-mt5-panels');
+            const mt5OpenEl = document.getElementById('sw-mt5-open-wrap');
+            const finaltoWrapEl = document.getElementById('sw-finalto-wrap');
+            if (mt5PanelsEl) mt5PanelsEl.style.display = '';
+            if (mt5OpenEl) mt5OpenEl.style.display = '';
+            if (finaltoWrapEl) finaltoWrapEl.style.display = 'none';
+            const s = swapStyleValue(data.totalSwap);
+            const openColor = swapStyleValue(data.openSwapAccrued);
+            summary.innerHTML =
+                `Total Swap (deals in range) <strong style="color:${s}">${nf2.format(data.totalSwap)}</strong>`
+                + ` &middot; Open Swap Accrued (now) <strong style="color:${openColor}">${nf2.format(data.openSwapAccrued || 0)}</strong>`
+                + ` &middot; Deal Volume <strong>${nf2.format(data.dealVolume)}</strong>`
+                + ` &middot; Realized Volume <strong>${nf2.format(data.realizedVolume)}</strong>`
+                + ` &middot; ${nfInt.format(data.positions.length)} closed pos, ${nfInt.format(data.deals.length)} deal(s), ${nfInt.format((data.openPositions || []).length)} open pos`;
+            var vendorLabel = (source || 'MT5').toString();
+            document.getElementById('sw-open-head').textContent =
+                `Unrealized - currently open positions (live from ${vendorLabel}, matches the ${vendorLabel} trade view)`;
+            buildPositionGrid(data.positions, /* isLp */ true);
+            buildDealGrid(data.deals, /* isLp */ true);
+            buildOpenPositionsGrid(data.openPositions || [], /* isLp */ true);
+        } catch (e) {
+            status.textContent = 'Failed to load LP detail. Check the server logs.';
+        }
+    }
+
+    function buildFinaltoGrid(rows) {
+        if (_finaltoGridApi) _finaltoGridApi.destroy();
+        const pinned = {
+            subAccountId: null,
+            instrument: 'TOTAL',
+            tradeDate: '',
+            longPosCost: rows.reduce((s, r) => s + (Number(r.longPosCost) || 0), 0),
+            shortPosCost: rows.reduce((s, r) => s + (Number(r.shortPosCost) || 0), 0),
+            total: rows.reduce((s, r) => s + (Number(r.total) || 0), 0),
+            eodRate: null,
+        };
+        _finaltoGridApi = SLC.createGrid(document.getElementById('sw-finalto-grid'), {
+            columnDefs: [
+                { headerName: 'Sub-account', field: 'subAccountId', minWidth: 110 },
+                { headerName: 'Instrument', field: 'instrument', minWidth: 130 },
+                { headerName: 'Trade Date (UTC)', field: 'tradeDate', minWidth: 130 },
+                { headerName: 'Long Pos Cost', field: 'longPosCost', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'Short Pos Cost', field: 'shortPosCost', minWidth: 130, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'Total', field: 'total', minWidth: 120, type: 'numericColumn',
+                    valueFormatter: fmtSwap, cellStyle: totalRowStyle(swapStyle) },
+                { headerName: 'EOD Rate', field: 'eodRate', minWidth: 100, type: 'numericColumn',
+                    valueFormatter: p => p.value != null ? Number(p.value).toFixed(6) : '' },
+            ],
+            rowData: rows,
+            pinnedBottomRowData: rows.length ? [pinned] : [],
+        });
+    }
+
+    function swapStyleValue(v) {
+        v = Number(v) || 0;
+        if (v > 0) return 'var(--pos)';
+        if (v < 0) return 'var(--neg)';
+        return 'var(--fg-dim)';
+    }
+
+    async function runSwaps() {
+        const btn = document.getElementById('sw-runBtn');
+        const stats = document.getElementById('sw-stats');
+        const errEl = document.getElementById('sw-error');
+        const infoEl = document.getElementById('sw-info');
+        const fromStr = document.getElementById('sw-from').value;
+        const toStr = document.getElementById('sw-to').value;
+
+        errEl.style.display = 'none';
+        errEl.textContent = '';
+        infoEl.style.display = 'none';
+
+        if (!fromStr || !toStr) {
+            stats.textContent = 'Pick a date range first.';
+            return;
+        }
+
+        const { fromUnixSec, toUnixSec } = dateRangeToUnix(fromStr, toStr);
+        _lastRange = { fromUnixSec, toUnixSec };
+        closeDetail();
+
+        btn.disabled = true;
+        document.getElementById('sw-csvClientBtn').disabled = true;
+        document.getElementById('sw-csvLpBtn').disabled = true;
+        const t0 = Date.now();
+        stats.textContent = 'Loading...';
+
+        try {
+            const liveFinalto = document.getElementById('sw-live-finalto').checked;
+            const resp = await fetch(`/api/SwapsReport?from=${fromUnixSec}&to=${toUnixSec}&liveFinalto=${liveFinalto}`, { credentials: 'same-origin' });
+            if (!resp.ok) {
+                errEl.textContent = `Error ${resp.status}: ${await shortErr(resp)}`;
+                errEl.style.display = 'block';
+                stats.textContent = `Error ${resp.status}`;
+                return;
+            }
+            const data = await resp.json();
+
+            buildClientGrid(data.clients || [], data.clientTotals || { totalSwap: 0, accountCount: 0 });
+            buildLpGrid(data.lps || [], data.lpTotals || { totalSwap: 0, accountCount: 0 });
+
+            const notes = [];
+            if (data.skippedApiLpCount > 0) {
+                notes.push(`${data.skippedApiLpCount} API LP(s) skipped (only Xtb + Finalto are wired)`);
+            }
+            if (data.clientPanelError) {
+                notes.push(`Client panel failed: ${data.clientPanelError}`);
+            }
+            if (Array.isArray(data.lpErrors) && data.lpErrors.length > 0) {
+                notes.push(`${data.lpErrors.length} LP(s) failed: ${data.lpErrors.join('; ')}`);
+            }
+            if (notes.length) {
+                infoEl.textContent = notes.join(' | ');
+                infoEl.style.display = 'block';
+            }
+
+            document.getElementById('sw-csvClientBtn').disabled = false;
+            document.getElementById('sw-csvLpBtn').disabled = false;
+
+            const dt = Date.now() - t0;
+            stats.textContent = `${fromStr} -> ${toStr} - ${(dt / 1000).toFixed(1)}s`;
+        } catch (e) {
+            errEl.textContent = 'Failed to load report. Check the server logs.';
+            errEl.style.display = 'block';
+            stats.textContent = 'Failed';
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function shortErr(resp) {
+        try {
+            const body = await resp.text();
+            if (!body) return resp.statusText || 'Request failed';
+            try {
+                const parsed = JSON.parse(body);
+                if (parsed && typeof parsed.error === 'string') return parsed.error;
+            } catch (_) { /* not JSON */ }
+            return 'Request failed. Check the server logs.';
+        } catch (_) {
+            return resp.statusText || 'Request failed';
+        }
+    }
+
+    function downloadCsv(panel) {
+        const fromStr = document.getElementById('sw-from').value;
+        const toStr = document.getElementById('sw-to').value;
+        if (!fromStr || !toStr) return;
+        const { fromUnixSec, toUnixSec } = dateRangeToUnix(fromStr, toStr);
+        window.location = `/api/SwapsReport/csv?from=${fromUnixSec}&to=${toUnixSec}&panel=${panel}`;
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        defaultDates();
+    });
+</script>
+
+</body>
+</html>

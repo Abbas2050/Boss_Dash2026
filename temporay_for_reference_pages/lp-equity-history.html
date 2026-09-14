@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>SLC - LP Equity History</title>
+    <style>
+body { padding: 0; }
+h1 { color: var(--blue); margin-bottom: 8px; }
+h2 { font-size: 12px; color: var(--fg); margin: 8px 0 6px; }
+
+.page { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+
+.controls-row {
+    display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+}
+.control-group { display: flex; flex-direction: column; gap: 3px; min-width: 180px; }
+.control-group.grow { flex: 1 1 320px; min-width: 260px; }
+.control-label { font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.3px; }
+
+.lp-picker {
+    position: relative;
+    background: var(--bg3); border: 1px solid var(--line); border-radius: 4px;
+    padding: 4px 6px; min-height: 26px; cursor: pointer;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+    font-size: 11px;
+}
+.lp-picker .placeholder { color: var(--fg-muted); font-style: italic; padding: 2px 4px; }
+.lp-picker .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(122,162,247,0.15); color: var(--blue);
+    border: 1px solid rgba(122,162,247,0.35);
+    border-radius: 3px; padding: 1px 6px; font-size: 10px; font-weight: 600;
+}
+.lp-picker .chip .x {
+    cursor: pointer; color: var(--fg-muted); font-weight: bold;
+}
+.lp-picker .chip .x:hover { color: var(--rose); }
+
+.lp-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; margin-top: 2px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 4px; padding: 4px;
+    max-height: 320px; overflow-y: auto;
+    z-index: 50; display: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.lp-dropdown.open { display: block; }
+.lp-dropdown .search {
+    width: 100%; margin-bottom: 4px; padding: 3px 6px; font-size: 11px;
+    background: var(--bg3); border: 1px solid var(--line); color: var(--fg);
+    border-radius: 3px;
+}
+.lp-dropdown .row {
+    padding: 3px 6px; font-size: 11px; cursor: pointer; border-radius: 3px;
+    display: flex; align-items: center; gap: 6px;
+}
+.lp-dropdown .row:hover { background: rgba(122,162,247,0.1); color: var(--blue); }
+.lp-dropdown .row input[type=checkbox] { pointer-events: none; }
+.lp-dropdown .row.selected { color: var(--blue); }
+.lp-dropdown .toolbar {
+    display: flex; gap: 6px; padding: 3px 6px 6px;
+    border-bottom: 1px solid var(--line); margin-bottom: 4px;
+    font-size: 10px;
+}
+.lp-dropdown .toolbar a {
+    color: var(--blue); cursor: pointer; text-decoration: none;
+}
+.lp-dropdown .toolbar a:hover { text-decoration: underline; }
+
+.btn {
+    padding: 5px 14px; border: 1px solid var(--line); border-radius: 4px;
+    font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
+    background: var(--blue); color: var(--surface);
+}
+.btn:hover { background: #89b4fa; }
+.btn:disabled { background: var(--bg3); color: var(--fg-muted); cursor: default; }
+.btn.secondary { background: var(--bg3); color: var(--fg); }
+.btn.secondary:hover { background: var(--surface); border-color: var(--blue); }
+
+#msg { font-size: 11px; min-height: 16px; }
+.msg-ok { color: var(--pos); }
+.msg-err { color: var(--rose); }
+.msg-info { color: var(--fg-muted); font-style: italic; }
+
+#dataGrid { height: 600px; width: 100%; }
+
+.count-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    background: var(--bg3); color: var(--fg-dim); font-size: 10px;
+    margin-left: 6px;
+}
+    </style>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.2/dist/ag-grid-community.min.js"></script>
+    <script src="/shared/grid.js"></script>
+    <script src="/shared/nav.js"></script>
+</head>
+<body>
+<div class="page">
+    <h1>LP Equity History</h1>
+
+    <div class="panel">
+        <div class="controls-row">
+            <div class="control-group grow">
+                <span class="control-label">LP Accounts <span id="pickCount" class="count-badge">0 selected</span></span>
+                <div id="lpPicker" class="lp-picker" onclick="onPickerClick(event)">
+                    <span class="placeholder" id="pickerPlaceholder">Click to select LPs</span>
+                    <div id="lpDropdown" class="lp-dropdown">
+                        <div class="toolbar">
+                            <a onclick="selectAll(true)">Select all</a>
+                            <a onclick="selectAll(false)">Clear</a>
+                        </div>
+                        <input id="lpSearch" class="search" placeholder="Filter by name or login" oninput="renderLpRows()" onclick="event.stopPropagation()">
+                        <div id="lpRows"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <span class="control-label">From (UTC)</span>
+                <input type="date" id="fromDate">
+            </div>
+            <div class="control-group">
+                <span class="control-label">To (UTC)</span>
+                <input type="date" id="toDate">
+            </div>
+            <div class="control-group" style="min-width:0">
+                <span class="control-label">&nbsp;</span>
+                <button class="btn" id="loadBtn" onclick="loadSeries()">Load</button>
+            </div>
+        </div>
+        <div id="msg" class="msg-info" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="panel">
+        <h2>Daily Snapshot Time (UTC)</h2>
+        <div style="display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+            <div class="control-group">
+                <span class="control-label">Hour (0-23)</span>
+                <input type="number" id="schedHour" min="0" max="23" step="1" style="width:80px;">
+            </div>
+            <div class="control-group">
+                <span class="control-label">Minute (0-59)</span>
+                <input type="number" id="schedMinute" min="0" max="59" step="1" style="width:80px;">
+            </div>
+            <div class="control-group" style="min-width:0">
+                <span class="control-label">&nbsp;</span>
+                <button class="btn" id="saveSchedBtn" onclick="saveSchedule()">Save Schedule</button>
+            </div>
+            <div class="control-group" style="min-width:0">
+                <span class="control-label">&nbsp;</span>
+                <button class="btn secondary" id="runNowBtn" onclick="runSnapshotNow()" title="Fires the snapshot job immediately -- useful for testing.">Take Snapshot Now</button>
+            </div>
+            <div id="schedMsg" class="msg-info" style="align-self:center;"></div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Snapshots <span id="rowCount" class="count-badge">0 rows</span></h2>
+        <div id="dataGrid" class="ag-theme-alpine-dark"></div>
+    </div>
+</div>
+
+<script>
+    var LP_LIST = [];
+    var selectedLogins = new Set();
+    var gridApi = null;
+
+    function setMsg(text, cls) {
+        var el = document.getElementById('msg');
+        el.textContent = text || '';
+        el.className = cls || 'msg-info';
+    }
+
+    function fmtDateInput(d) {
+        var y = d.getUTCFullYear();
+        var m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        var day = String(d.getUTCDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+
+    function fmtTs(v) {
+        if (!v) return '';
+        var d = new Date(v);
+        if (isNaN(d.getTime())) return '';
+        var y = d.getUTCFullYear();
+        var mo = String(d.getUTCMonth() + 1).padStart(2, '0');
+        var da = String(d.getUTCDate()).padStart(2, '0');
+        var hh = String(d.getUTCHours()).padStart(2, '0');
+        var mm = String(d.getUTCMinutes()).padStart(2, '0');
+        return y + '-' + mo + '-' + da + ' ' + hh + ':' + mm + ' UTC';
+    }
+
+    function fmtNum(v, digits) {
+        if (v == null || isNaN(Number(v))) return '';
+        return Number(v).toLocaleString(undefined, {
+            minimumFractionDigits: digits != null ? digits : 2,
+            maximumFractionDigits: digits != null ? digits : 2,
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        var today = new Date();
+        var todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+        document.getElementById('fromDate').value = fmtDateInput(todayUtc);
+        document.getElementById('toDate').value = fmtDateInput(todayUtc);
+
+        initGrid();
+        loadLpList();
+        loadSchedule();
+
+        document.addEventListener('click', function(e) {
+            var picker = document.getElementById('lpPicker');
+            if (!picker.contains(e.target)) {
+                document.getElementById('lpDropdown').classList.remove('open');
+            }
+        });
+    });
+
+    function setSchedMsg(text, cls) {
+        var el = document.getElementById('schedMsg');
+        el.textContent = text || '';
+        el.className = cls || 'msg-info';
+    }
+
+    async function loadSchedule() {
+        try {
+            var resp = await fetch('/api/LpEquitySnapshotSchedule');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var s = await resp.json();
+            document.getElementById('schedHour').value = s.snapshotHourUtc;
+            document.getElementById('schedMinute').value = s.snapshotMinuteUtc;
+            var when = s.updatedUtc ? (' (last saved ' + new Date(s.updatedUtc).toISOString().replace('T', ' ').slice(0, 16) + ' UTC)') : '';
+            setSchedMsg('Currently fires daily at ' + pad2(s.snapshotHourUtc) + ':' + pad2(s.snapshotMinuteUtc) + ' UTC' + when + '.', 'msg-info');
+        } catch (e) {
+            setSchedMsg('Failed to load schedule: ' + e.message, 'msg-err');
+        }
+    }
+
+    async function runSnapshotNow() {
+        var btn = document.getElementById('runNowBtn');
+        btn.disabled = true; btn.textContent = 'Running...';
+        setSchedMsg('Running snapshot -- this may take a few seconds depending on the LP count...', 'msg-info');
+        try {
+            var resp = await fetch('/api/LpEquitySnapshotSchedule/run-now', { method: 'POST' });
+            if (resp.status === 409) {
+                setSchedMsg('A snapshot is already running -- try again in a moment.', 'msg-err');
+                return;
+            }
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var body = await resp.json();
+            var r = body.run;
+            var msg;
+            if (r == null) {
+                msg = 'Snapshot triggered but no JobRuns row found -- check the app log.';
+            } else if (r.status === 'succeeded') {
+                msg = 'Succeeded. ' + (r.recordsProcessed || 0) + ' snapshot row(s) written in ' + (r.durationMs || '?') + ' ms (JobRunId ' + r.jobRunId + ').';
+            } else if (r.status === 'failed') {
+                msg = 'Failed: ' + (r.errorMessage || '(no error message)') + ' (JobRunId ' + r.jobRunId + ').';
+            } else {
+                msg = 'Status: ' + r.status + ' (JobRunId ' + r.jobRunId + ').';
+            }
+            setSchedMsg(msg, r && r.status === 'succeeded' ? 'msg-ok' : 'msg-err');
+            loadSchedule();
+            if (typeof loadSeries === 'function' && LP_LIST.length > 0) loadSeries();
+        } catch (e) {
+            setSchedMsg('Snapshot trigger failed: ' + e.message, 'msg-err');
+        } finally {
+            btn.disabled = false; btn.textContent = 'Take Snapshot Now';
+        }
+    }
+
+    async function saveSchedule() {
+        var h = parseInt(document.getElementById('schedHour').value, 10);
+        var m = parseInt(document.getElementById('schedMinute').value, 10);
+        if (isNaN(h) || h < 0 || h > 23) { setSchedMsg('Hour must be 0-23.', 'msg-err'); return; }
+        if (isNaN(m) || m < 0 || m > 59) { setSchedMsg('Minute must be 0-59.', 'msg-err'); return; }
+        var btn = document.getElementById('saveSchedBtn');
+        btn.disabled = true; btn.textContent = 'Saving...';
+        try {
+            var resp = await fetch('/api/LpEquitySnapshotSchedule', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ snapshotHourUtc: h, snapshotMinuteUtc: m })
+            });
+            if (!resp.ok) {
+                var err = await resp.json().catch(function() { return { error: 'HTTP ' + resp.status }; });
+                throw new Error(err.error || ('HTTP ' + resp.status));
+            }
+            var s = await resp.json();
+            setSchedMsg('Saved. Next snapshot at ' + pad2(s.snapshotHourUtc) + ':' + pad2(s.snapshotMinuteUtc) + ' UTC.', 'msg-ok');
+        } catch (e) {
+            setSchedMsg('Save failed: ' + e.message, 'msg-err');
+        } finally {
+            btn.disabled = false; btn.textContent = 'Save Schedule';
+        }
+    }
+
+    function pad2(n) { return String(n).padStart(2, '0'); }
+
+    async function loadLpList() {
+        try {
+            var resp = await fetch('/LpEquityHistory/lps');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            LP_LIST = await resp.json();
+            LP_LIST.forEach(function(lp) { selectedLogins.add(String(lp.login)); });
+            renderLpRows();
+            renderPickerChips();
+            loadSeries();
+        } catch (e) {
+            setMsg('Failed to load LP list: ' + e.message, 'msg-err');
+        }
+    }
+
+    function onPickerClick(ev) {
+        if (ev.target.classList.contains('x')) return;
+        if (ev.target.closest('.lp-dropdown')) return;
+        document.getElementById('lpDropdown').classList.toggle('open');
+        var s = document.getElementById('lpSearch');
+        if (document.getElementById('lpDropdown').classList.contains('open')) {
+            setTimeout(function() { s.focus(); }, 0);
+        }
+    }
+
+    function renderLpRows() {
+        var q = (document.getElementById('lpSearch').value || '').toLowerCase();
+        var host = document.getElementById('lpRows');
+        var rows = LP_LIST.filter(function(lp) {
+            if (!q) return true;
+            var name = (lp.name || '').toLowerCase();
+            var login = String(lp.login);
+            return name.indexOf(q) >= 0 || login.indexOf(q) >= 0;
+        });
+        host.innerHTML = rows.map(function(lp) {
+            var checked = selectedLogins.has(String(lp.login));
+            var display = (lp.name || 'LP') + ' (' + lp.login + ')';
+            return '<label class="row' + (checked ? ' selected' : '') + '" data-login="' + lp.login + '">' +
+                   '<input type="checkbox"' + (checked ? ' checked' : '') + '>' +
+                   '<span>' + escapeHtml(display) + '</span></label>';
+        }).join('') || '<div style="padding:6px;color:var(--fg-muted);font-size:11px;">No LPs match</div>';
+
+        Array.from(host.querySelectorAll('.row')).forEach(function(row) {
+            row.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                var login = row.getAttribute('data-login');
+                if (selectedLogins.has(login)) selectedLogins.delete(login);
+                else selectedLogins.add(login);
+                renderLpRows();
+                renderPickerChips();
+            });
+        });
+    }
+
+    function selectAll(on) {
+        var q = (document.getElementById('lpSearch').value || '').toLowerCase();
+        var rows = LP_LIST.filter(function(lp) {
+            if (!q) return true;
+            var name = (lp.name || '').toLowerCase();
+            return name.indexOf(q) >= 0 || String(lp.login).indexOf(q) >= 0;
+        });
+        rows.forEach(function(lp) {
+            if (on) selectedLogins.add(String(lp.login));
+            else selectedLogins.delete(String(lp.login));
+        });
+        renderLpRows();
+        renderPickerChips();
+    }
+
+    function renderPickerChips() {
+        var picker = document.getElementById('lpPicker');
+        var dropdown = document.getElementById('lpDropdown');
+        // Strip existing chips/placeholder, but preserve the dropdown node.
+        Array.from(picker.querySelectorAll('.chip, .placeholder')).forEach(function(n) { n.remove(); });
+        var byLogin = {};
+        LP_LIST.forEach(function(lp) { byLogin[String(lp.login)] = lp; });
+        var logins = Array.from(selectedLogins);
+        document.getElementById('pickCount').textContent = logins.length + ' selected';
+        if (logins.length === 0) {
+            var ph = document.createElement('span');
+            ph.className = 'placeholder';
+            ph.textContent = 'Click to select LPs';
+            picker.insertBefore(ph, dropdown);
+            return;
+        }
+        logins.forEach(function(login) {
+            var lp = byLogin[login] || { name: 'LP', login: login };
+            var chip = document.createElement('span');
+            chip.className = 'chip';
+            chip.textContent = (lp.name || 'LP') + ' (' + login + ')';
+            var x = document.createElement('span');
+            x.className = 'x';
+            x.textContent = 'x';
+            x.title = 'Remove';
+            x.addEventListener('click', function(ev) {
+                ev.stopPropagation();
+                selectedLogins.delete(login);
+                renderLpRows();
+                renderPickerChips();
+            });
+            chip.appendChild(x);
+            picker.insertBefore(chip, dropdown);
+        });
+    }
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function initGrid() {
+        var cols = [
+            { headerName: 'Login',   field: 'login',       maxWidth: 110 },
+            { headerName: 'Name',    field: 'name',        minWidth: 160, flex: 1 },
+            { headerName: 'Source',  field: 'source',      maxWidth: 110 },
+            { headerName: 'Timestamp (UTC)', field: 'timestamp', minWidth: 180,
+              valueFormatter: function(p) { return fmtTs(p.value); } },
+            { headerName: 'Equity',      field: 'equity',      type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+            { headerName: 'Balance',     field: 'balance',     type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+            { headerName: 'Credit',      field: 'credit',      type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+            { headerName: 'Margin',      field: 'margin',      type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+            { headerName: 'Free Margin', field: 'freeMargin',  type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+            { headerName: 'Margin Level %', field: 'marginLevel', type: 'numericColumn', valueFormatter: function(p) { return fmtNum(p.value); } },
+        ];
+        gridApi = SLC.createGrid(document.getElementById('dataGrid'), {
+            columnDefs: cols,
+            rowData: [],
+            defaultColDef: { resizable: true, sortable: true, filter: true },
+            overlayNoRowsTemplate: 'No snapshots -- Load a range to populate.',
+        });
+    }
+
+    async function loadSeries() {
+        var logins = Array.from(selectedLogins);
+        if (logins.length === 0) {
+            logins = LP_LIST.map(function(lp) { return String(lp.login); });
+        }
+        var from = document.getElementById('fromDate').value;
+        var to = document.getElementById('toDate').value;
+        if (!from || !to) {
+            setMsg('Please pick both dates.', 'msg-err');
+            return;
+        }
+        if (from > to) {
+            setMsg('From date must not be after To date.', 'msg-err');
+            return;
+        }
+
+        var btn = document.getElementById('loadBtn');
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        setMsg('Loading snapshots...', 'msg-info');
+
+        try {
+            var qs = new URLSearchParams();
+            logins.forEach(function(l) { qs.append('logins', l); });
+            qs.set('from', from + 'T00:00:00Z');
+            qs.set('to', to + 'T23:59:59Z');
+            var resp = await fetch('/LpEquityHistory/series?' + qs.toString());
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            var body = await resp.json();
+            var payload = (body && body.series) ? body.series : (Array.isArray(body) ? body : []);
+            renderGrid(payload);
+            var total = countRows(payload);
+            setMsg('Loaded ' + total + ' snapshot' + (total === 1 ? '' : 's') + ' across ' + logins.length + ' LP' + (logins.length === 1 ? '' : 's') + '.', 'msg-ok');
+        } catch (e) {
+            setMsg('Load failed: ' + e.message, 'msg-err');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Load';
+        }
+    }
+
+    // Payload shape: array of { login, name, points: [{ timestamp, equity, balance, credit, margin, freeMargin, marginLevel, source }] }
+    function countRows(payload) {
+        var n = 0;
+        (payload || []).forEach(function(s) { n += (s.points || []).length; });
+        return n;
+    }
+
+    function renderGrid(payload) {
+        var rows = [];
+        (payload || []).forEach(function(s) {
+            (s.points || []).forEach(function(p) {
+                rows.push({
+                    login: s.login,
+                    name: s.name,
+                    source: p.source || s.source || '',
+                    timestamp: p.timestamp,
+                    equity: p.equity,
+                    balance: p.balance,
+                    credit: p.credit,
+                    margin: p.margin,
+                    freeMargin: p.freeMargin,
+                    marginLevel: p.marginLevel,
+                });
+            });
+        });
+        rows.sort(function(a, b) {
+            if (a.login !== b.login) return a.login < b.login ? -1 : 1;
+            return a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0;
+        });
+        if (gridApi) gridApi.setGridOption('rowData', rows);
+        document.getElementById('rowCount').textContent = rows.length + ' rows';
+    }
+</script>
+</body>
+</html>

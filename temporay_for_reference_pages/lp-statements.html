@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>SLC - LP Statements</title>
+    <link rel="stylesheet" href="/shared/theme.css">
+    <script src="/shared/nav.js"></script>
+    <style>
+        body { padding: 0; }
+        .page { max-width: 1500px; margin: 0 auto; padding: 18px 20px; }
+        h1 { color: var(--blue); margin-bottom: 6px; }
+        .subtitle { color: var(--fg-muted); font-size: 13px; margin-bottom: 12px; }
+
+        .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+        .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim); margin: 0 0 10px; }
+
+        .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; align-items: end; }
+        .form-grid label { display: block; font-size: 11px; color: var(--fg-muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 3px; }
+        .form-grid input, .form-grid select {
+            width: 100%; box-sizing: border-box;
+            background: var(--bg3); border: 1px solid var(--line);
+            color: var(--fg); padding: 6px 8px; border-radius: 4px; font-size: 13px;
+        }
+
+        .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+        button {
+            background: var(--blue); color: var(--surface); border: none;
+            padding: 7px 14px; cursor: pointer; border-radius: 4px;
+            font-size: 13px; font-weight: bold;
+        }
+        button:hover:not(:disabled) { background: #89b4fa; }
+        button.secondary { background: #414868; color: var(--fg); }
+        button.secondary:hover:not(:disabled) { background: var(--fg-muted); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .drop-zone {
+            border: 2px dashed var(--line); border-radius: 6px;
+            padding: 24px; text-align: center; color: var(--fg-muted); font-size: 13px;
+            cursor: pointer; transition: background 0.15s, border-color 0.15s;
+        }
+        .drop-zone.dragover { background: var(--bg3); border-color: var(--blue); color: var(--fg); }
+        .file-list { list-style: none; padding: 0; margin: 8px 0 0; font-size: 12px; color: var(--fg-muted); }
+        .file-list li { padding: 3px 0; }
+
+        table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+        table.grid th, table.grid td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+        table.grid th { color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.4px; font-size: 10px; font-weight: bold; background: var(--bg3); }
+        table.grid td.right { text-align: right; font-variant-numeric: tabular-nums; }
+        table.grid td.err { color: var(--rose); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; }
+
+        /* Coverage matrix: horizontally + vertically scrollable inside a bounded box.
+           Header row sticks to the top, LP column sticks to the left, top-left cell
+           gets z-index=3 so it stays above both sticky planes.
+           padding-bottom leaves room below the last row so the horizontal scrollbar
+           doesn't overlap it and swallow clicks on the bottom LP's cells. */
+        .coverage-scroll {
+            overflow: auto;
+            border: 1px solid var(--line); border-radius: 4px;
+            max-width: 100%; max-height: 60vh;
+            padding-bottom: 16px;
+        }
+        table.coverage { border-collapse: collapse; font-size: 11px; }
+        table.coverage th, table.coverage td {
+            padding: 5px 8px; border: 1px solid var(--line); text-align: center;
+            white-space: nowrap; box-sizing: border-box;
+        }
+        table.coverage thead th {
+            position: sticky; top: 0; z-index: 2;
+            color: var(--fg-dim); background: var(--bg3);
+            font-size: 10px; text-transform: uppercase; font-weight: bold;
+        }
+        table.coverage th, table.coverage td { min-width: 60px; }
+        table.coverage th.lp-col, table.coverage td.lp-col {
+            text-align: left; padding-left: 10px;
+            position: sticky; left: 0;
+            min-width: 180px; max-width: 220px;
+        }
+        table.coverage th.lp-col { z-index: 3; background: var(--bg3); }
+        table.coverage td.lp-col { z-index: 1; background: var(--surface); }
+        table.coverage tbody tr:last-child td { padding-bottom: 10px; }
+        table.coverage td.present { background: rgba(163, 190, 140, 0.25); color: var(--pos); cursor: pointer; font-weight: bold; }
+        table.coverage td.present:hover { background: rgba(163, 190, 140, 0.45); }
+        table.coverage td.missing { background: rgba(255, 121, 121, 0.12); color: var(--fg-muted); }
+
+        .row-count { font-size: 12px; color: var(--fg-muted); margin: 8px 0; }
+        .empty { color: var(--fg-muted); font-style: italic; font-size: 13px; }
+        .hidden { display: none; }
+
+        .toast {
+            position: fixed; bottom: 18px; right: 18px; z-index: 2000;
+            background: var(--surface); border: 1px solid var(--line); border-radius: 4px;
+            padding: 10px 14px; font-size: 13px; color: var(--fg);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.35); display: none;
+        }
+        .toast.show { display: block; }
+        .toast.ok { border-left: 3px solid var(--pos); }
+        .toast.fail { border-left: 3px solid var(--rose); }
+
+        .modal-overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1500;
+            align-items: center; justify-content: center;
+        }
+        .modal-card {
+            background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+            padding: 14px 16px; min-width: 520px; max-width: 80%; max-height: 80vh;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .modal-card header { display: flex; justify-content: space-between; align-items: center; }
+        .modal-card header span {
+            font-size: 12px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--fg-dim);
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <h1>LP Statements</h1>
+    <div class="subtitle">Upload LP-issued statements (Phase 1: CMC PDF only), inspect what's stored, and see coverage gaps per LP per date.</div>
+
+    <!-- Upload panel -->
+    <div class="panel">
+        <h2>Upload statements</h2>
+        <div class="form-grid">
+            <div>
+                <label>Vendor</label>
+                <select id="uploadVendor">
+                    <option value="Cmc">CMC</option>
+                    <option value="FxEdge">FX-EDGE</option>
+                    <option value="Fxcm">FXCM</option>
+                    <option value="Lmax">LMAX</option>
+                    <option value="B2B">B2B</option>
+                    <option value="Ig">IG</option>
+                    <option value="Finalto">FINALTO</option>
+                </select>
+            </div>
+            <div>
+                <label>LP account</label>
+                <select id="uploadLp"><option value="">Loading...</option></select>
+            </div>
+        </div>
+        <div id="dropZone" class="drop-zone" style="margin-top:10px;">
+            Drag &amp; drop statement files here (PDF or XLSX), or click to browse. Multi-file supported.
+            <input id="fileInput" type="file" multiple accept="application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.pdf,.xlsx" style="display:none;">
+        </div>
+        <ul id="fileList" class="file-list"></ul>
+        <div class="btn-row">
+            <button id="btnPreview" disabled>Preview</button>
+            <button id="btnCommit" class="secondary" disabled>Commit</button>
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--fg-muted);cursor:pointer;">
+                <input id="chkOverwrite" type="checkbox" style="width:14px;height:14px;cursor:pointer;">
+                Force re-ingest (delete existing statement for same LP + kind + date)
+            </label>
+            <span id="uploadStatus" class="row-count"></span>
+        </div>
+        <table class="grid hidden" id="previewGrid" style="margin-top:10px;">
+            <thead>
+                <tr>
+                    <th>File</th><th>Status</th><th>Kind</th><th>Date</th><th>Vendor Acct</th>
+                    <th class="right">Opening</th><th class="right">Closing</th>
+                    <th class="right">Swaps</th><th class="right">Commissions</th>
+                </tr>
+            </thead>
+            <tbody id="previewBody"></tbody>
+        </table>
+    </div>
+
+    <!-- Coverage panel -->
+    <div class="panel">
+        <h2>Coverage</h2>
+        <div class="form-grid">
+            <div>
+                <label>Kind</label>
+                <select id="covKind">
+                    <option value="Daily">Daily</option>
+                    <option value="Monthly" selected>Monthly</option>
+                </select>
+            </div>
+            <div>
+                <label>From</label>
+                <input id="covFrom" type="date">
+            </div>
+            <div>
+                <label>To</label>
+                <input id="covTo" type="date">
+            </div>
+        </div>
+        <div class="btn-row">
+            <button id="btnCoverage">Load coverage</button>
+            <span id="covStatus" class="row-count"></span>
+        </div>
+        <div id="covWrapper" style="margin-top:10px;"></div>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<div id="detailModal" class="modal-overlay hidden">
+    <div class="modal-card">
+        <header>
+            <span id="detailTitle">Statement details</span>
+            <button class="secondary" onclick="closeModal()">Close</button>
+        </header>
+        <div id="detailBody"></div>
+    </div>
+</div>
+
+<script>
+    const $ = (id) => document.getElementById(id);
+    const toast = (msg, ok) => {
+        const el = $('toast');
+        el.textContent = msg;
+        el.className = 'toast show ' + (ok ? 'ok' : 'fail');
+        setTimeout(() => { el.className = 'toast'; }, 3500);
+    };
+    const fmtMoney = (v) => v == null ? '' : Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtDate = (iso) => iso ? iso.substring(0, 10) : '';
+    const closeModal = () => $('detailModal').classList.add('hidden');
+
+    let pendingFiles = [];
+    let previewedFiles = [];
+
+    async function loadLps() {
+        const r = await fetch('/api/LpAccount');
+        if (!r.ok) { toast('Failed to load LPs', false); return; }
+        const rows = await r.json();
+        const sel = $('uploadLp');
+        sel.innerHTML = '';
+        for (const lp of rows) {
+            const opt = document.createElement('option');
+            opt.value = lp.id;
+            opt.textContent = `${lp.lpName} (id ${lp.id})`;
+            sel.appendChild(opt);
+        }
+    }
+
+    function renderFileList() {
+        const ul = $('fileList');
+        ul.innerHTML = '';
+        for (const f of pendingFiles) {
+            const li = document.createElement('li');
+            li.textContent = `${f.name}  (${(f.size / 1024).toFixed(1)} KB)`;
+            ul.appendChild(li);
+        }
+        $('btnPreview').disabled = pendingFiles.length === 0;
+        $('btnCommit').disabled = true;
+        $('previewGrid').classList.add('hidden');
+    }
+
+    function attachFileHandlers() {
+        const dz = $('dropZone');
+        const inp = $('fileInput');
+        dz.addEventListener('click', () => inp.click());
+        dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+        dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+        dz.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dz.classList.remove('dragover');
+            pendingFiles = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+            renderFileList();
+        });
+        inp.addEventListener('change', () => {
+            pendingFiles = Array.from(inp.files);
+            renderFileList();
+        });
+    }
+
+    async function doPreview() {
+        if (pendingFiles.length === 0) return;
+        $('btnPreview').disabled = true;
+        $('uploadStatus').textContent = 'Parsing...';
+
+        const fd = new FormData();
+        fd.append('vendor', $('uploadVendor').value);
+        for (const f of pendingFiles) fd.append('files', f, f.name);
+
+        const r = await fetch('/api/LpStatements/preview', { method: 'POST', body: fd });
+        if (!r.ok) {
+            const err = await r.text();
+            $('uploadStatus').textContent = 'Preview failed: ' + err;
+            $('btnPreview').disabled = false;
+            return;
+        }
+        const rows = await r.json();
+        previewedFiles = rows;
+        renderPreview(rows);
+        const okCount = rows.filter(r => r.success).length;
+        $('uploadStatus').textContent = `Parsed ${okCount}/${rows.length} files`;
+        $('btnPreview').disabled = false;
+        $('btnCommit').disabled = okCount === 0;
+    }
+
+    function renderPreview(rows) {
+        const body = $('previewBody');
+        body.innerHTML = '';
+        for (const r of rows) {
+            const tr = document.createElement('tr');
+            if (r.success) {
+                tr.innerHTML = `
+                    <td>${r.fileName}</td>
+                    <td style="color:var(--pos)">OK</td>
+                    <td>${r.kind ?? ''}</td>
+                    <td>${fmtDate(r.statementDateUtc)}</td>
+                    <td>${r.vendorAccountNumber ?? ''}</td>
+                    <td class="right">${fmtMoney(r.openingEquity)}</td>
+                    <td class="right">${fmtMoney(r.closingEquity)}</td>
+                    <td class="right">${fmtMoney(r.totalSwaps)}</td>
+                    <td class="right">${fmtMoney(r.totalCommissions)}</td>`;
+            } else {
+                tr.innerHTML = `
+                    <td>${r.fileName}</td>
+                    <td colspan="8" class="err">FAIL: ${r.error ?? 'Unknown error'}</td>`;
+            }
+            body.appendChild(tr);
+        }
+        $('previewGrid').classList.remove('hidden');
+    }
+
+    async function doCommit() {
+        if (pendingFiles.length === 0) return;
+        $('btnCommit').disabled = true;
+        $('uploadStatus').textContent = 'Importing...';
+
+        const fd = new FormData();
+        fd.append('vendor', $('uploadVendor').value);
+        fd.append('lpAccountId', $('uploadLp').value);
+        fd.append('overwrite', $('chkOverwrite').checked ? 'true' : 'false');
+        for (const f of pendingFiles) fd.append('files', f, f.name);
+
+        const r = await fetch('/api/LpStatements/import', { method: 'POST', body: fd });
+        if (!r.ok) {
+            $('uploadStatus').textContent = 'Import failed: ' + await r.text();
+            toast('Import failed', false);
+            $('btnCommit').disabled = false;
+            return;
+        }
+        const rows = await r.json();
+        const okCount = rows.filter(r => r.success).length;
+        const dups = rows.filter(r => r.success && r.isDuplicate).length;
+        const overwrites = rows.filter(r => r.success && r.isOverwrite).length;
+        const parts = [];
+        if (dups > 0) parts.push(`${dups} skipped duplicate`);
+        if (overwrites > 0) parts.push(`${overwrites} overwritten`);
+        $('uploadStatus').textContent = `Imported ${okCount}/${rows.length}` + (parts.length ? ` (${parts.join(', ')})` : '');
+        toast(`${okCount} statement(s) committed${overwrites > 0 ? ` (${overwrites} overwritten)` : ''}`, true);
+        pendingFiles = [];
+        renderFileList();
+        await loadCoverage();
+    }
+
+    async function loadCoverage() {
+        const kind = $('covKind').value;
+        const from = $('covFrom').value;
+        const to = $('covTo').value;
+        if (!from || !to) { toast('Pick from + to dates', false); return; }
+        $('covStatus').textContent = 'Loading...';
+
+        const url = `/api/LpStatements/coverage?kind=${kind}&from=${from}T00:00:00Z&to=${to}T23:59:59Z`;
+        const r = await fetch(url);
+        if (!r.ok) { $('covStatus').textContent = 'Failed'; toast('Coverage load failed', false); return; }
+        const data = await r.json();
+        renderCoverage(data, kind, from, to);
+        $('covStatus').textContent = `${data.lps.length} LP(s), ${data.lps.reduce((n, lp) => n + lp.statements.length, 0)} statement(s)`;
+    }
+
+    function buildBuckets(kind, fromIso, toIso) {
+        const buckets = [];
+        const start = new Date(fromIso + 'T00:00:00Z');
+        const end = new Date(toIso + 'T00:00:00Z');
+        const cur = new Date(start);
+        if (kind === 'Monthly') {
+            cur.setUTCDate(1);
+            while (cur <= end) {
+                buckets.push(`${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, '0')}`);
+                cur.setUTCMonth(cur.getUTCMonth() + 1);
+            }
+        } else {
+            while (cur <= end) {
+                buckets.push(cur.toISOString().substring(0, 10));
+                cur.setUTCDate(cur.getUTCDate() + 1);
+            }
+        }
+        return buckets;
+    }
+
+    function bucketOfStatement(kind, isoDate) {
+        const dt = new Date(isoDate);
+        if (kind === 'Monthly') {
+            return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}`;
+        }
+        return dt.toISOString().substring(0, 10);
+    }
+
+    function renderCoverage(data, kind, from, to) {
+        const wrap = $('covWrapper');
+        wrap.innerHTML = '';
+        if (data.lps.length === 0) {
+            wrap.innerHTML = '<div class="empty">No statements in the selected range.</div>';
+            return;
+        }
+
+        const buckets = buildBuckets(kind, from, to);
+
+        // Missing summary per LP - the primary output the accountant asked for.
+        const summary = document.createElement('div');
+        summary.className = 'panel';
+        summary.style.margin = '0 0 12px';
+        summary.style.background = 'var(--bg3)';
+        summary.innerHTML = `<h2>Missing ${kind.toLowerCase() === 'monthly' ? 'months' : 'days'} in range</h2>`;
+        const missTable = document.createElement('table');
+        missTable.className = 'grid';
+        missTable.innerHTML = '<thead><tr><th>LP</th><th>Missing</th><th>Missing count</th><th>Present count</th></tr></thead>';
+        const missBody = document.createElement('tbody');
+
+        for (const lp of data.lps) {
+            const present = new Set(lp.statements.map(s => bucketOfStatement(kind, s.statementDate)));
+            const missing = buckets.filter(b => !present.has(b));
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${lp.lpName} <span style="color:var(--fg-muted);font-size:10px">(${lp.lpVendor})</span></td>
+                <td>${missing.length === 0 ? '<span style="color:var(--pos)">-- all present --</span>' : missing.join(', ')}</td>
+                <td class="right" style="color:${missing.length > 0 ? 'var(--rose)' : 'var(--fg-muted)'}">${missing.length}</td>
+                <td class="right">${present.size}</td>`;
+            missBody.appendChild(tr);
+        }
+        missTable.appendChild(missBody);
+        summary.appendChild(missTable);
+        wrap.appendChild(summary);
+
+        // Statement Totals - per-LP sums of TotalSwaps + TotalCommissions across every
+        // statement in the range, for comparing against the Swaps Report / Deal Matching
+        // report on the same window.
+        const totalsPanel = document.createElement('div');
+        totalsPanel.className = 'panel';
+        totalsPanel.style.margin = '0 0 12px';
+        totalsPanel.style.background = 'var(--bg3)';
+        totalsPanel.innerHTML = `<h2>Statement totals in range (per LP)</h2>
+            <div style="font-size:11px;color:var(--fg-muted);margin-bottom:8px">
+                Sum of TotalSwaps and TotalCommissions across every ${kind.toLowerCase()} statement whose date falls between ${from} and ${to}. Compare against the Swaps Report / Deal Matching report over the same window.
+            </div>`;
+        const totalsTable = document.createElement('table');
+        totalsTable.className = 'grid';
+        totalsTable.innerHTML = '<thead><tr><th>LP</th><th class="right">Statements</th><th class="right">Sum Swaps</th><th class="right">Sum Commissions</th><th class="right">Opening (earliest)</th><th class="right">Closing (latest)</th></tr></thead>';
+        const totalsBody = document.createElement('tbody');
+
+        let grandStatements = 0, grandSwaps = 0, grandComm = 0, grandOpen = 0, grandClose = 0;
+        for (const lp of data.lps) {
+            const stmts = (lp.statements || []).slice().sort(
+                (a, b) => new Date(a.statementDate) - new Date(b.statementDate));
+            const nStmts = stmts.length;
+            const sumSwaps = stmts.reduce((n, s) => n + (Number(s.totalSwaps) || 0), 0);
+            const sumComm = stmts.reduce((n, s) => n + (Number(s.totalCommissions) || 0), 0);
+            const openEq = nStmts ? Number(stmts[0].openingEquity) || 0 : 0;
+            const closeEq = nStmts ? Number(stmts[nStmts - 1].closingEquity) || 0 : 0;
+
+            grandStatements += nStmts;
+            grandSwaps += sumSwaps;
+            grandComm += sumComm;
+            grandOpen += openEq;
+            grandClose += closeEq;
+
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${lp.lpName} <span style="color:var(--fg-muted);font-size:10px">(${lp.lpVendor})</span></td>
+                <td class="right">${nStmts}</td>
+                <td class="right" style="color:${sumSwaps < 0 ? 'var(--rose)' : sumSwaps > 0 ? 'var(--pos)' : 'var(--fg-muted)'}">${fmtMoney(sumSwaps)}</td>
+                <td class="right" style="color:${sumComm < 0 ? 'var(--rose)' : sumComm > 0 ? 'var(--pos)' : 'var(--fg-muted)'}">${fmtMoney(sumComm)}</td>
+                <td class="right">${fmtMoney(openEq)}</td>
+                <td class="right">${fmtMoney(closeEq)}</td>`;
+            totalsBody.appendChild(tr);
+        }
+        const totalTr = document.createElement('tr');
+        totalTr.style.fontWeight = 'bold';
+        totalTr.style.borderTop = '2px solid var(--line)';
+        totalTr.innerHTML = `
+            <td>TOTAL</td>
+            <td class="right">${grandStatements}</td>
+            <td class="right" style="color:${grandSwaps < 0 ? 'var(--rose)' : grandSwaps > 0 ? 'var(--pos)' : 'var(--fg-muted)'}">${fmtMoney(grandSwaps)}</td>
+            <td class="right" style="color:${grandComm < 0 ? 'var(--rose)' : grandComm > 0 ? 'var(--pos)' : 'var(--fg-muted)'}">${fmtMoney(grandComm)}</td>
+            <td class="right">${fmtMoney(grandOpen)}</td>
+            <td class="right">${fmtMoney(grandClose)}</td>`;
+        totalsBody.appendChild(totalTr);
+        totalsTable.appendChild(totalsBody);
+        totalsPanel.appendChild(totalsTable);
+        wrap.appendChild(totalsPanel);
+
+        // Coverage matrix below the summary. Wrapped in a horizontally scrollable
+        // container so wide date ranges don't overflow the page. LP column is sticky-left.
+        const scroll = document.createElement('div');
+        scroll.className = 'coverage-scroll';
+        const table = document.createElement('table');
+        table.className = 'coverage';
+        const thead = document.createElement('thead');
+        const trH = document.createElement('tr');
+        trH.innerHTML = '<th class="lp-col">LP</th>' + buckets.map(b => `<th>${b}</th>`).join('');
+        thead.appendChild(trH);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        for (const lp of data.lps) {
+            const byBucket = {};
+            for (const s of lp.statements) {
+                byBucket[bucketOfStatement(kind, s.statementDate)] = s;
+            }
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td class="lp-col">${lp.lpName} <span style="color:var(--fg-muted);font-size:10px">(${lp.lpVendor})</span></td>`;
+            for (const b of buckets) {
+                const cell = byBucket[b];
+                const td = document.createElement('td');
+                if (cell) {
+                    td.className = 'present';
+                    td.textContent = '✓';
+                    td.title = `Opening: ${fmtMoney(cell.openingEquity)}\nClosing: ${fmtMoney(cell.closingEquity)}\nSwaps: ${fmtMoney(cell.totalSwaps)}\nCommissions: ${fmtMoney(cell.totalCommissions)}`;
+                    td.onclick = () => openDetail(cell.id);
+                } else {
+                    td.className = 'missing';
+                    td.textContent = '-';
+                }
+                tr.appendChild(td);
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        scroll.appendChild(table);
+        wrap.appendChild(scroll);
+    }
+
+    async function openDetail(id) {
+        const r = await fetch(`/api/LpStatements/${id}`);
+        if (!r.ok) { toast('Detail load failed', false); return; }
+        const d = await r.json();
+        const h = d.header;
+        const body = `
+            <table class="grid">
+                <tr><th>Kind</th><td>${h.statementKind}</td></tr>
+                <tr><th>Date</th><td>${fmtDate(h.statementDate)}</td></tr>
+                <tr><th>Vendor Acct</th><td>${h.vendorAccountNumber ?? ''}</td></tr>
+                <tr><th>Opening</th><td class="right">${fmtMoney(h.openingEquity)}</td></tr>
+                <tr><th>Closing</th><td class="right">${fmtMoney(h.closingEquity)}</td></tr>
+                <tr><th>Total Swaps</th><td class="right">${fmtMoney(h.totalSwaps)}</td></tr>
+                <tr><th>Total Commissions</th><td class="right">${fmtMoney(h.totalCommissions)}</td></tr>
+                <tr><th>Imported</th><td>${h.importedAtUtc}</td></tr>
+            </table>
+            <h3 style="margin-top:10px;font-size:13px;">Per-product lines</h3>
+            <table class="grid">
+                <thead><tr><th>Product</th><th class="right">Commission</th><th class="right">Holding Costs</th></tr></thead>
+                <tbody>
+                    ${d.productLines.map(p => `<tr><td>${p.product}</td><td class="right">${fmtMoney(p.commission)}</td><td class="right">${fmtMoney(p.holdingCosts)}</td></tr>`).join('')}
+                </tbody>
+            </table>`;
+        $('detailTitle').textContent = `Statement ${id}`;
+        $('detailBody').innerHTML = body;
+        $('detailModal').classList.remove('hidden');
+    }
+
+    // Defaults: last 6 months
+    function setDefaultDates() {
+        const to = new Date();
+        const from = new Date();
+        from.setMonth(from.getMonth() - 6);
+        $('covFrom').value = from.toISOString().substring(0, 10);
+        $('covTo').value = to.toISOString().substring(0, 10);
+    }
+
+    document.addEventListener('DOMContentLoaded', async () => {
+        setDefaultDates();
+        attachFileHandlers();
+        $('btnPreview').addEventListener('click', doPreview);
+        $('btnCommit').addEventListener('click', doCommit);
+        $('btnCoverage').addEventListener('click', loadCoverage);
+        await loadLps();
+        await loadCoverage();
+    });
+</script>
+</body>
+</html>
