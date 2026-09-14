@@ -174,6 +174,24 @@ export const SETTINGS_MENU_ITEMS = [
   // Sits directly under Alerts on purpose: that page is the LP-side margin
   // watch and this is the client-side counterpart of it.
   { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
+  // LP Statements is for the back office as well as for an admin, and the menu
+  // model has no OR: getVisibleSettingsMenuItems -> canAccessAll uses .every(),
+  // so requiredPermissions is a conjunction and cannot say "either of two
+  // roles". The one disjunction the model does have is the Super Admin
+  // short-circuit inside hasUserAccess, and it happens to be exactly the
+  // "admin" half of what was asked for. So this pair reads, in effect,
+  // "Super Admin OR (Settings AND Backoffice)" -- which admits both intended
+  // audiences and, unlike a bare ["Settings"], does not also hand the page to
+  // Marketing or HR. It is the closest correct expression available; a true
+  // two-role OR would need canAccessAll to grow an anyOf sibling.
+  {
+    key: "lp-statements",
+    name: "LP Statements",
+    path: "/settings/lp-statements",
+    icon: "Briefcase",
+    group: "core",
+    requiredPermissions: ["Settings", "Backoffice"],
+  },
   { key: "ws-test", name: "WS Test", path: "/settings/ws-test", icon: "ShieldCheck", group: "core", requiredPermissions: ["Settings"] },
   // Admin group, and the same permission pair as User Management: this page
   // mints and revokes the credentials external machine callers authenticate

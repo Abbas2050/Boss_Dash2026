@@ -29,6 +29,7 @@ const ApiVendorUrlsPage = lazy(() => import("./pages/settings/ApiVendorUrlsPage"
 const FinaltoAccountsPage = lazy(() => import("./pages/settings/FinaltoAccountsPage").then((m) => ({ default: m.FinaltoAccountsPage })));
 const FinaltoAdminPage = lazy(() => import("./pages/settings/FinaltoAdminPage").then((m) => ({ default: m.FinaltoAdminPage })));
 const LpInfoPage = lazy(() => import("./pages/settings/LpInfoPage").then((m) => ({ default: m.LpInfoPage })));
+const LpStatementsPage = lazy(() => import("./pages/settings/LpStatementsPage").then((m) => ({ default: m.LpStatementsPage })));
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
@@ -45,6 +46,7 @@ const settingsPageComponents = {
   "symbol-mapping": SymbolMappingPage,
   alerts: AlertsSettingsPage,
   "client-account-monitor": ClientAccountMonitorPage,
+  "lp-statements": LpStatementsPage,
   "ws-test": WSTestPage,
   "api-clients": ApiClientsPage,
   "api-vendor-urls": ApiVendorUrlsPage,
