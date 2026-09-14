@@ -175,6 +175,17 @@ export const SETTINGS_MENU_ITEMS = [
   // watch and this is the client-side counterpart of it.
   { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
   { key: "ws-test", name: "WS Test", path: "/settings/ws-test", icon: "ShieldCheck", group: "core", requiredPermissions: ["Settings"] },
+  // Admin group, and the same permission pair as User Management: this page
+  // mints and revokes the credentials external machine callers authenticate
+  // with, which is a strictly wider power than editing a setting.
+  {
+    key: "api-clients",
+    name: "API Clients",
+    path: "/settings/api-clients",
+    icon: "ShieldCheck",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   {
     key: "user-management",
     name: "User Management",
