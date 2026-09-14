@@ -30,6 +30,7 @@ const FinaltoAccountsPage = lazy(() => import("./pages/settings/FinaltoAccountsP
 const FinaltoAdminPage = lazy(() => import("./pages/settings/FinaltoAdminPage").then((m) => ({ default: m.FinaltoAdminPage })));
 const LpInfoPage = lazy(() => import("./pages/settings/LpInfoPage").then((m) => ({ default: m.LpInfoPage })));
 const LpStatementsPage = lazy(() => import("./pages/settings/LpStatementsPage").then((m) => ({ default: m.LpStatementsPage })));
+const LpEquityHistoryPage = lazy(() => import("./pages/settings/LpEquityHistoryPage").then((m) => ({ default: m.LpEquityHistoryPage })));
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
@@ -52,6 +53,7 @@ const settingsPageComponents = {
   "api-vendor-urls": ApiVendorUrlsPage,
   "finalto-accounts": FinaltoAccountsPage,
   "finalto-admin": FinaltoAdminPage,
+  "lp-equity-history": LpEquityHistoryPage,
   "user-management": UserManagementPage,
 } as const;
 

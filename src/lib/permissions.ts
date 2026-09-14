@@ -236,6 +236,18 @@ export const SETTINGS_MENU_ITEMS = [
     group: "admin",
     requiredPermissions: ["Settings", "Auth:ManageUsers"],
   },
+  // Admin only, on the same permission pair as User Management. This page moves
+  // the daily snapshot schedule -- which decides when equity is captured for
+  // every LP, for everyone -- and can trigger the job by hand, so it is a
+  // scheduling change rather than a display setting.
+  {
+    key: "lp-equity-history",
+    name: "LP Equity History",
+    path: "/settings/lp-equity-history",
+    icon: "Briefcase",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   {
     key: "user-management",
     name: "User Management",
