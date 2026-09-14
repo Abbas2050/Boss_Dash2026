@@ -188,3 +188,124 @@ describe("backendProxy", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 });
+
+// Per-route timeout budgets.
+//
+// The bug these cover, measured live against production on 2026-09-14: a
+// SINGLE-DAY GET /api/backend/api/SwapsReport?from=..&to=..&liveFinalto=false
+// returned 504 after 45.3s with {"error":"proxy_timeout"} -- our own budget, not
+// the backend's -- so the Swaps Report tab could not load at all.
+//
+// Every assertion here reads the value actually handed to AbortSignal.timeout,
+// not merely "no error was thrown": the old code also threw nothing, it just
+// used the wrong number.
+describe("backendProxy per-route timeout budgets", () => {
+  // AbortSignal.timeout() gives back an opaque signal, so the argument is
+  // captured at the call and remembered against the signal it produced. Keying
+  // by signal rather than just collecting the numbers matters: the token
+  // exchange in backendToken.js arms its OWN abort timeout on the way through,
+  // so a flat list would mix its budget in with the proxy's.
+  function spyOnAbortTimeout() {
+    const budgetOf = new WeakMap();
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    const spy = vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      // A real signal, so the fetch options stay the shape the runtime expects;
+      // the huge value keeps it from firing during the test.
+      const signal = real(3_600_000);
+      budgetOf.set(signal, ms);
+      return signal;
+    });
+    return { budgetOf, restore: () => spy.mockRestore() };
+  }
+
+  // Returns the budget armed on the signal the FORWARDED request actually
+  // carried -- the number that decides whether this endpoint gets to answer.
+  async function timeoutUsedFor(originalUrl, deps = {}) {
+    const { budgetOf, restore } = spyOnAbortTimeout();
+    const budgets = [];
+    const fetchImpl = vi.fn(async (_url, init) => {
+      budgets.push(budgetOf.get(init.signal));
+      return upstreamReply(200, "{}");
+    });
+    try {
+      await backendProxy(makeReq({ originalUrl }), makeRes(), {
+        fetchImpl,
+        tokenFetchImpl: tokenFetch(),
+        ...deps,
+      });
+    } finally {
+      restore();
+    }
+    return budgets;
+  }
+
+  afterEach(() => {
+    delete process.env.PROXY_TIMEOUT_MS;
+  });
+
+  it("gives /api/SwapsReport the 180s budget the report layer proved these endpoints need", async () => {
+    expect(await timeoutUsedFor("/api/backend/api/SwapsReport?from=1757808000&to=1757894400&liveFinalto=false")).toEqual([180_000]);
+  });
+
+  it("gives DealMatch/Run the same 180s budget", async () => {
+    // ~40s whatever the window (41.8s for one day, 40.4s for a month, measured
+    // 2026-08-31), so 45s left under four seconds of headroom.
+    expect(await timeoutUsedFor("/api/backend/DealMatch/Run?from=2026-08-25&to=2026-09-01")).toEqual([180_000]);
+  });
+
+  it("matches the slow routes whatever their casing, because the backend routes are case-insensitive", async () => {
+    expect(await timeoutUsedFor("/api/backend/api/swapsreport?from=1&to=2")).toEqual([180_000]);
+    expect(await timeoutUsedFor("/api/backend/dealmatch/RUN?from=1&to=2")).toEqual([180_000]);
+  });
+
+  it("leaves an unlisted path on the 45s default", async () => {
+    // Most endpoints answer in well under a second. A long GLOBAL budget would
+    // let one hung backend hold sockets and worker capacity for minutes.
+    expect(await timeoutUsedFor("/api/backend/Metrics?from=1&to=2")).toEqual([45_000]);
+  });
+
+  it("does not give the long budget to a near-miss path", async () => {
+    // An exact match, never a prefix or substring test: a different endpoint of
+    // unknown cost must not inherit 180s just because its name starts the same.
+    expect(await timeoutUsedFor("/api/backend/api/SwapsReportSomethingElse?from=1&to=2")).toEqual([45_000]);
+    expect(await timeoutUsedFor("/api/backend/DealMatch/RunAll?from=1&to=2")).toEqual([45_000]);
+  });
+
+  it("still lets PROXY_TIMEOUT_MS override the default budget", async () => {
+    process.env.PROXY_TIMEOUT_MS = "9000";
+    expect(await timeoutUsedFor("/api/backend/Metrics?from=1&to=2")).toEqual([9_000]);
+  });
+
+  it("treats the slow-route budget as a floor PROXY_TIMEOUT_MS cannot lower", async () => {
+    // Deliberate: the 45s-ish global is below the MEASURED cost of these
+    // endpoints, so letting the global knob cut them back would silently
+    // reintroduce the 504 in a deployment where nobody touched these routes.
+    process.env.PROXY_TIMEOUT_MS = "9000";
+    expect(await timeoutUsedFor("/api/backend/api/SwapsReport?from=1&to=2")).toEqual([180_000]);
+    // Raising it above the floor still reaches the slow routes.
+    process.env.PROXY_TIMEOUT_MS = "240000";
+    expect(await timeoutUsedFor("/api/backend/api/SwapsReport?from=1&to=2")).toEqual([240_000]);
+  });
+
+  it("names the route and the budget that was exceeded when a slow route times out", async () => {
+    const res = makeRes();
+    const aborted = Object.assign(new Error("The operation was aborted due to timeout"), {
+      name: "TimeoutError",
+    });
+
+    await backendProxy(
+      makeReq({ originalUrl: "/api/backend/api/SwapsReport?from=1757808000&to=1757894400" }),
+      res,
+      { fetchImpl: vi.fn().mockRejectedValue(aborted), tokenFetchImpl: tokenFetch() },
+    );
+
+    expect(res.statusCode).toBe(504);
+    expect(res.jsonBody.error).toBe("proxy_timeout");
+    // Today's message says only that something was aborted -- it does not say
+    // which budget ran out, so nobody can tell our limit from the backend's.
+    expect(res.jsonBody.message).toContain("/api/SwapsReport");
+    expect(res.jsonBody.message).toContain("180000ms");
+    expect(res.jsonBody.route).toBe("/api/SwapsReport");
+    expect(res.jsonBody.timeoutMs).toBe(180_000);
+  });
+});
