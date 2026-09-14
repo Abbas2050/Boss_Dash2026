@@ -197,6 +197,19 @@ export const SETTINGS_MENU_ITEMS = [
     group: "admin",
     requiredPermissions: ["Settings", "Auth:ManageUsers"],
   },
+  // Finalto: both of these are super-admin surfaces on the backend, and they
+  // decide what the rest of the dashboard counts (the includeIn* routing
+  // switches) and what the backend goes and fetches (the backfill trigger), so
+  // they sit in the admin group on the same permission pair as User Management
+  // rather than alongside the display settings above.
+  {
+    key: "finalto-accounts",
+    name: "Finalto Accounts",
+    path: "/settings/finalto-accounts",
+    icon: "Briefcase",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   {
     key: "user-management",
     name: "User Management",
