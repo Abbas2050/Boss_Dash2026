@@ -39,6 +39,7 @@ const HUB_FILES = [
   "src/hooks/useLiveTransactionAlerts.ts",
   "src/pages/departments/DealingDepartmentPage.tsx",
   "src/pages/departments/dealing/LpRiskAlertsTab.tsx",
+  "src/pages/settings/ClientAccountMonitorPage.tsx",
   "src/pages/settings/WSTestPage.tsx",
 ];
 

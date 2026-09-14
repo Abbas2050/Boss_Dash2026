@@ -23,6 +23,7 @@ const SymbolMappingPage = lazy(() => import("./pages/settings/SymbolMappingPage"
 const WSTestPage = lazy(() => import("./pages/settings/WSTestPage").then((m) => ({ default: m.WSTestPage })));
 const UserManagementPage = lazy(() => import("./pages/settings/UserManagementPage").then((m) => ({ default: m.UserManagementPage })));
 const AlertsSettingsPage = lazy(() => import("./pages/settings/AlertsSettingsPage").then((m) => ({ default: m.AlertsSettingsPage })));
+const ClientAccountMonitorPage = lazy(() => import("./pages/settings/ClientAccountMonitorPage").then((m) => ({ default: m.ClientAccountMonitorPage })));
 const LpInfoPage = lazy(() => import("./pages/settings/LpInfoPage").then((m) => ({ default: m.LpInfoPage })));
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
@@ -39,6 +40,7 @@ const settingsPageComponents = {
   "internal-accounts": InternalAccountsSettingsPage,
   "symbol-mapping": SymbolMappingPage,
   alerts: AlertsSettingsPage,
+  "client-account-monitor": ClientAccountMonitorPage,
   "ws-test": WSTestPage,
   "user-management": UserManagementPage,
 } as const;

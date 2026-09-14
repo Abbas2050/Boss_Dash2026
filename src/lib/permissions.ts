@@ -171,6 +171,9 @@ export const SETTINGS_MENU_ITEMS = [
   { key: "internal-accounts", name: "Internal Accounts", path: "/settings/internal-accounts", icon: "Briefcase", group: "core", requiredPermissions: ["Settings"] },
   { key: "symbol-mapping", name: "Symbol Mapping", path: "/settings/symbol-mapping", icon: "Link2", group: "core", requiredPermissions: ["Settings"] },
   { key: "alerts", name: "Alerts", path: "/settings/alerts", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
+  // Sits directly under Alerts on purpose: that page is the LP-side margin
+  // watch and this is the client-side counterpart of it.
+  { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
   { key: "ws-test", name: "WS Test", path: "/settings/ws-test", icon: "ShieldCheck", group: "core", requiredPermissions: ["Settings"] },
   {
     key: "user-management",
