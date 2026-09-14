@@ -13,10 +13,107 @@
  * cannot import it. This module is a pure function of (req, res, deps).
  */
 
+import express from 'express';
+
 import { fetchWithBackendToken } from './backendToken.js';
 import { redactText } from './redactSecrets.js';
 
 export const BACKEND_PROXY_PREFIX = '/api/backend';
+
+// The media types the GLOBAL parsers in server.js already own: express.json()
+// claims application/json and express.urlencoded() claims
+// application/x-www-form-urlencoded, both mounted above every route.
+//
+// This set is the whole reason the raw capture below cannot regress the JSON
+// path. The raw parser is given an explicit predicate rather than a catch-all,
+// so for a JSON request it never runs at all: express.json() has already parsed
+// the stream and set req.body to the object, and express.raw() declines the
+// request on the content type alone, leaving that object exactly as it was.
+// A catch-all raw parser would instead depend on body-parser noticing the
+// stream was already drained -- true today, but an internal detail, and a
+// silently-emptied req.body on every JSON POST is precisely the class of
+// failure this whole change exists to prevent.
+const EXPRESS_PARSED_MEDIA_TYPES = new Set([
+  'application/json',
+  'application/x-www-form-urlencoded',
+]);
+
+// 25mb, deliberately above the 1mb the JSON/urlencoded parsers cap at.
+//
+// The 1mb cap is right for a JSON payload and wrong for this route: the LP
+// Statements page uploads broker PDF statements, and a monthly statement from a
+// prime broker routinely runs to tens of megabytes. 25mb is a compromise: high
+// enough that a real statement is not refused, low enough that a handful of
+// concurrent uploads cannot exhaust this process -- the body is buffered in
+// memory before forwarding, and this box also serves the whole dashboard.
+//
+// Whatever the number is, exceeding it must be a LOUD 413 naming the limit, not
+// a truncated upload. A half-read multipart body is not a smaller statement; it
+// is a corrupt one, and importing it would write partial deal rows.
+export const BACKEND_PROXY_RAW_BODY_LIMIT = '25mb';
+
+/**
+ * Whether the proxy should capture this request's bytes verbatim.
+ *
+ * True for any content type the global parsers do not own -- multipart/form-data
+ * above all, but also application/pdf, text/csv or anything else the backend
+ * grows an endpoint for later. False for JSON and urlencoded, which already
+ * arrived parsed.
+ */
+export function backendProxyWantsRawBody(req) {
+  const header = String(req?.headers?.['content-type'] || '');
+  if (!header) return false;
+  const mediaType = header.split(';')[0].trim().toLowerCase();
+  if (!mediaType) return false;
+  return !EXPRESS_PARSED_MEDIA_TYPES.has(mediaType);
+}
+
+/**
+ * Middleware for the /api/backend mount that leaves an unparseable body intact.
+ *
+ * THE SILENT FAILURE THIS PREVENTS. server.js mounts only express.json() and
+ * express.urlencoded(). Neither claims multipart/form-data, so before this
+ * existed a file upload arrived at the proxy with req.body unset, buildBody()
+ * returned undefined, and the proxy forwarded a perfectly valid request
+ * carrying no file at all. The backend answered 200, the page said the import
+ * succeeded, and nothing was imported. No error anywhere -- which is why this
+ * is a parser problem and not something a retry or a bigger timeout would fix.
+ *
+ * WHY RAW AND NOT A MULTIPART PARSER. A multipart body is only meaningful
+ * together with the boundary token in its own Content-Type header, and the
+ * parts are byte-exact -- this is a PDF. Parsing it here and re-encoding it
+ * would mint a new boundary and re-serialise binary content through our code
+ * for no gain: the proxy has no interest in the fields, only the backend does.
+ * So the bytes go through untouched and the caller's Content-Type goes with
+ * them, boundary parameter and all (buildBackendProxyHeaders copies it
+ * verbatim; it drops content-length so fetch recomputes it from the buffer).
+ */
+export function backendRawBodyParser(options = {}) {
+  const limit = options.limit || BACKEND_PROXY_RAW_BODY_LIMIT;
+  const parser = express.raw({ type: backendProxyWantsRawBody, limit });
+
+  return function captureBackendRawBody(req, res, next) {
+    parser(req, res, (error) => {
+      if (!error) return next();
+      // Answer this one ourselves rather than handing it to Express's default
+      // error handler, which renders an HTML stack page a fetch() caller cannot
+      // read and which never names the number that has to change.
+      if (error.type === 'entity.too.large' || error.status === 413) {
+        console.error(
+          `[backend proxy] ${req.method} ${req.originalUrl} REFUSED: body exceeds ${limit}`,
+        );
+        return res.status(413).json({
+          error: 'payload_too_large',
+          limit,
+          message:
+            `Request body exceeds the ${limit} limit for ${BACKEND_PROXY_PREFIX}. ` +
+            'Nothing was forwarded to the backend.',
+        });
+      }
+      return next(error);
+    });
+  };
+}
 
 export function backendProxyTarget() {
   return String(
@@ -151,6 +248,16 @@ function buildBody(req) {
   if (req.method === 'GET' || req.method === 'HEAD') return undefined;
   const body = req.body;
   if (body == null) return undefined;
+  // A Buffer is what backendRawBodyParser() leaves behind: the request bytes
+  // exactly as they arrived. It is forwarded as-is and must be checked BEFORE
+  // the JSON branch below -- JSON.stringify() on a Buffer yields
+  // {"type":"Buffer","data":[...]}, which is what a re-encoded file upload
+  // looks like on the wire and why it imported nothing.
+  //
+  // An empty buffer forwards no body at all rather than a zero-length one, so a
+  // bodyless request looks identical to the backend whether or not this parser
+  // happened to run.
+  if (Buffer.isBuffer(body)) return body.length ? body : undefined;
   if (typeof body === 'string') return body;
   return JSON.stringify(body);
 }

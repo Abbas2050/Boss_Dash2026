@@ -8,8 +8,17 @@
 // import time, so it cannot be imported into a test. server.js's only job for
 // this route is one app.use('/api/backend', ...) line, and
 // auth/routeCoverage.test.js is what proves that line sits behind the gate.
+import { Readable } from "node:stream";
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { backendProxy, buildBackendProxyHeaders, backendTargetUrl } from "./backendProxy.js";
+import {
+  backendProxy,
+  buildBackendProxyHeaders,
+  backendTargetUrl,
+  backendProxyWantsRawBody,
+  backendRawBodyParser,
+  BACKEND_PROXY_RAW_BODY_LIMIT,
+} from "./backendProxy.js";
 import { resetBackendTokenState } from "./backendToken.js";
 
 const KEY = "sk_backend_live_9f3a1c2b4d";
@@ -307,5 +316,243 @@ describe("backendProxy per-route timeout budgets", () => {
     expect(res.jsonBody.message).toContain("180000ms");
     expect(res.jsonBody.route).toBe("/api/SwapsReport");
     expect(res.jsonBody.timeoutMs).toBe(180_000);
+  });
+});
+
+// Raw body passthrough for uploads.
+//
+// THE BUG THESE COVER. server.js mounts express.json() and express.urlencoded()
+// and nothing else. Neither claims multipart/form-data, so a file upload to
+// POST /api/backend/api/LpStatements/import arrived at the proxy with no parsed
+// body, buildBody() returned nothing, and the proxy forwarded a perfectly valid
+// request carrying NO FILE. The backend answered 200, the page reported a
+// successful import, and not a single row was imported. Nothing logged an error
+// anywhere, which is why every assertion below reads the bytes actually handed
+// to fetch rather than merely checking that a call happened -- "a call
+// happened" was true the whole time this was broken.
+describe("backendProxy raw body passthrough", () => {
+  const BOUNDARY = "----SkylinksBoundary7MA4YWxkTrZu0gW";
+
+  // A multipart envelope around bytes that do not survive a text round trip: a
+  // NUL, a lone CR, and two bytes that are not valid UTF-8. A real broker
+  // statement is a PDF and is full of them.
+  function multipartUpload() {
+    const head = Buffer.from(
+      `--${BOUNDARY}\r\n` +
+        'Content-Disposition: form-data; name="file"; filename="statement.pdf"\r\n' +
+        "Content-Type: application/pdf\r\n\r\n",
+      "latin1",
+    );
+    const pdf = Buffer.from([
+      0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0d, 0x0a, 0x00, 0xff, 0xfe, 0x0a,
+    ]);
+    const tail = Buffer.from(`\r\n--${BOUNDARY}--\r\n`, "latin1");
+    return Buffer.concat([head, pdf, tail]);
+  }
+
+  // A request that is a real readable stream, because that is what the raw
+  // parser consumes. A plain object would let a broken predicate look fine.
+  function makeStreamReq({
+    method = "POST",
+    originalUrl = "/api/backend/api/LpStatements/import",
+    headers = {},
+    payload = null,
+    declareLength = true,
+  }) {
+    const req = Readable.from(payload ? [payload] : []);
+    req.method = method;
+    req.originalUrl = originalUrl;
+    req.url = originalUrl;
+    req.headers = { ...headers };
+    if (payload && declareLength && req.headers["content-length"] === undefined) {
+      req.headers["content-length"] = String(payload.length);
+    }
+    return req;
+  }
+
+  // Runs the middleware and settles whether it called next() or answered the
+  // request itself, so the refusal path can be asserted without hanging.
+  function runRawParser(parser, req) {
+    const res = makeRes();
+    const next = vi.fn();
+    const settled = new Promise((resolve) => {
+      const sendJson = res.json;
+      res.json = (payload) => {
+        sendJson(payload);
+        resolve();
+        return res;
+      };
+      next.mockImplementation(() => resolve());
+    });
+    parser(req, res, next);
+    return settled.then(() => ({ res, next }));
+  }
+
+  it("forwards a multipart upload byte-for-byte with its boundary intact", async () => {
+    const payload = multipartUpload();
+    const req = makeStreamReq({
+      headers: {
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+        accept: "application/json",
+      },
+      payload,
+    });
+
+    const { next } = await runRawParser(backendRawBodyParser(), req);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    const res = makeRes();
+    const upstream = vi.fn().mockResolvedValue(upstreamReply(200, '{"imported":42}'));
+    await backendProxy(req, res, { fetchImpl: upstream, tokenFetchImpl: tokenFetch() });
+
+    const sent = upstream.mock.calls[0][1];
+    // The bytes themselves, not "something was sent". Re-encoding a multipart
+    // body mints a new boundary and mangles the binary parts; this is a PDF.
+    expect(Buffer.isBuffer(sent.body)).toBe(true);
+    expect(Buffer.compare(sent.body, payload)).toBe(0);
+    // A multipart body is meaningless without the boundary parameter -- the
+    // backend cannot tell where one part ends and the next begins.
+    expect(sent.headers["content-type"]).toBe(`multipart/form-data; boundary=${BOUNDARY}`);
+    expect(sent.headers["content-type"]).toContain(BOUNDARY);
+    expect(sent.method).toBe("POST");
+    expect(upstream.mock.calls[0][0]).toBe(
+      "https://api.skylinkscapital.com/api/LpStatements/import",
+    );
+  });
+
+  it("still strips the caller's Authorization and attaches the backend Bearer on a multipart request", async () => {
+    const payload = multipartUpload();
+    const req = makeStreamReq({
+      headers: {
+        Authorization: "Bearer session-jwt-from-browser",
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+      },
+      payload,
+    });
+
+    await runRawParser(backendRawBodyParser(), req);
+    const res = makeRes();
+    const upstream = vi.fn().mockResolvedValue(upstreamReply(200, "{}"));
+    await backendProxy(req, res, { fetchImpl: upstream, tokenFetchImpl: tokenFetch() });
+
+    const sent = upstream.mock.calls[0][1].headers;
+    const authKeys = Object.keys(sent).filter((k) => k.toLowerCase() === "authorization");
+    expect(authKeys).toEqual(["authorization"]);
+    expect(sent.authorization).toBe("Bearer backend-token-xyz");
+    expect(JSON.stringify(sent)).not.toContain("session-jwt-from-browser");
+  });
+
+  // The regression that matters most: every route that exists today posts JSON.
+  it("leaves a JSON POST exactly as express.json() parsed it", async () => {
+    // Shaped the way express.json() hands it over: parsed object, content-type
+    // and content-length still on the request. Deliberately NOT a stream -- if
+    // the raw parser ever decided to claim application/json it would try to
+    // read this and fail loudly here, rather than quietly emptying req.body in
+    // production.
+    const req = {
+      method: "POST",
+      originalUrl: "/api/backend/Deal/Match",
+      url: "/api/backend/Deal/Match",
+      headers: {
+        "content-type": "application/json",
+        "content-length": "21",
+      },
+      body: { from: "2026-08-25" },
+    };
+
+    const { next } = await runRawParser(backendRawBodyParser(), req);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(req.body).toEqual({ from: "2026-08-25" });
+
+    const res = makeRes();
+    const upstream = vi.fn().mockResolvedValue(upstreamReply(200, "{}"));
+    await backendProxy(req, res, { fetchImpl: upstream, tokenFetchImpl: tokenFetch() });
+
+    const sent = upstream.mock.calls[0][1];
+    expect(sent.body).toBe('{"from":"2026-08-25"}');
+    expect(typeof sent.body).toBe("string");
+    expect(sent.headers["content-type"]).toBe("application/json");
+  });
+
+  it("claims only the content types the global parsers decline", () => {
+    expect(
+      backendProxyWantsRawBody({
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      }),
+    ).toBe(false);
+    expect(
+      backendProxyWantsRawBody({ headers: { "content-type": "application/json; charset=utf-8" } }),
+    ).toBe(false);
+    expect(
+      backendProxyWantsRawBody({ headers: { "content-type": "MULTIPART/FORM-DATA; boundary=x" } }),
+    ).toBe(true);
+    expect(backendProxyWantsRawBody({ headers: { "content-type": "application/pdf" } })).toBe(true);
+    // No content type, nothing to capture.
+    expect(backendProxyWantsRawBody({ headers: {} })).toBe(false);
+  });
+
+  it("sends no body at all for a GET", async () => {
+    const req = makeStreamReq({
+      method: "GET",
+      originalUrl: "/api/backend/Metrics?from=1&to=2",
+      headers: { accept: "application/json" },
+    });
+
+    const { next } = await runRawParser(backendRawBodyParser(), req);
+    expect(next).toHaveBeenCalledTimes(1);
+
+    const res = makeRes();
+    const upstream = vi.fn().mockResolvedValue(upstreamReply(200, "{}"));
+    await backendProxy(req, res, { fetchImpl: upstream, tokenFetchImpl: tokenFetch() });
+
+    // Not a zero-length buffer: a bodyless request must look to the backend
+    // exactly as it did before this parser existed.
+    expect(upstream.mock.calls[0][1].body).toBeUndefined();
+  });
+
+  it("refuses a body over the limit with an error naming it, and forwards nothing", async () => {
+    // Declared length over the cap: the read is refused before a byte is taken,
+    // so an oversized statement never lands in this process's memory at all.
+    const req = makeStreamReq({
+      headers: {
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+        "content-length": String(30 * 1024 * 1024),
+      },
+      payload: multipartUpload(),
+      declareLength: false,
+    });
+
+    const { res, next } = await runRawParser(backendRawBodyParser(), req);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.jsonBody.error).toBe("payload_too_large");
+    expect(res.jsonBody.limit).toBe(BACKEND_PROXY_RAW_BODY_LIMIT);
+    expect(res.jsonBody.message).toContain(BACKEND_PROXY_RAW_BODY_LIMIT);
+    // next() is never called, so backendProxy never runs and nothing reaches
+    // the backend. A truncated multipart body is not a smaller statement, it is
+    // a corrupt one, and importing it would write partial rows.
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("refuses an undeclared body that grows past the limit rather than truncating it", async () => {
+    // No content-length, so the cap can only be enforced while reading. A
+    // chunked upload must still be refused outright.
+    const oversized = Buffer.alloc(4096, 0x41);
+    const req = makeStreamReq({
+      headers: {
+        "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+        "transfer-encoding": "chunked",
+      },
+      payload: oversized,
+      declareLength: false,
+    });
+
+    const { res, next } = await runRawParser(backendRawBodyParser({ limit: "1kb" }), req);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.jsonBody.message).toContain("1kb");
+    expect(next).not.toHaveBeenCalled();
+    // Emphatically not a 1kb prefix of the upload.
+    expect(Buffer.isBuffer(req.body)).toBe(false);
   });
 });

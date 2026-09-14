@@ -27,7 +27,7 @@ import { readAlarmConfig, writeAlarmConfig } from './alerts/alarmConfig.js';
 import { GoogleSheetsClient, LetKnowPayClient, BitpaceClient, LETKNOWPAY_DISCOVERY_CANDIDATES } from './wallet/pspClients.js';
 import { deepRedact } from './wallet/redactSecrets.js';
 import { probeUsdRateSources } from './wallet/cryptoRates.js';
-import { backendProxy } from './wallet/backendProxy.js';
+import { backendProxy, backendRawBodyParser } from './wallet/backendProxy.js';
 import { hubTokenHandler } from './wallet/hubToken.js';
 import {
   loadGoogleSheetsMappingConfig,
@@ -936,7 +936,15 @@ app.use('/api/wallet', (req, res) =>
 // gates everything under /api and calls authRequired itself, so an anonymous
 // caller is refused before this handler runs.
 app.get('/api/backend/hub-token', (req, res) => hubTokenHandler(req, res));
-app.use('/api/backend', (req, res) => backendProxy(req, res));
+// backendRawBodyParser() is scoped to THIS mount on purpose. The global
+// express.json() above claims application/json and nothing else, so a file
+// upload (multipart/form-data) used to reach the proxy with no body at all and
+// was forwarded as a valid request carrying no file -- a 200, a page saying the
+// import worked, and nothing imported. This middleware keeps the untouched
+// bytes for exactly the content types those global parsers decline; JSON and
+// urlencoded requests are not offered to it, so every existing route behaves
+// byte-for-byte as before. See the comments in wallet/backendProxy.js.
+app.use('/api/backend', backendRawBodyParser(), (req, res) => backendProxy(req, res));
 [
   '/Metrics',
   '/Coverage',
