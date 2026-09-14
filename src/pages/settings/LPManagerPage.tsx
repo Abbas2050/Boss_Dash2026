@@ -7,6 +7,7 @@ import { SortableTable, type SortableTableColumn } from "../../components/ui/Sor
 // every call here must carry the session bearer token or it 401s the moment
 // the deny-by-default gate is live, even though apiUrl() targets this origin.
 import { authHeaders } from "@/lib/auth";
+import { formatDubaiInstant } from "@/lib/dubaiTime";
 
 type LPSource = "Manager" | "Terminal" | "Api";
 
@@ -27,9 +28,38 @@ type LPAccount = {
   excludeFromHistory?: boolean;
   excludeFromDealMatching?: boolean;
   excludeFromSwaps?: boolean;
+  /**
+   * A broker-side MT5 account where stock commission revenue lands. Not an LP at
+   * all -- it is our own account -- which is why it is split out of the LP grid
+   * and out of the LP counts, and why creating one forces the Equity, Positions
+   * and Deal Matching exclusions on.
+   */
+  isRevenueAccount?: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   isConnected?: boolean | null;
   lastDataReceived?: string | null;
 };
+
+/** One entry from the per-LP in-memory ring buffer behind /api/LpLog. */
+type LpLogEntry = {
+  timestampUtc?: string | null;
+  level?: string | null;
+  message?: string | null;
+  exception?: string | null;
+};
+
+/**
+ * Four outcomes, kept apart. "loaded and empty" is a real answer -- the ring
+ * buffer only holds what was emitted since the last server restart -- and
+ * folding it into the failure branch is how a working page gets reported as
+ * broken (and a broken one as quiet).
+ */
+type LpLogState =
+  | { kind: "loading" }
+  | { kind: "ok"; entries: LpLogEntry[] }
+  | { kind: "unauthorized" }
+  | { kind: "failed"; message: string };
 
 type ManagerStatusItem = {
   name: string;
@@ -78,6 +108,9 @@ type TerminalFeedRow = {
   isActive: boolean | null;
   isStale: boolean;
   lastPushLabel: string;
+  /** Present only when the feed's login matches a known LpAccount; the log
+   *  drilldown is keyed on it, so without it the row is not clickable. */
+  lpAccountId?: number;
 };
 
 const sourceName = (val: unknown): LPSource => {
@@ -102,6 +135,48 @@ const fmtNum = (value: unknown, digits = 2) => {
     maximumFractionDigits: digits,
   });
 };
+
+/**
+ * MT5's manager API answers with a return-code symbol, not a sentence, and the
+ * page used to print the symbol raw. "MT_RET_AUTH_UPGRADE" tells an operator
+ * nothing about what to go and fix.
+ *
+ * Each of these is a DIFFERENT remedy and they must not be collapsed back into
+ * one "connection error": a wrong password is a credential to rotate, an auth
+ * upgrade is a server version to match, "called too frequently" is OUR polling
+ * hitting the vendor's rate limiter, "feature disabled" is a permission on the
+ * manager account, and "connection lost" is the network. Showing one word for
+ * all five is how an operator spends an afternoon on the wrong one.
+ *
+ * An unrecognised code falls through as itself. Inventing a friendly name for a
+ * code we do not know would be worse than showing the code.
+ */
+export const MT5_ERROR_TEXT: Record<string, string> = {
+  MT_RET_OK: "OK",
+  MT_RET_ERR_NETWORK: "Network error",
+  MT_RET_ERR_CONNECTION: "Connection lost",
+  MT_RET_ERR_TIMEOUT: "Timed out",
+  MT_RET_ERR_PARAMS: "Invalid parameters",
+  MT_RET_ERR_NOTFOUND: "Not found",
+  MT_RET_ERR_PERMISSIONS: "Insufficient permissions",
+  MT_RET_ERR_DISABLED: "Feature disabled",
+  MT_RET_ERR_TOO_MANY: "Rate limit exceeded",
+  MT_RET_ERR_MEMORY: "Out of memory",
+  MT_RET_ERR_CANCEL: "Cancelled",
+  MT_RET_ERR_FREQUENT: "Called too frequently",
+  MT_RET_AUTH_ACCOUNT_INVALID: "Invalid account",
+  MT_RET_AUTH_INVALID_PASSWORD: "Wrong password",
+  MT_RET_AUTH_SERVER_ERR: "Auth server error",
+  MT_RET_AUTH_TIMEOUT: "Auth timed out",
+  MT_RET_AUTH_UPGRADE: "Auth upgrade required",
+};
+
+export function mt5ErrorText(code: string | null | undefined): string {
+  if (!code) return "";
+  return MT5_ERROR_TEXT[code] || code;
+}
+
+const LP_LOG_HINT = "Click to view recent errors + warnings for this LP";
 
 const sourceBadgeClass = (source: LPSource) => {
   if (source === "Terminal") return "bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border-cyan-500/30";
@@ -146,6 +221,7 @@ export const LPManagerPage: React.FC = () => {
   const [excludeFromHistory, setExcludeFromHistory] = useState(false);
   const [excludeFromDealMatching, setExcludeFromDealMatching] = useState(false);
   const [excludeFromSwaps, setExcludeFromSwaps] = useState(false);
+  const [isRevenueAccount, setIsRevenueAccount] = useState(false);
   const [mt5TerminalPath, setMt5TerminalPath] = useState("");
   const [mt5Server, setMt5Server] = useState("");
   const [mt5Password, setMt5Password] = useState("");
@@ -169,8 +245,21 @@ export const LPManagerPage: React.FC = () => {
   const [editExcludeFromHistory, setEditExcludeFromHistory] = useState(false);
   const [editExcludeFromDealMatching, setEditExcludeFromDealMatching] = useState(false);
   const [editExcludeFromSwaps, setEditExcludeFromSwaps] = useState(false);
+  const [editIsRevenueAccount, setEditIsRevenueAccount] = useState(false);
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [editSaving, setEditSaving] = useState(false);
+
+  // Add Stock Revenue Account form
+  const [revenuePanelExpanded, setRevenuePanelExpanded] = useState(false);
+  const [revenueLpName, setRevenueLpName] = useState("");
+  const [revenueMt5Login, setRevenueMt5Login] = useState("");
+  const [revenueDescription, setRevenueDescription] = useState("");
+  const [revenueMsg, setRevenueMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  // Per-LP log drilldown
+  const [logTarget, setLogTarget] = useState<{ id: number; name: string } | null>(null);
+  const [logLevel, setLogLevel] = useState<"Error" | "Warning" | "Information">("Warning");
+  const [logState, setLogState] = useState<LpLogState | null>(null);
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -292,23 +381,32 @@ export const LPManagerPage: React.FC = () => {
     return () => document.removeEventListener("keydown", onEscape);
   }, [editing]);
 
+  /**
+   * Revenue accounts are OUR accounts, not counterparties. They live in the same
+   * LpAccount table (that is where the MT5 login lives) but counting them as LPs
+   * would overstate every LP figure on the page, so they are split out here once
+   * and both the counts and the LP grid read the split, not `accounts`.
+   */
+  const lpRows = useMemo(() => accounts.filter((a) => !a.isRevenueAccount), [accounts]);
+  const revenueRows = useMemo(() => accounts.filter((a) => !!a.isRevenueAccount), [accounts]);
+
   const accountStats = useMemo(() => {
     let managerCount = 0;
     let terminalCount = 0;
     let apiCount = 0;
-    for (const account of accounts) {
+    for (const account of lpRows) {
       const src = sourceName(account.source);
       if (src === "Terminal") terminalCount += 1;
       else if (src === "Api") apiCount += 1;
       else managerCount += 1;
     }
     return {
-      total: accounts.length,
+      total: lpRows.length,
       managerCount,
       terminalCount,
       apiCount,
     };
-  }, [accounts]);
+  }, [lpRows]);
 
   const accountByLogin = useMemo(() => {
     const map = new Map<string, LPAccount>();
@@ -321,8 +419,13 @@ export const LPManagerPage: React.FC = () => {
   }, [accounts]);
 
   const lpAccountRows = useMemo<LPAccountTableRow[]>(
-    () => accounts.map((a) => ({ ...a, sourceLabel: sourceName(a.source) })),
-    [accounts],
+    () => lpRows.map((a) => ({ ...a, sourceLabel: sourceName(a.source) })),
+    [lpRows],
+  );
+
+  const revenueAccountRows = useMemo<LPAccountTableRow[]>(
+    () => revenueRows.map((a) => ({ ...a, sourceLabel: sourceName(a.source) })),
+    [revenueRows],
   );
 
   const filteredAccountRows = useMemo(() => {
@@ -352,14 +455,16 @@ export const LPManagerPage: React.FC = () => {
   const terminalFeedRows = useMemo<TerminalFeedRow[]>(() => {
     return terminalRows.map((row, idx) => {
       const matched = accountByLogin.get(String(row.login));
-      const lastPushDate = row.lastPush ? new Date(row.lastPush) : null;
       return {
         key: `term-${row.login}-${idx}`,
         lpName: matched?.lpName || `Login ${row.login}`,
         login: String(row.login),
         isActive: matched ? !!matched.isActive : null,
         isStale: !!row.isStale,
-        lastPushLabel: lastPushDate ? lastPushDate.toLocaleTimeString() : "Never",
+        // "Never" is a state, not a timestamp: no push has ever arrived. Only a
+        // real instant goes through the Dubai formatter.
+        lastPushLabel: row.lastPush ? formatDubaiInstant(row.lastPush) : "Never",
+        lpAccountId: matched?.id,
       };
     });
   }, [accountByLogin, terminalRows]);
@@ -385,6 +490,7 @@ export const LPManagerPage: React.FC = () => {
     setIsBonus(false);
     setExcludeFromHistory(false);
     setExcludeFromDealMatching(false);
+    setIsRevenueAccount(false);
     setMt5TerminalPath("");
     setMt5Server("");
     setMt5Password("");
@@ -415,6 +521,7 @@ export const LPManagerPage: React.FC = () => {
     setEditExcludeFromHistory(!!a.excludeFromHistory);
     setEditExcludeFromDealMatching(!!a.excludeFromDealMatching);
     setEditExcludeFromSwaps(!!a.excludeFromSwaps);
+    setEditIsRevenueAccount(!!a.isRevenueAccount);
     setEditErrors({});
     setEditMsg(null);
     setEditing(true);
@@ -451,6 +558,7 @@ export const LPManagerPage: React.FC = () => {
       excludeFromHistory: editExcludeFromHistory,
       excludeFromDealMatching: editExcludeFromDealMatching,
       excludeFromSwaps: editExcludeFromSwaps,
+      isRevenueAccount: editIsRevenueAccount,
     };
 
     const path = editTerminalPath.trim();
@@ -509,6 +617,7 @@ export const LPManagerPage: React.FC = () => {
       excludeFromHistory,
       excludeFromDealMatching,
       excludeFromSwaps,
+      isRevenueAccount,
     };
 
     if (source === "Terminal") {
@@ -544,6 +653,117 @@ export const LPManagerPage: React.FC = () => {
       setMsg({ text: `Failed: ${e.message}`, ok: false });
     }
   }
+
+  /**
+   * Validation runs before any request, not after a 400 comes back. An empty
+   * name would otherwise POST a row the grid renders as a blank line, and the
+   * operator would have to delete it to find out what went wrong.
+   *
+   * The three exclusions are forced on rather than offered: a revenue account is
+   * ours, so counting its balance as LP equity, its positions as LP coverage, or
+   * its deals in Deal Matching would corrupt three separate reports. That is a
+   * property of what the account IS, not a preference.
+   */
+  async function addRevenueAccount() {
+    setRevenueMsg(null);
+    const name = revenueLpName.trim();
+    if (!name) {
+      setRevenueMsg({ text: "Account Name is required", ok: false });
+      return;
+    }
+    const login = parseInt(revenueMt5Login.trim(), 10);
+    if (!Number.isFinite(login) || login <= 0) {
+      setRevenueMsg({ text: "MT5 Login must be a positive number", ok: false });
+      return;
+    }
+    if (
+      !confirm(
+        `Create the stock revenue account "${name}" on MT5 login ${login}?
+
+` +
+          "It will be excluded from Equity, Positions and Deal Matching.",
+      )
+    ) {
+      return;
+    }
+
+    const body = {
+      lpName: name,
+      mt5Login: login,
+      description: revenueDescription.trim() || null,
+      source: "Manager",
+      isRevenueAccount: true,
+      excludeFromEquity: true,
+      excludeFromPositions: true,
+      excludeFromDealMatching: true,
+    };
+
+    try {
+      const resp = await fetch(apiUrl(`/api/LpAccount`), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify(body),
+      });
+      if (resp.ok) {
+        setRevenueMsg({ text: "Revenue account created", ok: true });
+        setRevenueLpName("");
+        setRevenueMt5Login("");
+        setRevenueDescription("");
+        await loadAccounts();
+      } else {
+        const text = await resp.text().catch(() => "");
+        setRevenueMsg({ text: `Failed: ${text || `HTTP ${resp.status}`}`, ok: false });
+      }
+    } catch (e: any) {
+      setRevenueMsg({ text: `Failed: ${e.message}`, ok: false });
+    }
+  }
+
+  /**
+   * The per-LP ring buffer. Never fired on mount: it only runs once an operator
+   * has clicked a specific feed, and re-runs when they change the level.
+   *
+   * The four outcomes are kept apart deliberately -- an empty buffer is a real
+   * answer (nothing has been logged since the last restart), a 401 is our own
+   * session gate, and anything else is a genuine failure. Collapsing the first
+   * two into "no events" is how a refused request reads as a healthy LP.
+   */
+  async function loadLpLogs(target: { id: number; name: string }, level: string) {
+    setLogState({ kind: "loading" });
+    try {
+      const resp = await fetch(apiUrl(`/api/LpLog/${target.id}?level=${encodeURIComponent(level)}&limit=200`), {
+        headers: { Accept: "application/json", ...authHeaders() },
+      });
+      if (resp.status === 401 || resp.status === 403) {
+        setLogState({ kind: "unauthorized" });
+        return;
+      }
+      if (!resp.ok) {
+        setLogState({ kind: "failed", message: `Fetch failed: HTTP ${resp.status}` });
+        return;
+      }
+      const data = await resp.json().catch(() => null);
+      if (!Array.isArray(data)) {
+        setLogState({ kind: "failed", message: "/api/LpLog did not return a list of events." });
+        return;
+      }
+      setLogState({ kind: "ok", entries: data as LpLogEntry[] });
+    } catch (e: any) {
+      setLogState({ kind: "failed", message: `Fetch error: ${e.message}` });
+    }
+  }
+
+  function openLpLogModal(id: number, name: string) {
+    setLogTarget({ id, name });
+  }
+
+  useEffect(() => {
+    if (!logTarget) return;
+    void loadLpLogs(logTarget, logLevel);
+    // loadLpLogs is redeclared each render; depending on it would refetch on
+    // every keystroke elsewhere on the page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logTarget, logLevel]);
 
   async function deactivate(id: number) {
     if (!confirm("Deactivate this LP account? It will stop tracking positions.")) return;
@@ -717,15 +937,20 @@ export const LPManagerPage: React.FC = () => {
       sortValue: (row) => row.sourceLabel,
       searchValue: (row) => row.sourceLabel,
       render: (row) => {
-        const lastTxt = row.lastDataReceived ? new Date(row.lastDataReceived).toLocaleTimeString() : "never";
+        const lastTxt = row.lastDataReceived ? formatDubaiInstant(row.lastDataReceived) : "never";
         return (
           <span className="inline-flex items-center gap-1.5">
             <span className={`rounded border px-2 py-0.5 text-[11px] font-semibold ${sourceBadgeClass(row.sourceLabel)}`}>{row.sourceLabel}</span>
             {row.sourceLabel === "Api" && row.isConnected !== null && row.isConnected !== undefined && (
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${row.isConnected ? "bg-emerald-500" : "bg-rose-500"}`}
-                title={`Last data: ${lastTxt}`}
-              />
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); openLpLogModal(row.id, row.lpName); }}
+                title={LP_LOG_HINT}
+                className="inline-flex items-center gap-1 rounded px-1 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                <span className={`inline-block h-2 w-2 rounded-full ${row.isConnected ? "bg-emerald-500" : "bg-rose-500"}`} />
+                <span>Last data: {lastTxt}</span>
+              </button>
             )}
           </span>
         );
@@ -811,6 +1036,18 @@ export const LPManagerPage: React.FC = () => {
         ),
     },
     {
+      key: "type",
+      label: "Type",
+      sortValue: (row) => (row.isRevenueAccount ? 1 : 0),
+      searchValue: (row) => (row.isRevenueAccount ? "Revenue" : "LP"),
+      render: (row) =>
+        row.isRevenueAccount ? (
+          <span className="rounded border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] text-violet-700 dark:text-violet-300">Revenue</span>
+        ) : (
+          <span className="rounded border border-slate-500/30 bg-slate-500/10 px-2 py-0.5 text-[11px] text-slate-700 dark:text-slate-300">LP</span>
+        ),
+    },
+    {
       key: "group",
       label: "Group",
       sortValue: (row) => row.groupPattern || "",
@@ -832,6 +1069,99 @@ export const LPManagerPage: React.FC = () => {
         </span>
       ),
       defaultVisible: false,
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortValue: (row) => (row.isActive ? 1 : 0),
+      searchValue: (row) => (row.isActive ? "Active" : "Inactive"),
+      render: (row) =>
+        row.isActive ? (
+          <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[11px] text-emerald-700 dark:text-emerald-300">Active</span>
+        ) : (
+          <span className="rounded border border-slate-500/30 bg-slate-500/10 px-2 py-0.5 text-[11px] text-slate-700 dark:text-slate-300">Inactive</span>
+        ),
+    },
+    {
+      key: "actions",
+      label: "Actions",
+      hideable: false,
+      headerClassName: "text-right",
+      cellClassName: "text-right",
+      render: (row) => (
+        <div className="inline-flex flex-wrap justify-end gap-1.5">
+          <button
+            onClick={() => openEditModal(row.id)}
+            className="rounded bg-amber-400 px-2 py-1 text-[11px] font-medium text-black hover:bg-amber-500"
+          >
+            Edit
+          </button>
+          {row.isActive ? (
+            <button
+              onClick={() => deactivate(row.id)}
+              className="rounded border border-rose-500/40 px-2 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
+            >
+              Deactivate
+            </button>
+          ) : (
+            <button
+              onClick={() => activate(row.id)}
+              className="rounded bg-emerald-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-600"
+            >
+              Activate
+            </button>
+          )}
+          <button
+            onClick={() => removeAccount(row.id, row.lpName)}
+            className="rounded bg-rose-500 px-2 py-1 text-[11px] font-medium text-white hover:bg-rose-600"
+          >
+            Remove
+          </button>
+        </div>
+      ),
+    },
+  ];
+
+  const revenueColumns: SortableTableColumn<LPAccountTableRow>[] = [
+    {
+      key: "lpName",
+      label: "Name",
+      sortValue: (row) => row.lpName || "",
+      searchValue: (row) => row.lpName || "",
+      hideable: false,
+      render: (row) => <span className="font-semibold text-foreground">{row.lpName}</span>,
+    },
+    {
+      key: "mt5Login",
+      label: "MT5 Login",
+      sortValue: (row) => String(row.mt5Login || ""),
+      searchValue: (row) => String(row.mt5Login || ""),
+      render: (row) => <span className="font-mono">{row.mt5Login}</span>,
+    },
+    {
+      key: "description",
+      label: "Description",
+      sortValue: (row) => row.description || "",
+      searchValue: (row) => row.description || "",
+      render: (row) => (
+        <span className="inline-block max-w-[260px] truncate align-middle" title={row.description || "-"}>
+          {row.description || "-"}
+        </span>
+      ),
+    },
+    {
+      key: "createdAt",
+      label: "Created",
+      sortValue: (row) => row.createdAt || "",
+      searchValue: (row) => row.createdAt || "",
+      render: (row) => formatDubaiInstant(row.createdAt),
+    },
+    {
+      key: "updatedAt",
+      label: "Updated",
+      sortValue: (row) => row.updatedAt || "",
+      searchValue: (row) => row.updatedAt || "",
+      render: (row) => formatDubaiInstant(row.updatedAt),
     },
     {
       key: "status",
@@ -945,9 +1275,16 @@ export const LPManagerPage: React.FC = () => {
             ) : (
               <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
                 {managerStatus.map((m, idx) => {
-                  const lastAttempt = m.lastAttemptUtc ? new Date(m.lastAttemptUtc).toLocaleString() : "—";
+                  const lastAttempt = formatDubaiInstant(m.lastAttemptUtc);
                   const loginTxt = m.login > 0 ? `#${m.login}` : "—";
                   const hasError = m.lastResult && m.lastResult !== "MT_RET_OK";
+                  // The reference's manager feed has no LpAccount to hand, so it
+                  // renders that card unclickable. This page already keeps a
+                  // login -> account map for the terminal feeds, so the log
+                  // drilldown is offered here too: this is the panel where the
+                  // named cause appears, and the log is the first thing an
+                  // operator wants after reading one.
+                  const linkedAccount = accountByLogin.get(String(m.login));
                   return (
                     <div key={`mgr-${m.login}-${idx}`} className="rounded-lg border border-border bg-background/60 p-3">
                       <div className="font-semibold text-foreground">
@@ -965,7 +1302,19 @@ export const LPManagerPage: React.FC = () => {
                       </div>
                       <div className="mt-1.5 text-[11px] text-muted-foreground">Last attempt: {lastAttempt}</div>
                       {hasError && (
-                        <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400">{m.lastResult}</div>
+                        <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400" title={m.lastResult || undefined}>
+                          {mt5ErrorText(m.lastResult)}
+                        </div>
+                      )}
+                      {linkedAccount && (
+                        <button
+                          type="button"
+                          onClick={() => openLpLogModal(linkedAccount.id, linkedAccount.lpName)}
+                          title={LP_LOG_HINT}
+                          className="mt-1 text-[11px] font-medium text-cyan-700 underline underline-offset-2 dark:text-cyan-300"
+                        >
+                          Click to view recent errors
+                        </button>
                       )}
                     </div>
                   );
@@ -1112,6 +1461,17 @@ export const LPManagerPage: React.FC = () => {
                     <option value="true">Yes</option>
                   </select>
                 </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm md:col-span-2">
+                  <label className="text-muted-foreground">Revenue Account</label>
+                  <select
+                    value={String(isRevenueAccount)}
+                    onChange={(e) => setIsRevenueAccount(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes - auto-excludes from Equity, Positions, Deal Matching</option>
+                  </select>
+                </div>
               </div>
 
               {source === "Terminal" && (
@@ -1190,7 +1550,15 @@ export const LPManagerPage: React.FC = () => {
                     </thead>
                     <tbody>
                       {terminalFeedRows.map((row) => (
-                        <tr key={row.key} className="border-t border-border bg-background/30 hover:bg-background/60 transition-colors">
+                        <tr
+                          key={row.key}
+                          className={`border-t border-border bg-background/30 hover:bg-background/60 transition-colors${row.lpAccountId ? " cursor-pointer" : ""}`}
+                          title={row.lpAccountId ? LP_LOG_HINT : undefined}
+                          onClick={() => {
+                            if (!row.lpAccountId) return;
+                            openLpLogModal(row.lpAccountId, row.lpName);
+                          }}
+                        >
                           <td className="px-2 py-1.5 font-semibold text-foreground">{row.lpName}</td>
                           <td className="px-2 py-1.5 font-mono text-muted-foreground">{row.login}</td>
                           <td className="px-2 py-1.5">
@@ -1230,6 +1598,79 @@ export const LPManagerPage: React.FC = () => {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Add Stock Revenue Account */}
+          <div className={`${panelClass} bg-gradient-to-br from-violet-500/10 via-card to-violet-500/5`}>
+            <button
+              type="button"
+              onClick={() => setRevenuePanelExpanded((v) => !v)}
+              className="flex w-full items-center justify-between rounded-t-xl px-4 py-3 text-left"
+            >
+              <div>
+                <h2 className="text-base font-semibold text-primary">Add Stock Revenue Account</h2>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  Broker-side MT5 account where stock commission revenue is collected. Automatically excluded from
+                  Equity, Positions, and Deal Matching.
+                </div>
+              </div>
+              <span className="text-muted-foreground">
+                {revenuePanelExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              </span>
+            </button>
+
+            {revenuePanelExpanded && (
+              <div className="px-4 pb-4">
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <label className="text-xs text-muted-foreground">
+                    Account Name
+                    <input
+                      value={revenueLpName}
+                      onChange={(e) => setRevenueLpName(e.target.value)}
+                      placeholder="e.g. Stocks Revenue"
+                      aria-label="Account Name"
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                  <label className="text-xs text-muted-foreground">
+                    MT5 Login
+                    <input
+                      value={revenueMt5Login}
+                      onChange={(e) => setRevenueMt5Login(e.target.value)}
+                      placeholder="e.g. 987654"
+                      type="number"
+                      aria-label="Revenue MT5 Login"
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                  <label className="text-xs text-muted-foreground">
+                    Description
+                    <input
+                      value={revenueDescription}
+                      onChange={(e) => setRevenueDescription(e.target.value)}
+                      placeholder="Optional"
+                      aria-label="Revenue Description"
+                      className={`mt-1 w-full ${inputClass}`}
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void addRevenueAccount()}
+                    className="inline-flex items-center gap-2 rounded-md border border-violet-700 bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-700"
+                  >
+                    <PlusCircle className="h-4 w-4" />
+                    Add Revenue Account
+                  </button>
+                  {revenueMsg && (
+                    <div className={revenueMsg.ok ? "text-sm text-emerald-600 dark:text-emerald-300" : "text-sm text-rose-600 dark:text-rose-300"}>
+                      {revenueMsg.text}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className={`${panelClass} p-4`}>
@@ -1312,6 +1753,28 @@ export const LPManagerPage: React.FC = () => {
                 </button>
                 <button
                   type="button"
+                  onClick={() => {
+                    if (confirm(`Exclude ${selectedIds.size} LP account${selectedIds.size !== 1 ? "s" : ""} from the swaps report?`)) {
+                      bulkUpdate({ excludeFromSwaps: true });
+                    }
+                  }}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Exclude Swaps
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm(`Include ${selectedIds.size} LP account${selectedIds.size !== 1 ? "s" : ""} in the swaps report?`)) {
+                      bulkUpdate({ excludeFromSwaps: false });
+                    }
+                  }}
+                  className="rounded border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary"
+                >
+                  Include Swaps
+                </button>
+                <button
+                  type="button"
                   onClick={() => bulkUpdate({ isBonus: true })}
                   className="rounded border border-violet-500/40 px-2.5 py-1 text-[11px] font-medium text-violet-700 hover:bg-violet-500/10 dark:text-violet-300"
                 >
@@ -1351,6 +1814,25 @@ export const LPManagerPage: React.FC = () => {
                 emptyText="No LP accounts found for the current filters."
                 tableClassName="min-w-full text-xs"
                 rowClassName={(_, index) => (index % 2 === 0 ? "bg-background/40 hover:bg-background/70 transition-colors" : "bg-background/20 hover:bg-background/60 transition-colors")}
+              />
+            </div>
+          </div>
+
+          <div className={`${panelClass} p-4`}>
+            <h2 className="text-base font-semibold text-primary">Revenue Accounts</h2>
+            <div className="mt-1 text-xs text-muted-foreground">
+              Broker-side accounts, kept out of the LP grid and the LP counts above so they cannot be mistaken for a
+              counterparty.
+            </div>
+            <div className="mt-3">
+              <SortableTable
+                rows={revenueAccountRows}
+                columns={revenueColumns}
+                tableId="lp-manager-revenue-accounts"
+                enableColumnVisibility
+                exportFilePrefix="revenue-accounts"
+                emptyText="No revenue accounts yet. Use the Add Stock Revenue Account panel above."
+                tableClassName="min-w-full text-xs"
               />
             </div>
           </div>
@@ -1554,6 +2036,17 @@ export const LPManagerPage: React.FC = () => {
                     <option value="true">Yes</option>
                   </select>
                 </div>
+                <div className="flex items-center gap-2 rounded border border-border bg-background/70 p-2 text-sm">
+                  <label className="text-muted-foreground">Revenue Account</label>
+                  <select
+                    value={String(editIsRevenueAccount)}
+                    onChange={(e) => setEditIsRevenueAccount(e.target.value === "true")}
+                    className="ml-auto rounded border border-border bg-card px-2 py-1 text-xs"
+                  >
+                    <option value="false">No</option>
+                    <option value="true">Yes - auto-excludes from Equity, Positions, Deal Matching</option>
+                  </select>
+                </div>
               </div>
 
               {editIsTerminal && (
@@ -1600,6 +2093,97 @@ export const LPManagerPage: React.FC = () => {
                   {editMsg.text}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLogTarget(null);
+          }}
+        >
+          <div className="w-[780px] max-w-[92vw] max-h-[90vh] overflow-y-auto rounded-xl border border-border/50 bg-card p-5 shadow-2xl">
+            <h2 className="text-base font-semibold text-foreground">
+              Logs &mdash; {logTarget.name} (LpAccount #{logTarget.id})
+            </h2>
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              In-memory ring buffer, up to 200 most-recent events per LP.
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <label className="text-muted-foreground" htmlFor="lp-log-level">
+                Min level
+              </label>
+              <select
+                id="lp-log-level"
+                value={logLevel}
+                onChange={(e) => setLogLevel(e.target.value as "Error" | "Warning" | "Information")}
+                className="rounded border border-border bg-background/70 px-2 py-1 text-xs"
+              >
+                <option value="Error">Error</option>
+                <option value="Warning">Warning</option>
+                <option value="Information">Information</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => void loadLpLogs(logTarget, logLevel)}
+                className="rounded border border-border px-2.5 py-1 text-xs hover:bg-secondary"
+              >
+                Refresh
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogTarget(null)}
+                className="ml-auto rounded border border-border px-2.5 py-1 text-xs hover:bg-secondary"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-3 rounded border border-border">
+              {logState?.kind === "loading" && (
+                <div className="p-3 text-center text-xs italic text-muted-foreground">Loading...</div>
+              )}
+              {logState?.kind === "unauthorized" && (
+                <div className="p-3 text-center text-xs text-slate-700 dark:text-slate-300">
+                  Not authorised to read this LP's logs. Sign in again.
+                </div>
+              )}
+              {logState?.kind === "failed" && (
+                <div className="p-3 text-center text-xs text-rose-600 dark:text-rose-300">{logState.message}</div>
+              )}
+              {logState?.kind === "ok" && logState.entries.length === 0 && (
+                <div className="p-3 text-center text-xs italic text-muted-foreground">
+                  No events at this level. The ring buffer only captures events emitted after the last server restart.
+                </div>
+              )}
+              {logState?.kind === "ok" &&
+                logState.entries.map((entry, idx) => {
+                  const level = String(entry.level || "").toLowerCase();
+                  const levelClass =
+                    level === "error"
+                      ? "text-rose-600 dark:text-rose-300"
+                      : level === "warning"
+                        ? "text-amber-600 dark:text-amber-300"
+                        : "text-sky-600 dark:text-sky-300";
+                  return (
+                    <div key={`lp-log-${idx}`} className="border-b border-border p-2 font-mono text-[11px] last:border-b-0">
+                      <div className="flex flex-wrap items-baseline gap-2">
+                        <span className="text-muted-foreground">{formatDubaiInstant(entry.timestampUtc)}</span>
+                        <span className={`font-bold uppercase ${levelClass}`}>{entry.level || ""}</span>
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap break-words text-foreground">{entry.message || ""}</div>
+                      {entry.exception && (
+                        <div className="mt-1 whitespace-pre-wrap break-words rounded bg-black/25 p-2 text-[10px] text-muted-foreground">
+                          {entry.exception}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           </div>
         </div>
