@@ -186,6 +186,17 @@ export const SETTINGS_MENU_ITEMS = [
     group: "admin",
     requiredPermissions: ["Settings", "Auth:ManageUsers"],
   },
+  // Next to API Clients, and on the same permission pair: this page repoints
+  // the base URL a live vendor client authenticates against, which is a
+  // production routing change rather than a display setting.
+  {
+    key: "api-vendor-urls",
+    name: "API Vendor URLs",
+    path: "/settings/api-vendor-urls",
+    icon: "Link2",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   {
     key: "user-management",
     name: "User Management",

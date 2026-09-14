@@ -25,6 +25,7 @@ const UserManagementPage = lazy(() => import("./pages/settings/UserManagementPag
 const AlertsSettingsPage = lazy(() => import("./pages/settings/AlertsSettingsPage").then((m) => ({ default: m.AlertsSettingsPage })));
 const ClientAccountMonitorPage = lazy(() => import("./pages/settings/ClientAccountMonitorPage").then((m) => ({ default: m.ClientAccountMonitorPage })));
 const ApiClientsPage = lazy(() => import("./pages/settings/ApiClientsPage").then((m) => ({ default: m.ApiClientsPage })));
+const ApiVendorUrlsPage = lazy(() => import("./pages/settings/ApiVendorUrlsPage").then((m) => ({ default: m.ApiVendorUrlsPage })));
 const LpInfoPage = lazy(() => import("./pages/settings/LpInfoPage").then((m) => ({ default: m.LpInfoPage })));
 const MainDashboard = lazy(() => import("./pages/MainDashboard").then((m) => ({ default: m.MainDashboard })));
 const DepartmentPages = lazy(() => import("./pages/DepartmentPages").then((m) => ({ default: m.DepartmentPages })));
@@ -44,6 +45,7 @@ const settingsPageComponents = {
   "client-account-monitor": ClientAccountMonitorPage,
   "ws-test": WSTestPage,
   "api-clients": ApiClientsPage,
+  "api-vendor-urls": ApiVendorUrlsPage,
   "user-management": UserManagementPage,
 } as const;
 
