@@ -1,36 +1,55 @@
 // The Swaps report — the fourth email in the dealing family.
 //
-// WHY IT EXISTS: we pay swap three times over in three different ledgers and
-// nobody reads all three. MT5 books Storage on every closed deal. The LP's own
-// statement, uploaded as a PDF on the LP Statements page, says what the LP
-// thinks we owe. And the terminal shows accrued swap on whatever is open right
-// now. Those three numbers disagree, and the disagreement IS the report: a gap
-// between MT5 and the statement is money we are either not being billed for or
-// being billed twice for, and it is invisible unless the two are put on one row.
+// WHY IT EXISTS: swap is money that moves every night on every open position,
+// on both sides of the book, and nobody reads it in one place. This email puts
+// what our clients were booked, what each LP cost or earned us, and what is
+// accruing on open positions right now on one page.
 //
-// WHY THE THREE FIGURES ARE NEVER ADDED TOGETHER: they measure the same cost on
-// three different axes.
+// THE BACKEND TEAM'S STATED RULES (recorded 2026-09-16). These came from the
+// people who own /api/SwapsReport, in answer to questions this report had left
+// open. They are the rules this file implements; the code is not the authority.
 //
-//   totalSwap       MT5 Storage on deals CLOSED INSIDE THE WINDOW. A true
-//                   period figure: ask for last week and you get last week.
-//   statementSwap   The LP's TotalSwaps, summed over statement rows dated
-//                   inside the window. Also a period figure, from a different
-//                   book, which is why subtracting it from totalSwap is a
-//                   meaningful reconciliation.
-//   unrealizedSwap  Accrued swap on positions that are open AT THE MOMENT THIS
-//                   EMAIL IS BUILT. It is a snapshot. It belongs to no date
-//                   range, it will be different an hour later, and adding it to
-//                   either of the two above produces a number that describes no
-//                   period at all.
+//   Rule 1 — LP sign. A NEGATIVE LP swap means the LP charged us: a cost. A
+//            POSITIVE LP swap means we received swap: revenue. Every LP figure
+//            in the email says which of the two it is, in words, because a
+//            minus sign alone was exactly the ambiguity that had to be asked
+//            about. The rule was given for LPs ONLY. The client sign has not
+//            been confirmed, so client figures are printed as signed "swap"
+//            and are never called a cost or a revenue.
 //
-// The last one has a history in this repo. A "Realized" row was once placed in
-// the volume funnel as though it were a downstream stage of deal flow, and the
-// funnel widened as you read down it, because Realized is the same flow counted
-// on a different axis (see the note above renderVolumeSection). unrealizedSwap
-// is exactly the same trap wearing different clothes. So it is rendered in its
-// own labelled column, the label says "at send time" in every place it appears,
-// and nothing in this file ever sums it into a period total. There is a test on
-// that, on a fixture where folding it in would visibly change the figure.
+//   Rule 2 — time. The window is taken exactly as it is sent. No rollover or
+//            timezone adjustment is applied anywhere in this file.
+//
+//   Rule 4 — which LP figure counts depends on the LP's type:
+//              Manager   our statements            -> statementSwap
+//              Terminal  taken directly from the LP -> totalSwap
+//              Api       fetched from the LP        -> totalSwap, and when no
+//                        LP record exists, the DB statement -> statementSwap
+//            The FIELD MAPPING on the right is our inference from the payload
+//            and is NOT YET VERIFIED against a live LP row. That is why the
+//            rule lives in one small function (effectiveLpSwap) and why every
+//            LP row prints which source its figure came from: if the mapping is
+//            wrong, the reader sees "Statement" beside an LP that should say
+//            "LP", instead of trusting a silently wrong number.
+//
+//   Rule 5 — show every LP. Nothing is marked "skipped" or "incomplete" because
+//            an API LP has no vendor feed; that LP falls back to the statement.
+//
+//   Rule 6 — a row carrying excludeFromSwaps === true is left out of every
+//            table and every total. The endpoint does not send the flag today;
+//            honouring it now means turning it on needs no email change.
+//
+// (Rule 3 — daily and monthly windows are supported by the backend as-is.)
+//
+// WHY unrealizedSwap IS NEVER ADDED TO ANYTHING: it is accrued swap on positions
+// open AT THE MOMENT THIS EMAIL IS BUILT. It belongs to no date range and will
+// be different an hour later, so adding it to a period figure produces a number
+// that describes no period at all. A "Realized" row was once placed in the
+// volume funnel as though it were a downstream stage of deal flow, and the
+// funnel widened as you read down it (see the note above renderVolumeSection);
+// unrealizedSwap is the same trap wearing different clothes. It gets its own
+// column, labelled "at send time" everywhere, and a test on a fixture where
+// folding it in would visibly change a figure.
 //
 // NOT SCHEDULED YET, ON PURPOSE. The guard keys, the recipient variables and
 // all three cadences are here and exported, but reports/schedulers.js is
@@ -54,8 +73,8 @@ import {
   toYmdUtc,
 } from "./reportShared.js";
 
-// A dash means "could not read". 0.00 means "the value is zero". The whole
-// reconciliation below turns on the difference between those two statements.
+// A dash means "could not read". 0.00 means "the value is zero". Rule 4's Api
+// fallback and the LP total both turn on the difference between those two.
 const DASH = "&mdash;";
 
 // The light shell's muted ink. Repeated here only for the inline-styled note
@@ -89,16 +108,12 @@ export const SWAPS_RECIPIENT_VARS = {
 //
 // Measured: a ONE-DAY range answered 200 in 67.2 seconds. The 45s default in
 // reportShared would have aborted that call before it returned — a one-day
-// Swaps report is already impossible on the default budget. A week or a month
-// costs more, and unlike DealMatch/Run (whose ~40s is the cost of starting the
-// match, not of the deals matched) nothing has established where SwapsReport
-// settles as the window grows. So this is not a measured ceiling, it is the
-// house long-route budget, chosen because inventing a bespoke number from one
-// data point would be guessing with extra steps.
-//
-// If a monthly run still aborts at 180s, the answer is not a bigger number
-// here: it is 180s at the proxy too, so anything longer would only move the
-// failure. The report would then need to be built from narrower sub-windows.
+// Swaps report is already impossible on the default budget. The backend team
+// has confirmed daily and monthly windows are supported as single calls, so the
+// window is always fetched whole. Nothing has established where the call
+// settles as the window grows, so this is not a measured ceiling: it is the
+// house long-route budget, and 180s is also what the proxy allows, so a larger
+// number here would only move the failure.
 export const SWAPS_RUN_TIMEOUT_MS = 180_000;
 
 // The live vendor pull is OFF for scheduled sends.
@@ -115,12 +130,10 @@ export const SWAPS_RUN_TIMEOUT_MS = 180_000;
 // watching the spinner. An unattended cron job is not that operator.
 const SCHEDULED_LIVE_FINALTO = false;
 
-// How many rows a mover table may print. A month has hundreds of accounts with
+// How many rows a table may print. A month has hundreds of client accounts with
 // a non-zero swap and the reader is on a phone, where table.data stacks every
-// row into a card — three hundred cards is not a report. The cap is on the
-// MOVERS, which are a ranked sample by construction; the reconciliation uses it
-// too but says how many LPs it dropped, because there a missing row is a
-// missing answer rather than a shorter tail.
+// row into a card — three hundred cards is not a report. The LP table uses the
+// cap too, but orders unresolved LPs first and says how many rows it dropped.
 export const SWAPS_ROW_CAP = 15;
 
 export function swapsSubject(cadence, fromYmd, toYmd) {
@@ -133,20 +146,14 @@ export function swapsSubject(cadence, fromYmd, toYmd) {
 // ── parsing ──────────────────────────────────────────────────────────────────
 
 // A figure the backend did not send is null, never zero. `Number(undefined) || 0`
-// collapses "absent" and "genuinely zero" into one confident 0.00 and the reader
-// cannot tell them apart — which is precisely the failure the statement column
-// exists to avoid.
+// collapses "absent" and "genuinely zero" into one confident 0.00, and under
+// rule 4 that would also decide whether an Api LP falls back to the statement.
 function num(value) {
   if (value === null || value === undefined || value === "") return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
-// The backend computes the totals. Returning null when they are missing lets the
-// email say "unavailable"; summing the rows here would create a second answer to
-// what we paid in swaps, and a reader comparing the email with the tab would
-// have no way to tell which of the two was the real one.
-//
 // NaN and Infinity pass a typeof check and are not totals. Mirrors readTotals()
 // in src/lib/swapsReportApi.ts deliberately: same rule, same reason.
 function readTotals(payload, key) {
@@ -163,26 +170,39 @@ function readRows(payload, key) {
   return Array.isArray(rows) ? rows : [];
 }
 
+// Rule 6. Strictly `=== true`: an absent flag, or a truthy string a future
+// serializer might emit by mistake, keeps the row in. Dropping a real LP from
+// the total on a guess is worse than showing one that should have been hidden.
+const isExcluded = (row) => row?.excludeFromSwaps === true;
+
 /**
  * A raw `/api/SwapsReport` payload, normalised. Pure — hand it a fixture.
  *
  * Deliberately lenient about the ENVELOPE and strict about the FIGURES: an
  * absent `clients` array becomes [], which renders as "no rows", while an
- * absent `clientTotals` stays null and renders as "unavailable". The browser
- * client throws on a missing array because an operator is watching and can
- * retry; a scheduled email has nobody to retry it, and a report that says
- * "no client swaps" is less wrong than no report at all — the completeness
- * section says whether the panel actually failed.
+ * absent `clientTotals` stays null and renders as "unavailable".
+ *
+ * Rows flagged excludeFromSwaps (rule 6) are removed from `clients` / `lps`
+ * here, so no table or total downstream can see them, and kept aside in
+ * `excludedClients` / `excludedLps` so the email can say how many were left out
+ * and take the excluded clients back out of the backend's client total.
+ *
+ * `lpTotals` is still parsed so the payload shape stays whole, but it is not
+ * rendered: it is not rule-4 aware, so it is not the LP total.
  */
 export function parseSwapsReport(payload) {
   const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
   const skipped = Number(source.skippedApiLpCount);
   const panelError = typeof source.clientPanelError === "string" ? source.clientPanelError.trim() : "";
+  const clients = readRows(source, "clients");
+  const lps = readRows(source, "lps");
   return {
-    clients: readRows(source, "clients"),
+    clients: clients.filter((r) => !isExcluded(r)),
     clientTotals: readTotals(source, "clientTotals"),
-    lps: readRows(source, "lps"),
+    lps: lps.filter((r) => !isExcluded(r)),
     lpTotals: readTotals(source, "lpTotals"),
+    excludedClients: clients.filter(isExcluded),
+    excludedLps: lps.filter(isExcluded),
     skippedApiLpCount: Number.isFinite(skipped) && skipped > 0 ? skipped : 0,
     clientPanelError: panelError || null,
     lpErrors: Array.isArray(source.lpErrors)
@@ -191,7 +211,7 @@ export function parseSwapsReport(payload) {
   };
 }
 
-// ── row shaping (pure) ───────────────────────────────────────────────────────
+// ── rule 4 (pure) ────────────────────────────────────────────────────────────
 
 function accountLabel(row) {
   const named = String(row?.lpName || row?.name || "").trim();
@@ -201,55 +221,119 @@ function accountLabel(row) {
   return "Unidentified account";
 }
 
+// The three LP types, as `type LPSource` in src/pages/settings/LPManagerPage.tsx
+// spells them. Matched case-insensitively ("api" and "Api" are the same type);
+// anything else is unknown and gets no figure. LPManagerPage maps an unknown
+// value to "Manager" for its dropdown — copying that here would silently pick
+// our statement for an LP nobody has classified, which is a guess.
+const LP_TYPES = ["Manager", "Terminal", "Api"];
+
+export const LP_SWAP_SOURCE_LABELS = {
+  statement: "Statement",
+  lp: "LP",
+  "statement-fallback": "Statement (fallback &mdash; no LP record)",
+};
+
 /**
- * One LP's reconciliation line.
+ * Rule 4 — the ONE place that decides which figure is an LP's swap.
  *
- * `difference` is null whenever either side is missing. That is not a defensive
- * nicety: an LP with no uploaded statement has an UNKNOWN difference, and
- * rendering it as 0.00 would assert that MT5 and the LP agree, which is the
- * single most expensive lie this report could tell. An LP whose statement
- * genuinely totals zero keeps its 0.00 and gets a real difference.
+ * Returns `{ value, source, type, reason }`:
+ *   value   the figure, or null when rule 4 has nothing to offer
+ *   source  "statement" | "lp" | "statement-fallback" | null
+ *   type    the canonical LP type, or null when unknown/missing
+ *   reason  plain text saying why value is null (never set alongside a value)
+ *
+ * UNVERIFIED MAPPING (2026-09-16): Manager -> statementSwap, Terminal ->
+ * totalSwap, Api -> totalSwap else statementSwap is inferred from field names,
+ * not checked against a live LP row. If it proves wrong, the fix is here.
+ *
+ * "No LP record" is null/absent. A 0 from the LP is a record of zero swap and
+ * does NOT trigger the fallback — otherwise an LP that genuinely charged nothing
+ * would be silently replaced by whatever our statement says.
  */
-export function reconcileLp(row) {
-  const mt5 = num(row?.totalSwap);
+export function effectiveLpSwap(row) {
+  const rawType = row?.source;
+  const type = typeof rawType === "string"
+    ? LP_TYPES.find((t) => t.toLowerCase() === rawType.trim().toLowerCase()) || null
+    : null;
+  const lp = num(row?.totalSwap);
   const statement = num(row?.statementSwap);
-  return {
-    label: accountLabel(row),
-    mt5,
-    statement,
-    statementRows: num(row?.statementRowCount),
-    difference: mt5 === null || statement === null ? null : mt5 - statement,
-    // Carried so the mover table can read one shaped row, never summed.
-    unrealized: num(row?.unrealizedSwap),
-    login: row?.login,
-  };
+
+  if (type === "Manager") {
+    return statement !== null
+      ? { value: statement, source: "statement", type, reason: null }
+      : { value: null, source: null, type, reason: "Manager LP with no statement uploaded for this period. Manager LPs use our statement only, so there is no figure — not zero." };
+  }
+  if (type === "Terminal") {
+    return lp !== null
+      ? { value: lp, source: "lp", type, reason: null }
+      : { value: null, source: null, type, reason: "Terminal LP that sent no swap figure. Terminal LPs use the LP's own figure only, so there is no figure — not zero." };
+  }
+  if (type === "Api") {
+    if (lp !== null) return { value: lp, source: "lp", type, reason: null };
+    if (statement !== null) return { value: statement, source: "statement-fallback", type, reason: null };
+    return { value: null, source: null, type, reason: "Api LP with no LP record and no statement to fall back on, so there is no figure — not zero." };
+  }
+  const shown = rawType === null || rawType === undefined || String(rawType).trim() === ""
+    ? "LP type is missing"
+    : `Unknown LP type "${String(rawType)}"`;
+  return { value: null, source: null, type: null, reason: `${shown}. No rule covers it, so no figure is chosen.` };
 }
 
 /**
- * Reconciliation order: LPs whose difference is UNKNOWN first, then the rest by
- * the size of the gap.
+ * The LP headline: the sum of every LP's rule-4 figure, ALL OR NOTHING.
  *
- * Unknowns lead because they are the rows that need someone to do something —
- * upload the statement — and because they are few, so they cannot push the
- * material discrepancies off the bottom. If the cap has to drop rows it drops
- * the smallest known gaps, which is the tail a reader would skip anyway; an
- * unknown falling off would silently convert "we cannot check this LP" into
- * "this LP was not worth mentioning".
+ * If any LP is unresolved the total is null, never the sum of the ones that did
+ * resolve. A partial sum looks exactly like a real total — it is a plausible
+ * number with no visible hole in it — which is why sumOrNull in
+ * reports/volumeSection.js refuses to produce one either. An empty LP list is
+ * also null: there is nothing to total, and 0.00 would claim there was.
  */
-export function orderReconciliation(rows) {
-  const magnitude = (v) => (v === null ? -1 : Math.abs(v));
-  const unknown = rows.filter((r) => r.difference === null).sort((a, b) => magnitude(b.mt5) - magnitude(a.mt5));
-  const known = rows.filter((r) => r.difference !== null).sort((a, b) => Math.abs(b.difference) - Math.abs(a.difference));
-  return [...unknown, ...known];
+export function lpSwapTotal(lps) {
+  const resolved = lps.map(effectiveLpSwap);
+  const unresolved = resolved.filter((r) => r.value === null).length;
+  if (!lps.length || unresolved > 0) return { value: null, count: lps.length, unresolved };
+  return { value: resolved.reduce((sum, r) => sum + r.value, 0), count: lps.length, unresolved: 0 };
 }
 
 /**
- * Movers, biggest absolute swap first.
+ * The secondary cross-check: the LP's figure against our statement, only where
+ * both exist. It is never a total and never replaces the rule-4 figure; it is
+ * here so a disagreement between our books and the LP's stays visible.
+ */
+export function crossCheckLp(row) {
+  const lp = num(row?.totalSwap);
+  const statement = num(row?.statementSwap);
+  if (lp === null || statement === null) return null;
+  return { lp, statement, gap: lp - statement, statementRows: num(row?.statementRowCount) };
+}
+
+/**
+ * LP table order: unresolved LPs first, then by the size of the rule-4 figure.
  *
- * Absolute, not most-negative-first: swap is a cost on most instruments and a
- * credit on some, and an account earning $4,000 of swap is exactly as worth
- * seeing as one paying it. Ranking by the signed value would bury every credit
- * at the bottom of a table that gets truncated.
+ * Unresolved rows lead because they need someone to act and because they are
+ * what makes the LP total unavailable; if the row cap drops anything it drops
+ * the smallest resolved figures, never the reason the headline is a dash.
+ */
+export function orderLpRows(lps) {
+  const shaped = lps.map((row) => ({
+    row,
+    label: accountLabel(row),
+    swap: effectiveLpSwap(row),
+    check: crossCheckLp(row),
+    unrealized: num(row?.unrealizedSwap),
+  }));
+  const unresolved = shaped.filter((r) => r.swap.value === null);
+  const resolved = shaped
+    .filter((r) => r.swap.value !== null)
+    .sort((a, b) => Math.abs(b.swap.value) - Math.abs(a.swap.value));
+  return [...unresolved, ...resolved];
+}
+
+/**
+ * Client movers, biggest absolute swap first. Absolute, because a large credit
+ * is as worth seeing as a large charge, and ranking by the signed value would
+ * bury every credit at the bottom of a table that gets truncated.
  */
 export function orderMovers(rows) {
   return rows
@@ -262,6 +346,27 @@ export function orderMovers(rows) {
     .sort((a, b) => (b.swap === null ? -1 : Math.abs(b.swap)) - (a.swap === null ? -1 : Math.abs(a.swap)));
 }
 
+/**
+ * The client headline: the backend's own clientTotals, less any rows rule 6
+ * excluded. Not a sum of the rows — the rows are the accounts the backend chose
+ * to return, the total is what it measured. If an excluded row has no swap
+ * figure there is nothing to subtract, so the total is unavailable rather than
+ * quietly still containing it.
+ */
+function clientHeadline(report) {
+  const totals = report.clientTotals;
+  if (!totals) return { value: null, reason: "Backend sent no clientTotals; rows are not summed here" };
+  const excluded = report.excludedClients.map((r) => num(r?.totalSwap));
+  if (excluded.some((v) => v === null)) {
+    return { value: null, reason: "An excluded account had no swap figure to remove from the backend total" };
+  }
+  return {
+    value: totals.totalSwap - excluded.reduce((a, b) => a + b, 0),
+    accounts: totals.accountCount - excluded.length,
+    excluded: excluded.length,
+  };
+}
+
 // ── cells ────────────────────────────────────────────────────────────────────
 
 function signCls(value) {
@@ -271,8 +376,17 @@ function signCls(value) {
   return "muted";
 }
 
+// Client figures: signed, and nothing more. See rule 1 — the client sign has
+// not been confirmed, so this deliberately says nothing about who paid.
 const swapText = (value) => (value === null ? DASH : money(value));
-const countText = (value) => (value === null ? DASH : fmtNum(value, 0));
+
+// LP figures: signed, and named (rule 1). Zero is neither a cost nor a revenue.
+function lpSwapText(value) {
+  if (value === null) return DASH;
+  if (value < 0) return `${money(value)} (cost)`;
+  if (value > 0) return `${money(value)} (revenue)`;
+  return money(value);
+}
 
 // A labelled cell that is allowed to run the full width of its card.
 //
@@ -286,70 +400,92 @@ function proseCell(label, value, { colspan = 1 } = {}) {
 }
 
 // An unlabelled full-width line inside a row's card, for the reason beside a
-// dash. It rides in the row it explains rather than sitting in a <tr> of its
-// own: table.data gives every <tr> a zebra stripe and a rule, so a separate row
-// would read as twice as many LPs.
+// dash or the cross-check. It rides in the row it explains rather than sitting
+// in a <tr> of its own: table.data gives every <tr> a zebra stripe and a rule,
+// so a separate row would read as twice as many LPs. Small and muted, which is
+// also what keeps the cross-check visibly subordinate to the rule-4 figure.
 function reasonCell(text, { colspan = 1 } = {}) {
   return `<td class="txt" colspan="${colspan}" style="max-width:none;width:100%;padding:0 8px 4px;font-size:11px;line-height:1.45;color:${MUTED};">${text}</td>`;
 }
 
 // ── sections (pure) ──────────────────────────────────────────────────────────
 
+// Rule 5 leaves one thing the email cannot fix: an API LP the backend counted
+// as skipped but did not put in lps[] at all has no row to apply the statement
+// fallback to. The payload does not say which LPs were skipped, only how many,
+// so the count of absent ones is inferred: skipped API LPs that DID come back
+// show up as Api rows with no LP record (rule 4 then falls back for them), and
+// whatever the skipped count exceeds that by is what never arrived.
+function absentSkippedApiLps(report) {
+  if (report.skippedApiLpCount <= 0) return 0;
+  const present = [...report.lps, ...report.excludedLps].filter((row) => {
+    const type = typeof row?.source === "string" ? row.source.trim().toLowerCase() : "";
+    return type === "api" && num(row?.totalSwap) === null;
+  }).length;
+  return Math.max(0, report.skippedApiLpCount - present);
+}
+
 /**
- * Partial success, rendered before the figures rather than after them.
+ * Notes that qualify the figures, rendered before them.
  *
- * The backend answers 200 with these set when part of the report could not be
- * built. Every figure below is then a figure over an incomplete set of LPs, so
- * the caveat has to arrive before the numbers it qualifies, not in a footnote
- * under them. "No swaps for that LP" and "we never asked that LP" are the same
- * dash-versus-zero distinction the statement column makes, moved up to the
- * level of the whole report.
+ * Skipped API LPs are no longer a completeness failure (rule 5): they are shown
+ * with the statement fallback. The only skipped-LP note left is for LPs the
+ * endpoint did not return at all, and it says exactly that. Genuine LP errors
+ * and a failed client panel still mark the figures as affected.
  *
  * The all-clear is stated explicitly. An absent warning is indistinguishable
  * from a warning that failed to render, and this reader has lost a section to a
  * rendering bug before.
  */
-function renderCompleteness(report) {
+function renderNotes(report) {
   const notes = [];
-  if (report.skippedApiLpCount > 0) {
+  const absent = absentSkippedApiLps(report);
+  if (absent > 0) {
     notes.push({
-      label: "API LPs skipped",
-      detail: `${fmtNum(report.skippedApiLpCount, 0)} API LP(s) were never queried &mdash; only Xtb and Finalto are wired. Their swap is MISSING from every figure below; it is not zero.`,
+      label: "API LPs not returned",
+      detail: `${fmtNum(absent, 0)} API LP(s) were not returned by the endpoint, so their statement fallback could not be applied. They are not in the LP table or the LP total below.`,
+      failure: false,
     });
   }
   if (report.lpErrors.length > 0) {
     notes.push({
       label: "LP queries failed",
       detail: `${fmtNum(report.lpErrors.length, 0)} LP(s) failed: ${escapeHtml(report.lpErrors.join("; "))}`,
+      failure: true,
     });
   }
   if (report.clientPanelError) {
     notes.push({
       label: "Client panel failed",
       detail: `${escapeHtml(report.clientPanelError)} &mdash; the client figures below are missing or incomplete.`,
+      failure: true,
     });
   }
 
-  const title = `<p class="section-title" style="margin-top:0;">Report Completeness</p>`;
+  const title = `<p class="section-title" style="margin-top:0;">Report Notes</p>`;
   if (!notes.length) {
     return `${title}
-          <p class="note">Every LP was queried and both panels returned. The figures below cover the whole book.</p>`;
+          <p class="note">No LP errors, the client panel returned, and every LP the backend counted is in the table below.</p>`;
   }
 
   const bodyRows = notes
     .map(
       (n) => `<tr>
-        ${dataCell("Issue", escapeHtml(n.label), { nowrap: true, cls: "neg" })}
+        ${dataCell("Note", escapeHtml(n.label), { nowrap: true, cls: n.failure ? "neg" : "" })}
         ${proseCell("Detail", n.detail)}
       </tr>`,
     )
     .join("");
 
+  const lead = notes.some((n) => n.failure)
+    ? `<p class="note">Some figures below are affected by the failures listed here.</p>`
+    : "";
+
   return `${title}
-          <p class="note">This report is incomplete. Read every figure below as covering only the LPs that answered.</p>
+          ${lead}
           ${dataTable({
             headers: [
-              { label: "Issue", width: "28%" },
+              { label: "Note", width: "28%" },
               { label: "Detail", width: "72%" },
             ],
             bodyRows,
@@ -357,81 +493,91 @@ function renderCompleteness(report) {
           })}`;
 }
 
-/**
- * The headline totals, taken from the backend's own clientTotals / lpTotals.
- *
- * When one is null the card says Unavailable and the note says why. It is NOT
- * recomputed from the rows: the rows are the accounts the backend chose to
- * return, the total is what the backend actually measured, and a sum of the
- * former presented as the latter would be a second, quieter answer to "what did
- * we pay in swaps" that nobody could reconcile against the tab.
- */
 function renderTotals(report) {
-  const card = (label, totals, missingVar) =>
-    totals
-      ? {
-          label,
-          value: money(totals.totalSwap),
-          cls: signCls(totals.totalSwap),
-          note: `${fmtNum(totals.accountCount, 0)} accounts`,
-        }
-      : {
-          label,
-          value: "Unavailable",
-          cls: "muted",
-          note: `Backend sent no ${missingVar}; rows are not summed here`,
-        };
+  const client = clientHeadline(report);
+  const clientCard = client.value === null
+    ? { label: "Client Swap (period)", value: "Unavailable", cls: "muted", note: client.reason }
+    : {
+        label: "Client Swap (period)",
+        value: swapText(client.value),
+        cls: signCls(client.value),
+        note: `${fmtNum(client.accounts, 0)} accounts${client.excluded ? `, after removing ${fmtNum(client.excluded, 0)} excluded` : ""}`,
+      };
 
-  return kpiGrid(
-    [
-      card("Client Swap (period)", report.clientTotals, "clientTotals"),
-      card("LP Swap (period)", report.lpTotals, "lpTotals"),
-    ],
-    { maxWidth: 260 },
-  );
+  const lp = lpSwapTotal(report.lps);
+  let lpCard;
+  if (lp.value !== null) {
+    lpCard = { label: "LP Swap (period)", value: lpSwapText(lp.value), cls: signCls(lp.value), note: `${fmtNum(lp.count, 0)} LPs, each by its type rule` };
+  } else if (lp.count === 0) {
+    lpCard = { label: "LP Swap (period)", value: DASH, cls: "muted", note: "No LP rows to total" };
+  } else {
+    lpCard = {
+      label: "LP Swap (period)",
+      value: DASH,
+      cls: "muted",
+      note: `${fmtNum(lp.unresolved, 0)} of ${fmtNum(lp.count, 0)} LP(s) unresolved; no partial sum`,
+    };
+  }
+
+  return kpiGrid([clientCard, lpCard], { maxWidth: 260 });
 }
 
-function renderReconciliation(report, periodNoun) {
-  const all = orderReconciliation(report.lps.map(reconcileLp));
+/**
+ * Every LP, with its rule-4 figure and where that figure came from.
+ *
+ * The Source column is the check on the unverified field mapping: a reader who
+ * knows an LP is a Terminal LP and sees "Statement" beside it has found the bug.
+ * The cross-check line is small, muted and inside the row, so it reads as a
+ * footnote to the figure rather than a second figure competing with it.
+ */
+function renderLpTable(report, periodNoun) {
+  const all = orderLpRows(report.lps);
   const shown = all.slice(0, SWAPS_ROW_CAP);
   const dropped = all.length - shown.length;
 
   const headers = [
-    { label: "LP", width: "24%" },
-    { label: "MT5 Swap", width: "19%" },
-    { label: "Statement Swap", width: "19%" },
-    { label: "Difference", width: "19%" },
-    { label: "Statement Rows", width: "19%" },
+    { label: "LP", width: "22%" },
+    { label: "LP Type", width: "14%" },
+    { label: "LP Swap (period)", width: "22%" },
+    { label: "Source", width: "20%" },
+    { label: "Unrealized (at send time)", width: "22%" },
   ];
 
   const bodyRows = shown
     .map((r) => {
-      // The reason travels with the dash. A dash on its own says "unknown" and
-      // stops there; the reader's next question is always which of the two
-      // books is missing, and the answer costs one line.
-      let reason = "";
-      if (r.statement === null) {
-        reason = "No LP statement has been uploaded for this period, so the difference is <strong>unknown</strong> &mdash; not zero.";
-      } else if (r.mt5 === null) {
-        reason = "The backend sent no MT5 swap figure for this LP, so the difference is <strong>unknown</strong> &mdash; not zero.";
+      const { swap, check } = r;
+      const typeText = swap.type
+        ? swap.type
+        : r.row?.source === null || r.row?.source === undefined || String(r.row.source).trim() === ""
+          ? DASH
+          : escapeHtml(String(r.row.source));
+      const lines = [];
+      if (swap.value === null) lines.push(escapeHtml(swap.reason));
+      if (check) {
+        lines.push(
+          `Cross-check only, not used in any total: LP figure ${lpSwapText(check.lp)} vs our statement ${lpSwapText(check.statement)}, gap ${money(check.gap)}${check.statementRows === null ? "" : ` (${fmtNum(check.statementRows, 0)} statement rows)`}.`,
+        );
       }
       return `<tr>
         ${dataCell("LP", escapeHtml(r.label), { nowrap: true })}
-        ${dataCell("MT5 Swap", swapText(r.mt5), { align: "right", cls: signCls(r.mt5) })}
-        ${dataCell("Statement Swap", swapText(r.statement), { align: "right", cls: signCls(r.statement) })}
-        ${dataCell("Difference", swapText(r.difference), { align: "right", cls: signCls(r.difference) })}
-        ${dataCell("Statement Rows", countText(r.statementRows), { align: "right" })}
-        ${reason ? reasonCell(reason, { colspan: headers.length }) : ""}
+        ${dataCell("LP Type", typeText, { nowrap: true })}
+        ${dataCell("LP Swap (period)", lpSwapText(swap.value), { align: "right", cls: signCls(swap.value) })}
+        ${dataCell("Source", swap.source ? LP_SWAP_SOURCE_LABELS[swap.source] : DASH, { cls: swap.source ? "" : "muted" })}
+        ${dataCell("Unrealized (at send time)", lpSwapText(r.unrealized), { align: "right", cls: signCls(r.unrealized) })}
+        ${lines.map((line) => reasonCell(line, { colspan: headers.length })).join("")}
       </tr>`;
     })
     .join("");
 
-  const unknownCount = all.filter((r) => r.difference === null).length;
+  const unresolved = all.filter((r) => r.swap.value === null).length;
+  const checks = all.filter((r) => r.check);
+  const disagree = checks.filter((r) => Math.abs(r.check.gap) >= 0.005).length;
+  const excluded = report.excludedLps.length;
 
-  return `<p class="section-title">LP Reconciliation &mdash; MT5 vs Statement</p>
+  return `<p class="section-title">LP Swap &mdash; by LP Type</p>
           <p class="note">
-            Difference = MT5 Swap &minus; Statement Swap, over the same ${escapeHtml(periodNoun)}.
-            An LP with no uploaded statement shows ${DASH}, never 0.00: the two books cannot be compared, which is not the same as their agreeing.
+            Each LP&rsquo;s figure follows its type: Manager uses our statement; Terminal uses the LP&rsquo;s own figure; Api uses the LP&rsquo;s figure, or our statement when the LP has no record.
+            Negative LP swap is a cost (the LP charged us); positive is revenue (we received swap).
           </p>
           ${dataTable({
             headers,
@@ -439,29 +585,28 @@ function renderReconciliation(report, periodNoun) {
             emptyText: `No LP rows for this ${escapeHtml(periodNoun)}.`,
           })}
           <p class="note">
-            ${unknownCount > 0
-              ? `<strong>${fmtNum(unknownCount, 0)} of ${fmtNum(all.length, 0)} LP(s) cannot be reconciled</strong> because no statement covers this ${escapeHtml(periodNoun)}.`
-              : `All ${fmtNum(all.length, 0)} LP(s) have a statement covering this ${escapeHtml(periodNoun)}.`}
-            ${dropped > 0 ? ` Showing the ${fmtNum(shown.length, 0)} most material; ${fmtNum(dropped, 0)} smaller LP(s) omitted.` : ""}
+            ${unresolved > 0
+              ? `<strong>${fmtNum(unresolved, 0)} of ${fmtNum(all.length, 0)} LP(s) have no figure</strong>, so the LP total is unavailable.`
+              : `All ${fmtNum(all.length, 0)} LP(s) have a figure.`}
+            ${checks.length > 0 ? ` Cross-check: ${fmtNum(checks.length, 0)} LP(s) have both an LP figure and a statement; ${fmtNum(disagree, 0)} disagree.` : ""}
+            ${dropped > 0 ? ` Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} LPs; ${fmtNum(dropped, 0)} LP(s) omitted.` : ""}
+            ${excluded > 0 ? ` ${fmtNum(excluded, 0)} LP(s) marked excluded from swaps are left out of this table and the LP total.` : ""}
+            Unrealized is a live snapshot of accrued swap on positions open when this email was built &mdash; it belongs to no ${escapeHtml(periodNoun)} and is never added into any total.
           </p>`;
 }
 
 /**
- * Top movers, one table per side.
- *
- * The Unrealized column is the only place the snapshot figure appears, its
- * label says "at send time" in full, and it sits beside a period figure without
- * ever being added to one. The column is here rather than dropped because the
- * accounts with the largest accrued swap on open positions are next month's
- * cost, and the reader asked for the three measurements side by side.
+ * Top client movers. The Unrealized column sits beside a period figure without
+ * ever being added to one, and its label says "at send time" in full.
  */
-function renderMovers({ title, rows, idLabel, periodNoun, emptyText }) {
-  const all = orderMovers(rows);
+function renderClientMovers(report, periodNoun) {
+  const all = orderMovers(report.clients);
   const shown = all.slice(0, SWAPS_ROW_CAP);
   const dropped = all.length - shown.length;
+  const excluded = report.excludedClients.length;
 
   const headers = [
-    { label: idLabel, width: "30%" },
+    { label: "Account", width: "30%" },
     { label: "Login", width: "16%" },
     { label: "Swap (period)", width: "27%" },
     { label: "Unrealized (at send time)", width: "27%" },
@@ -470,7 +615,7 @@ function renderMovers({ title, rows, idLabel, periodNoun, emptyText }) {
   const bodyRows = shown
     .map(
       (r) => `<tr>
-        ${dataCell(idLabel, escapeHtml(r.label), { nowrap: true })}
+        ${dataCell("Account", escapeHtml(r.label), { nowrap: true })}
         ${dataCell("Login", r.login === null || r.login === undefined || r.login === "" ? DASH : escapeHtml(String(r.login)), { nowrap: true })}
         ${dataCell("Swap (period)", swapText(r.swap), { align: "right", cls: signCls(r.swap) })}
         ${dataCell("Unrealized (at send time)", swapText(r.unrealized), { align: "right", cls: signCls(r.unrealized) })}
@@ -478,11 +623,12 @@ function renderMovers({ title, rows, idLabel, periodNoun, emptyText }) {
     )
     .join("");
 
-  return `<p class="section-title">${title}</p>
-          ${dataTable({ headers, bodyRows, emptyText })}
+  return `<p class="section-title">Top Movers &mdash; Client Accounts</p>
+          ${dataTable({ headers, bodyRows, emptyText: `No client swap rows for this ${escapeHtml(periodNoun)}.` })}
           <p class="note">
-            Ranked by the size of Swap (period), credits and costs alike.
+            Ranked by the size of Swap (period), either sign.
             ${dropped > 0 ? `Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} accounts; ${fmtNum(dropped, 0)} omitted.` : `All ${fmtNum(all.length, 0)} account(s) shown.`}
+            ${excluded > 0 ? `${fmtNum(excluded, 0)} account(s) marked excluded from swaps are left out of this table and the client total.` : ""}
             Unrealized is a live snapshot of accrued swap on positions open when this email was built &mdash; it belongs to no ${escapeHtml(periodNoun)} and is never added into the period figures above.
           </p>`;
 }
@@ -502,41 +648,29 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
   const spec = CADENCES[cadence] || CADENCES.weekly;
   const noun = spec.noun;
   const { fromYmd, toYmd } = period;
+  const absent = absentSkippedApiLps(report);
 
   const body = `
-          ${renderCompleteness(report)}
+          ${renderNotes(report)}
 
           <p class="section-title">Headline Totals</p>
           ${renderTotals(report)}
           <p class="note">
-            Both totals are the backend&rsquo;s own figures for this ${escapeHtml(noun)}, not sums of the rows below.
-            They count MT5 storage on deals closed inside the window only.
+            Client Swap is the backend&rsquo;s own total for this ${escapeHtml(noun)}, not a sum of the rows below. Its sign convention is not yet confirmed, so it is shown as signed swap only.
+            LP Swap is the sum of each LP&rsquo;s figure from the table below, and is shown only when every LP has one.
+            ${absent > 0 ? `It does not include the ${fmtNum(absent, 0)} API LP(s) the endpoint did not return.` : ""}
           </p>
 
-          ${renderReconciliation(report, noun)}
+          ${renderLpTable(report, noun)}
 
-          ${renderMovers({
-            title: "Top Movers &mdash; LP Accounts",
-            rows: report.lps,
-            idLabel: "LP",
-            periodNoun: noun,
-            emptyText: `No LP swap rows for this ${escapeHtml(noun)}.`,
-          })}
-
-          ${renderMovers({
-            title: "Top Movers &mdash; Client Accounts",
-            rows: report.clients,
-            idLabel: "Account",
-            periodNoun: noun,
-            emptyText: `No client swap rows for this ${escapeHtml(noun)}.`,
-          })}`;
+          ${renderClientMovers(report, noun)}`;
 
   return emailShell({
     theme: "light",
     title: `${spec.subjectWord} Swaps Report`,
     // Plain text, no entities: emailShell runs the subtitle through escapeHtml,
     // so an "&amp;" written here would reach the reader as "&amp;amp;".
-    subtitle: "Management Reporting | Swap Cost and LP Reconciliation",
+    subtitle: "Management Reporting | Client and LP Swap",
     metaLines: [
       `Period: <strong>${escapeHtml(fromYmd)}</strong> to <strong>${escapeHtml(toYmd)}</strong>`,
       "Scope: all client accounts and all configured LP accounts",
@@ -545,7 +679,7 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
     body,
     footerLines: [
       "Automated report generated by the Swaps Reporting pipeline.",
-      "MT5 Swap = &Sigma; Storage on deals closed in the period. Statement Swap = &Sigma; TotalSwaps on LP statement rows dated in the period.",
+      "LP Swap by type: Manager = our statement; Terminal = the LP&rsquo;s figure; Api = the LP&rsquo;s figure, else our statement. Negative LP swap is a cost, positive is revenue.",
       "Unrealized is accrued swap on open positions at the moment this email was built. It is a snapshot, it covers no period, and it is never included in any total above.",
     ],
   });
@@ -558,11 +692,11 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
  * network.
  *
  * Throws on any failure, naming the range. A half-empty Swaps email is worse
- * than no email: the reconciliation would show dashes for every LP and read as
- * "no statements uploaded" rather than "the call died", and the reader would go
- * chasing the LP Statements page for a problem that is not there. So there is
- * no fallback payload and no partial result — the caller does not catch, the
- * run fails, and the failure names the window that was too wide.
+ * than no email: every LP would show a dash and read as "no statements
+ * uploaded" rather than "the call died", and the reader would go chasing the LP
+ * Statements page for a problem that is not there. So there is no fallback
+ * payload and no partial result — the caller does not catch, the run fails, and
+ * the failure names the window.
  */
 export async function fetchSwapsReport(fromDate, toDate, { liveFinalto = SCHEDULED_LIVE_FINALTO } = {}) {
   const { from, to } = toUnixRange(fromDate, toDate);
@@ -580,8 +714,7 @@ export async function fetchSwapsReport(fromDate, toDate, { liveFinalto = SCHEDUL
     // AbortSignal.timeout rejects with a bare TimeoutError that names neither
     // the endpoint nor the window, and "the operation was aborted" in a log is
     // indistinguishable from a network blip. The range is the diagnosis here:
-    // this endpoint is slow in proportion to the window, so knowing it was a
-    // month is most of the answer.
+    // this endpoint is slow, so knowing it was a month is most of the answer.
     const message = error?.message || String(error);
     throw new Error(
       `SwapsReport ${range} failed after up to ${SWAPS_RUN_TIMEOUT_MS / 1000}s: ${message}`,
