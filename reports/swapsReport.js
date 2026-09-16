@@ -9,13 +9,16 @@
 // people who own /api/SwapsReport, in answer to questions this report had left
 // open. They are the rules this file implements; the code is not the authority.
 //
-//   Rule 1 — LP sign. A NEGATIVE LP swap means the LP charged us: a cost. A
-//            POSITIVE LP swap means we received swap: revenue. Every LP figure
-//            in the email says which of the two it is, in words, because a
-//            minus sign alone was exactly the ambiguity that had to be asked
-//            about. The rule was given for LPs ONLY. The client sign has not
-//            been confirmed, so client figures are printed as signed "swap"
-//            and are never called a cost or a revenue.
+//   Rule 1 — sign. A NEGATIVE LP swap means the LP charged us: a cost. A
+//            POSITIVE LP swap means we received swap: revenue. For CLIENTS the
+//            user confirmed (2026-09-16) the opposite: a negative client swap is
+//            charged to the client, which is our revenue, and a positive one is
+//            given to the client, which is our cost. Both are stated from
+//            Skylinks' side of the book. Every figure in the email says which of
+//            the two it is, in words, because a minus sign alone was exactly the
+//            ambiguity that had to be asked about — and because the same sign
+//            means opposite things in the two halves of the page. The mapping
+//            lives in ONE function, swapEffect, so the two sides cannot drift.
 //
 //   Rule 2 — time. The window is taken exactly as it is sent. No rollover or
 //            timezone adjustment is applied anywhere in this file.
@@ -27,13 +30,16 @@
 //                        LP record exists, the DB statement -> statementSwap
 //            The FIELD MAPPING on the right is our inference from the payload
 //            and is NOT YET VERIFIED against a live LP row. That is why the
-//            rule lives in one small function (effectiveLpSwap) and why every
-//            LP row prints which source its figure came from: if the mapping is
-//            wrong, the reader sees "Statement" beside an LP that should say
-//            "LP", instead of trusting a silently wrong number.
+//            rule lives in one small function (effectiveLpSwap). The email
+//            used to print each LP's type and source so a wrong pick was
+//            visible; the user asked for those to go (2026-09-16) — the reader
+//            wants one figure per LP and nothing else. With no label on the
+//            page, the protection moved into the tests, which assert the NUMBER
+//            each LP type displays when its two candidate figures differ.
 //
 //   Rule 5 — show every LP. Nothing is marked "skipped" or "incomplete" because
 //            an API LP has no vendor feed; that LP falls back to the statement.
+//            The email never names the type or the source to the reader.
 //
 //   Rule 6 — a row carrying excludeFromSwaps === true is left out of every
 //            table and every total. The endpoint does not send the flag today;
@@ -228,12 +234,6 @@ function accountLabel(row) {
 // our statement for an LP nobody has classified, which is a guess.
 const LP_TYPES = ["Manager", "Terminal", "Api"];
 
-export const LP_SWAP_SOURCE_LABELS = {
-  statement: "Statement",
-  lp: "LP",
-  "statement-fallback": "Statement (fallback &mdash; no LP record)",
-};
-
 /**
  * Rule 4 — the ONE place that decides which figure is an LP's swap.
  *
@@ -241,7 +241,11 @@ export const LP_SWAP_SOURCE_LABELS = {
  *   value   the figure, or null when rule 4 has nothing to offer
  *   source  "statement" | "lp" | "statement-fallback" | null
  *   type    the canonical LP type, or null when unknown/missing
- *   reason  plain text saying why value is null (never set alongside a value)
+ *   reason  plain text saying why value is null (never set alongside a value).
+ *           It names the type and the book, so it is for tests and debugging
+ *           only; the email prints unresolvedLpReason's wording instead.
+ *
+ * `source` and `type` are likewise never rendered (user, 2026-09-16).
  *
  * UNVERIFIED MAPPING (2026-09-16): Manager -> statementSwap, Terminal ->
  * totalSwap, Api -> totalSwap else statementSwap is inferred from field names,
@@ -297,18 +301,6 @@ export function lpSwapTotal(lps) {
 }
 
 /**
- * The secondary cross-check: the LP's figure against our statement, only where
- * both exist. It is never a total and never replaces the rule-4 figure; it is
- * here so a disagreement between our books and the LP's stays visible.
- */
-export function crossCheckLp(row) {
-  const lp = num(row?.totalSwap);
-  const statement = num(row?.statementSwap);
-  if (lp === null || statement === null) return null;
-  return { lp, statement, gap: lp - statement, statementRows: num(row?.statementRowCount) };
-}
-
-/**
  * LP table order: unresolved LPs first, then by the size of the rule-4 figure.
  *
  * Unresolved rows lead because they need someone to act and because they are
@@ -320,8 +312,6 @@ export function orderLpRows(lps) {
     row,
     label: accountLabel(row),
     swap: effectiveLpSwap(row),
-    check: crossCheckLp(row),
-    unrealized: num(row?.unrealizedSwap),
   }));
   const unresolved = shaped.filter((r) => r.swap.value === null);
   const resolved = shaped
@@ -369,23 +359,63 @@ function clientHeadline(report) {
 
 // ── cells ────────────────────────────────────────────────────────────────────
 
-function signCls(value) {
-  if (value === null) return "muted";
-  if (value > 0) return "pos";
-  if (value < 0) return "neg";
+// What a NEGATIVE swap means on each side of the book, from Skylinks' point of
+// view. Positive is always the other one.
+//
+// The two sides are deliberately OPPOSITE, and this table is the only place
+// that says so:
+//   lp      negative = the LP charged us                    -> cost
+//           (backend team, rule 1, 2026-09-16)
+//   client  negative = charged to the client, we keep it    -> revenue
+//           positive = given to the client, we pay it       -> cost
+//           (confirmed by the user, Abbas, 2026-09-16)
+// Writing the mapping once, as data, is what stops a later edit flipping one
+// side's ternary and not the other's.
+const NEGATIVE_SWAP_MEANS = { lp: "cost", client: "revenue" };
+const OPPOSITE_EFFECT = { cost: "revenue", revenue: "cost" };
+
+/**
+ * Rule 1 — the ONE place a signed swap becomes a cost or a revenue.
+ *
+ * @param {number|null} value  the signed figure as the backend sent it
+ * @param {"client"|"lp"} side which half of the book the figure belongs to
+ * @returns {"cost"|"revenue"|null}
+ *
+ * ZERO is null, and so is anything that prints as $0.00. Nothing moved, so
+ * calling it a cost or a revenue would be false either way; and a figure like
+ * -0.004 printed as "-$0.00 (revenue)" would claim money the page cannot show.
+ * The rendered text for such a figure is a bare "$0.00", muted.
+ *
+ * An unknown side throws rather than defaulting to one convention: guessing
+ * here would silently invert half the email.
+ */
+export function swapEffect(value, side) {
+  if (!Object.hasOwn(NEGATIVE_SWAP_MEANS, side)) throw new Error(`swapEffect: unknown side "${side}"`);
+  if (value === null || !Number.isFinite(value) || roundsToZero(value)) return null;
+  const negativeMeans = NEGATIVE_SWAP_MEANS[side];
+  return value < 0 ? negativeMeans : OPPOSITE_EFFECT[negativeMeans];
+}
+
+function roundsToZero(value) {
+  return Math.abs(value) < 0.005;
+}
+
+// Colour follows the effect, not the sign. A client charge is negative AND our
+// revenue; painting it red would contradict the word printed beside it.
+function effectCls(value, side) {
+  const effect = swapEffect(value, side);
+  if (effect === "revenue") return "pos";
+  if (effect === "cost") return "neg";
   return "muted";
 }
 
-// Client figures: signed, and nothing more. See rule 1 — the client sign has
-// not been confirmed, so this deliberately says nothing about who paid.
-const swapText = (value) => (value === null ? DASH : money(value));
-
-// LP figures: signed, and named (rule 1). Zero is neither a cost nor a revenue.
-function lpSwapText(value) {
+// Every swap figure on the page, either side: signed, and named.
+function swapText(value, side) {
   if (value === null) return DASH;
-  if (value < 0) return `${money(value)} (cost)`;
-  if (value > 0) return `${money(value)} (revenue)`;
-  return money(value);
+  const effect = swapEffect(value, side);
+  // money(-0.004) prints "-$0.00"; a figure that is zero on the page is shown
+  // as zero, without a sign that implies a direction.
+  return effect === null ? money(0) : `${money(value)} (${effect})`;
 }
 
 // A labelled cell that is allowed to run the full width of its card.
@@ -400,10 +430,9 @@ function proseCell(label, value, { colspan = 1 } = {}) {
 }
 
 // An unlabelled full-width line inside a row's card, for the reason beside a
-// dash or the cross-check. It rides in the row it explains rather than sitting
-// in a <tr> of its own: table.data gives every <tr> a zebra stripe and a rule,
-// so a separate row would read as twice as many LPs. Small and muted, which is
-// also what keeps the cross-check visibly subordinate to the rule-4 figure.
+// dash. It rides in the row it explains rather than sitting in a <tr> of its
+// own: table.data gives every <tr> a zebra stripe and a rule, so a separate row
+// would read as twice as many LPs.
 function reasonCell(text, { colspan = 1 } = {}) {
   return `<td class="txt" colspan="${colspan}" style="max-width:none;width:100%;padding:0 8px 4px;font-size:11px;line-height:1.45;color:${MUTED};">${text}</td>`;
 }
@@ -440,10 +469,13 @@ function absentSkippedApiLps(report) {
 function renderNotes(report) {
   const notes = [];
   const absent = absentSkippedApiLps(report);
+  // Worded without the LP's type or where its figure would have come from: the
+  // reader asked for neither, and the only fact they can act on is that some
+  // LPs are missing from the table and the total.
   if (absent > 0) {
     notes.push({
-      label: "API LPs not returned",
-      detail: `${fmtNum(absent, 0)} API LP(s) were not returned by the endpoint, so their statement fallback could not be applied. They are not in the LP table or the LP total below.`,
+      label: "LPs not returned",
+      detail: `${fmtNum(absent, 0)} LP(s) were not returned by the endpoint, so no swap figure could be shown for them. They are not in the LP table or the LP total below.`,
       failure: false,
     });
   }
@@ -499,15 +531,15 @@ function renderTotals(report) {
     ? { label: "Client Swap (period)", value: "Unavailable", cls: "muted", note: client.reason }
     : {
         label: "Client Swap (period)",
-        value: swapText(client.value),
-        cls: signCls(client.value),
+        value: swapText(client.value, "client"),
+        cls: effectCls(client.value, "client"),
         note: `${fmtNum(client.accounts, 0)} accounts${client.excluded ? `, after removing ${fmtNum(client.excluded, 0)} excluded` : ""}`,
       };
 
   const lp = lpSwapTotal(report.lps);
   let lpCard;
   if (lp.value !== null) {
-    lpCard = { label: "LP Swap (period)", value: lpSwapText(lp.value), cls: signCls(lp.value), note: `${fmtNum(lp.count, 0)} LPs, each by its type rule` };
+    lpCard = { label: "LP Swap (period)", value: swapText(lp.value, "lp"), cls: effectCls(lp.value, "lp"), note: `${fmtNum(lp.count, 0)} LPs` };
   } else if (lp.count === 0) {
     lpCard = { label: "LP Swap (period)", value: DASH, cls: "muted", note: "No LP rows to total" };
   } else {
@@ -523,12 +555,13 @@ function renderTotals(report) {
 }
 
 /**
- * Every LP, with its rule-4 figure and where that figure came from.
+ * Every LP, each with exactly one swap figure: the one rule 4 chose.
  *
- * The Source column is the check on the unverified field mapping: a reader who
- * knows an LP is a Terminal LP and sees "Statement" beside it has found the bug.
- * The cross-check line is small, muted and inside the row, so it reads as a
- * footnote to the figure rather than a second figure competing with it.
+ * Two columns and nothing else, at the user's request (2026-09-16): the LP's
+ * type, where its figure came from, a second figure to cross-check it against,
+ * and the unrealized snapshot were all judged noise for this reader. Rule 4
+ * still decides the figure; it just no longer explains itself on the page,
+ * which is why the tests pin the number each type displays.
  */
 function renderLpTable(report, periodNoun) {
   const all = orderLpRows(report.lps);
@@ -536,47 +569,27 @@ function renderLpTable(report, periodNoun) {
   const dropped = all.length - shown.length;
 
   const headers = [
-    { label: "LP", width: "22%" },
-    { label: "LP Type", width: "14%" },
-    { label: "LP Swap (period)", width: "22%" },
-    { label: "Source", width: "20%" },
-    { label: "Unrealized (at send time)", width: "22%" },
+    { label: "LP", width: "50%" },
+    { label: "LP Swap (period)", width: "50%" },
   ];
 
   const bodyRows = shown
     .map((r) => {
-      const { swap, check } = r;
-      const typeText = swap.type
-        ? swap.type
-        : r.row?.source === null || r.row?.source === undefined || String(r.row.source).trim() === ""
-          ? DASH
-          : escapeHtml(String(r.row.source));
-      const lines = [];
-      if (swap.value === null) lines.push(escapeHtml(swap.reason));
-      if (check) {
-        lines.push(
-          `Cross-check only, not used in any total: LP figure ${lpSwapText(check.lp)} vs our statement ${lpSwapText(check.statement)}, gap ${money(check.gap)}${check.statementRows === null ? "" : ` (${fmtNum(check.statementRows, 0)} statement rows)`}.`,
-        );
-      }
+      const { swap } = r;
       return `<tr>
         ${dataCell("LP", escapeHtml(r.label), { nowrap: true })}
-        ${dataCell("LP Type", typeText, { nowrap: true })}
-        ${dataCell("LP Swap (period)", lpSwapText(swap.value), { align: "right", cls: signCls(swap.value) })}
-        ${dataCell("Source", swap.source ? LP_SWAP_SOURCE_LABELS[swap.source] : DASH, { cls: swap.source ? "" : "muted" })}
-        ${dataCell("Unrealized (at send time)", lpSwapText(r.unrealized), { align: "right", cls: signCls(r.unrealized) })}
-        ${lines.map((line) => reasonCell(line, { colspan: headers.length })).join("")}
+        ${dataCell("LP Swap (period)", swapText(swap.value, "lp"), { align: "right", cls: effectCls(swap.value, "lp") })}
+        ${swap.value === null ? reasonCell(unresolvedLpReason(swap), { colspan: headers.length }) : ""}
       </tr>`;
     })
     .join("");
 
   const unresolved = all.filter((r) => r.swap.value === null).length;
-  const checks = all.filter((r) => r.check);
-  const disagree = checks.filter((r) => Math.abs(r.check.gap) >= 0.005).length;
   const excluded = report.excludedLps.length;
 
-  return `<p class="section-title">LP Swap &mdash; by LP Type</p>
+  return `<p class="section-title">LP Swap &mdash; All LPs</p>
           <p class="note">
-            Each LP&rsquo;s figure follows its type: Manager uses our statement; Terminal uses the LP&rsquo;s own figure; Api uses the LP&rsquo;s figure, or our statement when the LP has no record.
+            One swap figure per LP for this ${escapeHtml(periodNoun)}.
             Negative LP swap is a cost (the LP charged us); positive is revenue (we received swap).
           </p>
           ${dataTable({
@@ -588,16 +601,26 @@ function renderLpTable(report, periodNoun) {
             ${unresolved > 0
               ? `<strong>${fmtNum(unresolved, 0)} of ${fmtNum(all.length, 0)} LP(s) have no figure</strong>, so the LP total is unavailable.`
               : `All ${fmtNum(all.length, 0)} LP(s) have a figure.`}
-            ${checks.length > 0 ? ` Cross-check: ${fmtNum(checks.length, 0)} LP(s) have both an LP figure and a statement; ${fmtNum(disagree, 0)} disagree.` : ""}
             ${dropped > 0 ? ` Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} LPs; ${fmtNum(dropped, 0)} LP(s) omitted.` : ""}
             ${excluded > 0 ? ` ${fmtNum(excluded, 0)} LP(s) marked excluded from swaps are left out of this table and the LP total.` : ""}
-            Unrealized is a live snapshot of accrued swap on positions open when this email was built &mdash; it belongs to no ${escapeHtml(periodNoun)} and is never added into any total.
           </p>`;
+}
+
+// The line under a dash, in the reader's terms. effectiveLpSwap's own reason
+// names the LP type and which book it reads, which is what an operator
+// debugging the mapping needs and exactly what this reader asked not to see.
+// Two cases survive translation: rule 4 knew where to look and found nothing,
+// or the LP is not classified, so no rule applies to it at all.
+function unresolvedLpReason(swap) {
+  return swap.type
+    ? "No swap record for this period, so there is no figure &mdash; not zero."
+    : "This LP is not set up for swap reporting, so there is no figure &mdash; not zero.";
 }
 
 /**
  * Top client movers. The Unrealized column sits beside a period figure without
- * ever being added to one, and its label says "at send time" in full.
+ * ever being added to one, and its label says "at send time" in full. Both
+ * columns carry the client sign convention, so a charge reads as revenue.
  */
 function renderClientMovers(report, periodNoun) {
   const all = orderMovers(report.clients);
@@ -617,8 +640,8 @@ function renderClientMovers(report, periodNoun) {
       (r) => `<tr>
         ${dataCell("Account", escapeHtml(r.label), { nowrap: true })}
         ${dataCell("Login", r.login === null || r.login === undefined || r.login === "" ? DASH : escapeHtml(String(r.login)), { nowrap: true })}
-        ${dataCell("Swap (period)", swapText(r.swap), { align: "right", cls: signCls(r.swap) })}
-        ${dataCell("Unrealized (at send time)", swapText(r.unrealized), { align: "right", cls: signCls(r.unrealized) })}
+        ${dataCell("Swap (period)", swapText(r.swap, "client"), { align: "right", cls: effectCls(r.swap, "client") })}
+        ${dataCell("Unrealized (at send time)", swapText(r.unrealized, "client"), { align: "right", cls: effectCls(r.unrealized, "client") })}
       </tr>`,
     )
     .join("");
@@ -627,6 +650,7 @@ function renderClientMovers(report, periodNoun) {
           ${dataTable({ headers, bodyRows, emptyText: `No client swap rows for this ${escapeHtml(periodNoun)}.` })}
           <p class="note">
             Ranked by the size of Swap (period), either sign.
+            Negative client swap is charged to the client (revenue); positive is given to the client (cost).
             ${dropped > 0 ? `Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} accounts; ${fmtNum(dropped, 0)} omitted.` : `All ${fmtNum(all.length, 0)} account(s) shown.`}
             ${excluded > 0 ? `${fmtNum(excluded, 0)} account(s) marked excluded from swaps are left out of this table and the client total.` : ""}
             Unrealized is a live snapshot of accrued swap on positions open when this email was built &mdash; it belongs to no ${escapeHtml(periodNoun)} and is never added into the period figures above.
@@ -656,9 +680,9 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
           <p class="section-title">Headline Totals</p>
           ${renderTotals(report)}
           <p class="note">
-            Client Swap is the backend&rsquo;s own total for this ${escapeHtml(noun)}, not a sum of the rows below. Its sign convention is not yet confirmed, so it is shown as signed swap only.
+            Client Swap is the backend&rsquo;s own total for this ${escapeHtml(noun)}, not a sum of the rows below. Negative client swap is charged to the client, so it is our revenue; positive is given to the client, so it is our cost.
             LP Swap is the sum of each LP&rsquo;s figure from the table below, and is shown only when every LP has one.
-            ${absent > 0 ? `It does not include the ${fmtNum(absent, 0)} API LP(s) the endpoint did not return.` : ""}
+            ${absent > 0 ? `It does not include the ${fmtNum(absent, 0)} LP(s) the endpoint did not return.` : ""}
           </p>
 
           ${renderLpTable(report, noun)}
@@ -679,7 +703,7 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
     body,
     footerLines: [
       "Automated report generated by the Swaps Reporting pipeline.",
-      "LP Swap by type: Manager = our statement; Terminal = the LP&rsquo;s figure; Api = the LP&rsquo;s figure, else our statement. Negative LP swap is a cost, positive is revenue.",
+      "Sign, from our side of the book: negative LP swap is a cost and positive is revenue; negative client swap is our revenue and positive is our cost.",
       "Unrealized is accrued swap on open positions at the moment this email was built. It is a snapshot, it covers no period, and it is never included in any total above.",
     ],
   });

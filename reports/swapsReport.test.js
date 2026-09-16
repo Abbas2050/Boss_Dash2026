@@ -8,14 +8,17 @@
 // get wrong:
 //
 //   1. Rule 4 (backend team, 2026-09-16): each LP's figure is chosen by its
-//      type, the Api fallback fires on a MISSING LP record and never on a real
-//      zero, and every row says which source it used. The field mapping is not
-//      yet verified against live data, so the Source label is load-bearing.
+//      type, and the Api fallback fires on a MISSING LP record and never on a
+//      real zero. The email no longer prints the type or the source (the user
+//      asked for one plain figure per LP), so nothing on the page would reveal
+//      a wrong pick. These tests are that check now: they assert the NUMBER
+//      each type displays, on rows whose two candidate figures differ.
 //   2. The LP headline is the sum of the rule-4 figures, all or nothing. The
 //      unresolved fixture is built so a partial sum would print a plausible
 //      number, so the guard bites.
-//   3. Rule 1: LP figures say cost or revenue; client figures say neither,
-//      because the client sign has not been confirmed.
+//   3. Rule 1: every figure says cost or revenue, and the two sides are
+//      OPPOSITE -- a negative LP swap is our cost, a negative client swap is our
+//      revenue (confirmed by the user, 2026-09-16).
 //   4. Rule 6: excludeFromSwaps rows leave the tables AND the totals.
 //   5. Rule 5: skipped API LPs are not "incomplete"; only LPs the endpoint never
 //      returned get a note, and it says exactly that.
@@ -31,12 +34,12 @@ import {
   SWAPS_ROW_CAP,
   SWAPS_RUN_TIMEOUT_MS,
   buildSwapsEmailHtml,
-  crossCheckLp,
   effectiveLpSwap,
   fetchSwapsReport,
   lpSwapTotal,
   orderLpRows,
   parseSwapsReport,
+  swapEffect,
   swapsSubject,
 } from "./swapsReport.js";
 
@@ -51,6 +54,7 @@ import {
 //   Raw totalSwap over the rows (null as 0)                = -5,600.00
 //   The backend's lpTotals (not rule-4 aware)              = -9,123.45
 //   LP unrealized (-700 -300 +150) folded into -7,300      = -8,150.00
+//     (LP unrealized is no longer displayed, but must still not reach a total)
 //
 //   client rows sum to -8,500.00 but clientTotals says -12,345.67; client
 //   unrealized (-6,000) folded in would be -18,345.67.
@@ -101,8 +105,8 @@ function section(out, startMarker, endMarker) {
   const to = endMarker ? out.indexOf(endMarker, from) : -1;
   return out.slice(from, to === -1 ? out.length : to);
 }
-const headlineOf = (out) => section(out, "Headline Totals", "LP Swap &mdash; by LP Type");
-const lpTableOf = (out) => section(out, "LP Swap &mdash; by LP Type", "Top Movers &mdash; Client Accounts");
+const headlineOf = (out) => section(out, "Headline Totals", "LP Swap &mdash; All LPs");
+const lpTableOf = (out) => section(out, "LP Swap &mdash; All LPs", "Top Movers &mdash; Client Accounts");
 const clientMoversOf = (out) => section(out, "Top Movers &mdash; Client Accounts");
 
 // One table.data row, anchored on its first cell's VISIBLE VALUE -- never on a
@@ -112,6 +116,15 @@ function row(out, key) {
   if (at === -1) return null;
   const end = out.indexOf("</tr>", at);
   return out.slice(at, end === -1 ? out.length : end);
+}
+
+// The whole <tr>, opening tag included, for counting a row's cells.
+function fullRow(out, key) {
+  const at = out.indexOf(`<span class="val">${key}</span>`);
+  if (at === -1) return null;
+  const start = out.lastIndexOf("<tr>", at);
+  const end = out.indexOf("</tr>", at);
+  return out.slice(start, end === -1 ? out.length : end);
 }
 
 function cell(rowHtml, column) {
@@ -259,39 +272,58 @@ describe("rule 4 picks each LP's figure by its type", () => {
   });
 });
 
-describe("every LP row says where its figure came from", () => {
+describe("the LP table is one plain list: every LP, one figure, nothing else", () => {
   const table = () => lpTableOf(html());
 
-  it("renders the source label on each row, including the fallback", () => {
-    expect(cell(row(table(), "Xtb"), "Source")).toBe("LP");
-    expect(cell(row(table(), "Finalto"), "Source")).toBe("Statement (fallback &mdash; no LP record)");
-    expect(cell(row(table(), "Quiet LP"), "Source")).toBe("LP");
-    expect(cell(row(table(), "Book LP"), "Source")).toBe("Statement");
-    expect(cell(row(table(), "Term LP"), "Source")).toBe("LP");
+  it("has exactly two columns, LP and LP Swap (period)", () => {
+    const heads = [...table().matchAll(/<th[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]);
+    expect(heads).toEqual(["LP", "LP Swap (period)"]);
   });
 
-  it("renders the type and the rule-4 figure beside it", () => {
-    expect(cell(row(table(), "Book LP"), "LP Type")).toBe("Manager");
-    expect(cell(row(table(), "Book LP"), "LP Swap (period)")).toBe("-$1,200.00 (cost)");
-    expect(cell(row(table(), "Finalto"), "LP Swap (period)")).toBe("-$2,000.00 (cost)");
-    expect(cell(row(table(), "Quiet LP"), "LP Swap (period)")).toBe("$0.00");
+  it("has no LP Type, Source or Unrealized column, while the client table keeps Unrealized", () => {
+    const t = table();
+    for (const col of ["LP Type", "Source", "Unrealized (at send time)"]) {
+      expect(t).not.toContain(`data-label="${col}"`);
+      expect(t).not.toContain(`>${col}</th>`);
+    }
+    expect(countCells(clientMoversOf(html()), "Unrealized (at send time)")).toBe(CLIENTS.length);
+    expect(clientMoversOf(html())).toMatch(/<th width="[^"]*">Unrealized \(at send time\)<\/th>/);
   });
 
-  it("renders a Manager LP with no statement as a dash with the reason", () => {
-    const r = row(lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] })), "Unfiled Mgr");
+  it("shows every LP, nothing skipped", () => {
+    for (const lp of LPS) expect(row(table(), lp.lpName)).not.toBeNull();
+    expect(countCells(table(), "LP Swap (period)")).toBe(LPS.length);
+  });
+
+  it("gives each LP row exactly one swap figure and no cross-check line", () => {
+    const t = table();
+    for (const lp of LPS) {
+      const r = fullRow(t, lp.lpName);
+      expect(r.match(/<td /g)).toHaveLength(2);
+      expect(r.match(/\$[\d,]+\.\d\d/g)).toHaveLength(1);
+    }
+    expect(html()).not.toMatch(/cross-check/i);
+    expect(t).not.toMatch(/\bgap\b/i);
+    // Xtb's and Quiet LP's other candidate figures, which the cross-check used to print.
+    expect(t).not.toContain("4,500.00");
+    expect(t).not.toContain("800.00");
+  });
+
+  it("renders an LP with no figure as a dash and a plain reason, never 0.00", () => {
+    const r = fullRow(lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] })), "Unfiled Mgr");
     expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(cell(r, "Source")).toBe("&mdash;");
-    expect(r).toMatch(/Manager LP with no statement uploaded for this period/);
-    expect(r).toMatch(/not zero/);
+    expect(r).toMatch(/No swap record for this period, so there is no figure &mdash; not zero\./);
     expect(r).not.toContain("$0.00");
+    expect(r).not.toContain("400.00");
+    expect(r).not.toMatch(/Manager|statement|\btype\b|source/i);
   });
 
-  it("renders an unknown type as a dash naming the type", () => {
+  it("renders an unclassified LP as a dash with a reason that names no type", () => {
     const odd = { id: 9, login: 509, lpName: "Odd LP", source: "Hybrid", totalSwap: -250, statementSwap: -250 };
-    const r = row(lpTableOf(html({ lps: [...LPS, odd] })), "Odd LP");
-    expect(cell(r, "LP Type")).toBe("Hybrid");
+    const r = fullRow(lpTableOf(html({ lps: [...LPS, odd] })), "Odd LP");
     expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(r).toMatch(/Unknown LP type &quot;Hybrid&quot;/);
+    expect(r).toMatch(/not set up for swap reporting, so there is no figure &mdash; not zero\./);
+    expect(r).not.toMatch(/Hybrid|\btype\b/i);
   });
 
   it("puts unresolved LPs first so the row cap cannot drop them", () => {
@@ -306,6 +338,74 @@ describe("every LP row says where its figure came from", () => {
   });
 });
 
+// With no type or source label on the page, a wrong rule-4 pick would print a
+// plausible number and nothing else. Each case below gives the LP two candidate
+// figures that differ, and asserts the one the reader actually sees.
+describe("rule 4 still decides the number each LP displays, with no label to lean on", () => {
+  const shownFor = (lp) => {
+    const t = lpTableOf(html({ lps: [lp] }));
+    return { value: cell(row(t, lp.lpName), "LP Swap (period)"), table: t };
+  };
+
+  it("a Manager LP whose totalSwap and statementSwap differ displays the statement", () => {
+    const { value, table } = shownFor({ lpName: "Mgr LP", source: "Manager", totalSwap: -1500, statementSwap: -1200 });
+    expect(value).toBe("-$1,200.00 (cost)");
+    expect(table).not.toContain("1,500.00");
+  });
+
+  it("a Terminal LP displays totalSwap", () => {
+    const { value, table } = shownFor({ lpName: "Term LP", source: "Terminal", totalSwap: 900, statementSwap: -350 });
+    expect(value).toBe("$900.00 (revenue)");
+    expect(table).not.toContain("350.00");
+  });
+
+  it("an Api LP with totalSwap: null displays the statement", () => {
+    const { value } = shownFor({ lpName: "Api Null", source: "Api", totalSwap: null, statementSwap: -2000 });
+    expect(value).toBe("-$2,000.00 (cost)");
+  });
+
+  it("an Api LP with a totalSwap displays it, not the statement", () => {
+    const { value, table } = shownFor({ lpName: "Api Rec", source: "Api", totalSwap: -5000, statementSwap: -4500 });
+    expect(value).toBe("-$5,000.00 (cost)");
+    expect(table).not.toContain("4,500.00");
+  });
+
+  it("an Api LP with totalSwap: 0 displays 0.00, not the statement", () => {
+    const { value, table } = shownFor({ lpName: "Api Zero", source: "Api", totalSwap: 0, statementSwap: -800 });
+    expect(value).toBe("$0.00");
+    expect(table).not.toContain("800.00");
+  });
+
+  it("the full fixture shows each LP's rule-4 figure", () => {
+    const t = lpTableOf(html());
+    const shown = Object.fromEntries(LPS.map((lp) => [lp.lpName, cell(row(t, lp.lpName), "LP Swap (period)")]));
+    expect(shown).toEqual({
+      Xtb: "-$5,000.00 (cost)",
+      Finalto: "-$2,000.00 (cost)",
+      "Quiet LP": "$0.00",
+      "Book LP": "-$1,200.00 (cost)",
+      "Term LP": "$900.00 (revenue)",
+    });
+  });
+});
+
+describe("no LP type or source terminology reaches the reader", () => {
+  it.each([
+    ["the clean report", () => html()],
+    ["with every note", () => html({ skippedApiLpCount: 4, lpErrors: ["Vendor B: socket closed"], clientPanelError: "Client panel timed out" })],
+    ["with an unresolved and an unclassified LP", () => html({ lps: [...LPS, UNFILED_MANAGER, { lpName: "Odd", source: "Hybrid", totalSwap: -1 }] })],
+    ["with an LP the endpoint did not return", () => html({ skippedApiLpCount: 3 })],
+    ["daily, with no rows", () => html({ lps: [], clients: [] }, { cadence: "daily", period: { fromYmd: "2026-08-31", toYmd: "2026-08-31" } })],
+  ])("%s", (_label, build) => {
+    const out = build();
+    for (const word of ["Manager", "Terminal", "Api", "Source", "Statement (fallback", "LP Type"]) {
+      expect(out).not.toContain(word);
+    }
+    // And the same ideas in any case or spelling.
+    expect(out).not.toMatch(/\bapi\b|\bsource\b|statement|by type|type rule|\bLP type\b|cross-check|fallback/i);
+  });
+});
+
 // ── the LP headline ──────────────────────────────────────────────────────────
 
 describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
@@ -313,7 +413,7 @@ describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
     expect(lpSwapTotal(LPS)).toEqual({ value: -7300, count: 5, unresolved: 0 });
     const card = kpi(headlineOf(html()), "LP Swap (period)");
     expect(card.value).toBe("-$7,300.00 (cost)");
-    expect(card.note).toBe("5 LPs, each by its type rule");
+    expect(card.note).toBe("5 LPs");
   });
 
   it("is not the backend's lpTotals, nor a raw sum of totalSwap", () => {
@@ -343,51 +443,93 @@ describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
 
 // ── rule 1: sign convention ──────────────────────────────────────────────────
 
-describe("LP figures read as cost or revenue; client figures do not", () => {
-  it("a negative LP figure is a cost and a positive one is revenue", () => {
-    const table = lpTableOf(html());
-    expect(cell(row(table, "Xtb"), "LP Swap (period)")).toBe("-$5,000.00 (cost)");
-    expect(cell(row(table, "Term LP"), "LP Swap (period)")).toBe("$900.00 (revenue)");
-    expect(row(table, "Xtb")).toMatch(/<span class="val neg">-\$5,000\.00 \(cost\)/);
-    expect(row(table, "Term LP")).toMatch(/<span class="val pos">\$900\.00 \(revenue\)/);
+describe("rule 1: clients and LPs read a sign in opposite directions", () => {
+  it("swapEffect: client negative is revenue, client positive is cost; LP negative is cost, LP positive is revenue", () => {
+    expect(swapEffect(-100, "client")).toBe("revenue");
+    expect(swapEffect(100, "client")).toBe("cost");
+    expect(swapEffect(-100, "lp")).toBe("cost");
+    expect(swapEffect(100, "lp")).toBe("revenue");
   });
 
-  it("the LP headline carries the word too, in both directions", () => {
-    expect(kpi(html(), "LP Swap (period)").value).toMatch(/\(cost\)$/);
-    expect(kpi(html({ lps: [LPS[4]] }), "LP Swap (period)").value).toBe("$900.00 (revenue)");
+  it("swapEffect calls zero, and anything that prints as $0.00, neither", () => {
+    for (const side of ["client", "lp"]) {
+      expect(swapEffect(0, side)).toBeNull();
+      expect(swapEffect(-0.004, side)).toBeNull();
+      expect(swapEffect(0.004, side)).toBeNull();
+      expect(swapEffect(null, side)).toBeNull();
+      expect(swapEffect(-0.005, side)).not.toBeNull();
+    }
   });
 
-  it("client figures carry no cost/revenue label anywhere", () => {
+  it("swapEffect refuses to guess a side", () => {
+    expect(() => swapEffect(-1, "vendor")).toThrow(/unknown side/);
+    expect(() => swapEffect(-1)).toThrow(/unknown side/);
+  });
+
+  // One fixture, both sides, both directions: the same signed amounts must read
+  // opposite ways in the client half and the LP half of the same email.
+  const MIRROR = {
+    clients: [
+      { login: 1, name: "Charged Client", totalSwap: -300, unrealizedSwap: -60 },
+      { login: 2, name: "Paid Client", totalSwap: 200, unrealizedSwap: 40 },
+    ],
+    clientTotals: { totalSwap: -100, accountCount: 2 },
+    lps: [
+      { lpName: "Charging LP", source: "Terminal", totalSwap: -300 },
+      { lpName: "Paying LP", source: "Terminal", totalSwap: 200 },
+    ],
+  };
+
+  it("renders the opposition in one email, rows and headlines, words and colours", () => {
+    const out = html(MIRROR);
+    const movers = clientMoversOf(out);
+    const lps = lpTableOf(out);
+
+    expect(cell(row(movers, "Charged Client"), "Swap (period)")).toBe("-$300.00 (revenue)");
+    expect(cell(row(lps, "Charging LP"), "LP Swap (period)")).toBe("-$300.00 (cost)");
+    expect(cell(row(movers, "Paid Client"), "Swap (period)")).toBe("$200.00 (cost)");
+    expect(cell(row(lps, "Paying LP"), "LP Swap (period)")).toBe("$200.00 (revenue)");
+
+    expect(row(movers, "Charged Client")).toMatch(/<span class="val pos">-\$300\.00 \(revenue\)/);
+    expect(row(lps, "Charging LP")).toMatch(/<span class="val neg">-\$300\.00 \(cost\)/);
+    expect(row(movers, "Paid Client")).toMatch(/<span class="val neg">\$200\.00 \(cost\)/);
+    expect(row(lps, "Paying LP")).toMatch(/<span class="val pos">\$200\.00 \(revenue\)/);
+
+    // Client unrealized follows the client convention too.
+    expect(cell(row(movers, "Charged Client"), "Unrealized (at send time)")).toBe("-$60.00 (revenue)");
+    expect(cell(row(movers, "Paid Client"), "Unrealized (at send time)")).toBe("$40.00 (cost)");
+
+    expect(kpi(out, "Client Swap (period)")).toMatchObject({ value: "-$100.00 (revenue)", cls: "pos" });
+    expect(kpi(out, "LP Swap (period)")).toMatchObject({ value: "-$100.00 (cost)", cls: "neg" });
+  });
+
+  it("renders a genuine zero as a bare, muted $0.00 on both sides", () => {
+    const out = html({
+      clients: [{ login: 3, name: "Flat Client", totalSwap: 0, unrealizedSwap: -0.001 }],
+      clientTotals: { totalSwap: 0, accountCount: 1 },
+    });
+    expect(row(clientMoversOf(out), "Flat Client")).toMatch(/<span class="val muted">\$0\.00<\/span>/);
+    expect(cell(row(clientMoversOf(out), "Flat Client"), "Unrealized (at send time)")).toBe("$0.00");
+    expect(kpi(out, "Client Swap (period)")).toMatchObject({ value: "$0.00", cls: "muted" });
+    expect(row(lpTableOf(out), "Quiet LP")).toMatch(/<span class="val muted">\$0\.00<\/span>/);
+    expect(out).not.toContain("-$0.00");
+  });
+
+  it("says nothing about the client sign being unconfirmed, and states the convention", () => {
     const out = html();
-    expect(clientMoversOf(out)).not.toMatch(/\((cost|revenue)\)/);
-    const card = kpi(out, "Client Swap (period)");
-    expect(card.value).toBe("-$12,345.67");
-    expect(`${card.value} ${card.note}`).not.toMatch(/cost|revenue/i);
-    expect(headlineOf(out)).toMatch(/sign convention is not yet confirmed/);
+    expect(out).not.toMatch(/not yet confirmed|unconfirmed|signed swap only/i);
+    expect(headlineOf(out)).toMatch(/Negative client swap is charged to the client, so it is our revenue; positive is given to the client, so it is our cost\./);
+    expect(clientMoversOf(out)).toMatch(/Negative client swap is charged to the client \(revenue\); positive is given to the client \(cost\)\./);
+  });
+
+  it("the fixture's client headline reads as revenue", () => {
+    expect(kpi(html(), "Client Swap (period)")).toEqual({ cls: "pos", value: "-$12,345.67 (revenue)", note: "3 accounts" });
   });
 });
 
-// ── the cross-check and the snapshot ─────────────────────────────────────────
+// ── the snapshot ─────────────────────────────────────────────────────────────
 
-describe("the LP cross-check is shown only where both figures exist, beneath the rule-4 figure", () => {
-  it("shows LP figure vs statement and the gap inside the row", () => {
-    const r = row(lpTableOf(html()), "Xtb");
-    expect(r).toMatch(/Cross-check only, not used in any total: LP figure -\$5,000\.00 \(cost\) vs our statement -\$4,500\.00 \(cost\), gap -\$500\.00 \(12 statement rows\)\./);
-  });
-
-  it("is absent where either side is missing", () => {
-    expect(row(lpTableOf(html()), "Finalto")).not.toMatch(/Cross-check/);
-    expect(row(lpTableOf(html()), "Term LP")).not.toMatch(/Cross-check/);
-    expect(crossCheckLp(LPS[1])).toBeNull();
-    expect(crossCheckLp(LPS[2])).toEqual({ lp: 0, statement: -800, gap: 800, statementRows: 3 });
-  });
-
-  it("is a muted line, not a column competing with the figure", () => {
-    const table = lpTableOf(html());
-    expect(table).not.toMatch(/data-label="(MT5 Swap|Statement Swap|Difference)"/);
-    expect(table).toMatch(/Cross-check: 3 LP\(s\) have both an LP figure and a statement; 3 disagree\./);
-  });
-
+describe("unrealized is labelled as a snapshot wherever it is shown", () => {
   it("names every unrealized cell as an at-send-time figure, never bare", () => {
     const out = html();
     expect(out).not.toMatch(/data-label="Unrealized"/);
@@ -396,6 +538,13 @@ describe("the LP cross-check is shown only where both figures exist, beneath the
     for (const label of labels) expect(label).toContain("at send time");
     expect(out).toMatch(/<th width="[^"]*">Unrealized \(at send time\)<\/th>/);
     expect(out).toMatch(/snapshot of accrued swap on positions open when this email was built/);
+  });
+
+  it("does not print any LP's unrealized figure", () => {
+    const t = lpTableOf(html());
+    expect(t).not.toContain("700.00");
+    expect(t).not.toContain("150.00");
+    expect(t).not.toMatch(/unrealized/i);
   });
 });
 
@@ -417,13 +566,6 @@ describe("unrealizedSwap is never folded into a period total", () => {
     expect(out).not.toContain("-$8,150.00");
   });
 
-  it("keeps the snapshot out of the cross-check gap", () => {
-    // -5000 - -4500 = -500. With the -700 snapshot on the LP side it would be -1200.
-    const r = row(lpTableOf(html()), "Xtb");
-    expect(r).toMatch(/gap -\$500\.00/);
-    expect(r).not.toMatch(/gap -\$1,200\.00/);
-  });
-
   it("says in the body that the snapshot belongs to no period", () => {
     const out = html();
     expect(out).toMatch(/never added into the period figures above/);
@@ -437,7 +579,7 @@ describe("a null client total says so rather than being recomputed from rows", (
   const ROW_SUM_CLIENTS = "-$8,500.00"; // -7000 + -4000 + 2500
 
   it("renders the backend's figure when it sends one", () => {
-    expect(kpi(html(), "Client Swap (period)")).toEqual({ cls: "neg", value: "-$12,345.67", note: "3 accounts" });
+    expect(kpi(html(), "Client Swap (period)")).toEqual({ cls: "pos", value: "-$12,345.67 (revenue)", note: "3 accounts" });
   });
 
   it("says Unavailable and names the missing field when clientTotals is null", () => {
@@ -488,7 +630,7 @@ describe("excludeFromSwaps removes a row from the tables and the totals", () => 
   it("leaves the excluded client out of the movers and takes it out of the client total", () => {
     const out = withExcluded();
     expect(row(clientMoversOf(out), "Hidden Client")).toBeNull();
-    expect(kpi(out, "Client Swap (period)")).toEqual({ cls: "neg", value: "-$11,345.67", note: "3 accounts, after removing 1 excluded" });
+    expect(kpi(out, "Client Swap (period)")).toEqual({ cls: "pos", value: "-$11,345.67 (revenue)", note: "3 accounts, after removing 1 excluded" });
   });
 
   it("makes the client total unavailable when an excluded row has nothing to subtract", () => {
@@ -511,23 +653,23 @@ describe("excludeFromSwaps removes a row from the tables and the totals", () => 
 // ── report notes (rule 5) ────────────────────────────────────────────────────
 
 describe("report notes", () => {
-  it("names API LPs the endpoint did not return, without calling the report incomplete", () => {
+  it("names LPs the endpoint did not return, without calling the report incomplete", () => {
     // Finalto is a skipped Api LP that DID come back (no LP record); the other
     // two of the three never arrived.
     const out = html({ skippedApiLpCount: 3 });
     expect(out).toMatch(/Report Notes/);
-    expect(out).toMatch(/API LPs not returned/);
-    expect(out).toMatch(/2 API LP\(s\) were not returned by the endpoint, so their statement fallback could not be applied/);
-    expect(headlineOf(out)).toMatch(/does not include the 2 API LP\(s\) the endpoint did not return/);
+    expect(out).toMatch(/>LPs not returned</);
+    expect(out).toMatch(/2 LP\(s\) were not returned by the endpoint, so no swap figure could be shown for them/);
+    expect(headlineOf(out)).toMatch(/does not include the 2 LP\(s\) the endpoint did not return/);
     expect(out).not.toMatch(/incomplete/i);
     expect(out).not.toMatch(/never queried|MISSING/);
   });
 
   it("adds no note when every skipped API LP came back and used the fallback", () => {
     const out = html({ skippedApiLpCount: 1 });
-    expect(out).not.toMatch(/API LPs not returned/);
+    expect(out).not.toMatch(/LPs not returned/);
     expect(out).toMatch(/No LP errors, the client panel returned/);
-    expect(cell(row(lpTableOf(out), "Finalto"), "Source")).toBe("Statement (fallback &mdash; no LP record)");
+    expect(cell(row(lpTableOf(out), "Finalto"), "LP Swap (period)")).toBe("-$2,000.00 (cost)");
   });
 
   it("shows every LP error message", () => {
@@ -547,7 +689,7 @@ describe("report notes", () => {
 
   it("shows all three at once", () => {
     const out = html({ skippedApiLpCount: 4, lpErrors: ["Vendor B: socket closed"], clientPanelError: "MT5 manager timed out" });
-    expect(out).toMatch(/API LPs not returned/);
+    expect(out).toMatch(/LPs not returned/);
     expect(out).toMatch(/LP queries failed/);
     expect(out).toMatch(/Client panel failed/);
   });
@@ -585,7 +727,7 @@ describe("the row cap holds on a large fixture", () => {
   it("caps at SWAPS_ROW_CAP in every table", () => {
     const out = html(BIG);
     expect(SWAPS_ROW_CAP).toBe(15);
-    expect(countCells(lpTableOf(out), "Source")).toBe(SWAPS_ROW_CAP);
+    expect(countCells(lpTableOf(out), "LP Swap (period)")).toBe(SWAPS_ROW_CAP);
     expect(countCells(clientMoversOf(out), "Unrealized (at send time)")).toBe(SWAPS_ROW_CAP);
   });
 
