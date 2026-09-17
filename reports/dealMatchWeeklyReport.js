@@ -275,6 +275,11 @@ export function deriveClientRevenueRows(report) {
         lots: Number(row.lots) || 0,
         markup,
         clientComm,
+        // Client swap, the backend's swapRevenueUsd. Nothing subtracts it -- it
+        // is already inside totalRevenueUsd. It is carried so the composition
+        // chart can name the gap between markup + commission and the total,
+        // instead of leaving it as an unexplained residual.
+        swap: Number(row.swapRevenueUsd) || 0,
         lpComm,
         /** Notional x weighted per-million rate. The figure Net Revenue is built from. */
         lpCommPerM,
@@ -311,6 +316,7 @@ export function deriveClientRevenueRows(report) {
   // clientRevenueSummaries is empty, and the footer notes the degraded source.
   return Array.from(byLogin.values()).map((row) => ({
     ...row,
+    swap: 0,
     lpCommPerM: 0,
     millionsUsd: 0,
     totalRev: row.markup + row.clientComm - row.lpComm,
@@ -358,6 +364,7 @@ export function groupRowsByClient(rows, userIdByLogin) {
         lots: 0,
         markup: 0,
         clientComm: 0,
+        swap: 0,
         lpComm: 0,
         lpCommPerM: 0,
         millionsUsd: 0,
@@ -373,6 +380,7 @@ export function groupRowsByClient(rows, userIdByLogin) {
     client.lots += Number(row.lots) || 0;
     client.markup += Number(row.markup) || 0;
     client.clientComm += Number(row.clientComm) || 0;
+    client.swap += Number(row.swap) || 0;
     client.lpComm += Number(row.lpComm) || 0;
     client.lpCommPerM += Number(row.lpCommPerM) || 0;
     client.millionsUsd += Number(row.millionsUsd) || 0;
@@ -407,9 +415,18 @@ export async function buildClientRows(baseRows, week) {
   const clientRows = groupRowsByClient(baseRows, userIdByLogin);
   const rebateResult = await attachRebateWithdrawn(clientRows, { from: week.start, to: week.end });
 
+  // netRev is totalRev MINUS the rebate, not a second revenue figure built from
+  // scratch. It used to be (markup + clientComm) - (lpComm + rebateWithdrawn),
+  // which silently dropped every revenue component the backend counts that is
+  // not markup or client commission -- above all client swap. On 2026-09-16, a
+  // day with no IB rebate at all, that reported Total $21,609.65 against Net
+  // $1,295.74, and the entire $20,313.91 gap was swap revenue. The Net Revenue
+  // card's own note ("Total Revenue less IB Rebate") described a figure the
+  // report was not showing. reports/dailyDigest.js has always computed it this
+  // way; this brings the two into agreement.
   const rows = clientRows.map((row) => ({
     ...row,
-    netRev: (row.markup + row.clientComm) - (row.lpComm + row.rebateWithdrawn),
+    netRev: row.totalRev - row.rebateWithdrawn,
   }));
   // Blank-login rows can never be matched to a CRM client either, so they
   // belong in the same "could not be matched" count the footer already shows.
@@ -451,6 +468,7 @@ const CH = {
   muted: "#64748b",
   markup: "#0891b2",
   clientComm: "#0f766e",
+  swap: "#7c3aed",
   lpComm: "#b45309",
   ibComm: "#be123c",
   net: "#15803d",
@@ -601,7 +619,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
           x: { ticks: { color: CH.axis }, grid: { display: false } },
           y: { ticks: { color: CH.axis, callback: (v) => shortMoney(v) }, grid: { color: CH.grid } },
         },
-        plugins: chartTitle(`Gross vs Net Revenue ${titleSuffix}`, "the gap between the pair is LP Comm + Rebate Withdrawn"),
+        plugins: chartTitle(`Gross vs Net Revenue ${titleSuffix}`, "the gap between the pair is Rebate Withdrawn"),
       },
       plugins: [valueLabels((v) => shortMoney(v))],
     },
@@ -642,11 +660,11 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
     config: {
       type: "doughnut",
       data: {
-        labels: ["Markup", "Client commission", "LP commission", "Rebate withdrawn", "Net revenue"],
+        labels: ["Markup", "Client commission", "Swap revenue", "LP commission", "Rebate withdrawn", "Net revenue"],
         datasets: [
           {
-            data: [totals.markup, totals.clientComm, totals.lpComm, totals.rebateWithdrawn, Math.abs(totals.netRev)],
-            backgroundColor: [CH.markup, CH.clientComm, CH.lpComm, CH.ibComm, CH.net],
+            data: [totals.markup, totals.clientComm, totals.swap, totals.lpComm, totals.rebateWithdrawn, Math.abs(totals.netRev)],
+            backgroundColor: [CH.markup, CH.clientComm, CH.swap, CH.lpComm, CH.ibComm, CH.net],
             borderColor: "#ffffff",
             borderWidth: 2,
           },
@@ -910,13 +928,14 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       acc.lots += Number(row.lots) || 0;
       acc.markup += Number(row.markup) || 0;
       acc.clientComm += Number(row.clientComm) || 0;
+      acc.swap += Number(row.swap) || 0;
       acc.lpComm += Number(row.lpComm) || 0;
       acc.rebateWithdrawn += Number(row.rebateWithdrawn) || 0;
       acc.totalRev += Number(row.totalRev) || 0;
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { lots: 0, markup: 0, clientComm: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
+    { lots: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
   );
 
   const bodyRows = rows
@@ -1155,7 +1174,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
 
           ${charts ? chartImg(charts, "gross-vs-net.png", "Gross versus net revenue by client") : buildGroupedChart(
             "Gross vs Net Revenue",
-            "top 10 by total revenue &mdash; the gap is LP Comm + Rebate Withdrawn",
+            "top 10 by total revenue &mdash; the gap is Rebate Withdrawn",
             [
               { key: "totalRev", label: "Gross", color: "#1d4ed8" },
               { key: "netRev", label: "Net", color: "#15803d" },
@@ -1190,19 +1209,20 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
 
           ${charts ? chartImg(charts, "revenue-composition.png", "Revenue composition doughnut") : buildCompositionChart(
             "Revenue Composition",
-            `share of gross revenue (${money(totals.markup + totals.clientComm)} earned before costs)`,
+            `share of gross revenue (${money(totals.markup + totals.clientComm + totals.swap)} earned before costs)`,
             [
               { label: "Markup", value: totals.markup, display: money(totals.markup), color: "#0891b2" },
               { label: "Client Comm", value: totals.clientComm, display: money(totals.clientComm), color: "#0f766e" },
+              { label: "Swap Revenue", value: totals.swap, display: money(totals.swap), color: "#7c3aed" },
               { label: "LP Comm", value: totals.lpComm, display: money(totals.lpComm), color: "#b45309" },
               { label: "Rebate Withdrawn", value: totals.rebateWithdrawn, display: money(totals.rebateWithdrawn), color: "#be123c" },
               { label: "Net Revenue", value: totals.netRev, display: money(totals.netRev), color: "#15803d" },
             ],
-            totals.markup + totals.clientComm,
+            totals.markup + totals.clientComm + totals.swap,
           )}
           <div class="foot">
             Automated report generated by Deal Matching pipeline.<br/>
-            Formula: Total Revenue = (Markup + Client Comm) - LP Comm; Net Revenue = (Markup + Client Comm) - (LP Comm + Rebate Withdrawn)<br/>
+            Formula: Total Revenue = (Markup + Client Comm + Swap Revenue) - LP Comm, as returned by DealMatch/Run; Net Revenue = Total Revenue - Rebate Withdrawn<br/>
             Rebate Withdrawn is the approved IB transfers and withdrawals <em>settled inside this ${periodNoun}</em>, looked up once per client. It is money that left the IB wallet during the ${periodNoun} and may have been earned earlier, so it is a cash figure rather than earnings. The running IB wallet balance is not included.<br/>
             ${ibNotice ? `<strong>Check:</strong> ${escapeHtml(ibNotice)}<br/>` : ""}
             ${chartError ? `Chart images unavailable: ${escapeHtml(chartError)} &mdash; showing built-in bar charts instead.<br/>` : ""}
@@ -1303,12 +1323,13 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     (acc, row) => {
       acc.markup += Number(row.markup) || 0;
       acc.clientComm += Number(row.clientComm) || 0;
+      acc.swap += Number(row.swap) || 0;
       acc.lpComm += Number(row.lpComm) || 0;
       acc.rebateWithdrawn += Number(row.rebateWithdrawn) || 0;
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { markup: 0, clientComm: 0, lpComm: 0, rebateWithdrawn: 0, netRev: 0 },
+    { markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, netRev: 0 },
   );
 
   let chartUrls = null;

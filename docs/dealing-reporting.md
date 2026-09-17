@@ -168,9 +168,17 @@ KPI "cost per lot" flips the sign for display.
 ## 5. Revenue formulas
 
 ```
-Total Revenue = (Markup + Client Comm) − LP Comm
-Net Revenue   = (Markup + Client Comm) − (LP Comm + Rebate Withdrawn)
+Total Revenue = (Markup + Client Comm + Swap Revenue) − LP Comm   [= totalRevenueUsd]
+Net Revenue   = Total Revenue − Rebate Withdrawn
 ```
+
+Total Revenue is the backend's own `totalRevenueUsd`, and its gross includes
+**client swap** alongside markup and client commission. Net Revenue is that
+figure less the rebate — nothing else. Do not rebuild Net from
+`markup + clientComm`: that drops swap, and on 2026-09-16, a day with no IB
+rebate at all, it reported Total $21,609.65 against Net $1,295.74. The whole
+$20,313.91 gap was swap revenue. Verified on that day:
+`markup 1,736.28 + clientComm 27.50 + swap 20,313.91 − lpComm 468.04 = 21,609.65`.
 
 Rebate Withdrawn is the IB commission actually withdrawn or transferred out
 during the reporting week — it excludes the running IB wallet balance. The
@@ -185,9 +193,12 @@ fixed, all verified against the Deal Performance tab:
 2. **IB transfers/withdrawals may arrive signed-negative.** Sum magnitudes.
    Without this, IB commission goes negative and **Net Revenue exceeds Total
    Revenue**, which is impossible. (Observed: Total $40,490.37 / Net $46,510.97.)
-3. **Do NOT use the backend's `totalRevenueUsd`.** For 13–19 Jul it sums to
-   63,405.11 while the Deal Performance tab shows **65,571.75**, which is
-   `markup + clientComm − lpComm`. Recompute; do not trust that field.
+3. **Use the backend's `totalRevenueUsd`.** An earlier note here said the
+   opposite, from a 13–19 Jul comparison against a tab that was itself
+   subtracting the wrong LP cost. `gross − lpCommPerMillionUsd` reproduces
+   `totalRevenueUsd` on 78 of 78 rows (8–14 Aug); `gross − lpCommissionUsd` on
+   none. Only derive when the field is absent or zero, and then subtract
+   `lpCommPerMillionUsd`.
 
 Rebate Withdrawn is computed in this repo, so it is the one revenue input that
 is auditable here. It is looked up **once per CRM client** and counts only the

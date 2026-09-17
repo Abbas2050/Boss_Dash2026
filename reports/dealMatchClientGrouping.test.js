@@ -191,11 +191,35 @@ describe("buildClientRows", () => {
     const week = { start: new Date("2026-08-08T00:00:00Z"), end: new Date("2026-08-14T23:59:59Z") };
     const { rows, unresolved, rebateResult } = await buildClientRows(ROWS, week);
     const dawei = rows.find((r) => r.userId === 9001);
-    // markup 995.50 + clientComm 0 - (lpComm 12.50 + rebateWithdrawn 646) = 337.00
+    // totalRev 983.00 - rebateWithdrawn 646.00 = 337.00
     expect(dawei.rebateWithdrawn).toBeCloseTo(646, 10);
     expect(dawei.netRev).toBeCloseTo(337, 10);
     expect(unresolved).toBe(1); // 109999 has no CRM user
     expect(rebateResult.failed).toBe(0);
+  });
+
+  // The 2026-09-16 daily read Total $21,609.65 against Net $1,295.74 on a day
+  // with no IB rebate at all. The whole $20,313.91 gap was client swap revenue:
+  // totalRev is the backend's figure and its gross INCLUDES swap, while netRev
+  // was rebuilt from markup + clientComm only, so swap never reached it. The
+  // card's own note reads "Total Revenue less IB Rebate", and the daily digest
+  // computes exactly that. netRev must be totalRev minus the rebate, so any
+  // revenue component the backend counts is carried instead of silently
+  // dropped. A row whose totalRev exceeds markup + clientComm - lpComm is what
+  // separates the two formulas; every row above has swap-free figures, where
+  // both agree.
+  it("carries swap revenue into netRev, since totalRev already counts it", async () => {
+    stubCrm();
+    const week = { start: new Date("2026-08-08T00:00:00Z"), end: new Date("2026-08-14T23:59:59Z") };
+    // Shaped on 2026-09-16: markup 1736.28 + clientComm 27.50 + swap 20313.91
+    // - lpComm 468.04 = totalRev 21609.65.
+    const swapRow = [{ login: "102244", name: "Dawei Huang", lots: 12, markup: 1736.28, clientComm: 27.5, lpComm: 468.04, totalRev: 21609.65 }];
+    const { rows } = await buildClientRows(swapRow, week);
+    const [client] = rows;
+    expect(client.rebateWithdrawn).toBeCloseTo(646, 10);
+    expect(client.netRev).toBeCloseTo(20963.65, 2);
+    // The old formula, which reported $649.74 for the same day.
+    expect(client.netRev).not.toBeCloseTo(client.markup + client.clientComm - (client.lpComm + client.rebateWithdrawn), 2);
   });
 
   it("counts blank-login rows in unresolved so the footer covers them too", async () => {

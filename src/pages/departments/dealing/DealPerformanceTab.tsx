@@ -349,7 +349,7 @@ export function DealPerformanceTab({
             if (!crmId) return row;
             const cached = ibCache.get(crmId);
             if (cached !== undefined) {
-              return { ...row, ibCommission: cached, netRevenue: (row.markup + row.clientComm) - (row.lpComm + cached) };
+              return { ...row, ibCommission: cached, netRevenue: row.totalRev - cached };
             }
             if (!(await isIb(crmId))) return row;
             // Transactions are fetched per month too, so large ranges don't 500.
@@ -364,7 +364,12 @@ export function DealPerformanceTab({
               }
             }
             ibCache.set(crmId, tx);
-            return { ...row, ibCommission: tx, netRevenue: (row.markup + row.clientComm) - (row.lpComm + tx) };
+            // Net is the total less the rebate. Rebuilding it from markup +
+            // clientComm dropped swap revenue, which totalRev (the backend's
+            // figure) includes -- so an IB client's Net fell below a non-IB
+            // client's for no reason other than being an IB. Matches
+            // reports/dealMatchWeeklyReport.js.
+            return { ...row, ibCommission: tx, netRevenue: row.totalRev - tx };
           } finally {
             resolved++;
             setProgress(Math.min(99, 70 + Math.round((resolved / Math.max(1, clientRows.length)) * 29)));
