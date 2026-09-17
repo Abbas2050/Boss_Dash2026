@@ -24,6 +24,20 @@ import { authHeaders } from "@/lib/auth";
  * They are three independent measurements of the same underlying cost and they
  * disagree; that disagreement is the point of showing all three side by side,
  * so none of them may be folded into another.
+ *
+ * A MISSING STATEMENT IS A ZERO, NOT A NULL
+ * The backend does not send null when no statement was uploaded. It sends
+ * `statementSwap: 0` together with `statementRowCount: 0`. This was observed
+ * live on 2026-09-17: the response for 2026-09-05..2026-09-11 carried exactly
+ * that pair on all 43 LPs, none of which had a statement uploaded. This note
+ * previously said the field was absent/null in that case, and code written to
+ * that note rendered every one of those LPs as a statement of $0.00 -- and the
+ * Swaps email summed them into an LP total that was 42% short.
+ *
+ * `statementRowCount > 0` is therefore the only reliable signal that a statement
+ * exists. When the count is 0, null or absent, `statementSwap` is not a figure,
+ * whatever its value. A zero WITH rows behind it is a genuine zero and stays
+ * one. reports/swapsReport.js (hasStatement) applies the same rule.
  */
 export type SwapAccountRow = {
   /** LpAccount row id. Present on LP rows only; the LP drilldown is keyed on it. */
@@ -35,9 +49,16 @@ export type SwapAccountRow = {
   totalSwap: number;
   /** Live snapshot, not a window figure. Terminal LPs send nothing here. */
   unrealizedSwap?: number | null;
-  /** LP Statement DB. Absent/null when no statements were uploaded for the range. */
+  /**
+   * LP Statement DB. Sent as 0 -- not null -- when no statements were uploaded
+   * for the range (observed live 2026-09-17), so it means nothing on its own:
+   * read it only when statementRowCount > 0.
+   */
   statementSwap?: number | null;
-  /** How many statement rows fed statementSwap, for the cell tooltip. */
+  /**
+   * How many statement rows fed statementSwap. The only reliable sign that a
+   * statement exists: 0, null or absent means there is none.
+   */
   statementRowCount?: number | null;
   dealVolume?: number;
   realizedVolume?: number;
