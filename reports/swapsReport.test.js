@@ -25,9 +25,15 @@
 //   6. unrealizedSwap is a SNAPSHOT and must never land inside a period total.
 //   7. Nothing renders a class the shell does not define -- the bug that made
 //      the volume section arrive as two bare headings on the reader's phone.
+//   8. A statement exists only when statementRowCount > 0. The backend sends
+//      statementSwap: 0 with statementRowCount: 0 for "no statement", never
+//      null (live, 2026-09-17). The fixture that shipped modelled it as null,
+//      which is why nothing caught every Manager LP rendering as $0.00; the
+//      real week's LP rows are now the regression fixture.
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { REAL_WEEK } from "./swapsReport.realWeek.fixture.js";
 import {
   SWAPS_GUARD_KEYS,
   SWAPS_RECIPIENT_VARS,
@@ -36,6 +42,7 @@ import {
   buildSwapsEmailHtml,
   effectiveLpSwap,
   fetchSwapsReport,
+  hasStatement,
   lpSwapTotal,
   orderLpRows,
   parseSwapsReport,
@@ -90,7 +97,10 @@ const CLEAN = {
 // A Manager LP with no statement. With it the LP total must be unavailable; a
 // partial sum would print -7,300.00, the same plausible figure the clean
 // report shows, and nothing on the page would give it away.
-const UNFILED_MANAGER = { id: 6, login: 506, lpName: "Unfiled Mgr", source: "Manager", totalSwap: -400, unrealizedSwap: null, statementSwap: null, statementRowCount: null };
+//
+// Shaped as the backend actually sends "no statement" (observed 2026-09-17): a
+// ZERO statementSwap with zero rows behind it, not null.
+const UNFILED_MANAGER = { id: 6, login: 506, lpName: "Unfiled Mgr", source: "Manager", totalSwap: -400, unrealizedSwap: null, statementSwap: 0, statementRowCount: 0 };
 
 const PERIOD = { fromYmd: "2026-08-24", toYmd: "2026-08-30" };
 
@@ -234,15 +244,19 @@ describe("rule 4 picks each LP's figure by its type", () => {
 
   it("Api falls back to the statement when the LP record is null or absent", () => {
     expect(effectiveLpSwap(LPS[1])).toEqual({ value: -2000, source: "statement-fallback", type: "Api", reason: null });
-    expect(effectiveLpSwap({ source: "Api", statementSwap: -2000 })).toMatchObject({ value: -2000, source: "statement-fallback" });
+    expect(effectiveLpSwap({ source: "Api", statementSwap: -2000, statementRowCount: 1 })).toMatchObject({ value: -2000, source: "statement-fallback" });
   });
 
   it("Api does NOT fall back when the LP record is a real zero", () => {
     expect(effectiveLpSwap(LPS[2])).toEqual({ value: 0, source: "lp", type: "Api", reason: null });
   });
 
-  it("a Manager statement of zero is a figure, not a missing one", () => {
-    expect(effectiveLpSwap({ source: "Manager", totalSwap: -10, statementSwap: 0 })).toMatchObject({ value: 0, source: "statement" });
+  it("a Manager statement of zero WITH statement rows is a figure, and renders $0.00", () => {
+    const genuine = { lpName: "Zero Book", source: "Manager", totalSwap: -10, statementSwap: 0, statementRowCount: 2 };
+    expect(effectiveLpSwap(genuine)).toMatchObject({ value: 0, source: "statement" });
+    const out = html({ lps: [genuine] });
+    expect(cell(row(lpTableOf(out), "Zero Book"), "LP Swap (period)")).toBe("$0.00");
+    expect(kpi(headlineOf(out), "LP Swap (period)").value).toBe("$0.00");
   });
 
   it("an unresolvable LP has no value and says why", () => {
@@ -312,10 +326,10 @@ describe("the LP table is one plain list: every LP, one figure, nothing else", (
   it("renders an LP with no figure as a dash and a plain reason, never 0.00", () => {
     const r = fullRow(lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] })), "Unfiled Mgr");
     expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(r).toMatch(/No swap record for this period, so there is no figure &mdash; not zero\./);
+    expect(r).toMatch(/No statement uploaded for this period, so there is no figure &mdash; not zero\./);
     expect(r).not.toContain("$0.00");
     expect(r).not.toContain("400.00");
-    expect(r).not.toMatch(/Manager|statement|\btype\b|source/i);
+    expect(r).not.toMatch(/Manager|\btype\b|source/i);
   });
 
   it("renders an unclassified LP as a dash with a reason that names no type", () => {
@@ -348,7 +362,7 @@ describe("rule 4 still decides the number each LP displays, with no label to lea
   };
 
   it("a Manager LP whose totalSwap and statementSwap differ displays the statement", () => {
-    const { value, table } = shownFor({ lpName: "Mgr LP", source: "Manager", totalSwap: -1500, statementSwap: -1200 });
+    const { value, table } = shownFor({ lpName: "Mgr LP", source: "Manager", totalSwap: -1500, statementSwap: -1200, statementRowCount: 5 });
     expect(value).toBe("-$1,200.00 (cost)");
     expect(table).not.toContain("1,500.00");
   });
@@ -360,7 +374,7 @@ describe("rule 4 still decides the number each LP displays, with no label to lea
   });
 
   it("an Api LP with totalSwap: null displays the statement", () => {
-    const { value } = shownFor({ lpName: "Api Null", source: "Api", totalSwap: null, statementSwap: -2000 });
+    const { value } = shownFor({ lpName: "Api Null", source: "Api", totalSwap: null, statementSwap: -2000, statementRowCount: 2 });
     expect(value).toBe("-$2,000.00 (cost)");
   });
 
@@ -397,7 +411,10 @@ describe("no LP type or source terminology reaches the reader", () => {
     ["with an LP the endpoint did not return", () => html({ skippedApiLpCount: 3 })],
     ["daily, with no rows", () => html({ lps: [], clients: [] }, { cadence: "daily", period: { fromYmd: "2026-08-31", toYmd: "2026-08-31" } })],
   ])("%s", (_label, build) => {
-    const out = build();
+    // The one sanctioned use of the word: the reason under a Manager LP's dash
+    // names the missing statement, because that is what the reader must chase
+    // (user, 2026-09-17). It still names no type and no source.
+    const out = build().replaceAll("No statement uploaded for this period, so there is no figure &mdash; not zero.", "");
     for (const word of ["Manager", "Terminal", "Api", "Source", "Statement (fallback", "LP Type"]) {
       expect(out).not.toContain(word);
     }
@@ -406,11 +423,110 @@ describe("no LP type or source terminology reaches the reader", () => {
   });
 });
 
+// ── a missing statement is a zero with no rows, not a null ───────────────────
+
+describe("statementRowCount > 0 is the only sign a statement exists", () => {
+  it("hasStatement reads the row count and ignores the value", () => {
+    expect(hasStatement({ statementSwap: 0, statementRowCount: 0 })).toBe(false);
+    expect(hasStatement({ statementSwap: -500, statementRowCount: 0 })).toBe(false);
+    expect(hasStatement({ statementSwap: -500, statementRowCount: null })).toBe(false);
+    expect(hasStatement({ statementSwap: -500 })).toBe(false);
+    expect(hasStatement({ statementSwap: 0, statementRowCount: 2 })).toBe(true);
+  });
+
+  it("an Api LP with totalSwap: null and no statement rows is unresolved", () => {
+    const r = effectiveLpSwap({ source: "Api", totalSwap: null, statementSwap: 0, statementRowCount: 0 });
+    expect(r.value).toBeNull();
+    expect(r.reason).toMatch(/no LP record and no statement/);
+  });
+
+  it("the same Api LP with statementRowCount: 3 uses the statement", () => {
+    expect(effectiveLpSwap({ source: "Api", totalSwap: null, statementSwap: -640, statementRowCount: 3 }))
+      .toEqual({ value: -640, source: "statement-fallback", type: "Api", reason: null });
+  });
+
+  it("an Api LP's real zero still wins over its statement", () => {
+    expect(effectiveLpSwap({ source: "Api", totalSwap: 0, statementSwap: -640, statementRowCount: 3 })).toMatchObject({ value: 0, source: "lp" });
+  });
+});
+
+describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", () => {
+  const MANAGERS = REAL_WEEK.lps.filter((lp) => lp.source === "Manager");
+  const realOut = () => html(REAL_WEEK, { period: { fromYmd: "2026-09-05", toYmd: "2026-09-11" } });
+
+  it("is the payload the bug was proven on", () => {
+    expect(REAL_WEEK.lps).toHaveLength(43);
+    expect(MANAGERS).toHaveLength(27);
+    expect(REAL_WEEK.lps.every((lp) => lp.statementSwap === 0 && lp.statementRowCount === 0)).toBe(true);
+    expect(REAL_WEEK.lpErrors).toHaveLength(2);
+    const sum = REAL_WEEK.lps.reduce((a, lp) => a + lp.totalSwap, 0);
+    expect(sum).toBeCloseTo(REAL_WEEK.lpTotals.totalSwap, 2);
+  });
+
+  it("FX Edge Coverage has no figure, not a confident zero", () => {
+    const fxEdge = REAL_WEEK.lps.find((lp) => lp.lpName.trim() === "FX Edge Coverage");
+    expect(fxEdge.totalSwap).toBe(-11059.16);
+    expect(effectiveLpSwap(fxEdge)).toMatchObject({ value: null, source: null, type: "Manager" });
+
+    const r = fullRow(lpTableOf(realOut()), "FX Edge Coverage");
+    expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
+    expect(r).toMatch(/No statement uploaded for this period, so there is no figure &mdash; not zero\./);
+    expect(r).not.toContain("$0.00");
+    expect(r).not.toContain("11,059.16");
+  });
+
+  it("every Manager LP is unresolved, and every one the row cap shows is a dash with the reason", () => {
+    for (const lp of MANAGERS) expect(effectiveLpSwap(lp).value).toBeNull();
+
+    const t = lpTableOf(realOut());
+    const shown = MANAGERS.filter((lp) => row(t, lp.lpName.trim()) !== null);
+    // Unresolved rows lead, so the cap is spent entirely on Manager LPs.
+    expect(shown).toHaveLength(SWAPS_ROW_CAP);
+    for (const lp of shown) {
+      const r = fullRow(t, lp.lpName.trim());
+      expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
+      expect(r).toMatch(/No statement uploaded for this period/);
+    }
+    expect(t).not.toMatch(/<span class="val[^"]*">\$0\.00<\/span>/);
+    expect(t).toMatch(/<strong>27 of 43 LP\(s\) have no figure<\/strong>/);
+    expect(t).toMatch(/2 LP\(s\) failed and are not in this table/);
+  });
+
+  it("the LP total is a dash, and the partial sum appears nowhere in the email", () => {
+    expect(lpSwapTotal(REAL_WEEK.lps, REAL_WEEK.lpErrors)).toEqual({ value: null, count: 43, unresolved: 27, failed: 2 });
+    const out = realOut();
+    const card = kpi(headlineOf(out), "LP Swap (period)");
+    expect(card.value).toBe("&mdash;");
+    expect(card.note).toBe("27 of 43 LP(s) unresolved, 2 LP(s) failed; no partial sum");
+    expect(out).not.toContain("27,767.27");
+    expect(out).not.toContain("48,265.24");
+  });
+
+  // The real week has two independent reasons for a dash: 27 statement-less
+  // Manager LPs AND two failed LPs. Either guard alone would hide the partial
+  // sum from the headline, so this case removes the failures and leaves the
+  // statement rule to hold the line on its own.
+  it("with the two failures removed, the statement rule alone still refuses the partial sum", () => {
+    const out = html({ ...REAL_WEEK, lpErrors: [] }, { period: { fromYmd: "2026-09-05", toYmd: "2026-09-11" } });
+    const card = kpi(headlineOf(out), "LP Swap (period)");
+    expect(card.value).toBe("&mdash;");
+    expect(card.note).toBe("27 of 43 LP(s) unresolved; no partial sum");
+    expect(out).not.toContain("27,767.27");
+  });
+
+  it("still surfaces both LP failures", () => {
+    const out = realOut();
+    expect(out).toMatch(/LP queries failed/);
+    expect(out).toMatch(/2 LP\(s\) failed: AIDI \(56720794\)/);
+    expect(out).toContain("Broctagon2 (101824)");
+  });
+});
+
 // ── the LP headline ──────────────────────────────────────────────────────────
 
 describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
   it("sums each LP's rule-4 figure", () => {
-    expect(lpSwapTotal(LPS)).toEqual({ value: -7300, count: 5, unresolved: 0 });
+    expect(lpSwapTotal(LPS)).toEqual({ value: -7300, count: 5, unresolved: 0, failed: 0 });
     const card = kpi(headlineOf(html()), "LP Swap (period)");
     expect(card.value).toBe("-$7,300.00 (cost)");
     expect(card.note).toBe("5 LPs");
@@ -425,13 +541,34 @@ describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
   it("is a dash with the unresolved count when any LP is unresolved, never the partial sum", () => {
     // The five resolved LPs still sum to -7,300 -- a perfectly plausible
     // figure. It must appear nowhere.
-    expect(lpSwapTotal([...LPS, UNFILED_MANAGER])).toEqual({ value: null, count: 6, unresolved: 1 });
+    expect(lpSwapTotal([...LPS, UNFILED_MANAGER])).toEqual({ value: null, count: 6, unresolved: 1, failed: 0 });
     const out = html({ lps: [...LPS, UNFILED_MANAGER] });
     const card = kpi(headlineOf(out), "LP Swap (period)");
     expect(card.value).toBe("&mdash;");
     expect(card.note).toBe("1 of 6 LP(s) unresolved; no partial sum");
     expect(out).not.toContain("$7,300.00");
     expect(out).not.toContain("$7,700.00");
+  });
+
+  it("is a dash when every returned LP resolves but an LP failed, never the sum of the rest", () => {
+    // The failed LP is not in lps[] at all -- exactly as AIDI and Broctagon2
+    // were in the live week -- so -7,300.00 is a sum over an incomplete list.
+    expect(lpSwapTotal(LPS, ["Vendor B: socket closed"])).toEqual({ value: null, count: 5, unresolved: 0, failed: 1 });
+    const out = html({ lpErrors: ["Vendor B: socket closed"] });
+    const card = kpi(headlineOf(out), "LP Swap (period)");
+    expect(card.value).toBe("&mdash;");
+    expect(card.note).toBe("1 LP(s) failed; no partial sum");
+    expect(out).not.toContain("7,300.00");
+    expect(lpTableOf(out)).toMatch(/1 LP\(s\) failed and are not in this table \(see Report Notes\), so the LP total is unavailable\./);
+    // and the error itself is still surfaced
+    expect(out).toMatch(/LP queries failed/);
+    expect(out).toMatch(/Vendor B: socket closed/);
+  });
+
+  it("still shows the summed total when every LP resolves and none failed", () => {
+    const out = html({ lpErrors: [] });
+    expect(kpi(headlineOf(out), "LP Swap (period)")).toEqual({ cls: "neg", value: "-$7,300.00 (cost)", note: "5 LPs" });
+    expect(lpTableOf(out)).not.toMatch(/failed/);
   });
 
   it("is a dash, not 0.00, when there are no LP rows", () => {

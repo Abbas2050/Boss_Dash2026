@@ -28,6 +28,12 @@
 //              Terminal  taken directly from the LP -> totalSwap
 //              Api       fetched from the LP        -> totalSwap, and when no
 //                        LP record exists, the DB statement -> statementSwap
+//            "A statement exists" means statementRowCount > 0 and nothing
+//            else. Observed live on 2026-09-17 (week 2026-09-05..11): the
+//            backend sends statementSwap: 0 with statementRowCount: 0 when no
+//            statement was uploaded — never null. Reading that zero as a
+//            statement turned all 27 Manager LPs into a confident $0.00 and let
+//            a 42%-short LP total through. See hasStatement.
 //            The FIELD MAPPING on the right is our inference from the payload
 //            and is NOT YET VERIFIED against a live LP row. That is why the
 //            rule lives in one small function (effectiveLpSwap). The email
@@ -235,6 +241,27 @@ function accountLabel(row) {
 const LP_TYPES = ["Manager", "Terminal", "Api"];
 
 /**
+ * Whether a row's statementSwap is a figure at all: true only when at least one
+ * uploaded statement row fed it.
+ *
+ * WHY THE ROW COUNT AND NOT THE VALUE: on 2026-09-17 a live /api/SwapsReport
+ * response for 2026-09-05..2026-09-11 carried statementSwap: 0 with
+ * statementRowCount: 0 on every one of its 43 LPs — no statements had been
+ * uploaded, and the backend said so with a zero, not a null. A `=== null` check
+ * read each of those as "our statement says zero", rendered every Manager LP as
+ * $0.00 and summed an LP total that silently left out -20,497.97 of Manager swap.
+ *
+ * A zero statement WITH rows behind it (statementRowCount > 0) is a real figure
+ * and stays one. A count that is 0, null, absent or not a number is no statement,
+ * whatever statementSwap says. src/lib/swapsReportApi.ts records the same rule
+ * for the dashboard tab.
+ */
+export function hasStatement(row) {
+  const rows = num(row?.statementRowCount);
+  return rows !== null && rows > 0;
+}
+
+/**
  * Rule 4 — the ONE place that decides which figure is an LP's swap.
  *
  * Returns `{ value, source, type, reason }`:
@@ -254,6 +281,14 @@ const LP_TYPES = ["Manager", "Terminal", "Api"];
  * "No LP record" is null/absent. A 0 from the LP is a record of zero swap and
  * does NOT trigger the fallback — otherwise an LP that genuinely charged nothing
  * would be silently replaced by whatever our statement says.
+ *
+ * "No statement" is NOT null/absent — see hasStatement. The two fields are
+ * asymmetric because the backend is: totalSwap arrives as null when there is no
+ * LP record, statementSwap arrives as 0 when there is no statement.
+ *
+ * There is deliberately no MT5 fallback for a Manager LP with no statement
+ * (user, 2026-09-17): the dash is the signal that a statement is due, and a
+ * substituted MT5 figure would hide exactly that.
  */
 export function effectiveLpSwap(row) {
   const rawType = row?.source;
@@ -261,7 +296,7 @@ export function effectiveLpSwap(row) {
     ? LP_TYPES.find((t) => t.toLowerCase() === rawType.trim().toLowerCase()) || null
     : null;
   const lp = num(row?.totalSwap);
-  const statement = num(row?.statementSwap);
+  const statement = hasStatement(row) ? num(row?.statementSwap) : null;
 
   if (type === "Manager") {
     return statement !== null
@@ -292,12 +327,19 @@ export function effectiveLpSwap(row) {
  * number with no visible hole in it — which is why sumOrNull in
  * reports/volumeSection.js refuses to produce one either. An empty LP list is
  * also null: there is nothing to total, and 0.00 would claim there was.
+ *
+ * A failed LP makes it null too, even when every returned row resolved. In the
+ * live week of 2026-09-05..11 (observed 2026-09-17) AIDI and Broctagon2 failed
+ * with an IPC timeout and were ABSENT from lps[], present only as lpErrors
+ * strings — so no sum over the returned rows can be the LP total, however
+ * complete those rows look. `failed` is the count of those errors.
  */
-export function lpSwapTotal(lps) {
+export function lpSwapTotal(lps, lpErrors = []) {
   const resolved = lps.map(effectiveLpSwap);
   const unresolved = resolved.filter((r) => r.value === null).length;
-  if (!lps.length || unresolved > 0) return { value: null, count: lps.length, unresolved };
-  return { value: resolved.reduce((sum, r) => sum + r.value, 0), count: lps.length, unresolved: 0 };
+  const failed = lpErrors.length;
+  if (!lps.length || unresolved > 0 || failed > 0) return { value: null, count: lps.length, unresolved, failed };
+  return { value: resolved.reduce((sum, r) => sum + r.value, 0), count: lps.length, unresolved: 0, failed: 0 };
 }
 
 /**
@@ -536,19 +578,18 @@ function renderTotals(report) {
         note: `${fmtNum(client.accounts, 0)} accounts${client.excluded ? `, after removing ${fmtNum(client.excluded, 0)} excluded` : ""}`,
       };
 
-  const lp = lpSwapTotal(report.lps);
+  const lp = lpSwapTotal(report.lps, report.lpErrors);
   let lpCard;
   if (lp.value !== null) {
     lpCard = { label: "LP Swap (period)", value: swapText(lp.value, "lp"), cls: effectCls(lp.value, "lp"), note: `${fmtNum(lp.count, 0)} LPs` };
-  } else if (lp.count === 0) {
+  } else if (lp.count === 0 && lp.failed === 0) {
     lpCard = { label: "LP Swap (period)", value: DASH, cls: "muted", note: "No LP rows to total" };
   } else {
-    lpCard = {
-      label: "LP Swap (period)",
-      value: DASH,
-      cls: "muted",
-      note: `${fmtNum(lp.unresolved, 0)} of ${fmtNum(lp.count, 0)} LP(s) unresolved; no partial sum`,
-    };
+    const why = [
+      lp.unresolved > 0 ? `${fmtNum(lp.unresolved, 0)} of ${fmtNum(lp.count, 0)} LP(s) unresolved` : "",
+      lp.failed > 0 ? `${fmtNum(lp.failed, 0)} LP(s) failed` : "",
+    ].filter(Boolean).join(", ");
+    lpCard = { label: "LP Swap (period)", value: DASH, cls: "muted", note: `${why}; no partial sum` };
   }
 
   return kpiGrid([clientCard, lpCard], { maxWidth: 260 });
@@ -585,6 +626,7 @@ function renderLpTable(report, periodNoun) {
     .join("");
 
   const unresolved = all.filter((r) => r.swap.value === null).length;
+  const failed = report.lpErrors.length;
   const excluded = report.excludedLps.length;
 
   return `<p class="section-title">LP Swap &mdash; All LPs</p>
@@ -601,6 +643,7 @@ function renderLpTable(report, periodNoun) {
             ${unresolved > 0
               ? `<strong>${fmtNum(unresolved, 0)} of ${fmtNum(all.length, 0)} LP(s) have no figure</strong>, so the LP total is unavailable.`
               : `All ${fmtNum(all.length, 0)} LP(s) have a figure.`}
+            ${failed > 0 ? ` ${fmtNum(failed, 0)} LP(s) failed and are not in this table (see Report Notes), so the LP total is unavailable.` : ""}
             ${dropped > 0 ? ` Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} LPs; ${fmtNum(dropped, 0)} LP(s) omitted.` : ""}
             ${excluded > 0 ? ` ${fmtNum(excluded, 0)} LP(s) marked excluded from swaps are left out of this table and the LP total.` : ""}
           </p>`;
@@ -609,9 +652,13 @@ function renderLpTable(report, periodNoun) {
 // The line under a dash, in the reader's terms. effectiveLpSwap's own reason
 // names the LP type and which book it reads, which is what an operator
 // debugging the mapping needs and exactly what this reader asked not to see.
-// Two cases survive translation: rule 4 knew where to look and found nothing,
-// or the LP is not classified, so no rule applies to it at all.
+// Three cases survive translation. A Manager LP with no statement gets the one
+// fact the reader can act on — a statement is missing — because the user chose
+// (2026-09-17) to show that gap rather than paper over it with the MT5 figure.
+// It says "statement", never the LP's type. Otherwise rule 4 knew where to look
+// and found nothing, or the LP is not classified, so no rule applies to it.
 function unresolvedLpReason(swap) {
+  if (swap.type === "Manager") return "No statement uploaded for this period, so there is no figure &mdash; not zero.";
   return swap.type
     ? "No swap record for this period, so there is no figure &mdash; not zero."
     : "This LP is not set up for swap reporting, so there is no figure &mdash; not zero.";
@@ -681,7 +728,7 @@ export function buildSwapsEmailHtml({ report, period, cadence = "weekly" }) {
           ${renderTotals(report)}
           <p class="note">
             Client Swap is the backend&rsquo;s own total for this ${escapeHtml(noun)}, not a sum of the rows below. Negative client swap is charged to the client, so it is our revenue; positive is given to the client, so it is our cost.
-            LP Swap is the sum of each LP&rsquo;s figure from the table below, and is shown only when every LP has one.
+            LP Swap is the sum of each LP&rsquo;s figure from the table below, and is shown only when every LP has one and no LP failed.
             ${absent > 0 ? `It does not include the ${fmtNum(absent, 0)} LP(s) the endpoint did not return.` : ""}
           </p>
 
