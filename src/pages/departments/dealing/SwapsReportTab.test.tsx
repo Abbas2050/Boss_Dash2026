@@ -295,6 +295,44 @@ describe("the three swap sources stay distinguishable", () => {
   });
 });
 
+// The backend sends statementSwap: 0 with statementRowCount: 0 when no
+// statement was uploaded -- never null. Observed live on 2026-09-17 on all 43
+// LPs of the 2026-09-05..11 week. A null check alone printed "$0.00" in the
+// Statement DB column for every one of them, which reads as "the statement says
+// zero" when there is no statement at all.
+describe("a statement exists only when statementRowCount > 0", () => {
+  const lpWith = (statementSwap: number | null, statementRowCount: number | null) => ({
+    ...REPORT,
+    lps: [{ ...LP_ROW, statementSwap, statementRowCount }],
+  });
+
+  it("shows no statement figure for a zero with no rows behind it", async () => {
+    installFetch({ report: lpWith(0, 0) });
+    render(<SwapsReportTab />);
+    run();
+    await waitFor(() => expect(screen.getAllByText("Finalto").length).toBeGreaterThan(0));
+    // No other cell in this payload can print $0.00, so any occurrence is the
+    // Statement DB column claiming a statement that does not exist.
+    expect(screen.queryAllByText("$0.00")).toHaveLength(0);
+  });
+
+  it("shows no statement figure for a non-zero value with no rows behind it", async () => {
+    installFetch({ report: lpWith(-500, null) });
+    render(<SwapsReportTab />);
+    run();
+    await waitFor(() => expect(screen.getAllByText("Finalto").length).toBeGreaterThan(0));
+    expect(screen.queryAllByText("-$500.00")).toHaveLength(0);
+  });
+
+  it("shows a genuine zero statement as $0.00", async () => {
+    installFetch({ report: lpWith(0, 2) });
+    render(<SwapsReportTab />);
+    run();
+    await waitFor(() => expect(screen.getAllByText("Finalto").length).toBeGreaterThan(0));
+    expect(screen.getAllByText("$0.00").length).toBeGreaterThan(0);
+  });
+});
+
 describe("the totals still come from the backend", () => {
   it("renders clientTotals and lpTotals unchanged, and not a neighbouring figure", async () => {
     installFetch({});

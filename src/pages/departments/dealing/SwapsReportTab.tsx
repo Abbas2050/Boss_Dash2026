@@ -62,6 +62,19 @@ const unixInstant = (secs: number | null | undefined) => {
 };
 
 /**
+ * Whether the row's statementSwap is a figure at all.
+ *
+ * The backend sends statementSwap: 0 with statementRowCount: 0 when no statement
+ * was uploaded -- not null. Observed live on 2026-09-17: every one of the 43 LPs
+ * in the 2026-09-05..11 response carried that pair, and a null check alone put
+ * "$0.00" in the Statement DB column for all of them, as if each statement said
+ * zero. The row count is the only reliable signal (see swapsReportApi.ts); a
+ * zero with rows behind it is a genuine zero and still renders.
+ */
+// Number(null) is 0 and Number(undefined) is NaN; neither is > 0.
+const hasStatement = (r: SwapAccountRow) => Number(r.statementRowCount) > 0;
+
+/**
  * The two halves of the report differ only in which field carries the name, so
  * one factory builds both rather than two near-identical column lists drifting
  * apart.
@@ -126,9 +139,9 @@ function swapColumns(
         "SOURCE: LP Statement DB (uploaded broker PDFs). Sum of TotalSwaps across LpStatement rows whose StatementDate falls in the report window. Blank when no statements were uploaded for this LP and range.",
       headerClassName: "text-right",
       cellClassName: "text-right",
-      sortValue: (r) => Number(r.statementSwap) || 0,
+      sortValue: (r) => (hasStatement(r) ? Number(r.statementSwap) || 0 : 0),
       render: (r) =>
-        r.statementSwap === null || r.statementSwap === undefined ? (
+        !hasStatement(r) || r.statementSwap === null || r.statementSwap === undefined ? (
           <span className="text-slate-400">—</span>
         ) : (
           <span
