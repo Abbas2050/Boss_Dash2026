@@ -89,10 +89,6 @@ import {
 // fallback and the LP total both turn on the difference between those two.
 const DASH = "&mdash;";
 
-// The light shell's muted ink. Repeated here only for the inline-styled note
-// cells; everything else takes its colour from a class the shell defines.
-const MUTED = "#64748b";
-
 // The weekly key is bare, matching SLIPPAGE_GUARD_KEYS: if this report is ever
 // scheduled at more than one cadence, a shared key would make Saturday's weekly
 // skip itself as "already sent" because the daily had claimed the window.
@@ -142,10 +138,18 @@ export const SWAPS_RUN_TIMEOUT_MS = 180_000;
 // watching the spinner. An unattended cron job is not that operator.
 const SCHEDULED_LIVE_FINALTO = false;
 
-// How many rows a table may print. A month has hundreds of client accounts with
-// a non-zero swap and the reader is on a phone, where table.data stacks every
-// row into a card — three hundred cards is not a report. The LP table uses the
-// cap too, but orders unresolved LPs first and says how many rows it dropped.
+// How many CLIENT rows the Top Movers table may print. A month has hundreds of
+// client accounts with a non-zero swap and the reader is on a phone, where
+// table.data stacks every row into a card — three hundred cards is not a report.
+// The section says it is "Top Movers" and the client headline is the backend's
+// own total, so truncating the list hides nothing the headline depends on.
+//
+// The LP table is NOT capped. It used to be, with unresolved LPs sorted first,
+// and on the real week of 2026-09-05..11 that spent all 15 rows on Manager LPs
+// with no statement: the email showed fifteen dashes and cut off every LP that
+// had a figure — Amana 1, Scope Prime, Infinox and XTB Direct API were nowhere
+// on the page. The user's rule (2026-09-16) is "don't skip anything, show all
+// LPs", and there are ~45 LPs, not hundreds, so the list is always whole.
 export const SWAPS_ROW_CAP = 15;
 
 export function swapsSubject(cadence, fromYmd, toYmd) {
@@ -343,11 +347,16 @@ export function lpSwapTotal(lps, lpErrors = []) {
 }
 
 /**
- * LP table order: unresolved LPs first, then by the size of the rule-4 figure.
+ * LP order: every LP with a figure first, largest magnitude first (a cost and a
+ * revenue of the same size rank together); then every LP with no figure, by
+ * name.
  *
- * Unresolved rows lead because they need someone to act and because they are
- * what makes the LP total unavailable; if the row cap drops anything it drops
- * the smallest resolved figures, never the reason the headline is a dash.
+ * Figures lead because they are what the reader opens the email for. The old
+ * order put unresolved LPs first, and on the real week of 2026-09-05..11 the 27
+ * statement-less Manager LPs pushed every actual figure below the fold and, with
+ * the row cap, off the page. Unresolved LPs are alphabetical because they have
+ * no number to rank by and a reader scanning a list of names on a phone is
+ * looking for one they know.
  */
 export function orderLpRows(lps) {
   const shaped = lps.map((row) => ({
@@ -355,11 +364,13 @@ export function orderLpRows(lps) {
     label: accountLabel(row),
     swap: effectiveLpSwap(row),
   }));
-  const unresolved = shaped.filter((r) => r.swap.value === null);
   const resolved = shaped
     .filter((r) => r.swap.value !== null)
     .sort((a, b) => Math.abs(b.swap.value) - Math.abs(a.swap.value));
-  return [...unresolved, ...resolved];
+  const unresolved = shaped
+    .filter((r) => r.swap.value === null)
+    .sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base" }));
+  return [...resolved, ...unresolved];
 }
 
 /**
@@ -469,14 +480,6 @@ function swapText(value, side) {
 // shell, so the class-coverage guard stays meaningful.
 function proseCell(label, value, { colspan = 1 } = {}) {
   return `<td class="txt" data-label="${escapeHtml(label)}" colspan="${colspan}" style="max-width:none;width:100%;"><span class="lbl">${escapeHtml(label)}</span><span class="val">${value}</span></td>`;
-}
-
-// An unlabelled full-width line inside a row's card, for the reason beside a
-// dash. It rides in the row it explains rather than sitting in a <tr> of its
-// own: table.data gives every <tr> a zebra stripe and a rule, so a separate row
-// would read as twice as many LPs.
-function reasonCell(text, { colspan = 1 } = {}) {
-  return `<td class="txt" colspan="${colspan}" style="max-width:none;width:100%;padding:0 8px 4px;font-size:11px;line-height:1.45;color:${MUTED};">${text}</td>`;
 }
 
 // ── sections (pure) ──────────────────────────────────────────────────────────
@@ -603,53 +606,100 @@ function renderTotals(report) {
  * and the unrealized snapshot were all judged noise for this reader. Rule 4
  * still decides the figure; it just no longer explains itself on the page,
  * which is why the tests pin the number each type displays.
+ *
+ * Every LP appears, uncapped (see SWAPS_ROW_CAP), in two parts:
+ *
+ *   1. LPs with a figure, as table.data cards, largest first.
+ *   2. LPs with no figure, grouped by the reason they have none. Each distinct
+ *      reason is stated ONCE, followed by the names it applies to as one
+ *      wrapped line of text.
+ *
+ * WHY THE UNRESOLVED LPs ARE NOT CARDS: on the real week of 2026-09-05..11, 27
+ * of 43 LPs had no statement. As cards, each with its own reason line, that is
+ * 27 phone-screen blocks repeating one sentence under a dash, and the reader
+ * would scroll through them to learn nothing new. A dash carries no information
+ * a name does not, and the reason is shared, so the group is one heading and a
+ * paragraph of names.
  */
 function renderLpTable(report, periodNoun) {
   const all = orderLpRows(report.lps);
-  const shown = all.slice(0, SWAPS_ROW_CAP);
-  const dropped = all.length - shown.length;
+  const withFigure = all.filter((r) => r.swap.value !== null);
+  const withoutFigure = all.filter((r) => r.swap.value === null);
 
   const headers = [
     { label: "LP", width: "50%" },
     { label: "LP Swap (period)", width: "50%" },
   ];
 
-  const bodyRows = shown
-    .map((r) => {
-      const { swap } = r;
-      return `<tr>
+  const bodyRows = withFigure
+    .map((r) => `<tr>
         ${dataCell("LP", escapeHtml(r.label), { nowrap: true })}
-        ${dataCell("LP Swap (period)", swapText(swap.value, "lp"), { align: "right", cls: effectCls(swap.value, "lp") })}
-        ${swap.value === null ? reasonCell(unresolvedLpReason(swap), { colspan: headers.length }) : ""}
-      </tr>`;
-    })
+        ${dataCell("LP Swap (period)", swapText(r.swap.value, "lp"), { align: "right", cls: effectCls(r.swap.value, "lp") })}
+      </tr>`)
     .join("");
 
-  const unresolved = all.filter((r) => r.swap.value === null).length;
   const failed = report.lpErrors.length;
   const excluded = report.excludedLps.length;
 
   return `<p class="section-title">LP Swap &mdash; All LPs</p>
           <p class="note">
-            One swap figure per LP for this ${escapeHtml(periodNoun)}.
+            One swap figure per LP for this ${escapeHtml(periodNoun)}, largest first.
             Negative LP swap is a cost (the LP charged us); positive is revenue (we received swap).
           </p>
           ${dataTable({
             headers,
             bodyRows,
-            emptyText: `No LP rows for this ${escapeHtml(periodNoun)}.`,
+            emptyText: all.length
+              ? `No LP has a swap figure for this ${escapeHtml(periodNoun)}.`
+              : `No LP rows for this ${escapeHtml(periodNoun)}.`,
           })}
+          ${renderUnresolvedLps(withoutFigure)}
           <p class="note">
-            ${unresolved > 0
-              ? `<strong>${fmtNum(unresolved, 0)} of ${fmtNum(all.length, 0)} LP(s) have no figure</strong>, so the LP total is unavailable.`
+            ${withoutFigure.length > 0
+              ? `<strong>${fmtNum(withoutFigure.length, 0)} of ${fmtNum(all.length, 0)} LP(s) have no figure</strong>, so the LP total is unavailable.`
               : `All ${fmtNum(all.length, 0)} LP(s) have a figure.`}
             ${failed > 0 ? ` ${fmtNum(failed, 0)} LP(s) failed and are not in this table (see Report Notes), so the LP total is unavailable.` : ""}
-            ${dropped > 0 ? ` Showing ${fmtNum(shown.length, 0)} of ${fmtNum(all.length, 0)} LPs; ${fmtNum(dropped, 0)} LP(s) omitted.` : ""}
             ${excluded > 0 ? ` ${fmtNum(excluded, 0)} LP(s) marked excluded from swaps are left out of this table and the LP total.` : ""}
           </p>`;
 }
 
-// The line under a dash, in the reader's terms. effectiveLpSwap's own reason
+/**
+ * LPs with no figure, one block per distinct reason.
+ *
+ * Groups run largest first, so the gap that affects the most LPs is read first;
+ * names inside a group keep orderLpRows' alphabetical order. Each name is held
+ * together with white-space:nowrap (an inline style Zoho keeps), so a narrow
+ * screen breaks the line between names and never inside "Finalto 2nd acc 33758
+ * - Coverage". The separator is glued to the name before it with &nbsp;, so a
+ * wrapped line never starts with a dot.
+ *
+ * No table, no new class: a `note` paragraph for the reason and a plain inline-
+ * styled paragraph for the names, in the page's ink rather than muted, because
+ * the names are the content.
+ */
+function renderUnresolvedLps(rows) {
+  if (!rows.length) return "";
+  const groups = new Map();
+  for (const r of rows) {
+    const reason = unresolvedLpReason(r.swap);
+    if (!groups.has(reason)) groups.set(reason, []);
+    groups.get(reason).push(r.label);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([reason, names]) => {
+      const list = names
+        .map((name) => `<span style="white-space:nowrap;">${escapeHtml(name)}</span>`)
+        .join("&nbsp;&middot; ");
+      return `<p class="note" style="margin:12px 0 4px;"><strong>${reason}</strong> ${fmtNum(names.length, 0)} LP(s):</p>
+          <p style="margin:0 0 12px;font-size:12px;line-height:1.7;">${list}</p>`;
+    })
+    .join("");
+}
+
+// The heading over a group of LPs with no figure, in the reader's terms. These
+// exact strings are the group keys, so two LPs share a heading exactly when the
+// reader would be told the same thing about them. effectiveLpSwap's own reason
 // names the LP type and which book it reads, which is what an operator
 // debugging the mapping needs and exactly what this reader asked not to see.
 // Three cases survive translation. A Manager LP with no statement gets the one

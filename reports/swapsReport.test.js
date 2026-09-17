@@ -30,6 +30,11 @@
 //      null (live, 2026-09-17). The fixture that shipped modelled it as null,
 //      which is why nothing caught every Manager LP rendering as $0.00; the
 //      real week's LP rows are now the regression fixture.
+//   9. Every LP is on the page. The LP table was once capped at 15 with
+//      unresolved LPs first, and on the real week that printed 15 Manager
+//      dashes and cut off every LP with a figure (Amana 1, Scope Prime,
+//      Infinox, XTB Direct API). LPs with a figure now lead, and LPs without
+//      are named under their reason, stated once. Only client movers are capped.
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -145,6 +150,29 @@ function cell(rowHtml, column) {
   const gt = rowHtml.indexOf(">", open);
   return rowHtml.slice(gt + 1, rowHtml.indexOf("</span>", gt)).trim();
 }
+
+// LPs with no figure are not cards: each distinct reason is printed once and
+// followed by the names it applies to. unresolvedGroups returns them in page
+// order as [{ reason, count, names }], so a test can say which LP sits under
+// which reason.
+const NAME_SPAN = /<span style="white-space:nowrap;">([^<]*)<\/span>/g;
+function unresolvedGroups(out) {
+  return [...out.matchAll(/<p class="note"[^>]*><strong>(.*?)<\/strong> (\d+) LP\(s\):<\/p>\s*<p [^>]*>([\s\S]*?)<\/p>/g)]
+    .map((m) => ({ reason: m[1], count: Number(m[2]), names: [...m[3].matchAll(NAME_SPAN)].map((n) => n[1]) }));
+}
+
+// Every LP name the LP section prints -- as a card or under a reason -- in
+// page order.
+function lpNamesShown(out) {
+  return [...lpTableOf(out).matchAll(/<span class="lbl">LP<\/span><span class="val">([^<]*)<\/span>|<span style="white-space:nowrap;">([^<]*)<\/span>/g)]
+    .map((m) => m[1] ?? m[2]);
+}
+
+// A rendered figure back as a number: "-$12,277.45 (cost)" -> -12277.45.
+const figureOf = (text) => Number(text.replace(/\s*\((cost|revenue)\)$/, "").replace(/[$,]/g, ""));
+
+const NO_STATEMENT = "No statement uploaded for this period, so there is no figure &mdash; not zero.";
+const NO_RECORD = "No swap record for this period, so there is no figure &mdash; not zero.";
 
 // A KPI card by its label: { cls, value, note }.
 function kpi(out, label) {
@@ -323,27 +351,27 @@ describe("the LP table is one plain list: every LP, one figure, nothing else", (
     expect(t).not.toContain("800.00");
   });
 
-  it("renders an LP with no figure as a dash and a plain reason, never 0.00", () => {
-    const r = fullRow(lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] })), "Unfiled Mgr");
-    expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(r).toMatch(/No statement uploaded for this period, so there is no figure &mdash; not zero\./);
-    expect(r).not.toContain("$0.00");
-    expect(r).not.toContain("400.00");
-    expect(r).not.toMatch(/Manager|\btype\b|source/i);
+  it("lists an LP with no figure by name under its reason, never as 0.00", () => {
+    const t = lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] }));
+    expect(row(t, "Unfiled Mgr")).toBeNull(); // a name under a reason, not a card
+    expect(unresolvedGroups(t)).toEqual([{ reason: NO_STATEMENT, count: 1, names: ["Unfiled Mgr"] }]);
+    expect(t).not.toContain("400.00");
+    expect(t).not.toMatch(/Manager|\btype\b|source/i);
   });
 
-  it("renders an unclassified LP as a dash with a reason that names no type", () => {
+  it("lists an unclassified LP under a reason that names no type", () => {
     const odd = { id: 9, login: 509, lpName: "Odd LP", source: "Hybrid", totalSwap: -250, statementSwap: -250 };
-    const r = fullRow(lpTableOf(html({ lps: [...LPS, odd] })), "Odd LP");
-    expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(r).toMatch(/not set up for swap reporting, so there is no figure &mdash; not zero\./);
-    expect(r).not.toMatch(/Hybrid|\btype\b/i);
+    const t = lpTableOf(html({ lps: [...LPS, odd] }));
+    expect(unresolvedGroups(t)).toEqual([
+      { reason: "This LP is not set up for swap reporting, so there is no figure &mdash; not zero.", count: 1, names: ["Odd LP"] },
+    ]);
+    expect(t).not.toContain("250.00");
+    expect(t).not.toMatch(/Hybrid|\btype\b/i);
   });
 
-  it("puts unresolved LPs first so the row cap cannot drop them", () => {
-    const ordered = orderLpRows([...LPS, UNFILED_MANAGER]);
-    expect(ordered[0].label).toBe("Unfiled Mgr");
-    expect(ordered.slice(1).every((r) => r.swap.value !== null)).toBe(true);
+  it("puts LPs with a figure first, largest first, and LPs with none after", () => {
+    const ordered = orderLpRows([UNFILED_MANAGER, ...LPS]);
+    expect(ordered.map((r) => r.label)).toEqual(["Xtb", "Finalto", "Book LP", "Term LP", "Quiet LP", "Unfiled Mgr"]);
   });
 
   it("counts the unresolved LPs under the table", () => {
@@ -468,28 +496,93 @@ describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", (
     expect(fxEdge.totalSwap).toBe(-11059.16);
     expect(effectiveLpSwap(fxEdge)).toMatchObject({ value: null, source: null, type: "Manager" });
 
-    const r = fullRow(lpTableOf(realOut()), "FX Edge Coverage");
-    expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-    expect(r).toMatch(/No statement uploaded for this period, so there is no figure &mdash; not zero\./);
-    expect(r).not.toContain("$0.00");
-    expect(r).not.toContain("11,059.16");
+    const t = lpTableOf(realOut());
+    expect(row(t, "FX Edge Coverage")).toBeNull();
+    const [group] = unresolvedGroups(t);
+    expect(group.reason).toBe(NO_STATEMENT);
+    expect(group.names).toContain("FX Edge Coverage");
+    expect(t).not.toContain("11,059.16");
   });
 
-  it("every Manager LP is unresolved, and every one the row cap shows is a dash with the reason", () => {
-    for (const lp of MANAGERS) expect(effectiveLpSwap(lp).value).toBeNull();
+  // The defect: with a 15-row cap and unresolved LPs sorted first, the real
+  // week's email printed 15 Manager dashes and none of these four figures.
+  it("shows all 43 LPs by name, each exactly once", () => {
+    const names = lpNamesShown(realOut());
+    expect(names).toHaveLength(43);
+    expect(new Set(names).size).toBe(43);
+    expect([...names].sort()).toEqual(REAL_WEEK.lps.map((lp) => lp.lpName.trim()).sort());
+  });
+
+  it("shows Amana 1, Scope Prime, Infinox and XTB Direct API with their figures, before any LP with no figure", () => {
+    const out = realOut();
+    const t = lpTableOf(out);
+    expect(cell(row(t, "Amana 1"), "LP Swap (period)")).toBe("-$12,277.45 (cost)");
+    expect(cell(row(t, "Scope Prime"), "LP Swap (period)")).toBe("-$9,883.71 (cost)");
+    expect(cell(row(t, "Infinox"), "LP Swap (period)")).toBe("-$3,358.94 (cost)");
+    expect(cell(row(t, "XTB Direct API"), "LP Swap (period)")).toBe("-$2,122.34 (cost)");
+
+    const names = lpNamesShown(out);
+    const firstUnresolved = Math.min(...MANAGERS.map((lp) => names.indexOf(lp.lpName.trim())));
+    for (const name of ["Amana 1", "Scope Prime", "Infinox", "XTB Direct API"]) {
+      expect(names.indexOf(name)).toBeGreaterThan(-1);
+      expect(names.indexOf(name)).toBeLessThan(firstUnresolved);
+    }
+  });
+
+  it("orders the LPs that have a figure by magnitude, and puts every one of them before every LP without", () => {
+    const names = lpNamesShown(realOut());
+    const resolved = REAL_WEEK.lps.filter((lp) => effectiveLpSwap(lp).value !== null).map((lp) => lp.lpName.trim());
+    expect(resolved).toHaveLength(16);
+    // The first 16 names on the page are exactly the 16 LPs with a figure.
+    expect([...names.slice(0, 16)].sort()).toEqual([...resolved].sort());
 
     const t = lpTableOf(realOut());
-    const shown = MANAGERS.filter((lp) => row(t, lp.lpName.trim()) !== null);
-    // Unresolved rows lead, so the cap is spent entirely on Manager LPs.
-    expect(shown).toHaveLength(SWAPS_ROW_CAP);
-    for (const lp of shown) {
-      const r = fullRow(t, lp.lpName.trim());
-      expect(cell(r, "LP Swap (period)")).toBe("&mdash;");
-      expect(r).toMatch(/No statement uploaded for this period/);
-    }
-    expect(t).not.toMatch(/<span class="val[^"]*">\$0\.00<\/span>/);
+    const sizes = names.slice(0, 16).map((n) => Math.abs(figureOf(cell(row(t, n), "LP Swap (period)"))));
+    for (let i = 1; i < sizes.length; i++) expect(sizes[i]).toBeLessThanOrEqual(sizes[i - 1]);
+    expect(names.slice(0, 7)).toEqual(["Amana 1", "Scope Prime", "Infinox", "XTB Direct API", "Finalto API", "Noor Capital", "CFI"]);
+
+    // And orderLpRows itself, not only the page.
+    const ordered = orderLpRows(REAL_WEEK.lps);
+    expect(ordered.slice(0, 16).every((r) => r.swap.value !== null)).toBe(true);
+    expect(ordered.slice(16).every((r) => r.swap.value === null)).toBe(true);
+  });
+
+  it("states the no-statement reason once for all 27 Manager LPs, not once per LP", () => {
+    for (const lp of MANAGERS) expect(effectiveLpSwap(lp).value).toBeNull();
+    const t = lpTableOf(realOut());
+    expect(t.split("No statement uploaded for this period").length - 1).toBe(1);
+    expect(unresolvedGroups(t)).toEqual([
+      { reason: NO_STATEMENT, count: 27, names: MANAGERS.map((lp) => lp.lpName.trim()).sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })) },
+    ]);
+    // No LP with no figure is rendered as a card, so there are no dash cards.
+    expect(countCells(t, "LP Swap (period)")).toBe(16);
+    expect(t).not.toMatch(/<span class="val[^"]*">&mdash;<\/span>/);
     expect(t).toMatch(/<strong>27 of 43 LP\(s\) have no figure<\/strong>/);
     expect(t).toMatch(/2 LP\(s\) failed and are not in this table/);
+  });
+
+  it("with two distinct reasons, states each once with its own LPs under it", () => {
+    const noRecordApi = { id: 90, lpName: "Silent Api LP", login: 90, source: "Api", totalSwap: null, statementSwap: 0, statementRowCount: 0 };
+    const noRecordTerm = { id: 91, lpName: "Silent Terminal LP", login: 91, source: "Terminal", totalSwap: null, statementSwap: 0, statementRowCount: 0 };
+    const out = html({ ...REAL_WEEK, lps: [...REAL_WEEK.lps, noRecordApi, noRecordTerm] }, { period: { fromYmd: "2026-09-05", toYmd: "2026-09-11" } });
+    const t = lpTableOf(out);
+
+    expect(t.split("No statement uploaded for this period").length - 1).toBe(1);
+    expect(t.split("No swap record for this period").length - 1).toBe(1);
+
+    const groups = unresolvedGroups(t);
+    expect(groups.map((g) => g.reason)).toEqual([NO_STATEMENT, NO_RECORD]);
+    expect(groups[0].count).toBe(27);
+    expect([...groups[0].names].sort()).toEqual(MANAGERS.map((lp) => lp.lpName.trim()).sort());
+    expect(groups[1]).toEqual({ reason: NO_RECORD, count: 2, names: ["Silent Api LP", "Silent Terminal LP"] });
+    expect(lpNamesShown(out)).toHaveLength(45);
+  });
+
+  it("keeps the client section capped at SWAPS_ROW_CAP", () => {
+    const t = clientMoversOf(realOut());
+    expect(REAL_WEEK.clients.length).toBeGreaterThan(SWAPS_ROW_CAP);
+    expect(countCells(t, "Swap (period)")).toBe(SWAPS_ROW_CAP);
+    expect(t).toMatch(/Showing 15 of 22 accounts; 7 omitted\./);
   });
 
   it("the LP total is a dash, and the partial sum appears nowhere in the email", () => {
@@ -845,7 +938,10 @@ describe("report notes", () => {
 
 // ── the row cap ──────────────────────────────────────────────────────────────
 
-describe("the row cap holds on a large fixture", () => {
+// The cap is for client movers only. The LP list is always whole: the user's
+// rule (2026-09-16) is "show all LPs", and capping it hid every real LP figure
+// in the week of 2026-09-05..11.
+describe("the row cap holds for clients, and never applies to LPs", () => {
   const many = (n, make) => Array.from({ length: n }, (_, i) => make(i));
   const BIG = {
     lps: many(400, (i) => ({
@@ -861,23 +957,29 @@ describe("the row cap holds on a large fixture", () => {
     clients: many(600, (i) => ({ login: 20000 + i, name: `Client ${i}`, totalSwap: -(i + 1) * 7, unrealizedSwap: -i })),
   };
 
-  it("caps at SWAPS_ROW_CAP in every table", () => {
+  it("caps the client movers at SWAPS_ROW_CAP and prints every LP", () => {
     const out = html(BIG);
     expect(SWAPS_ROW_CAP).toBe(15);
-    expect(countCells(lpTableOf(out), "LP Swap (period)")).toBe(SWAPS_ROW_CAP);
     expect(countCells(clientMoversOf(out), "Unrealized (at send time)")).toBe(SWAPS_ROW_CAP);
+    expect(countCells(lpTableOf(out), "LP Swap (period)")).toBe(400);
   });
 
-  it("says how many rows it dropped rather than dropping them silently", () => {
+  it("says how many client rows it dropped, and never says an LP was omitted", () => {
     const out = html(BIG);
-    expect(lpTableOf(out)).toMatch(/Showing 15 of 400 LPs; 385 LP\(s\) omitted/);
     expect(clientMoversOf(out)).toMatch(/Showing 15 of 600 accounts; 585 omitted/);
+    expect(lpTableOf(out)).not.toMatch(/omitted|Showing \d+ of/);
   });
 
-  it("keeps the largest, not the first fifteen the backend happened to send", () => {
-    const table = lpTableOf(html(BIG));
-    expect(table).toContain("LP 399");
-    expect(table).not.toContain(`<span class="val">LP 0</span>`);
+  it("keeps the largest clients, not the first fifteen the backend happened to send", () => {
+    const movers = clientMoversOf(html(BIG));
+    expect(movers).toContain("Client 599");
+    expect(movers).not.toContain(`<span class="val">Client 0</span>`);
+  });
+
+  it("orders the LPs largest first", () => {
+    const names = lpNamesShown(html(BIG));
+    expect(names[0]).toBe("LP 399");
+    expect(names[399]).toBe("LP 0");
   });
 
   it("still totals every LP, not just the rows shown", () => {
