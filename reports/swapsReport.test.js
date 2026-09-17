@@ -1194,12 +1194,3 @@ describe("the SwapsReport call", () => {
     expect(report.clientTotals).toEqual({ totalSwap: -12345.67, accountCount: 3 });
   });
 });
-
-// ── nothing is scheduled yet ─────────────────────────────────────────────────
-
-describe("the Swaps report is deliberately not on a cadence yet", () => {
-  it("is absent from the scheduler module", () => {
-    const schedulers = readFileSync(path.resolve("reports/schedulers.js"), "utf8");
-    expect(schedulers).not.toMatch(/swaps/i);
-  });
-});

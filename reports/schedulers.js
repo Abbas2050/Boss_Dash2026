@@ -4,14 +4,18 @@ import { runMonthlyReview } from "./monthlyReview.js";
 import { runWeeklyBusinessSummary, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
 import { runSlippageEmailReport, SLIPPAGE_RECIPIENT_VARS } from "./slippageWeeklyReport.js";
 import { runDealMatchEmailReport, DEALMATCH_RECIPIENT_VARS } from "./dealMatchWeeklyReport.js";
+import { runSwapsEmailReport, SWAPS_RECIPIENT_VARS } from "./swapsReport.js";
 
 // Every scheduled send in the system, in one table. This is the file to read to
 // answer "what goes out, when".
 //
 // Ordering within a cadence is deliberate: Deal Match, then Slippage, then
-// Business Summary. The Business Summary's At a Glance strip computes Total
-// Revenue from DealMatch/Run, so it must never run before the report it
-// summarises.
+// Business Summary, then Swaps. The Business Summary's At a Glance strip
+// computes Total Revenue from DealMatch/Run, so it must never run before the
+// report it summarises. Swaps goes last because SwapsReport is the slowest call
+// (53-67s measured, 180s budget) and depends on nothing the others produce; at
+// 08:30 Dubai (04:30 UTC) the 01:00 UTC Finalto ingest has long covered the
+// previous day.
 //
 // Dailies use cron day-of-week 2-6, Tuesday to Saturday, each covering the
 // previous day. That gives every trading day exactly one daily and fires
@@ -46,6 +50,13 @@ export const REPORT_SCHEDULES = [
     run: () => runDailyDigest(),
   },
   {
+    label: "SwapsDaily", defaultCron: "30 8 * * 2-6",
+    enabledVar: "DAILY_SWAPS_ENABLED", cronVar: "DAILY_SWAPS_CRON",
+    timezoneVar: "DAILY_SWAPS_TIMEZONE", runOnStartVar: "DAILY_SWAPS_RUN_ON_START",
+    recipientVars: SWAPS_RECIPIENT_VARS.daily,
+    run: () => runSwapsEmailReport({ cadence: "daily" }),
+  },
+  {
     label: "DealMatchWeekly", defaultCron: "0 9 * * 6",
     enabledVar: "WEEKLY_DEALMATCH_ENABLED", cronVar: "WEEKLY_DEALMATCH_CRON",
     timezoneVar: "WEEKLY_DEALMATCH_TIMEZONE", runOnStartVar: "WEEKLY_DEALMATCH_RUN_ON_START",
@@ -67,6 +78,13 @@ export const REPORT_SCHEDULES = [
     run: () => runWeeklyBusinessSummary(),
   },
   {
+    label: "SwapsWeekly", defaultCron: "30 10 * * 6",
+    enabledVar: "WEEKLY_SWAPS_ENABLED", cronVar: "WEEKLY_SWAPS_CRON",
+    timezoneVar: "WEEKLY_SWAPS_TIMEZONE", runOnStartVar: "WEEKLY_SWAPS_RUN_ON_START",
+    recipientVars: SWAPS_RECIPIENT_VARS.weekly,
+    run: () => runSwapsEmailReport({ cadence: "weekly" }),
+  },
+  {
     label: "DealMatchMonthly", defaultCron: "0 11 1 * *",
     enabledVar: "MONTHLY_DEALMATCH_ENABLED", cronVar: "MONTHLY_DEALMATCH_CRON",
     timezoneVar: "MONTHLY_DEALMATCH_TIMEZONE", runOnStartVar: "MONTHLY_DEALMATCH_RUN_ON_START",
@@ -86,6 +104,13 @@ export const REPORT_SCHEDULES = [
     timezoneVar: "MONTHLY_REVIEW_TIMEZONE", runOnStartVar: "MONTHLY_REVIEW_RUN_ON_START",
     recipientVars: SUMMARY_RECIPIENT_VARS.monthly,
     run: () => runMonthlyReview(),
+  },
+  {
+    label: "SwapsMonthly", defaultCron: "30 12 1 * *",
+    enabledVar: "MONTHLY_SWAPS_ENABLED", cronVar: "MONTHLY_SWAPS_CRON",
+    timezoneVar: "MONTHLY_SWAPS_TIMEZONE", runOnStartVar: "MONTHLY_SWAPS_RUN_ON_START",
+    recipientVars: SWAPS_RECIPIENT_VARS.monthly,
+    run: () => runSwapsEmailReport({ cadence: "monthly" }),
   },
 ];
 

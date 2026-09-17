@@ -1,11 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { REPORT_SCHEDULES } from "./schedulers.js";
+import { runSwapsEmailReport, SWAPS_RECIPIENT_VARS } from "./swapsReport.js";
+
+// Only the send is replaced, so the guard keys and recipient chains the tests
+// below compare against are the real exports.
+vi.mock("./swapsReport.js", async (importOriginal) => ({
+  ...(await importOriginal()),
+  runSwapsEmailReport: vi.fn(async () => ({ ok: true })),
+}));
 
 const bySlot = Object.fromEntries(REPORT_SCHEDULES.map((s) => [s.label, s]));
 
 describe("the schedule", () => {
-  it("declares exactly nine sends", () => {
-    expect(REPORT_SCHEDULES).toHaveLength(9);
+  it("declares exactly twelve sends", () => {
+    expect(REPORT_SCHEDULES).toHaveLength(12);
   });
 
   it("puts every report at every cadence", () => {
@@ -13,6 +21,7 @@ describe("the schedule", () => {
       "BusinessDaily", "BusinessMonthly", "BusinessWeekly",
       "DealMatchDaily", "DealMatchMonthly", "DealMatchWeekly",
       "SlippageDaily", "SlippageMonthly", "SlippageWeekly",
+      "SwapsDaily", "SwapsMonthly", "SwapsWeekly",
     ]);
   });
 
@@ -26,11 +35,14 @@ describe("the schedule", () => {
     expect(bySlot.DealMatchMonthly.defaultCron).toBe("0 11 1 * *");
     expect(bySlot.SlippageMonthly.defaultCron).toBe("30 11 1 * *");
     expect(bySlot.BusinessMonthly.defaultCron).toBe("0 12 1 * *");
+    expect(bySlot.SwapsDaily.defaultCron).toBe("30 8 * * 2-6");
+    expect(bySlot.SwapsWeekly.defaultCron).toBe("30 10 * * 6");
+    expect(bySlot.SwapsMonthly.defaultCron).toBe("30 12 1 * *");
   });
 
   it("gives every send a distinct environment variable set", () => {
     for (const key of ["enabledVar", "cronVar", "timezoneVar", "runOnStartVar"]) {
-      expect(new Set(REPORT_SCHEDULES.map((s) => s[key])).size).toBe(9);
+      expect(new Set(REPORT_SCHEDULES.map((s) => s[key])).size).toBe(12);
     }
   });
 
@@ -65,7 +77,7 @@ describe("no two schedulers share a minute", () => {
   it("holds for every minute of a full year", () => {
     const collisions = [];
     const start = Date.UTC(2026, 0, 1);
-    // Every half hour is enough: all nine expressions fire on :00 or :30.
+    // Every half hour is enough: every expression fires on :00 or :30.
     for (let t = start; t < Date.UTC(2027, 0, 1); t += 30 * 60_000) {
       const d = new Date(t);
       const hit = REPORT_SCHEDULES.filter((s) => fires(s.defaultCron, d));
@@ -86,21 +98,45 @@ describe("no two schedulers share a minute", () => {
 // Each report's own test asserts three distinct keys within itself. All three
 // could pass while slippage-daily and dealmatch-daily collided, which would
 // make one of them permanently skip as "already sent".
-describe("all nine send-guard keys are distinct", () => {
-  it("holds across the three reports together", async () => {
-    const [{ SUMMARY_GUARD_KEYS }, { SLIPPAGE_GUARD_KEYS }, { DEALMATCH_GUARD_KEYS }] =
+describe("all twelve send-guard keys are distinct", () => {
+  it("holds across the four reports together", async () => {
+    const [{ SUMMARY_GUARD_KEYS }, { SLIPPAGE_GUARD_KEYS }, { DEALMATCH_GUARD_KEYS }, { SWAPS_GUARD_KEYS }] =
       await Promise.all([
         import("./weeklyBusinessSummary.js"),
         import("./slippageWeeklyReport.js"),
         import("./dealMatchWeeklyReport.js"),
+        import("./swapsReport.js"),
       ]);
     const all = [
       ...Object.values(SUMMARY_GUARD_KEYS),
       ...Object.values(SLIPPAGE_GUARD_KEYS),
       ...Object.values(DEALMATCH_GUARD_KEYS),
+      ...Object.values(SWAPS_GUARD_KEYS),
     ];
-    expect(all).toHaveLength(9);
-    expect(new Set(all).size).toBe(9);
+    expect(all).toHaveLength(12);
+    expect(new Set(all).size).toBe(12);
+  });
+});
+
+describe("the Swaps sends", () => {
+  it.each(["daily", "weekly", "monthly"])("%s reads its own recipient chain and runs its own cadence", async (cadence) => {
+    const slot = bySlot[`Swaps${cadence[0].toUpperCase()}${cadence.slice(1)}`];
+    expect(slot.recipientVars).toEqual(SWAPS_RECIPIENT_VARS[cadence]);
+    runSwapsEmailReport.mockClear();
+    await slot.run();
+    expect(runSwapsEmailReport).toHaveBeenCalledExactlyOnceWith({ cadence });
+  });
+
+  it("each runs after every other report of its cadence", () => {
+    const minuteOfDay = (expr) => {
+      const [mi, hh] = expr.split(" ").map(Number);
+      return hh * 60 + mi;
+    };
+    for (const cadence of ["Daily", "Weekly", "Monthly"]) {
+      const others = REPORT_SCHEDULES.filter((s) => s.label.endsWith(cadence) && !s.label.startsWith("Swaps"));
+      const latest = Math.max(...others.map((s) => minuteOfDay(s.defaultCron)));
+      expect(minuteOfDay(bySlot[`Swaps${cadence}`].defaultCron)).toBeGreaterThan(latest);
+    }
   });
 });
 

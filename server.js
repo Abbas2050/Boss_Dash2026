@@ -1219,7 +1219,7 @@ app.post(
   makeReportTestSendHandler({ run: runDealMatchEmailReport, cadence: 'monthly', allowPeriod: true }),
 );
 
-// Who actually receives the nine scheduled reports (admin-only, read-only).
+// Who actually receives the scheduled reports (admin-only, read-only).
 //
 // Answering "are all reports going to talat@?" used to mean opening the
 // server's .env, and even then the answer is not a grep: resolveRecipients

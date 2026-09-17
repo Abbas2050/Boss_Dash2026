@@ -2,7 +2,7 @@ import { buildReportRecipientsView } from "./reportRecipientsView.js";
 import { deepRedact } from "../wallet/redactSecrets.js";
 
 /**
- * GET /api/reports/schedule -- who receives the nine scheduled reports.
+ * GET /api/reports/schedule -- who receives the scheduled reports.
  *
  * WHY THE ADMIN GATE LIVES INSIDE THE HANDLER rather than as a middleware
  * named at registration, the way the neighbouring test-send routes do it:

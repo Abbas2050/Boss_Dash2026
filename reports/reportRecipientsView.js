@@ -2,7 +2,7 @@ import { REPORT_SCHEDULES } from "./schedulers.js";
 import { parseRecipients } from "./reportShared.js";
 
 /**
- * A read-only picture of what the nine scheduled reports will actually do.
+ * A read-only picture of what the scheduled reports will actually do.
  *
  * WHY THIS EXISTS: the only way to answer "is Talat getting all of these?" was
  * to open the server's .env. Worse, the answer is not a simple grep, because
@@ -17,7 +17,7 @@ import { parseRecipients } from "./reportShared.js";
  * address list.
  *
  * WHY IT DERIVES FROM REPORT_SCHEDULES: that table is the single source of
- * truth for what is scheduled. A second hand-written list of the nine reports
+ * truth for what is scheduled. A second hand-written list of the reports
  * would be one more thing to forget when a tenth is added, and the panel would
  * then quietly under-report the very thing it exists to show.
  *
@@ -44,6 +44,7 @@ const REPORT_TITLES = {
   DealMatch: "Deal Match",
   Slippage: "Slippage",
   Business: "Business Summary",
+  Swaps: "Swaps",
 };
 
 function splitLabel(label) {

@@ -39,8 +39,8 @@ describe("every scheduled report appears", () => {
   });
 });
 
-// The assertion that a hardcoded list of nine cannot pass. Comparing a count
-// against REPORT_SCHEDULES.length is not enough on its own -- both are nine
+// The assertion that a hardcoded list of reports cannot pass. Comparing a count
+// against REPORT_SCHEDULES.length is not enough on its own -- both are the same number
 // today -- so the table is replaced with a ten-row one and the view must
 // follow it.
 describe("the list is derived from REPORT_SCHEDULES, not copied", () => {

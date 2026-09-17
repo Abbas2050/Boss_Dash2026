@@ -852,8 +852,8 @@ export async function fetchSwapsReport(fromDate, toDate, { liveFinalto = SCHEDUL
 // ── orchestration ────────────────────────────────────────────────────────────
 
 /**
- * Fetch, build, send. Nothing schedules this yet; reports/schedulers.js is
- * deliberately untouched until the rendered email has been approved.
+ * Fetch, build, send. Scheduled from reports/schedulers.js at all three
+ * cadences, after the other reports.
  */
 export async function runSwapsEmailReport({
   cadence = "weekly",
