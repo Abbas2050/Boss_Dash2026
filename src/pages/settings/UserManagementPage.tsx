@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Shield, UserPlus, Search, Trash2, Pencil, CheckCircle2, History, Filter } from "lucide-react";
 import { AuthAuditEvent, AuthUser, deleteUser, fetchAuthAuditEvents, getCurrentUser, getUsers, refreshUsers, upsertUser } from "@/lib/auth";
-import { ADMIN_ACCESS_KEYS, DASHBOARD_ACCESS_KEYS, DEALING_TAB_KEYS, DEPARTMENT_KEYS, NOTIFICATION_KEYS, USER_ROLE_TEMPLATES } from "@/lib/permissions";
+import { ADMIN_ACCESS_KEYS, DASHBOARD_ACCESS_KEYS, DEALING_TAB_KEYS, DEPARTMENT_KEYS, NOTIFICATION_KEYS, SETTINGS_PAGE_KEYS, USER_ROLE_TEMPLATES } from "@/lib/permissions";
 
 const dashboardKeys = DASHBOARD_ACCESS_KEYS;
 const departmentKeys = DEPARTMENT_KEYS;
 const dealingTabKeys = DEALING_TAB_KEYS;
+const settingsPageKeys = SETTINGS_PAGE_KEYS;
 const notificationKeys = NOTIFICATION_KEYS;
 const adminKeys = ADMIN_ACCESS_KEYS;
 
@@ -177,6 +178,24 @@ export const UserManagementPage: React.FC = () => {
     setForm((prev) => ({
       ...prev,
       access: prev.access.filter((key) => !key.startsWith("Dealing:")),
+    }));
+  };
+
+  // Adds only the page chips, not the broad "Settings" key: the chips already
+  // open every page, and "Settings" would add nothing but ambiguity.
+  const enableAllSettingsPages = () => {
+    setForm((prev) => {
+      const next = new Set(prev.access);
+      settingsPageKeys.forEach((item) => next.add(item.key));
+      return { ...prev, access: Array.from(next) };
+    });
+  };
+
+  // Leaves the broad "Settings" key alone; it has its own chip above.
+  const clearAllSettingsPages = () => {
+    setForm((prev) => ({
+      ...prev,
+      access: prev.access.filter((key) => !key.startsWith("Settings:")),
     }));
   };
 
@@ -371,6 +390,46 @@ export const UserManagementPage: React.FC = () => {
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Admin Access</div>
               <div className="flex flex-wrap gap-2">
                 {adminKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => toggleAccess(item.key)}
+                    className={`rounded-md px-2 py-1 text-xs border ${
+                      form.access.includes(item.key)
+                        ? "border-primary/40 bg-primary/15 text-primary"
+                        : "border-border/50 bg-secondary/30 text-muted-foreground"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Settings Page Access</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={enableAllSettingsPages}
+                    className="rounded-md border border-emerald-400/40 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700"
+                  >
+                    Allow All Pages
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAllSettingsPages}
+                    className="rounded-md border border-slate-400/40 bg-slate-500/10 px-2 py-1 text-xs text-slate-700"
+                  >
+                    Clear Pages
+                  </button>
+                </div>
+              </div>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Each chip opens that one page. The Settings chip above still opens all standard pages, but not the admin pages. User Management needs Manage Users &amp; Roles.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {settingsPageKeys.filter((item) => permissionVisible(item.label, item.key)).map((item) => (
                   <button
                     key={item.key}
                     type="button"

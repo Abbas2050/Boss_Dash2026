@@ -258,6 +258,22 @@ export const SETTINGS_MENU_ITEMS = [
   },
 ] as const satisfies readonly SettingsMenuItem[];
 
+// One access chip per settings page, "Settings:<page key>". A chip on its own
+// opens its page -- including the admin pages and LP Statements, whose
+// requiredPermissions pairs stay in place as the other way in.
+//
+// User Management has no chip. The page is a front end for managing users, and
+// without Manage Users & Roles it would open and then fail to save anything.
+export const SETTINGS_PAGE_CHIP_EXCLUDED: readonly string[] = ["user-management"];
+
+export function settingsPageKey(pageKey: string): string {
+  return `Settings:${pageKey}`;
+}
+
+export const SETTINGS_PAGE_KEYS: { key: string; label: string }[] = SETTINGS_MENU_ITEMS
+  .filter((item) => !SETTINGS_PAGE_CHIP_EXCLUDED.includes(item.key))
+  .map((item) => ({ key: settingsPageKey(item.key), label: item.name }));
+
 export const SETTINGS_MENU_CORE = SETTINGS_MENU_ITEMS.filter((item) => item.group === "core");
 export const SETTINGS_MENU_ADMIN = SETTINGS_MENU_ITEMS.filter((item) => item.group === "admin");
 
@@ -296,6 +312,7 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
     ...DASHBOARD_ACCESS_KEYS.map((item) => item.key),
     ...DEPARTMENT_KEYS.map((item) => item.key),
     ...DEALING_TAB_KEYS.map((item) => item.key),
+    ...SETTINGS_PAGE_KEYS.map((item) => item.key),
     ...NOTIFICATION_KEYS.map((item) => item.key),
     ...ADMIN_ACCESS_KEYS.map((item) => item.key),
   ]),
@@ -389,8 +406,23 @@ export function getDepartmentItemBySlug(slug: string | null | undefined) {
   return DEPARTMENT_NAV_ITEMS.find((item) => item.slug === normalized) || null;
 }
 
+// A settings page opens for its requiredPermissions (the broad "Settings" key,
+// or a Settings + role pair), OR for its own page chip.
+//
+// The chip is matched EXACTLY, never through hasUserAccess. That function
+// treats owning a prefix as owning everything under it, so "Settings" would
+// satisfy "Settings:api-clients" and every existing Settings user would
+// silently gain the admin pages the Settings + Manage Users pair keeps from
+// them. Same reasoning as hasDashboardSectionAccess below.
+export function canAccessSettingsItem(user: AuthUser | null | undefined, item: SettingsMenuItem): boolean {
+  if (canAccessAll(user, item.requiredPermissions)) return true;
+  if (!user || SETTINGS_PAGE_CHIP_EXCLUDED.includes(item.key)) return false;
+  const owned = Array.isArray(user.access) ? user.access : [];
+  return owned.includes(settingsPageKey(item.key));
+}
+
 export function getVisibleSettingsMenuItems(user: AuthUser | null | undefined) {
-  return SETTINGS_MENU_ITEMS.filter((item) => canAccessAll(user, item.requiredPermissions));
+  return SETTINGS_MENU_ITEMS.filter((item) => canAccessSettingsItem(user, item));
 }
 
 // Dashboard sections are gated by EXACT key ownership, not the prefix-cascade used by

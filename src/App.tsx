@@ -9,7 +9,7 @@ import { Layout } from "./components/Layout";
 import { LiveAlertsNotifier } from "./components/LiveAlertsNotifier";
 import { getCurrentUser } from "./lib/auth";
 import { UnauthorizedPage } from "./components/UnauthorizedPage";
-import { canAccessAll, hasApplicationsAccess, LEGACY_ROUTE_ALIASES, SETTINGS_MENU_ITEMS } from "./lib/permissions";
+import { canAccessSettingsItem, hasApplicationsAccess, LEGACY_ROUTE_ALIASES, SETTINGS_MENU_ITEMS, type SettingsMenuItem } from "./lib/permissions";
 
 const Index = lazy(() => import("./pages/Index"));
 const LeverageUpdate = lazy(() => import("./pages/LeverageUpdate"));
@@ -57,17 +57,19 @@ const settingsPageComponents = {
   "user-management": UserManagementPage,
 } as const;
 
+// Same rule as the settings menu (canAccessSettingsItem), so a page hidden from
+// the menu cannot be reached by typing its URL either.
 function SettingsRoute({
   children,
-  requiredPermissions,
+  item,
   title,
 }: {
   children: React.ReactNode;
-  requiredPermissions: readonly string[];
+  item: SettingsMenuItem;
   title: string;
 }) {
   const currentUser = getCurrentUser();
-  if (!canAccessAll(currentUser, requiredPermissions)) return <UnauthorizedPage title={title} />;
+  if (!canAccessSettingsItem(currentUser, item)) return <UnauthorizedPage title={title} />;
   return children;
 }
 
@@ -119,7 +121,7 @@ const App = () => (
                     key={item.key}
                     path={item.path.replace(/^\//, "")}
                     element={
-                      <SettingsRoute requiredPermissions={item.requiredPermissions} title={`${item.name} Access Required`}>
+                      <SettingsRoute item={item} title={`${item.name} Access Required`}>
                         <PageComponent />
                       </SettingsRoute>
                     }
