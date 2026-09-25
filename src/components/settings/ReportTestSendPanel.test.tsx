@@ -236,3 +236,56 @@ describe("ReportTestSendPanel resolved period and errors", () => {
     await waitFor(() => screen.getByText("Choose a cadence or a date range, not both."));
   });
 });
+
+// ── reports whose route takes no period ──────────────────────────────────────
+//
+// Daily Digest and Monthly Review are handled by their own routes, not by
+// makeReportTestSendHandler, and those take recipients only: runDailyDigest()
+// always covers yesterday, runMonthlyReview() last calendar month. A cadence
+// posted to either is accepted and ignored, which is the worst outcome of the
+// three -- the operator gets a green confirmation for a window they did not
+// ask for and did not receive.
+describe("reports that take no cadence or date range", () => {
+  it("sends recipients only, dropping any period still in state", () => {
+    expect(
+      buildTestSendBody({
+        recipients: ["ops@example.com"],
+        cadence: "monthly",
+        from: "2026-09-01",
+        to: "2026-09-30",
+        supportsPeriod: false,
+      }),
+    ).toEqual({ recipients: ["ops@example.com"] });
+  });
+
+  it("still sends the period for the reports whose routes honour one", () => {
+    expect(
+      buildTestSendBody({ recipients: ["ops@example.com"], cadence: "daily", from: "", to: "", supportsPeriod: true }),
+    ).toEqual({ recipients: ["ops@example.com"], cadence: "daily" });
+  });
+
+  it("defaults to sending the period, so an entry missing the flag is not silently stripped", () => {
+    expect(
+      buildTestSendBody({ recipients: ["ops@example.com"], cadence: "daily", from: "", to: "" }),
+    ).toEqual({ recipients: ["ops@example.com"], cadence: "daily" });
+  });
+
+  it("offers every scheduled report family in the picker", () => {
+    // The six families in reports/schedulers.js. A report that can be scheduled
+    // but not test-sent can only be verified by waiting for its cron, which is
+    // how a broken headline reached the desk unnoticed.
+    render(<ReportTestSendPanel />);
+    const picker = screen.getByLabelText(/report/i) as HTMLSelectElement;
+    const labels = [...picker.options].map((o) => o.textContent);
+    for (const name of [
+      "Slippage Report",
+      "Deal Match Report",
+      "Business Summary",
+      "Swaps Report",
+      "Daily Digest",
+      "Monthly Review",
+    ]) {
+      expect(labels).toContain(name);
+    }
+  });
+});

@@ -3,13 +3,20 @@ import { authHeaders, getCurrentUser } from "@/lib/auth";
 import { describePeriod, previousFullPeriodUtc, type ReportCadence } from "@/lib/reportPeriods";
 
 // The report emails that can be test-sent on demand. Each entry maps to the
-// matching /api/reports/<endpoint>/test route on the server. All three routes
-// accept an optional cadence or an optional from/to window in the body.
+// matching /api/reports/<endpoint>/test route on the server.
+//
+// `supportsPeriod` says whether that route honours a cadence or a from/to
+// window. The four built on makeReportTestSendHandler do; Daily Digest and
+// Monthly Review take recipients only and always cover yesterday and last month
+// respectively. The flag is not decoration -- posting a cadence to those two
+// would be accepted and silently ignored, so the panel hides the controls
+// rather than letting an operator choose a period that does nothing.
 export const TEST_SEND_REPORTS = [
   {
     key: "slippage",
     label: "Slippage Report",
     endpoint: "/api/reports/slippage-weekly/test",
+    supportsPeriod: true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.lps ?? 0} LPs`,
   },
@@ -17,6 +24,7 @@ export const TEST_SEND_REPORTS = [
     key: "dealmatch",
     label: "Deal Match Report",
     endpoint: "/api/reports/dealmatch-weekly/test",
+    supportsPeriod: true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.rows ?? 0} clients`,
   },
@@ -24,6 +32,7 @@ export const TEST_SEND_REPORTS = [
     key: "summary",
     label: "Business Summary",
     endpoint: "/api/reports/summary-weekly/test",
+    supportsPeriod: true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.depositors ?? 0} active accounts`,
   },
@@ -31,11 +40,30 @@ export const TEST_SEND_REPORTS = [
     key: "swaps",
     label: "Swaps Report",
     endpoint: "/api/reports/swaps-weekly/test",
+    supportsPeriod: true,
     // runSwapsEmailReport resolves to { ok, lps, clients, fromYmd, toYmd } --
     // both counts, because a swaps send with clients but no LPs (or the
     // reverse) is the failure worth spotting in the confirmation line.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.clients ?? 0} clients, ${d?.lps ?? 0} LPs`,
+  },
+  {
+    key: "digest",
+    label: "Daily Digest",
+    endpoint: "/api/reports/daily-digest/test",
+    // Its route takes recipients and nothing else -- runDailyDigest() always
+    // covers yesterday. See `supportsPeriod` below.
+    supportsPeriod: false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.instruments ?? 0} instruments`,
+  },
+  {
+    key: "review",
+    label: "Monthly Review",
+    endpoint: "/api/reports/monthly-review/test",
+    supportsPeriod: false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.depositors ?? 0} depositors, ${d?.weeks ?? 0} weeks`,
   },
 ] as const;
 
@@ -61,13 +89,21 @@ export function buildTestSendBody({
   cadence,
   from,
   to,
+  supportsPeriod = true,
 }: {
   recipients: string[];
   cadence: CadenceChoice;
   from: string;
   to: string;
+  supportsPeriod?: boolean;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = { recipients };
+  // A report whose route takes no period gets recipients and nothing else, even
+  // if a cadence is somehow still in state. The UI hides the controls, but this
+  // is the function that decides what is actually sent -- and a request the
+  // server silently ignores is worse than one it refuses, because the operator
+  // sees a green confirmation for a window they did not get.
+  if (supportsPeriod === false) return body;
   if (cadence) body.cadence = cadence;
   else if (from && to) {
     body.from = from;
@@ -149,7 +185,7 @@ export const ReportTestSendPanel: React.FC = () => {
       const res = await fetch(selectedReport.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify(buildTestSendBody({ recipients, cadence, from, to })),
+        body: JSON.stringify(buildTestSendBody({ recipients, cadence, from, to, supportsPeriod: selectedReport.supportsPeriod })),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data?.ok === false) {
@@ -213,6 +249,15 @@ export const ReportTestSendPanel: React.FC = () => {
         </button>
       </div>
 
+      {!selectedReport.supportsPeriod ? (
+        <div className="mt-3 rounded-xl border border-border/40 bg-background/40 p-3 text-xs text-muted-foreground">
+          {/* Not a disabled row: a greyed-out cadence picker invites the
+              question "why can't I?", where a sentence answers it. */}
+          {selectedReport.label} always covers its own fixed window &mdash;{" "}
+          {selectedReport.key === "digest" ? "yesterday" : "last calendar month"}. It takes no cadence or
+          date range, so there is nothing to choose here.
+        </div>
+      ) : (
       <div className="mt-3 rounded-xl border border-border/40 bg-background/40 p-3">
         <div className="flex flex-wrap items-center gap-3">
           <label className={`inline-flex items-center gap-2 text-sm text-muted-foreground ${usingDates ? "opacity-40" : ""}`}>
@@ -279,6 +324,7 @@ export const ReportTestSendPanel: React.FC = () => {
           )}
         </div>
       </div>
+      )}
     </section>
   );
 };
