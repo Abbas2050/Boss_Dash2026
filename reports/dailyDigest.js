@@ -71,7 +71,26 @@ export function buildDailyDigestHtml({
     dataCell("IB Rebate", money(d.ibRebate), { align: "right", cls: num(d.ibRebate) > 0 ? "cost" : "" }) +
     dataCell("Net", money(net), { align: "right", bold: true, cls: signCls(net) });
 
-  // Six tiles, not the weekly's nine. Active Accounts, Large Depositors and
+  // Credit given to clients. It is already aggregated -- classifyTx() buckets
+  // "credit" as its own kind and aggregate() puts it in `excluded`, deliberately
+  // OUT of deposits/withdrawals/netFlow, because a credit is a bonus and not
+  // cash the business received or paid.
+  //
+  // Reported here rather than left in the footer's excluded line: "what did we
+  // give away in credit yesterday" is a question about the day's money, and a
+  // figure nobody sees is a figure nobody governs. It stays visibly apart from
+  // the flow tiles all the same -- no pos/cost tint, and a note saying it is not
+  // cash -- so it can never be read as a deposit.
+  //
+  // txAmount() takes magnitudes (direction comes from the type, never the sign),
+  // so this is credit GIVEN, gross. If credit is ever reversed it will arrive as
+  // another "credit" row and add to this total rather than subtract from it;
+  // there is no credit-out type today to distinguish them.
+  const creditBucket = (agg.excluded || []).find((e) => e.kind === "credit");
+  const creditGiven = creditBucket ? creditBucket.amount : 0;
+  const creditCount = creditBucket ? creditBucket.count : 0;
+
+  // Seven tiles, not the weekly's nine. Active Accounts, Large Depositors and
   // First-Time Depositors are counts that need a week to mean anything; over a
   // single day they are mostly small integers that crowd out the money.
   const glanceCards = kpiGrid([
@@ -91,6 +110,16 @@ export function buildDailyDigestHtml({
       note: "Total Revenue less IB Rebate",
     },
     { label: "Lots", value: fmtNum(instruments.totalLots, 2), note: "realized, all instruments" },
+    {
+      label: "Credit Given",
+      value: money(creditGiven),
+      // No pos/cost class on purpose. Those tint the cash tiles, and credit is
+      // not cash -- colouring it like a deposit is exactly the misreading the
+      // note below exists to prevent.
+      note: creditCount
+        ? `bonus/credit, not cash · across ${fmtNum(creditCount, 0)} credit${creditCount === 1 ? "" : "s"}`
+        : "bonus/credit, not cash · none yesterday",
+    },
   ]);
 
   const cb = closingBalance;

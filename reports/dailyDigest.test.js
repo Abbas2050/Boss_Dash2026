@@ -151,3 +151,56 @@ describe("the footer states the real cadence", () => {
     expect(html).not.toMatch(/sent every morning/i);
   });
 });
+
+// ── credit given to clients ──────────────────────────────────────────────────
+//
+// Credit is a bonus, not cash. aggregate() has always bucketed it apart from
+// deposits/withdrawals; before 2026-09-25 the digest never showed it, so the one
+// number saying what the business gave away yesterday existed only in the
+// footer's excluded line of a DIFFERENT report.
+describe("credit given to clients", () => {
+  const WITH_CREDIT = aggregate([
+    tx({ id: 1, type: "deposit", processedAmount: 5000, fromUserId: 1 }),
+    tx({ id: 2, type: "withdrawal", processedAmount: 1200, fromUserId: 1 }),
+    tx({ id: 3, type: "credit", processedAmount: 300, fromUserId: 2 }),
+    tx({ id: 4, type: "credit", processedAmount: 150, fromUserId: 3 }),
+  ]);
+
+  it("shows the credit total and how many credits made it", () => {
+    const out = base({ agg: WITH_CREDIT });
+    expect(out).toContain("Credit Given");
+    expect(out).toContain("$450.00");
+    expect(out).toMatch(/across 2 credits/);
+  });
+
+  it("keeps credit out of deposits, withdrawals and net flow", () => {
+    // The tile must not change the money chain. Deposits - Withdrawals - IB
+    // Rebate = Net Flow still holds, and none of the three moved by the $450.
+    expect(WITH_CREDIT.deposits).toBe(5000);
+    expect(WITH_CREDIT.withdrawals).toBe(1200);
+    expect(WITH_CREDIT.netFlow).toBe(5000 - 1200 - 0);
+    expect(WITH_CREDIT.excluded.find((e) => e.kind === "credit")).toEqual({
+      kind: "credit",
+      amount: 450,
+      count: 2,
+    });
+  });
+
+  it("never tints credit as cash", () => {
+    // pos/cost are the classes the deposit and withdrawal tiles carry. Credit
+    // wearing one would read as money in or out, which is the whole confusion
+    // the note guards against.
+    const out = base({ agg: WITH_CREDIT });
+    const tile = out.slice(out.indexOf("Credit Given"), out.indexOf("Credit Given") + 400);
+    expect(tile).not.toMatch(/kpi-value[^"]*\b(pos|cost)\b/);
+    expect(tile).toMatch(/bonus\/credit, not cash/);
+  });
+
+  it("says so plainly on a day with no credit, rather than omitting the tile", () => {
+    // A missing tile reads as "not measured"; $0.00 with a note reads as
+    // "measured, and it was none".
+    const out = base();
+    expect(out).toContain("Credit Given");
+    expect(out).toMatch(/none yesterday/);
+  });
+});
