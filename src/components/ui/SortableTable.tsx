@@ -32,6 +32,22 @@ type SortableTableProps<T> = {
   emptyText?: string;
   exportFilePrefix?: string;
   exportFooterRows?: string[][];
+  /**
+   * A totals row pinned to the bottom of the table.
+   *
+   * Rendered in a real <tfoot>, NOT appended to `rows`, and that distinction is
+   * the whole point: a totals row inside `rows` is sorted like any other row, so
+   * the first click on a column header buries the total somewhere in the middle
+   * of the data. A <tfoot> stays put through every sort and filter.
+   *
+   * It is a partial map of column key -> node, so a caller supplies only the
+   * columns that have a meaningful total; every other cell renders empty rather
+   * than a misleading zero. Column visibility and reordering apply to it exactly
+   * as they do to the body, because it is built from the same visibleColumns.
+   */
+  footerRow?: Partial<Record<string, React.ReactNode>>;
+  /** Label for the footer's first visible cell, e.g. "TOTAL". */
+  footerLabel?: React.ReactNode;
   rowClassName?: (row: T, index: number) => string;
   onRowClick?: (row: T, index: number) => void;
 };
@@ -99,6 +115,8 @@ export function SortableTable<T>({
   emptyText = "No data available.",
   exportFilePrefix = "table",
   exportFooterRows = [],
+  footerRow,
+  footerLabel = "TOTAL",
   rowClassName,
   onRowClick,
   defaultSortKey,
@@ -447,6 +465,24 @@ export function SortableTable<T>({
               </tr>
             )}
           </tbody>
+          {footerRow && sortedRows.length > 0 && (
+            <tfoot>
+              <tr className="bg-slate-100 font-semibold dark:bg-slate-900/80">
+                {visibleColumns.map((col, i) => (
+                  <td
+                    key={col.key}
+                    className={`border-t-2 border-slate-400 px-3 py-2 dark:border-slate-600 ${col.cellClassName || "text-left"}`}
+                  >
+                    {/* The label occupies the first visible column, so it survives
+                        the user hiding or reordering columns -- pinning it to a
+                        named key would blank the label the moment that column was
+                        hidden. */}
+                    {i === 0 ? (footerRow[col.key] ?? footerLabel) : (footerRow[col.key] ?? null)}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

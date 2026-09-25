@@ -105,7 +105,12 @@ const CLEAN = {
 //
 // Shaped as the backend actually sends "no statement" (observed 2026-09-17): a
 // ZERO statementSwap with zero rows behind it, not null.
+// No statement, but MT5 DID report a figure. Since 2026-09-25 this resolves to
+// that figure rather than to null -- see the Manager branch of effectiveLpSwap.
 const UNFILED_MANAGER = { id: 6, login: 506, lpName: "Unfiled Mgr", source: "Manager", totalSwap: -400, unrealizedSwap: null, statementSwap: 0, statementRowCount: 0 };
+// Neither a statement nor an MT5 figure. This is what "unresolvable" means for
+// a Manager LP now, and it is the only shape that still produces no figure.
+const UNRESOLVABLE_MANAGER = { id: 7, login: 507, lpName: "Silent Mgr", source: "Manager", totalSwap: null, unrealizedSwap: null, statementSwap: 0, statementRowCount: 0 };
 
 const PERIOD = { fromYmd: "2026-08-24", toYmd: "2026-08-30" };
 
@@ -177,7 +182,11 @@ const NO_RECORD = "No swap record for this period, so there is no figure &mdash;
 // A KPI card by its label: { cls, value, note }.
 function kpi(out, label) {
   const esc = label.replace(/[()]/g, "\\$&");
-  const m = new RegExp(`<p class="kpi-label">${esc}</p>\\s*<p class="kpi-value([^"]*)">([^<]*)</p>(?:\\s*<p class="kpi-note-sm">([^<]*)</p>)?`).exec(out);
+  // `[^>]*` after each class: a headline card may carry inline styles as well
+  // as its class (the shared rptHero does, since inline is what survives the
+  // mail clients). Anchoring on the class alone keeps this helper about WHICH
+  // card it found rather than about how that card happens to be painted.
+  const m = new RegExp(`<p class="kpi-label"[^>]*>${esc}</p>\\s*<p class="kpi-value([^"]*)"[^>]*>([^<]*)</p>(?:\\s*<p class="kpi-note-sm"[^>]*>([^<]*)</p>)?`).exec(out);
   return m ? { cls: m[1].trim(), value: m[2], note: m[3] ?? null } : null;
 }
 
@@ -287,11 +296,23 @@ describe("rule 4 picks each LP's figure by its type", () => {
     expect(kpi(headlineOf(out), "LP Swap (period)").value).toBe("$0.00");
   });
 
+  it("Manager falls back to the MT5 figure when no statement was uploaded", () => {
+    // The 2026-09-25 reversal. Before it, this returned null and a day with no
+    // statements uploaded printed a dash for the whole LP headline while the
+    // Swaps Report tab showed a total for the same day.
+    expect(effectiveLpSwap(UNFILED_MANAGER)).toEqual({ value: -400, source: "mt5-fallback", type: "Manager", reason: null });
+  });
+
+  it("a Manager statement still wins over the MT5 figure when one exists", () => {
+    // The fallback must not override an uploaded statement -- LPS[3] has both.
+    expect(effectiveLpSwap(LPS[3]).source).toBe("statement");
+  });
+
   it("an unresolvable LP has no value and says why", () => {
-    const mgr = effectiveLpSwap(UNFILED_MANAGER);
+    const mgr = effectiveLpSwap(UNRESOLVABLE_MANAGER);
     expect(mgr.value).toBeNull();
     expect(mgr.source).toBeNull();
-    expect(mgr.reason).toMatch(/Manager LP with no statement uploaded/);
+    expect(mgr.reason).toMatch(/no statement uploaded and no MT5 figure/);
 
     const term = effectiveLpSwap({ source: "Terminal", totalSwap: null, statementSwap: -50 });
     expect(term.value).toBeNull();
@@ -352,10 +373,9 @@ describe("the LP table is one plain list: every LP, one figure, nothing else", (
   });
 
   it("lists an LP with no figure by name under its reason, never as 0.00", () => {
-    const t = lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] }));
-    expect(row(t, "Unfiled Mgr")).toBeNull(); // a name under a reason, not a card
-    expect(unresolvedGroups(t)).toEqual([{ reason: NO_STATEMENT, count: 1, names: ["Unfiled Mgr"] }]);
-    expect(t).not.toContain("400.00");
+    const t = lpTableOf(html({ lps: [...LPS, UNRESOLVABLE_MANAGER] }));
+    expect(row(t, "Silent Mgr")).toBeNull(); // a name under a reason, not a card
+    expect(unresolvedGroups(t)).toEqual([{ reason: NO_RECORD, count: 1, names: ["Silent Mgr"] }]);
     expect(t).not.toMatch(/Manager|\btype\b|source/i);
   });
 
@@ -370,12 +390,12 @@ describe("the LP table is one plain list: every LP, one figure, nothing else", (
   });
 
   it("puts LPs with a figure first, largest first, and LPs with none after", () => {
-    const ordered = orderLpRows([UNFILED_MANAGER, ...LPS]);
-    expect(ordered.map((r) => r.label)).toEqual(["Xtb", "Finalto", "Book LP", "Term LP", "Quiet LP", "Unfiled Mgr"]);
+    const ordered = orderLpRows([UNRESOLVABLE_MANAGER, ...LPS]);
+    expect(ordered.map((r) => r.label)).toEqual(["Xtb", "Finalto", "Book LP", "Term LP", "Quiet LP", "Silent Mgr"]);
   });
 
   it("counts the unresolved LPs under the table", () => {
-    expect(lpTableOf(html({ lps: [...LPS, UNFILED_MANAGER] }))).toMatch(/<strong>1 of 6 LP\(s\) have no figure<\/strong>/);
+    expect(lpTableOf(html({ lps: [...LPS, UNRESOLVABLE_MANAGER] }))).toMatch(/<strong>1 of 6 LP\(s\) have no figure<\/strong>/);
     expect(lpTableOf(html())).toMatch(/All 5 LP\(s\) have a figure\./);
   });
 });
@@ -491,17 +511,17 @@ describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", (
     expect(sum).toBeCloseTo(REAL_WEEK.lpTotals.totalSwap, 2);
   });
 
-  it("FX Edge Coverage has no figure, not a confident zero", () => {
+  // Was "FX Edge Coverage has no figure, not a confident zero". Until the
+  // 2026-09-25 reversal this Manager LP resolved to null because no statement
+  // was uploaded, even though MT5 had -11,059.16 for it. Showing that figure is
+  // the entire point of the change, so the fixture now asserts it.
+  it("FX Edge Coverage shows its MT5 figure now that Manager falls back", () => {
     const fxEdge = REAL_WEEK.lps.find((lp) => lp.lpName.trim() === "FX Edge Coverage");
     expect(fxEdge.totalSwap).toBe(-11059.16);
-    expect(effectiveLpSwap(fxEdge)).toMatchObject({ value: null, source: null, type: "Manager" });
+    expect(effectiveLpSwap(fxEdge)).toMatchObject({ value: -11059.16, source: "mt5-fallback", type: "Manager" });
 
     const t = lpTableOf(realOut());
-    expect(row(t, "FX Edge Coverage")).toBeNull();
-    const [group] = unresolvedGroups(t);
-    expect(group.reason).toBe(NO_STATEMENT);
-    expect(group.names).toContain("FX Edge Coverage");
-    expect(t).not.toContain("11,059.16");
+    expect(cell(row(t, "FX Edge Coverage"), "LP Swap (period)")).toBe("-$11,059.16 (cost)");
   });
 
   // The defect: with a 15-row cap and unresolved LPs sorted first, the real
@@ -513,51 +533,47 @@ describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", (
     expect([...names].sort()).toEqual(REAL_WEEK.lps.map((lp) => lp.lpName.trim()).sort());
   });
 
-  it("shows Amana 1, Scope Prime, Infinox and XTB Direct API with their figures, before any LP with no figure", () => {
-    const out = realOut();
-    const t = lpTableOf(out);
+  it("shows every LP with a figure, Manager ones included", () => {
+    const t = lpTableOf(realOut());
     expect(cell(row(t, "Amana 1"), "LP Swap (period)")).toBe("-$12,277.45 (cost)");
     expect(cell(row(t, "Scope Prime"), "LP Swap (period)")).toBe("-$9,883.71 (cost)");
     expect(cell(row(t, "Infinox"), "LP Swap (period)")).toBe("-$3,358.94 (cost)");
     expect(cell(row(t, "XTB Direct API"), "LP Swap (period)")).toBe("-$2,122.34 (cost)");
-
-    const names = lpNamesShown(out);
-    const firstUnresolved = Math.min(...MANAGERS.map((lp) => names.indexOf(lp.lpName.trim())));
-    for (const name of ["Amana 1", "Scope Prime", "Infinox", "XTB Direct API"]) {
-      expect(names.indexOf(name)).toBeGreaterThan(-1);
-      expect(names.indexOf(name)).toBeLessThan(firstUnresolved);
-    }
+    // Manager LPs, which printed no figure at all before the reversal.
+    expect(cell(row(t, "FXCM 2 Coverage"), "LP Swap (period)")).toBe("-$3,813.72 (cost)");
+    expect(countCells(t, "LP Swap (period)")).toBe(43);
   });
 
-  it("orders the LPs that have a figure by magnitude, and puts every one of them before every LP without", () => {
+  it("orders every LP by magnitude, now that all 43 resolve", () => {
+    const resolved = REAL_WEEK.lps.filter((lp) => effectiveLpSwap(lp).value !== null);
+    expect(resolved).toHaveLength(43); // was 16 before the Manager fallback
+
     const names = lpNamesShown(realOut());
-    const resolved = REAL_WEEK.lps.filter((lp) => effectiveLpSwap(lp).value !== null).map((lp) => lp.lpName.trim());
-    expect(resolved).toHaveLength(16);
-    // The first 16 names on the page are exactly the 16 LPs with a figure.
-    expect([...names.slice(0, 16)].sort()).toEqual([...resolved].sort());
-
     const t = lpTableOf(realOut());
-    const sizes = names.slice(0, 16).map((n) => Math.abs(figureOf(cell(row(t, n), "LP Swap (period)"))));
+    const sizes = names.map((n) => Math.abs(figureOf(cell(row(t, n), "LP Swap (period)"))));
     for (let i = 1; i < sizes.length; i++) expect(sizes[i]).toBeLessThanOrEqual(sizes[i - 1]);
-    expect(names.slice(0, 7)).toEqual(["Amana 1", "Scope Prime", "Infinox", "XTB Direct API", "Finalto API", "Noor Capital", "CFI"]);
+    // Managers now interleave with the rest instead of being exiled to the end.
+    expect(names.slice(0, 7)).toEqual([
+      "Amana 1", "FX Edge Coverage", "Scope Prime", "Finalto 2nd acc 33758 - Coverage",
+      "FXCM 2 Coverage", "Infinox", "EdgeWaterMark Coverage ACC",
+    ]);
 
-    // And orderLpRows itself, not only the page.
     const ordered = orderLpRows(REAL_WEEK.lps);
-    expect(ordered.slice(0, 16).every((r) => r.swap.value !== null)).toBe(true);
-    expect(ordered.slice(16).every((r) => r.swap.value === null)).toBe(true);
+    expect(ordered.every((r) => r.swap.value !== null)).toBe(true);
   });
 
-  it("states the no-statement reason once for all 27 Manager LPs, not once per LP", () => {
-    for (const lp of MANAGERS) expect(effectiveLpSwap(lp).value).toBeNull();
+  // Was "states the no-statement reason once for all 27 Manager LPs". Those 27
+  // all resolve now, so that grouping has nothing to group and the no-statement
+  // wording should appear nowhere on the page.
+  it("no longer groups the 27 Manager LPs under a no-statement reason", () => {
+    for (const lp of MANAGERS) expect(effectiveLpSwap(lp).value).not.toBeNull();
     const t = lpTableOf(realOut());
-    expect(t.split("No statement uploaded for this period").length - 1).toBe(1);
-    expect(unresolvedGroups(t)).toEqual([
-      { reason: NO_STATEMENT, count: 27, names: MANAGERS.map((lp) => lp.lpName.trim()).sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })) },
-    ]);
-    // No LP with no figure is rendered as a card, so there are no dash cards.
-    expect(countCells(t, "LP Swap (period)")).toBe(16);
+    expect(t).not.toContain("No statement uploaded for this period");
+    expect(unresolvedGroups(t)).toEqual([]);
+    expect(countCells(t, "LP Swap (period)")).toBe(43);
     expect(t).not.toMatch(/<span class="val[^"]*">&mdash;<\/span>/);
-    expect(t).toMatch(/<strong>27 of 43 LP\(s\) have no figure<\/strong>/);
+    expect(t).toMatch(/All 43 LP\(s\) have a figure\./);
+    // The two fetch failures are a separate matter and still surface.
     expect(t).toMatch(/2 LP\(s\) failed and are not in this table/);
   });
 
@@ -567,14 +583,14 @@ describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", (
     const out = html({ ...REAL_WEEK, lps: [...REAL_WEEK.lps, noRecordApi, noRecordTerm] }, { period: { fromYmd: "2026-09-05", toYmd: "2026-09-11" } });
     const t = lpTableOf(out);
 
-    expect(t.split("No statement uploaded for this period").length - 1).toBe(1);
+    // One reason survives the Manager fallback: an Api/Terminal LP that sent
+    // nothing at all. The 27 Managers resolve and are not grouped.
+    expect(t).not.toContain("No statement uploaded for this period");
     expect(t.split("No swap record for this period").length - 1).toBe(1);
 
-    const groups = unresolvedGroups(t);
-    expect(groups.map((g) => g.reason)).toEqual([NO_STATEMENT, NO_RECORD]);
-    expect(groups[0].count).toBe(27);
-    expect([...groups[0].names].sort()).toEqual(MANAGERS.map((lp) => lp.lpName.trim()).sort());
-    expect(groups[1]).toEqual({ reason: NO_RECORD, count: 2, names: ["Silent Api LP", "Silent Terminal LP"] });
+    expect(unresolvedGroups(t)).toEqual([
+      { reason: NO_RECORD, count: 2, names: ["Silent Api LP", "Silent Terminal LP"] },
+    ]);
     expect(lpNamesShown(out)).toHaveLength(45);
   });
 
@@ -586,24 +602,35 @@ describe("the real week of 2026-09-05..2026-09-11 (live payload, 2026-09-17)", (
   });
 
   it("the LP total is a dash, and the partial sum appears nowhere in the email", () => {
-    expect(lpSwapTotal(REAL_WEEK.lps, REAL_WEEK.lpErrors)).toEqual({ value: null, count: 43, unresolved: 27, failed: 2 });
+    // Still a dash for this week, but for ONE reason now instead of two: every
+    // LP resolves, and two LPs failed to fetch at all. A sum over 43 of 45 is
+    // still a partial sum.
+    expect(lpSwapTotal(REAL_WEEK.lps, REAL_WEEK.lpErrors)).toEqual({ value: null, count: 43, unresolved: 0, failed: 2 });
     const out = realOut();
     const card = kpi(headlineOf(out), "LP Swap (period)");
     expect(card.value).toBe("&mdash;");
-    expect(card.note).toBe("27 of 43 LP(s) unresolved, 2 LP(s) failed; no partial sum");
+    expect(card.note).toBe("2 LP(s) failed; no partial sum");
     expect(out).not.toContain("27,767.27");
-    expect(out).not.toContain("48,265.24");
   });
 
-  // The real week has two independent reasons for a dash: 27 statement-less
-  // Manager LPs AND two failed LPs. Either guard alone would hide the partial
-  // sum from the headline, so this case removes the failures and leaves the
-  // statement rule to hold the line on its own.
-  it("with the two failures removed, the statement rule alone still refuses the partial sum", () => {
+  // The inverse of what this case proved before 2026-09-25. The real week had
+  // two independent reasons for a dash -- 27 statement-less Manager LPs AND two
+  // failed LPs -- and the statement rule used to hold the line on its own. With
+  // the Manager fallback in place only the failures do, so removing them yields
+  // a real total: the full -48,265.24 over all 43 LPs, and NOT the -27,767.27
+  // sixteen-LP partial the old rule existed to keep off the page.
+  it("with the two failures removed, every LP resolves and the total is the full sum", () => {
     const out = html({ ...REAL_WEEK, lpErrors: [] }, { period: { fromYmd: "2026-09-05", toYmd: "2026-09-11" } });
+    // toBeCloseTo, not toEqual: summing 43 floats lands on -48265.24000000001.
+    // The card formats to 2dp so the reader never sees the tail, and pinning the
+    // exact double would make this fail if one LP's figure changed in the last
+    // decimal for reasons that do not matter.
+    const total = lpSwapTotal(REAL_WEEK.lps, []);
+    expect(total.value).toBeCloseTo(-48265.24, 2);
+    expect(total).toMatchObject({ count: 43, unresolved: 0, failed: 0 });
     const card = kpi(headlineOf(out), "LP Swap (period)");
-    expect(card.value).toBe("&mdash;");
-    expect(card.note).toBe("27 of 43 LP(s) unresolved; no partial sum");
+    expect(card.value).toBe("-$48,265.24 (cost)");
+    expect(card.note).toBe("43 LPs");
     expect(out).not.toContain("27,767.27");
   });
 
@@ -634,8 +661,8 @@ describe("the LP total is the sum of rule-4 figures, all or nothing", () => {
   it("is a dash with the unresolved count when any LP is unresolved, never the partial sum", () => {
     // The five resolved LPs still sum to -7,300 -- a perfectly plausible
     // figure. It must appear nowhere.
-    expect(lpSwapTotal([...LPS, UNFILED_MANAGER])).toEqual({ value: null, count: 6, unresolved: 1, failed: 0 });
-    const out = html({ lps: [...LPS, UNFILED_MANAGER] });
+    expect(lpSwapTotal([...LPS, UNRESOLVABLE_MANAGER])).toEqual({ value: null, count: 6, unresolved: 1, failed: 0 });
+    const out = html({ lps: [...LPS, UNRESOLVABLE_MANAGER] });
     const card = kpi(headlineOf(out), "LP Swap (period)");
     expect(card.value).toBe("&mdash;");
     expect(card.note).toBe("1 of 6 LP(s) unresolved; no partial sum");
@@ -1006,10 +1033,28 @@ describe("the Swaps email is built through the shared light shell", () => {
 
   it("uses none of the constructions Zoho strips or that break on a phone", () => {
     const out = html();
-    expect(out).not.toMatch(/@media/);
     expect(out).not.toMatch(/::(before|after)/);
     expect(out).not.toMatch(/display\s*:\s*(flex|grid)/);
     expect(source).not.toMatch(/::(before|after)/);
+  });
+
+  // Narrowed from a flat "no @media anywhere" on 2026-09-25.
+  //
+  // The point of that rule is that Zoho strips @media, so LAYOUT must never
+  // depend on one -- which is why it sat beside ::before and display:flex. The
+  // shared card system honours that: .rpt-cell's column width is an inline px
+  // max-width, and when the cap exceeds the viewport the cells stack on their
+  // own, in every client, with no query involved. The one query that ships only
+  // widens an already-stacked card from its cap to the full screen, so a client
+  // that drops it loses a tidy right edge and nothing else.
+  //
+  // The guard is kept sharp rather than removed: exactly one @media may exist
+  // and it must be that override, so a second one -- or a load-bearing first
+  // one -- still fails here.
+  it("ships at most the one documented phone override, and no other @media", () => {
+    const out = html();
+    expect((out.match(/@media/g) || []).length).toBe(1);
+    expect(out).toMatch(/@media[^{]*\{\s*\.rpt-cell/);
   });
 
   it("emits the shell's document, its light palette and table.data", () => {

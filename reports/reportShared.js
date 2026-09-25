@@ -641,6 +641,21 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:${t.muted}; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:${t.kpiValue}; margin:0; white-space:nowrap; }
       .kpi-note-sm { font-size:10px; color:${t.muted}; margin:4px 0 0; }
+      /* Cells emitted by the shared card system (rptCard / rptHero). Their
+         column width is an inline px max-width, because that is what survives
+         a client with no stylesheet support at all; this rule exists so the
+         phone override below has something to override, and so the class is
+         not referenced without a rule. */
+      .rpt-cell { vertical-align:top; }
+      /* Phone widths: enhancement only, never load-bearing. The inline cap
+         already stacks the cells when it exceeds the viewport -- what it cannot
+         do is make a 228px card fill a 343px screen, which leaves the deck
+         ragged. Zoho strips media queries entirely (see the "Single layout"
+         note in the report shells), so a Zoho reader keeps exactly the stacked
+         layout they have today and nothing here is depended upon. */
+      @media only screen and (max-width: 600px) {
+        .rpt-cell { max-width:100% !important; width:100% !important; display:block !important; }
+      }
       /* ── cells flow, they never scroll ──────────────────────────────────
          Zoho ships a 29-property allow-list. It KEEPS display / width /
          max-width / white-space / box-sizing, and DROPS
@@ -708,3 +723,217 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
   </body>
 </html>`;
 }
+
+
+/* ══ Report card system ═════════════════════════════════════════════════
+ *
+ * Lives here rather than in one report because every scheduled email is meant
+ * to look like the same product. It was written for the Deal Match report; the
+ * moment a second report wanted it, keeping it there would have meant either a
+ * copy or swapsReport.js importing from dealMatchWeeklyReport.js, and neither
+ * of those survives a third caller.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Card deck, in the Risk Analysis Report's visual language ─────────────
+ *
+ * Styles are INLINE rather than classes in the shell's <style> block, and that
+ * is the point rather than an oversight. The comments around `.tscroll` and
+ * `table.data` in reports/reportShared.js record what this codebase already
+ * learned the hard way: Zoho ships a 29-property allow-list and silently drops
+ * the rest. A <style> block is a suggestion; a style attribute is not. The
+ * Risk Analysis Report these cards are modelled on is inline throughout, which
+ * is why it survives every client it is sent to.
+ *
+ * The palette is that report's, named here once so a later card cannot invent
+ * its own greys.
+ */
+// SINGLE quotes around 'Segoe UI', never double.
+//
+// This string is interpolated into style="..." attributes. A double quote in
+// the value closes the attribute at that point, so `font:700 10px/1.4
+// -apple-system, BlinkMacSystemFont, "Segoe UI", ...` parsed as a style of
+// `font:700 10px/1.4 -apple-system, BlinkMacSystemFont,` and everything after
+// it -- including color -- was dropped. On the light cards that merely lost the
+// intended size and weight; on the dark hero card it meant color:#ffffff never
+// applied and the text rendered in the inherited near-black, invisible against
+// #0f172a. CSS accepts single quotes for a family name, and they are safe
+// inside a double-quoted attribute.
+export const RPT_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+export const RPT = {
+  ink: "#0f172a",
+  accent: "#22d3ee",
+  cardBg: "#f8fafc",
+  cardBorder: "#e6eaf1",
+  muted: "#64748b",
+  pos: "#059669",
+  neg: "#dc2626",
+  warn: "#b45309",
+};
+
+/**
+ * Card tints. Every card belonged to one grey family before this, which meant
+ * colour carried no information and a reader scanning the deck had nothing to
+ * group by. Each tone answers "what kind of number is this?" -- the same
+ * grouping the Deal Match Analysis tab already uses on screen, so an operator
+ * reading the email and then opening the tab sees the same colours mean the
+ * same things.
+ *
+ *   em  money earned, and the client flow that earns it
+ *   am  commission, and the shifting bucket
+ *   cy  realized volume (a different unit from deals, so a different family)
+ *   ro  cost
+ *   in  internal accounts -- a parallel bucket, deliberately not em/cy
+ *
+ * `fg` is applied to the FIGURE only. The label and the note stay muted grey in
+ * every tone, so the tint groups cards without turning the deck into a
+ * ransom note.
+ */
+export const TONES = {
+  em: { bg: "#ecfdf5", bd: "#6ee7b7", fg: "#047857" },
+  am: { bg: "#fffbeb", bd: "#fcd34d", fg: "#b45309" },
+  cy: { bg: "#ecfeff", bd: "#67e8f9", fg: "#0e7490" },
+  ro: { bg: "#fff1f2", bd: "#fda4af", fg: "#be123c" },
+  in: { bg: "#eef2ff", bd: "#a5b4fc", fg: "#4338ca" },
+  plain: { bg: "#f8fafc", bd: "#e6eaf1", fg: "#0f172a" },
+};
+
+/**
+ * A share, for a card note. Returns "—" rather than "0.0%" or "NaN%" when the
+ * denominator is missing: this project's dash means "could not read", which is
+ * the honest answer when there is no total to divide by.
+ */
+export function pctOf(part, whole) {
+  const w = Number(whole) || 0;
+  if (!w) return "—";
+  const pct = (Number(part) || 0) / w * 100;
+  return `${pct < 0.01 && pct > 0 ? "<0.01" : pct.toFixed(2)}%`;
+}
+
+/**
+ * A section rule: cyan bar, tracked uppercase label, then a lower-case grey
+ * subtitle carrying the METHODOLOGY rather than a restatement of the title.
+ * "— live deal-matching · hedged vs internalised" is the move worth copying:
+ * it says where the number came from in the same breath as naming it.
+ */
+export function rptSectionTitle(title, subtitle = "") {
+  const sub = subtitle
+    ? `<span style="font-weight:500;letter-spacing:0;text-transform:none;color:${RPT.muted};font-size:11px"> — ${escapeHtml(subtitle)}</span>`
+    : "";
+  return `<div style="font:700 12px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.ink};border-left:3px solid ${RPT.accent};padding-left:9px;margin:22px 0 10px">${escapeHtml(title)}${sub}</div>`;
+}
+
+/**
+ * One KPI card. `tone` colours the FIGURE only — never the card — so colour
+ * stays semantic and a red number means money leaving rather than decoration.
+ * `unit` rides at 13px muted so the magnitude reads first ("802,646.01 lots").
+ */
+export function rptCard({ label, value, unit = "", note = "", tone = "plain" }) {
+  // Legacy tone names from the first pass, kept so a caller I miss still gets a
+  // sensible card rather than an untinted one.
+  const alias = { pos: "em", neg: "ro", warn: "am", ink: "plain" };
+  const t = TONES[alias[tone] || tone] || TONES.plain;
+
+  const unitHtml = unit
+    ? ` <span style="font-size:11px;color:${RPT.muted};font-weight:600;letter-spacing:0">${escapeHtml(unit)}</span>`
+    : "";
+  const noteHtml = note
+    ? `<div style="font:400 10px/1.45 ${RPT_FONT};color:${RPT.muted};margin-top:6px">${escapeHtml(note)}</div>`
+    : "";
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${t.bg};border:1px solid ${t.bd};border-radius:12px;height:100%">
+      <tr><td style="padding:12px 13px">
+        <div style="font:700 9.5px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(label)}</div>
+        <div style="font:800 20px/1.25 ${RPT_FONT};color:${t.fg};margin-top:5px;white-space:nowrap;letter-spacing:-.4px">${value}${unitHtml}</div>
+        ${noteHtml}
+      </td></tr>
+    </table>`;
+}
+
+/**
+ * The headline band: one figure given the whole stage, flanked by the two that
+ * explain it.
+ *
+ * Net revenue is what this email is opened for, and it used to be the fifth of
+ * five identical tiles — nothing on the page said where to look. A dark card at
+ * 30px says it without a word of copy.
+ *
+ * Built as a three-cell table rather than a grid: Outlook's Word renderer has
+ * no CSS grid, and this has to survive there. border-radius degrades to square
+ * corners in the same renderer, which is a fine way to lose that argument.
+ */
+/*
+ * The label/value/note elements carry kpi-label / kpi-value / kpi-note-sm as
+ * well as their inline styles. Those class names are hooks, not styling -- the
+ * inline rules do the visual work and win over the shell's stylesheet either
+ * way. They are here so a card stays machine-readable: the report tests locate
+ * a headline figure by them, and keeping them means a card can be restyled
+ * without rewriting the assertions that check what it SAYS. `cls` rides onto
+ * kpi-value for the same reason (revenue / cost / muted).
+ */
+export function rptHero({ label, value, note, cls = "", left, right }) {
+  const mini = (m) => {
+    const t = TONES[m.tone] || TONES.plain;
+    return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${t.bg};border:1px solid ${t.bd};border-radius:12px;height:100%">
+        <tr><td style="padding:13px 14px">
+          <p class="kpi-label" style="margin:0;font:700 9.5px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(m.label)}</p>
+          <p class="kpi-value${m.cls ? ` ${m.cls}` : ""}" style="margin:5px 0 0;font:800 19px/1.2 ${RPT_FONT};color:${t.fg};white-space:nowrap;letter-spacing:-.4px">${m.value}</p>
+          <p class="kpi-note-sm" style="margin:6px 0 0;font:400 10px/1.4 ${RPT_FONT};color:${RPT.muted}">${escapeHtml(m.note)}</p>
+        </td></tr>
+      </table>`;
+  };
+
+  // Inline-block cells, same no-@media reasoning as rptCardGrid(): the hero is
+  // ~430px and the two supporting cards ~245px, so all three sit on one line on
+  // a desktop and each takes the full width on a phone. Widths as px caps, not
+  // percentages -- a percentage would keep three columns at 375px and render
+  // "$8,387.97" at 30px inside a 120px cell.
+  const cell = (inner, cap) =>
+    `<td class="rpt-cell" valign="top" style="display:inline-block;width:100%;max-width:${cap}px;box-sizing:border-box;vertical-align:top;padding:0 6px 12px;font-size:12px">${inner}</td>`;
+
+  const main = `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${RPT.ink};border-radius:14px;height:100%">
+        <tr><td style="padding:16px 18px">
+          <p class="kpi-label" style="margin:0;font:700 10px/1.4 ${RPT_FONT};letter-spacing:.1em;text-transform:uppercase;color:${RPT.accent}">${escapeHtml(label)}</p>
+          <p class="kpi-value${cls ? ` ${cls}` : ""}" style="margin:6px 0 0;font:800 30px/1.05 ${RPT_FONT};color:#ffffff;white-space:nowrap;letter-spacing:-1px">${value}</p>
+          <p class="kpi-note-sm" style="margin:8px 0 0;font:400 10.5px/1.45 ${RPT_FONT};color:#94a3b8">${escapeHtml(note)}</p>
+        </td></tr>
+      </table>`;
+
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px 2px;font-size:0">
+      <tr>${cell(main, 430)}${cell(mini(left), 245)}${cell(mini(right), 245)}</tr>
+    </table>`;
+}
+
+/**
+ * Cards in ONE row of inline-block cells, wrapping naturally. No @media.
+ *
+ * This is the layout technique the shell already documents and relies on, and
+ * the reason is worth restating rather than rediscovering: Zoho strips @media
+ * entirely, so there is no breakpoint to switch on and one layout has to read
+ * at 375px and at desktop width.
+ *
+ * `display:inline-block` + `width:100%` + a px `max-width` does that with no
+ * query at all. Wide screen: the cap holds each cell to its column and several
+ * sit per line. Phone: 100% wins because the cap is wider than the viewport,
+ * and every cell becomes its own full-width row. `perRow` therefore sets the
+ * cap rather than emitting a fixed number of columns, so a narrow reader gets
+ * a clean stack instead of four 80px columns of squeezed digits.
+ *
+ * A grid of <td width="25%"> — which this was — does NOT stack. It squeezes,
+ * and 802,646.01 in an 80px column is a wrapped, unreadable smear.
+ *
+ * font-size:0 on the container kills the whitespace gap browsers insert between
+ * inline-blocks; each cell restores a real size.
+ */
+export function rptCardGrid(cards, perRow = 3) {
+  const list = cards.filter(Boolean);
+  if (!list.length) return "";
+  // Content width is ~940px inside the 980px wrap, less 6px of gutter a side.
+  const cap = Math.floor(940 / perRow) - 12;
+  const cells = list
+    .map(
+      (c) =>
+        `<td class="kpi rpt-cell" valign="top" style="display:inline-block;width:100%;max-width:${cap}px;box-sizing:border-box;vertical-align:top;padding:0 6px 12px;font-size:12px">${rptCard(c)}</td>`,
+    )
+    .join("");
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px;font-size:0"><tr>${cells}</tr></table>`;
+}
+

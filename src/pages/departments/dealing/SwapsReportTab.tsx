@@ -176,6 +176,71 @@ function swapColumns(
   return columns;
 }
 
+/**
+ * A pinned total for a drilldown grid, summed from the rows it shows.
+ *
+ * Unlike the main panels these grids carry no backend totals and are never
+ * filtered, so summing what is on screen is the honest figure rather than a
+ * second opinion. Columns not listed render empty.
+ */
+function sumFooter<T>(
+  rows: T[],
+  fields: Array<{ key: string; pick: (row: T) => number | null | undefined; fmt: (n: number) => React.ReactNode }>,
+): Partial<Record<string, React.ReactNode>> | undefined {
+  if (!rows.length) return undefined;
+  const out: Partial<Record<string, React.ReactNode>> = {};
+  for (const f of fields) out[f.key] = f.fmt(rows.reduce((acc, r) => acc + (Number(f.pick(r)) || 0), 0));
+  return out;
+}
+
+/**
+ * The pinned TOTAL row for a main panel, keyed by column.
+ *
+ * Only the columns that have a meaningful total are filled; name/login/source
+ * are left out so they render empty rather than as a zero that means nothing.
+ *
+ * `totalSwap` and `unrealizedSwap` come from the BACKEND's totals, not from
+ * summing the visible rows: the table can be searched and filtered, and a
+ * footer that re-summed whatever happens to be on screen would quietly become
+ * a different number from the one in the line above it. `statementSwap` has no
+ * backend total, so it is summed here from the rows, and that difference is
+ * deliberate rather than an oversight.
+ */
+function totalsFooter(
+  rows: SwapAccountRow[],
+  totals: SwapTotals | null,
+  { statement = false }: { statement?: boolean } = {},
+): Partial<Record<string, React.ReactNode>> | undefined {
+  if (!totals) return undefined;
+  const footer: Partial<Record<string, React.ReactNode>> = {
+    totalSwap: <span className={signed(totals.totalSwap)}>{money(totals.totalSwap)}</span>,
+    unrealizedSwap:
+      totals.unrealizedSwap === null || totals.unrealizedSwap === undefined ? (
+        <span className="text-slate-400">—</span>
+      ) : (
+        <span className={signed(totals.unrealizedSwap)}>{money(totals.unrealizedSwap)}</span>
+      ),
+  };
+  if (statement) {
+    // Only total the column when at least one LP actually HAS a statement.
+    //
+    // Summing regardless produced "$0.00" on a day when nothing was uploaded,
+    // which in this column does not mean "the statements net to zero" -- it
+    // means "the statements say zero", about statements that do not exist. That
+    // is the same misreading the per-row dash exists to prevent, and it is what
+    // the whole Manager-LP argument in the Swaps email turned on.
+    const withStatements = rows.filter(hasStatement);
+    footer.statementSwap = withStatements.length ? (
+      <span className={signed(withStatements.reduce((acc, r) => acc + (Number(r.statementSwap) || 0), 0))}>
+        {money(withStatements.reduce((acc, r) => acc + (Number(r.statementSwap) || 0), 0))}
+      </span>
+    ) : (
+      <span className="text-slate-400">—</span>
+    );
+  }
+  return footer;
+}
+
 /** Totals arrive from the backend. Absent, we say so rather than showing a figure. */
 function TotalsLine({ totals }: { totals: SwapTotals | null }) {
   if (!totals) {
@@ -215,11 +280,16 @@ function DetailTable<T>({
   rows,
   empty,
   rowKey,
+  footer,
+  footerLabel = "TOTAL",
 }: {
   columns: DetailColumn<T>[];
   rows: T[];
   empty: string;
   rowKey: (row: T, index: number) => string;
+  /** Totals pinned to the bottom, keyed by column. Only filled columns render. */
+  footer?: Partial<Record<string, React.ReactNode>>;
+  footerLabel?: React.ReactNode;
 }) {
   if (!rows.length) {
     return <p className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/40">{empty}</p>;
@@ -248,8 +318,40 @@ function DetailTable<T>({
               </tr>
             ))}
           </tbody>
+          {footer && (
+            <tfoot>
+              <tr className="border-t-2 border-slate-400 bg-slate-100 font-semibold dark:border-slate-600 dark:bg-slate-900/80">
+                {columns.map((col, i) => (
+                  <td key={col.key} className={`px-2 py-1.5 ${col.right ? "text-right" : "text-left"}`}>
+                    {i === 0 ? (footer[col.key] ?? footerLabel) : (footer[col.key] ?? null)}
+                  </td>
+                ))}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
+
+      {/* The phone layout renders each row as a card, so a pinned table row has
+          no equivalent -- the total becomes one more card, marked as the total. */}
+      {footer && (
+        <div className="mt-2 rounded-xl border-2 border-slate-400 bg-slate-100 p-3 md:hidden dark:border-slate-600 dark:bg-slate-900/80">
+          <dl className="space-y-1 text-xs font-semibold">
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500">{footerLabel}</dt>
+              <dd />
+            </div>
+            {columns
+              .filter((col) => footer[col.key] != null)
+              .map((col) => (
+                <div key={col.key} className="flex justify-between gap-3">
+                  <dt className="text-slate-500">{col.label}</dt>
+                  <dd className="text-right">{footer[col.key]}</dd>
+                </div>
+              ))}
+          </dl>
+        </div>
+      )}
 
       <div className="space-y-2 md:hidden">
         {rows.map((row, idx) => (
@@ -632,6 +734,7 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
               columns={clientColumns}
               tableClassName="min-w-full text-[11px]"
               emptyText="No client swap activity in this date range."
+              footerRow={totalsFooter(report.clients, report.clientTotals)}
               onRowClick={(row) => void openClientDetail(row)}
             />
             <p className="text-[11px] text-slate-500">Click a client row for its per-position, per-deal and open-position breakdown.</p>
@@ -646,6 +749,7 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
               columns={lpColumns}
               tableClassName="min-w-full text-[11px]"
               emptyText="No LP swap activity in this date range."
+              footerRow={totalsFooter(report.lps, report.lpTotals, { statement: true })}
               onRowClick={(row) => void openLpDetail(row)}
             />
             <p className="text-[11px] text-slate-500">
@@ -716,10 +820,18 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
                   <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                     Realized — per-instrument per-day (from Finalto GetCFDCost)
                   </h4>
-                  <p className="rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
-                    <strong>Caveat:</strong> Long Pos Cost / Short Pos Cost may be per-unit financing rates, not the
-                    actual charged dollar amounts. Verify against Finalto's own portal on a known position before
-                    treating these as booked swap.
+                  {/* The full caveat from the source page. It was shortened to its first
+                      and last sentence when this grid was ported, which dropped the two
+                      things that make it actionable: WHY rate semantics are suspected, and
+                      WHERE the actual charged figures probably live. Without them a reader
+                      is told not to trust the column and given nowhere to go. */}
+                  <p className="rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+                    <strong>Caveat:</strong> Long Pos Cost / Short Pos Cost may be per-unit financing{" "}
+                    <em>rates</em>, not the actual charged dollar amounts. Precision (numeric(28,10)), the
+                    DayToFinance window, and the sibling GetTomNextSwapRates endpoint all suggest rate
+                    semantics. Verify against Finalto's own portal on a known position before treating
+                    these as booked swap. Actual charged swap likely lives in FinaltoCashActivity with a
+                    CashActivityType like &ldquo;Swap&rdquo; / &ldquo;Storage&rdquo;.
                   </p>
                   {detail.detail.finaltoDailyCosts.length === 0 && (
                     <p className="rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
@@ -746,6 +858,12 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
                       rows={detail.detail.positions}
                       empty="No closed positions in this range."
                       rowKey={(row, idx) => `pos-${row.positionId ?? idx}`}
+                      footer={sumFooter(detail.detail.positions, [
+                        { key: "dealCount", pick: (r) => r.dealCount, fmt: (n) => num(n) },
+                        { key: "totalSwap", pick: (r) => r.totalSwap, fmt: (n) => <span className={signed(n)}>{money(n)}</span> },
+                        { key: "dealVolume", pick: (r) => r.dealVolume, fmt: (n) => num(n) },
+                        { key: "realizedVolume", pick: (r) => r.realizedVolume, fmt: (n) => num(n) },
+                      ])}
                     />
                   </div>
                   <div className="space-y-2">
@@ -757,6 +875,11 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
                       rows={detail.detail.deals}
                       empty="No closed deals in this range."
                       rowKey={(row, idx) => `deal-${row.dealId ?? idx}`}
+                      footer={sumFooter(detail.detail.deals, [
+                        { key: "lots", pick: (r) => r.lots, fmt: (n) => num(n) },
+                        { key: "closedLegLots", pick: (r) => r.closedLegLots, fmt: (n) => num(n) },
+                        { key: "storage", pick: (r) => r.storage, fmt: (n) => <span className={signed(n)}>{money(n)}</span> },
+                      ])}
                     />
                   </div>
                   <div className="space-y-2">
@@ -768,6 +891,11 @@ export function SwapsReportTab({ refreshKey }: { refreshKey?: number }) {
                       rows={detail.detail.openPositions}
                       empty="No open positions right now."
                       rowKey={(row, idx) => `open-${row.ticket ?? idx}`}
+                      footer={sumFooter(detail.detail.openPositions, [
+                        { key: "lots", pick: (r) => r.lots, fmt: (n) => num(n) },
+                        { key: "swap", pick: (r) => r.swap, fmt: (n) => <span className={signed(n)}>{money(n)}</span> },
+                        { key: "profit", pick: (r) => r.profit, fmt: (n) => <span className={signed(n)}>{money(n)}</span> },
+                      ])}
                     />
                   </div>
                 </>

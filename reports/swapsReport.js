@@ -77,6 +77,7 @@ import {
   escapeHtml,
   fmtNum,
   kpiGrid,
+  rptHero,
   money,
   recordSentFor,
   resolveRecipients,
@@ -290,9 +291,25 @@ export function hasStatement(row) {
  * asymmetric because the backend is: totalSwap arrives as null when there is no
  * LP record, statementSwap arrives as 0 when there is no statement.
  *
- * There is deliberately no MT5 fallback for a Manager LP with no statement
- * (user, 2026-09-17): the dash is the signal that a statement is due, and a
- * substituted MT5 figure would hide exactly that.
+ * MANAGER FALLBACK, and what it costs (user, 2026-09-25 — this REVERSES the
+ * 2026-09-17 decision recorded here before).
+ *
+ * A Manager LP now falls back to its MT5 coverage figure when no statement has
+ * been uploaded, instead of resolving to null. The reason for the change: with
+ * no statements uploaded for a day, all 27 Manager LPs went unresolved, the
+ * all-or-nothing headline below printed a dash, and the email looked broken
+ * beside the Swaps Report tab — which sums the MT5 coverage figures and shows a
+ * total for the same day.
+ *
+ * The cost is the thing the old rule existed to prevent, and it is real: a
+ * missing statement no longer shows up anywhere. The headline always prints a
+ * number now, so nobody is prompted to upload anything, and a month of missing
+ * statements looks exactly like a month of complete ones. Statement upload has
+ * to be chased by some other means from here.
+ *
+ * `source` distinguishes the two, so a future reader (or a test) can still tell
+ * a statement-backed figure from a substituted one even though neither is
+ * rendered.
  */
 export function effectiveLpSwap(row) {
   const rawType = row?.source;
@@ -303,9 +320,14 @@ export function effectiveLpSwap(row) {
   const statement = hasStatement(row) ? num(row?.statementSwap) : null;
 
   if (type === "Manager") {
-    return statement !== null
-      ? { value: statement, source: "statement", type, reason: null }
-      : { value: null, source: null, type, reason: "Manager LP with no statement uploaded for this period. Manager LPs use our statement only, so there is no figure — not zero." };
+    // Statement first — it is still the better source when it exists, and the
+    // fallback must never quietly override one that was uploaded.
+    if (statement !== null) return { value: statement, source: "statement", type, reason: null };
+    // Then the MT5 coverage figure. Note `lp !== null` rather than a truthiness
+    // check: a genuine 0 from MT5 is a record of zero swap and must resolve as
+    // 0, not fall through to "no figure".
+    if (lp !== null) return { value: lp, source: "mt5-fallback", type, reason: null };
+    return { value: null, source: null, type, reason: "Manager LP with no statement uploaded and no MT5 figure to fall back on, so there is no figure — not zero." };
   }
   if (type === "Terminal") {
     return lp !== null
@@ -595,7 +617,41 @@ function renderTotals(report) {
     lpCard = { label: "LP Swap (period)", value: DASH, cls: "muted", note: `${why}; no partial sum` };
   }
 
-  return kpiGrid([clientCard, lpCard], { maxWidth: 260 });
+  // The Deal Match card system, from reportShared. Client swap is the hero: it
+  // is the revenue figure and the one a manager opens this email for. LP swap
+  // rides beside it as the cost.
+  //
+  // Tone is chosen from the figure's EFFECT, not its sign, because the two
+  // disagree here and that is the whole sign convention of this report: a
+  // negative client swap was charged to the client and is revenue, while a
+  // negative LP swap was charged to us and is cost. effectCls already encodes
+  // that, so the tone is derived from it rather than from the number.
+  const toneFor = (cls) => (cls === "revenue" ? "em" : cls === "cost" ? "ro" : "plain");
+
+  const lpMini = {
+    label: lpCard.label,
+    value: lpCard.value,
+    tone: toneFor(lpCard.cls),
+    cls: lpCard.cls,
+    note: lpCard.note,
+  };
+  // A second supporting card so the hero is not flanked by one lonely tile.
+  // Accounts and LP count are the two "how much of the book is this?" figures.
+  const scopeMini = {
+    label: "Coverage",
+    value: `${fmtNum(client.accounts || 0, 0)} <span style="font-size:13px;font-weight:600">client</span> / ${fmtNum(lp.count || 0, 0)} <span style="font-size:13px;font-weight:600">LP</span>`,
+    tone: "cy",
+    note: "Accounts included in the two figures beside this.",
+  };
+
+  return rptHero({
+    label: clientCard.label,
+    value: clientCard.value,
+    note: clientCard.note || "",
+    cls: clientCard.cls,
+    left: lpMini,
+    right: scopeMini,
+  });
 }
 
 /**
@@ -708,7 +764,10 @@ function renderUnresolvedLps(rows) {
 // It says "statement", never the LP's type. Otherwise rule 4 knew where to look
 // and found nothing, or the LP is not classified, so no rule applies to it.
 function unresolvedLpReason(swap) {
-  if (swap.type === "Manager") return "No statement uploaded for this period, so there is no figure &mdash; not zero.";
+  // The Manager branch no longer says "no statement": since 2026-09-25 a
+  // Manager LP with no statement falls back to its MT5 figure and resolves, so
+  // reaching here means it had neither. Saying "statement" would send the
+  // reader to upload one that would not change this outcome.
   return swap.type
     ? "No swap record for this period, so there is no figure &mdash; not zero."
     : "This LP is not set up for swap reporting, so there is no figure &mdash; not zero.";
