@@ -27,6 +27,16 @@ export const TEST_SEND_REPORTS = [
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.depositors ?? 0} active accounts`,
   },
+  {
+    key: "swaps",
+    label: "Swaps Report",
+    endpoint: "/api/reports/swaps-weekly/test",
+    // runSwapsEmailReport resolves to { ok, lps, clients, fromYmd, toYmd } --
+    // both counts, because a swaps send with clients but no LPs (or the
+    // reverse) is the failure worth spotting in the confirmation line.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    summary: (d: any) => `${d?.clients ?? 0} clients, ${d?.lps ?? 0} LPs`,
+  },
 ] as const;
 
 export type TestSendReportKey = (typeof TEST_SEND_REPORTS)[number]["key"];

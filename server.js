@@ -36,6 +36,7 @@ import {
 } from './wallet/googleSheetsMappingConfig.js';
 import { readFabAccounts } from './wallet/fabAccountsSheet.js';
 import { runDealMatchEmailReport } from './reports/dealMatchWeeklyReport.js';
+import { runSwapsEmailReport } from './reports/swapsReport.js';
 import { runSlippageEmailReport } from './reports/slippageWeeklyReport.js';
 import { runWeeklyBusinessSummary } from './reports/weeklyBusinessSummary.js';
 import { runDailyDigest } from './reports/dailyDigest.js';
@@ -1187,6 +1188,20 @@ app.post(
   authRequired,
   adminOnly,
   makeReportTestSendHandler({ run: runDealMatchEmailReport, allowPeriod: true }),
+);
+
+// On-demand test send of the Swaps email (admin-only). Same shape as the Deal
+// Match route above: body recipients only, no env fallback, and either a
+// cadence or an explicit from/to.
+//
+// This report ran on a schedule for weeks with no test route, so the only way
+// to see a change before it reached the desk was to wait for the cron -- which
+// is exactly how a broken LP headline sat in the inbox unnoticed.
+app.post(
+  '/api/reports/swaps-weekly/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runSwapsEmailReport, allowPeriod: true }),
 );
 
 // Send a monthly for a period chosen by the caller. The four other test routes

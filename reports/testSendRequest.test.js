@@ -363,8 +363,11 @@ describe("admin gating on the report test-send routes", () => {
   const SERVER = readFileSync(path.resolve("server.js"), "utf8");
   const ROUTE_RE = /app\.post\(\s*'(\/api\/reports\/[^']*\/test)'/g;
 
-  it("finds all seven test-send routes, so the assertion below is not vacuous", () => {
-    expect([...SERVER.matchAll(ROUTE_RE)].map((m) => m[1])).toHaveLength(7);
+  // Eight since 2026-09-25, when the Swaps report gained a test route. This
+  // count is deliberately brittle: a new test-send route should fail here once,
+  // so whoever adds it confirms the gating assertion below now covers it.
+  it("finds all eight test-send routes, so the assertion below is not vacuous", () => {
+    expect([...SERVER.matchAll(ROUTE_RE)].map((m) => m[1])).toHaveLength(8);
   });
 
   it("gates every one of them on canManageUsers, directly or via adminOnly", () => {
@@ -383,6 +386,7 @@ describe("admin gating on the report test-send routes", () => {
   it("keeps the cadence-aware routes on the shared handler", () => {
     expect(SERVER).toMatch(/'\/api\/reports\/slippage-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runSlippageEmailReport, allowPeriod: true \}\)/);
     expect(SERVER).toMatch(/'\/api\/reports\/dealmatch-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runDealMatchEmailReport, allowPeriod: true \}\)/);
+    expect(SERVER).toMatch(/'\/api\/reports\/swaps-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runSwapsEmailReport, allowPeriod: true \}\)/);
   });
 
   it("puts the Business Summary route on the same handler, fanned out over its three runners", () => {
