@@ -461,19 +461,30 @@ const pct = (value, max) => (max > 0 ? Math.max(0, Math.min(100, (Math.abs(value
 
 // ── PNG charts (Chart.js) ────────────────────────────────────────────────────
 
+// Chart palette, retuned to the Risk Analysis Report's scheme: slate ink,
+// cyan for revenue earned, emerald for what is kept, amber/rose for cost.
+//
+// Every series colour in this file resolves here. Several charts used to carry
+// their own hex literals (a blue #1d4ed8 gross, a violet #7c3aed CFD) that
+// existed in no palette, so the report's charts and its cards were drawn from
+// two different schemes and only looked related by accident.
 const CH = {
   ink: "#0f172a",
-  grid: "#e2e8f0",
+  grid: "#e6eaf1",
   axis: "#334155",
   muted: "#64748b",
-  markup: "#0891b2",
-  clientComm: "#0f766e",
-  swap: "#7c3aed",
+  markup: "#22d3ee",
+  clientComm: "#0891b2",
+  swap: "#6366f1",
   lpComm: "#b45309",
   ibComm: "#be123c",
-  net: "#15803d",
-  gross: "#1d4ed8",
-  loss: "#b91c1c",
+  net: "#059669",
+  // Slate against emerald for the gross/net pair: the two bars sit side by
+  // side, so they need contrast in value, not just hue.
+  gross: "#0f172a",
+  loss: "#dc2626",
+  equity: "#0891b2",
+  cfd: "#6366f1",
 };
 
 const shortMoney = (v) => {
@@ -691,7 +702,7 @@ async function buildChartImages(rows, volume, totals, titleSuffix) {
           labels: days.map((d) => fmtDayLabel(d.date)),
           datasets: [
             { label: "Equity lots", data: days.map((d) => Number(d.stocksLots) || 0), backgroundColor: CH.markup, borderRadius: 4 },
-            { label: "CFD lots", data: days.map((d) => Number(d.cfdLots) || 0), backgroundColor: "#7c3aed", borderRadius: 4 },
+            { label: "CFD lots", data: days.map((d) => Number(d.cfdLots) || 0), backgroundColor: CH.cfd, borderRadius: 4 },
           ],
         },
         options: {
@@ -852,45 +863,15 @@ function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
     )
     .join("");
 
+  // The six KPI cards that used to sit here (Equity / CFD / Traded, then Deal
+  // Lots / Bridge / Matched) are gone: all six are cards at the top of the
+  // report now, read from the same scalars. What is left is the part only this
+  // section has -- the per-DAY split and the chart built from it.
   return `${title}
-          <table class="vol-kpis" role="presentation">
-            <tr>
-              <td class="kpi equity" width="33%">
-                <p class="kpi-label">Equity Lots</p>
-                <p class="kpi-value">${fmtNum(volume.totalStocksLots, 2)}</p>
-              </td>
-              <td class="kpi cfd" width="33%">
-                <p class="kpi-label">CFD Lots</p>
-                <p class="kpi-value">${fmtNum(volume.totalCfdLots, 2)}</p>
-              </td>
-              <td class="kpi vol-total" width="33%">
-                <p class="kpi-label">Traded Lots (realized)</p>
-                <p class="kpi-value">${fmtNum(volume.totalLots, 2)}</p>
-              </td>
-            </tr>
-          </table>
-
-          ${volumeStats ? `<table class="vol-kpis" role="presentation">
-            <tr>
-              <td class="kpi vol-total" width="33%">
-                <p class="kpi-label">Deal Lots (both legs)</p>
-                <p class="kpi-value">${fmtNum(volumeStats.dealLots, 2)}</p>
-              </td>
-              <td class="kpi equity" width="33%">
-                <p class="kpi-label">Bridge Lots</p>
-                <p class="kpi-value">${fmtNum(volumeStats.bridgeLots, 2)}</p>
-              </td>
-              <td class="kpi cfd" width="33%">
-                <p class="kpi-label">Matched Lots</p>
-                <p class="kpi-value">${fmtNum(volumeStats.matchedLots, 2)}</p>
-              </td>
-            </tr>
-          </table>
           <p style="font-size:11px;color:#64748b;margin:0 0 10px;">
-            Deal Lots count both legs of a round trip; Traded Lots count it once
-            (${fmtNum(volumeStats.realizedEquity, 2)} equity + ${fmtNum(volumeStats.realizedCfd, 2)} CFD =
-            ${fmtNum(volumeStats.realizedTotal, 2)}). Only Matched Lots reached an LP.
-          </p>` : ""}
+            Totals are in the cards above. Deal Lots count both legs of a round trip;
+            Traded Lots count it once${volumeStats ? ` (${fmtNum(volumeStats.realizedEquity, 2)} equity + ${fmtNum(volumeStats.realizedCfd, 2)} CFD = ${fmtNum(volumeStats.realizedTotal, 2)})` : ""}.
+          </p>
 
           <table class="data narrow">
             <thead>
@@ -911,8 +892,8 @@ function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
             "Daily Volume &mdash; Equity vs CFD",
             "lots traded per day",
             [
-              { key: "stocksLots", label: "Equity", color: "#0891b2" },
-              { key: "cfdLots", label: "CFD", color: "#7c3aed" },
+              { key: "stocksLots", label: "Equity", color: CH.equity },
+              { key: "cfdLots", label: "CFD", color: CH.cfd },
             ],
             days.map((d) => ({
               label: fmtDayLabel(d.date),
@@ -946,6 +927,18 @@ const RPT = {
   neg: "#dc2626",
   warn: "#b45309",
 };
+
+/**
+ * A share, for a card note. Returns "—" rather than "0.0%" or "NaN%" when the
+ * denominator is missing: this project's dash means "could not read", which is
+ * the honest answer when there is no total to divide by.
+ */
+function pctOf(part, whole) {
+  const w = Number(whole) || 0;
+  if (!w) return "—";
+  const pct = (Number(part) || 0) / w * 100;
+  return `${pct < 0.01 && pct > 0 ? "<0.01" : pct.toFixed(2)}%`;
+}
 
 /**
  * A section rule: cyan bar, tracked uppercase label, then a lower-case grey
@@ -1119,12 +1112,15 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       table.data { border-collapse:collapse; width:100%; font-size:12px; }
       table.data.narrow { font-size:11px; }
       table.data thead { display:none; }
-      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid #e2e8f0; padding:4px 0; }
-      table.data tbody tr:nth-child(even) { background:#f9fcff; }
-      table.data tr.total-row { background:#eff6ff; }
-      table.data tr.total-row td { font-weight:700; color:#0f2d4f; }
+      table.data tbody tr { display:block; box-sizing:border-box; border-bottom:1px solid #e6eaf1; padding:4px 0; }
+      table.data tbody tr:nth-child(even) { background:#f8fafc; }
+      table.data tr.total-row { background:#0f172a; }
+      table.data tr.total-row td { font-weight:700; color:#ffffff; }
+      table.data tr.total-row td .lbl { color:#cbd5e1; }
+      table.data tr.total-row td .val, table.data tr.total-row td .money-pos,
+      table.data tr.total-row td .money-cost, table.data tr.total-row td .money-neg { color:#ffffff; }
       table.data td, table.data th { display:inline-block; box-sizing:border-box; width:100%; max-width:156px; vertical-align:top; border:0; padding:4px 8px; text-align:left; }
-      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase; color:#64748b; }
+      table.data td .lbl { display:block; font-size:9px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:#64748b; }
       table.data td .val { display:block; font-size:12px; }
       table.data td.num .val { white-space:nowrap; }
       table.data td.key .val { white-space:nowrap; }
@@ -1245,10 +1241,13 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 + rptSectionTitle("Bridge / matched", "lots reaching the bridge, and the share matched to an LP order")
                 + rptCardGrid(
                     [
+                      // The share is what the dropped MT5 Volume Flow funnel
+                      // contributed that a raw figure does not: 529 lots means
+                      // nothing until you know it is 0.07% of the flow.
                       { label: "Bridge Lots", value: fmtNum(volumeDetail.bridgeLots, 2), unit: "lots", tone: "warn",
-                        note: "Volume that reached the bridge." },
+                        note: `Volume that reached the bridge — ${pctOf(volumeDetail.bridgeLots, volumeDetail.totalMt5Deals)} of total MT5 deals.` },
                       { label: "Matched Lots", value: fmtNum(volumeDetail.matchedLots, 2), unit: "lots", tone: "pos",
-                        note: "Client volume matched to an LP order." },
+                        note: `Client volume matched to an LP order — ${pctOf(volumeDetail.matchedLots, volumeDetail.totalMt5Deals)} of total MT5 deals.` },
                       { label: "Active Clients", value: fmtNum(rows.length, 0),
                         note: "Accounts with lots > 0 in this period — the rows in the table below." },
                     ],
@@ -1265,9 +1264,30 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
 
           ${buildVolumeSection(volume, charts, volumeStats, periodNoun)}
 
-          ${renderVolumeSection(mt5Volume)}
+          ${/* The shared volume-flow section is deliberately NOT rendered here.
+                Its flow rows (total deals / bridge / matched) and its
+                client-shifting-internal breakdown are both printed by the card
+                deck at the top of this report, which reads the same DealMatch
+                scalars, so rendering it too put the same figures on screen
+                three times. The coverage percentages it added now ride on the
+                Bridge / Matched cards. Same reasoning monthlyReview.js records
+                for not calling it. The section itself is unchanged and still
+                used by dailyDigest.js and slippageWeeklyReport.js.
+                Kept as a JS comment, not an HTML one: an HTML comment ships
+                inside every email for no reader's benefit. */ ""}
 
-          <p class="section-title" style="margin-top:18px;">Client Revenue Table</p>
+          <p class="section-title" style="margin-top:18px;">Client revenue<span style="font-weight:500;letter-spacing:0;text-transform:none;color:#64748b;font-size:11px;"> &mdash; per client, net of that client's own withdrawn rebate</span></p>
+          ${
+            revenueStats
+              ? `<p style="font-size:11px;color:#64748b;margin:0 0 10px;">
+            This table answers a different question from the Revenue cards above and its
+            TOTAL will not match them. The cards are whole-run totals for the book; these
+            rows cover only clients with <strong>Lots &gt; 0</strong> and each is reduced by
+            that client's withdrawn rebate. Use the cards for the book, this table for who
+            earned it.
+          </p>`
+              : ""
+          }
           <div class="tscroll">
           <table class="data">
             <thead>
@@ -1285,7 +1305,11 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
             </thead>
             <tbody>
               <tr class="total-row">
-                ${spanCell("TOTAL", { colspan: 2 })}
+                ${/* "LISTED CLIENTS", not "TOTAL": this sums only the rows below
+                      it, and a reader who sees "TOTAL" next to a figure that
+                      disagrees with the Revenue cards concludes one of them is
+                      broken. Naming the scope is what makes both honest. */ ""}
+                ${spanCell("TOTAL (listed clients)", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
                 ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
                 ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
@@ -1309,7 +1333,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 label: `${String(r.name || r.accounts?.[0] || "").slice(0, 18)}`.trim(),
                 value: r.netRev,
                 display: money(r.netRev),
-                color: (Number(r.netRev) || 0) < 0 ? "#b91c1c" : "#0f766e",
+                color: (Number(r.netRev) || 0) < 0 ? CH.loss : CH.net,
               })),
           )}
 
@@ -1317,8 +1341,8 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
             "Gross vs Net Revenue",
             "top 10 by total revenue &mdash; the gap is Rebate Withdrawn",
             [
-              { key: "totalRev", label: "Gross", color: "#1d4ed8" },
-              { key: "netRev", label: "Net", color: "#15803d" },
+              { key: "totalRev", label: "Gross", color: CH.gross },
+              { key: "netRev", label: "Net", color: CH.net },
             ],
             [...rows]
               .sort((a, b) => (Number(b.totalRev) || 0) - (Number(a.totalRev) || 0))
@@ -1334,8 +1358,8 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
             "Lots vs Net Revenue by Client",
             "top 12 by volume &mdash; each series on its own scale, so compare shapes not lengths",
             [
-              { key: "lots", label: "Lots", color: "#0891b2" },
-              { key: "netRev", label: "Net rev", color: "#15803d" },
+              { key: "lots", label: "Lots", color: CH.equity },
+              { key: "netRev", label: "Net rev", color: CH.net },
             ],
             [...rows]
               .sort((a, b) => (Number(b.lots) || 0) - (Number(a.lots) || 0))
@@ -1352,12 +1376,12 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
             "Revenue Composition",
             `share of gross revenue (${money(totals.markup + totals.clientComm + totals.swap)} earned before costs)`,
             [
-              { label: "Markup", value: totals.markup, display: money(totals.markup), color: "#0891b2" },
-              { label: "Client Comm", value: totals.clientComm, display: money(totals.clientComm), color: "#0f766e" },
-              { label: "Swap Revenue", value: totals.swap, display: money(totals.swap), color: "#7c3aed" },
-              { label: "LP Comm", value: totals.lpComm, display: money(totals.lpComm), color: "#b45309" },
-              { label: "Rebate Withdrawn", value: totals.rebateWithdrawn, display: money(totals.rebateWithdrawn), color: "#be123c" },
-              { label: "Net Revenue", value: totals.netRev, display: money(totals.netRev), color: "#15803d" },
+              { label: "Markup", value: totals.markup, display: money(totals.markup), color: CH.markup },
+              { label: "Client Comm", value: totals.clientComm, display: money(totals.clientComm), color: CH.clientComm },
+              { label: "Swap Revenue", value: totals.swap, display: money(totals.swap), color: CH.swap },
+              { label: "LP Comm", value: totals.lpComm, display: money(totals.lpComm), color: CH.lpComm },
+              { label: "Rebate Withdrawn", value: totals.rebateWithdrawn, display: money(totals.rebateWithdrawn), color: CH.ibComm },
+              { label: "Net Revenue", value: totals.netRev, display: money(totals.netRev), color: CH.net },
             ],
             totals.markup + totals.clientComm + totals.swap,
           )}

@@ -749,8 +749,11 @@ describe("no report gains an extra DealMatch/Run call", () => {
 
     expect(result.ok).toBe(true);
     expect(dealMatchCalls(urls)).toBe(1);
-    // ...and it is the same response that fed the section, not a second one.
-    expect(sent[0].htmlContent).toMatch(/MT5 Volume Flow/);
+    // ...and it is the same response that fed the page, not a second one.
+    // Proven against the card deck rather than the volume-flow section, which
+    // this report no longer renders (see the test above) -- the figure is what
+    // demonstrates a single response was reused, and the deck carries it now.
+    expect(sent[0].htmlContent).toMatch(/Total MT5 Deals/);
     expect(sent[0].htmlContent).toMatch(/203,109\.22/);
   });
 
@@ -884,7 +887,6 @@ describe("every report family renders the volume section", () => {
     ["Daily Digest", async () => (await import("./dailyDigest.js")).runDailyDigest],
     ["Weekly Business Summary", async () => (await import("./weeklyBusinessSummary.js")).runWeeklyBusinessSummary],
     ["Monthly Review", async () => (await import("./monthlyReview.js")).runMonthlyReview],
-    ["Deal Match", async () => (await import("./dealMatchWeeklyReport.js")).runDealMatchEmailReport],
     ["Slippage", async () => (await import("./slippageWeeklyReport.js")).runSlippageEmailReport],
   ];
 
@@ -899,9 +901,67 @@ describe("every report family renders the volume section", () => {
       expect(sent).toHaveLength(1);
       const html = sent[0].htmlContent;
       expect(html).toMatch(/MT5 Volume Flow/);
+      // Every family renders through the shared shell, so every family must
+      // carry the report palette. Asserted per-family rather than against
+      // emailShell alone: Monthly Review reaches the shell three modules deep
+      // (monthlyReview -> buildSummaryEmailHtml -> emailShell), and that chain
+      // is exactly the kind that quietly stops being true.
+      expect(html).toMatch(/background:#eef1f6/);
       expect(html).toMatch(/203,109\.22/); // the figures, not just the heading
       expect(figKeys(html)).toEqual(expKeys(html)); // and the lines beside them
       expect(expKeys(html)).toHaveLength(7);
     });
   }
+
+  // Deal Match is deliberately NOT in the list above.
+  //
+  // It is the one family that reports these same figures itself, as the card
+  // deck at the top of its email (Total MT5 Deals / Client Deals / realized /
+  // shifting / internal / bridge / matched), read from the same DealMatch
+  // scalars this section reads. Rendering the section as well printed the same
+  // numbers three times -- once in the cards, once in its Equity-vs-CFD KPI
+  // row, and once here -- which is what the business asked us to stop doing.
+  //
+  // The guard this file exists to provide is "no family ships without this
+  // information", not "every family renders this component". So Deal Match is
+  // held to the same standard in the form it actually uses: if someone deletes
+  // the card deck, this fails, exactly as dropping the section fails above.
+  it("Deal Match covers the same figures with its card deck instead of the section", async () => {
+    const run = (await import("./dealMatchWeeklyReport.js")).runDealMatchEmailReport;
+    const { sent } = stubFetch();
+
+    const result = await run({ ...PERIOD, recipients: ["ops@example.com"] });
+
+    expect(result.ok).toBe(true);
+    expect(sent).toHaveLength(1);
+    const html = sent[0].htmlContent;
+
+    // Not rendered -- that is the point of the change.
+    expect(html).not.toMatch(/MT5 Volume Flow/);
+
+    // But every figure it carried is still on the page, as a card.
+    for (const label of [
+      "Total MT5 Deals",
+      "Client Deals",
+      "MT5 Realized (CFD)",
+      "MT5 Realized (Equity)",
+      "Shifting Deals",
+      "Shifting Realized",
+      "Internal Deals",
+      "Internal Realized",
+      "Bridge Lots",
+      "Matched Lots",
+    ]) {
+      expect(html).toContain(label);
+    }
+
+    // And the coverage share the funnel contributed rides on the cards, so
+    // dropping the section cost no information.
+    expect(html).toMatch(/of total MT5 deals/);
+
+    // Deal Match builds its own shell rather than the shared one, so its
+    // palette has to be pinned separately or it can drift away from the other
+    // eleven scheduled reports without any test noticing.
+    expect(html).toMatch(/background:#eef1f6/);
+  });
 });
