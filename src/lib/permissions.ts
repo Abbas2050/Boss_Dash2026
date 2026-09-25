@@ -23,6 +23,7 @@ export const DEALING_TABS = [
   "Transactions",
   "Swap Tracker",
   "Swaps Report",
+  "Market Watch",
 ] as const;
 
 export const BONUS_SUB_TABS = ["Bonus Coverage", "Bonus Risk", "Bonus PNL", "Bonus Equity"] as const;

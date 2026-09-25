@@ -23,6 +23,7 @@ import { ClientVolumeTab } from "@/pages/departments/dealing/ClientVolumeTab";
 import { SlippageReportTab } from "@/pages/departments/dealing/SlippageReportTab";
 import { RevenueShareTab } from "@/pages/departments/dealing/RevenueShareTab";
 import { SwapsReportTab } from "@/pages/departments/dealing/SwapsReportTab";
+import { MarketWatchTab } from "@/pages/departments/dealing/MarketWatchTab";
 import { SortableTable, type SortableTableColumn } from "@/components/ui/SortableTable";
 import { UnauthorizedPage } from "@/components/UnauthorizedPage";
 import {
@@ -106,6 +107,9 @@ const DEALING_MENU_QUERY_MAP: Record<string, string> = {
   "swap-tracker": "Swap Tracker",
   "swaps-report": "Swaps Report",
   swaps: "Swaps Report",
+  "market-watch": "Market Watch",
+  marketwatch: "Market Watch",
+  mw: "Market Watch",
   history: "History",
   transactions: "Transactions",
   "transactions-history": "Transactions",
@@ -1145,6 +1149,7 @@ export function DealingDepartmentPage() {
   const [slippageRefreshKey, setSlippageRefreshKey] = useState(0);
   const [swapsReportRefreshKey, setSwapsReportRefreshKey] = useState(0);
   const [lpRiskAlertsRefreshKey, setLpRiskAlertsRefreshKey] = useState(0);
+  const [marketWatchRefreshKey, setMarketWatchRefreshKey] = useState(0);
   const [nopSymbol, setNopSymbol] = useState("");
   const [nopSymbolsAll, setNopSymbolsAll] = useState<string[]>([]);
   const [rebateIbId, setRebateIbId] = useState("10342");
@@ -1391,6 +1396,13 @@ export function DealingDepartmentPage() {
     }
     if (activeMenu === "Swaps Report") {
       setSwapsReportRefreshKey((k) => k + 1);
+      return;
+    }
+    if (activeMenu === "Market Watch") {
+      // Re-pulls the symbol list and saved markup/comment settings. The live
+      // prices are a hub subscription and are unaffected -- they do not need
+      // refreshing and must not be torn down by one.
+      setMarketWatchRefreshKey((k) => k + 1);
       return;
     }
     if (activeMenu === "LP Risk Alerts") {
@@ -4099,6 +4111,8 @@ export function DealingDepartmentPage() {
             <ClientVolumeTab refreshKey={clientVolumeRefreshKey} />
           ) : activeMenu === "Swaps Report" ? (
             <SwapsReportTab refreshKey={swapsReportRefreshKey} />
+          ) : activeMenu === "Market Watch" ? (
+            <MarketWatchTab refreshKey={marketWatchRefreshKey} />
           ) : activeMenu === "Revenue Share" ? (
             <RevenueShareTab refreshKey={revenueShareRefreshKey} />
           ) : activeMenu === "Slippage Report" ? (
