@@ -916,7 +916,18 @@ function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
  * The palette is that report's, named here once so a later card cannot invent
  * its own greys.
  */
-const RPT_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+// SINGLE quotes around 'Segoe UI', never double.
+//
+// This string is interpolated into style="..." attributes. A double quote in
+// the value closes the attribute at that point, so `font:700 10px/1.4
+// -apple-system, BlinkMacSystemFont, "Segoe UI", ...` parsed as a style of
+// `font:700 10px/1.4 -apple-system, BlinkMacSystemFont,` and everything after
+// it -- including color -- was dropped. On the light cards that merely lost the
+// intended size and weight; on the dark hero card it meant color:#ffffff never
+// applied and the text rendered in the inherited near-black, invisible against
+// #0f172a. CSS accepts single quotes for a family name, and they are safe
+// inside a double-quoted attribute.
+const RPT_FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 const RPT = {
   ink: "#0f172a",
   accent: "#22d3ee",
@@ -926,6 +937,33 @@ const RPT = {
   pos: "#059669",
   neg: "#dc2626",
   warn: "#b45309",
+};
+
+/**
+ * Card tints. Every card belonged to one grey family before this, which meant
+ * colour carried no information and a reader scanning the deck had nothing to
+ * group by. Each tone answers "what kind of number is this?" -- the same
+ * grouping the Deal Match Analysis tab already uses on screen, so an operator
+ * reading the email and then opening the tab sees the same colours mean the
+ * same things.
+ *
+ *   em  money earned, and the client flow that earns it
+ *   am  commission, and the shifting bucket
+ *   cy  realized volume (a different unit from deals, so a different family)
+ *   ro  cost
+ *   in  internal accounts -- a parallel bucket, deliberately not em/cy
+ *
+ * `fg` is applied to the FIGURE only. The label and the note stay muted grey in
+ * every tone, so the tint groups cards without turning the deck into a
+ * ransom note.
+ */
+const TONES = {
+  em: { bg: "#ecfdf5", bd: "#6ee7b7", fg: "#047857" },
+  am: { bg: "#fffbeb", bd: "#fcd34d", fg: "#b45309" },
+  cy: { bg: "#ecfeff", bd: "#67e8f9", fg: "#0e7490" },
+  ro: { bg: "#fff1f2", bd: "#fda4af", fg: "#be123c" },
+  in: { bg: "#eef2ff", bd: "#a5b4fc", fg: "#4338ca" },
+  plain: { bg: "#f8fafc", bd: "#e6eaf1", fg: "#0f172a" },
 };
 
 /**
@@ -958,43 +996,105 @@ function rptSectionTitle(title, subtitle = "") {
  * stays semantic and a red number means money leaving rather than decoration.
  * `unit` rides at 13px muted so the magnitude reads first ("802,646.01 lots").
  */
-function rptCard({ label, value, unit = "", note = "", tone = "ink" }) {
-  const colour = tone === "pos" ? RPT.pos : tone === "neg" ? RPT.neg : tone === "warn" ? RPT.warn : RPT.ink;
+function rptCard({ label, value, unit = "", note = "", tone = "plain" }) {
+  // Legacy tone names from the first pass, kept so a caller I miss still gets a
+  // sensible card rather than an untinted one.
+  const alias = { pos: "em", neg: "ro", warn: "am", ink: "plain" };
+  const t = TONES[alias[tone] || tone] || TONES.plain;
+
   const unitHtml = unit
-    ? ` <span style="font-size:13px;color:${RPT.muted};font-weight:600">${escapeHtml(unit)}</span>`
+    ? ` <span style="font-size:11px;color:${RPT.muted};font-weight:600;letter-spacing:0">${escapeHtml(unit)}</span>`
     : "";
   const noteHtml = note
-    ? `<div style="font:400 10.5px/1.45 ${RPT_FONT};color:${RPT.muted};margin-top:6px">${escapeHtml(note)}</div>`
+    ? `<div style="font:400 10px/1.45 ${RPT_FONT};color:${RPT.muted};margin-top:6px">${escapeHtml(note)}</div>`
     : "";
-  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${RPT.cardBg};border:1px solid ${RPT.cardBorder};border-radius:10px;height:100%">
-      <tr><td style="padding:14px 16px">
-        <div style="font:600 10px/1.4 ${RPT_FONT};letter-spacing:.08em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(label)}</div>
-        <div style="font:700 20px/1.25 ${RPT_FONT};color:${colour};margin-top:6px;white-space:nowrap">${value}${unitHtml}</div>
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${t.bg};border:1px solid ${t.bd};border-radius:12px;height:100%">
+      <tr><td style="padding:12px 13px">
+        <div style="font:700 9.5px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(label)}</div>
+        <div style="font:800 20px/1.25 ${RPT_FONT};color:${t.fg};margin-top:5px;white-space:nowrap;letter-spacing:-.4px">${value}${unitHtml}</div>
         ${noteHtml}
       </td></tr>
     </table>`;
 }
 
 /**
- * Cards laid out `perRow` to a line. Short final rows are padded with empty
- * cells so the last card keeps its column width instead of stretching across
- * the remainder — a table layout has no grid to fall back on.
+ * The headline band: one figure given the whole stage, flanked by the two that
+ * explain it.
+ *
+ * Net revenue is what this email is opened for, and it used to be the fifth of
+ * five identical tiles — nothing on the page said where to look. A dark card at
+ * 30px says it without a word of copy.
+ *
+ * Built as a three-cell table rather than a grid: Outlook's Word renderer has
+ * no CSS grid, and this has to survive there. border-radius degrades to square
+ * corners in the same renderer, which is a fine way to lose that argument.
+ */
+function rptHero({ label, value, note, left, right }) {
+  const mini = (m) => {
+    const t = TONES[m.tone] || TONES.plain;
+    return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${t.bg};border:1px solid ${t.bd};border-radius:12px;height:100%">
+        <tr><td style="padding:13px 14px">
+          <div style="font:700 9.5px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(m.label)}</div>
+          <div style="font:800 19px/1.2 ${RPT_FONT};color:${t.fg};margin-top:5px;white-space:nowrap;letter-spacing:-.4px">${m.value}</div>
+          <div style="font:400 10px/1.4 ${RPT_FONT};color:${RPT.muted};margin-top:6px">${escapeHtml(m.note)}</div>
+        </td></tr>
+      </table>`;
+  };
+
+  // Inline-block cells, same no-@media reasoning as rptCardGrid(): the hero is
+  // ~430px and the two supporting cards ~245px, so all three sit on one line on
+  // a desktop and each takes the full width on a phone. Widths as px caps, not
+  // percentages -- a percentage would keep three columns at 375px and render
+  // "$8,387.97" at 30px inside a 120px cell.
+  const cell = (inner, cap) =>
+    `<td class="rpt-cell" valign="top" style="display:inline-block;width:100%;max-width:${cap}px;box-sizing:border-box;vertical-align:top;padding:0 6px 12px;font-size:12px">${inner}</td>`;
+
+  const main = `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${RPT.ink};border-radius:14px;height:100%">
+        <tr><td style="padding:16px 18px">
+          <div style="font:700 10px/1.4 ${RPT_FONT};letter-spacing:.1em;text-transform:uppercase;color:${RPT.accent}">${escapeHtml(label)}</div>
+          <div style="font:800 30px/1.05 ${RPT_FONT};color:#ffffff;margin-top:6px;white-space:nowrap;letter-spacing:-1px">${value}</div>
+          <div style="font:400 10.5px/1.45 ${RPT_FONT};color:#94a3b8;margin-top:8px">${escapeHtml(note)}</div>
+        </td></tr>
+      </table>`;
+
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px 2px;font-size:0">
+      <tr>${cell(main, 430)}${cell(mini(left), 245)}${cell(mini(right), 245)}</tr>
+    </table>`;
+}
+
+/**
+ * Cards in ONE row of inline-block cells, wrapping naturally. No @media.
+ *
+ * This is the layout technique the shell already documents and relies on, and
+ * the reason is worth restating rather than rediscovering: Zoho strips @media
+ * entirely, so there is no breakpoint to switch on and one layout has to read
+ * at 375px and at desktop width.
+ *
+ * `display:inline-block` + `width:100%` + a px `max-width` does that with no
+ * query at all. Wide screen: the cap holds each cell to its column and several
+ * sit per line. Phone: 100% wins because the cap is wider than the viewport,
+ * and every cell becomes its own full-width row. `perRow` therefore sets the
+ * cap rather than emitting a fixed number of columns, so a narrow reader gets
+ * a clean stack instead of four 80px columns of squeezed digits.
+ *
+ * A grid of <td width="25%"> — which this was — does NOT stack. It squeezes,
+ * and 802,646.01 in an 80px column is a wrapped, unreadable smear.
+ *
+ * font-size:0 on the container kills the whitespace gap browsers insert between
+ * inline-blocks; each cell restores a real size.
  */
 function rptCardGrid(cards, perRow = 3) {
   const list = cards.filter(Boolean);
   if (!list.length) return "";
-  const width = (100 / perRow).toFixed(2);
-  const lines = [];
-  for (let i = 0; i < list.length; i += perRow) {
-    const chunk = list.slice(i, i + perRow);
-    const cells = chunk
-      .map((c) => `<td width="${width}%" valign="top" style="padding:0 6px 12px">${rptCard(c)}</td>`)
-      .join("");
-    const pad = perRow - chunk.length;
-    const filler = pad > 0 ? `<td width="${(Number(width) * pad).toFixed(2)}%" style="padding:0 6px"></td>` : "";
-    lines.push(`<tr>${cells}${filler}</tr>`);
-  }
-  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px">${lines.join("")}</table>`;
+  // Content width is ~940px inside the 980px wrap, less 6px of gutter a side.
+  const cap = Math.floor(940 / perRow) - 12;
+  const cells = list
+    .map(
+      (c) =>
+        `<td class="kpi rpt-cell" valign="top" style="display:inline-block;width:100%;max-width:${cap}px;box-sizing:border-box;vertical-align:top;padding:0 6px 12px;font-size:12px">${rptCard(c)}</td>`,
+    )
+    .join("");
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px;font-size:0"><tr>${cells}</tr></table>`;
 }
 
 export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, volumeDetail = null, revenueStats = null, mt5Volume = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
@@ -1054,13 +1154,21 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
          there makes the card-per-row maths deterministic instead of depending
          on the reader's window size. */
       .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#ffffff; border:1px solid #e6eaf1; border-radius:14px; overflow:hidden; }
-      .header { padding:22px 24px; background:#0f172a; color:#ffffff; }
+      .header { padding:22px 24px; background:#0f172a; color:#ffffff;
+                border-bottom:3px solid #22d3ee; }
       .header-grid { width:100%; border-collapse:collapse; }
       .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
       .header-left { vertical-align:top; text-align:left; }
       .header-right { vertical-align:top; text-align:left; margin-top:10px; }
-      .title { margin:0; font-size:19px; font-weight:700; letter-spacing:0.2px; }
-      .subtitle { margin:6px 0 0; font-size:12px; font-weight:600; color:#22d3ee; }
+      .title { margin:0; font-size:23px; font-weight:800; letter-spacing:-0.4px; line-height:1.2; }
+      .header-eyebrow { font-size:10px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; color:#22d3ee; margin:0 0 6px; }
+      /* Scope pills. inline-block so they wrap to as many lines as the width
+         needs -- no @media, same constraint as everything else here. */
+      .header-pills { margin:12px 0 0; font-size:0; }
+      .hpill { display:inline-block; font-size:10px; font-weight:600; color:#cbd5e1;
+               background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.14);
+               border-radius:20px; padding:3px 9px; margin:0 5px 5px 0; }
+      .subtitle { margin:5px 0 0; font-size:11.5px; font-weight:500; color:#94a3b8; }
       .header-meta { margin:0; font-size:11px; line-height:1.55; color:#94a3b8; }
       .content { padding:16px; }
       .meta { color:#475569; font-size:13px; margin:0 0 14px; line-height:1.5; }
@@ -1095,6 +1203,21 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:#64748b; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
       .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:3px solid #22d3ee; border-radius:8px; }
+      /* ── Phone widths: enhancement only, never load-bearing ──────────────
+         The px max-width on each .rpt-cell is the real layout and it already
+         works without this: when the cap exceeds the viewport, width:100% wins
+         and the cells stack one per line. What it cannot do is make a 228px
+         card fill a 343px phone, so the deck ends with a ragged right edge.
+
+         This query fixes that where it is honoured. It is deliberately additive
+         -- Zoho strips @media entirely (see the "Single layout, NO @media" note
+         above, which is why the caps exist at all), and a Zoho reader therefore
+         keeps exactly the stacked layout they have today. Apple Mail, the Gmail
+         app and Outlook mobile do honour it and get full-width cards. Nothing
+         depends on it, so nothing breaks where it is dropped. */
+      @media only screen and (max-width: 600px) {
+        .rpt-cell { max-width:100% !important; width:100% !important; display:block !important; }
+      }
       .section-title { margin:22px 0 10px; font-size:12px; font-weight:700; letter-spacing:0.09em; text-transform:uppercase; color:#0f172a; border-left:3px solid #22d3ee; padding-left:9px; }
       /* The full table needs ~860px to stay legible. table.data thead is hidden
          below, which makes every <th width="..."> here inert -- it survives only
@@ -1155,42 +1278,52 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
   <body>
     <div class="outer">
       <div class="wrap">
+        ${/* Header rebuilt as a single stacked block, not a two-column grid.
+              The old left/right split put the scope lines BEFORE the title in
+              source order, so on a phone -- where header-grid's cells are
+              already forced to display:block -- the first thing in the email
+              was three lines of grey filter text and the title came second.
+              One column reads the same at every width and needs no cells. */ ""}
         <div class="header">
-          <table class="header-grid" role="presentation">
-            <tr>
-              <td class="header-left" width="48%">
-                <div class="header-meta">
-                  Period: <strong>${escapeHtml(fromYmd)}</strong> to <strong>${escapeHtml(toYmd)}</strong> (UTC)<br/>
-                  Scope: all groups, all logins, all symbols<br/>
-                  Filter: only accounts with <strong>Lots &gt; 0</strong>
-                </div>
-              </td>
-              <td class="header-right" width="52%">
-                <h1 class="title">${CADENCES[cadence].subjectWord} Deal Performance Summary</h1>
-                <div class="subtitle">Management Reporting | Deal Match Revenue Analytics</div>
-              </td>
-            </tr>
-          </table>
+          <div class="header-eyebrow">Management Reporting &middot; Deal Match</div>
+          <h1 class="title">${CADENCES[cadence].subjectWord} Deal Performance Summary</h1>
+          <div class="subtitle">${escapeHtml(fromYmd)}${fromYmd === toYmd ? "" : ` &rarr; ${escapeHtml(toYmd)}`} &middot; UTC</div>
+          ${/* Scope as pills rather than three lines of prose: it is reference
+                detail, read once, and it should not out-weigh the title. */ ""}
+          <div class="header-pills">
+            <span class="hpill">All groups &middot; all symbols</span>
+            <span class="hpill">Accounts with lots &gt; 0</span>
+            <span class="hpill">${fmtNum(rows.length, 0)} active client${rows.length === 1 ? "" : "s"}</span>
+          </div>
         </div>
         <div class="content">
           ${
             revenueStats
-              ? rptSectionTitle("Revenue", "whole-run totals from DealMatch/Run — the figures the Deal Match Analysis tab shows")
+              ? rptHero({
+                    label: "Total Net Revenue",
+                    value: money(revenueStats.netRevenue),
+                    note: "Gross revenue less LP commission — what the book actually kept.",
+                    left: {
+                      label: "Gross Revenue", value: money(revenueStats.grossRevenue),
+                      tone: "cy", note: "Before LP cost",
+                    },
+                    right: {
+                      label: "LP Commission",
+                      value: `−${money(revenueStats.lpCommission).replace("-", "")}`,
+                      tone: "ro",
+                      // A cost is only judgeable against what it was paid out of.
+                      note: `${pctOf(revenueStats.lpCommission, revenueStats.grossRevenue)} of gross`,
+                    },
+                  })
+                + rptSectionTitle("Revenue build-up", "how gross was earned, before cost — from DealMatch/Run, the figures the Deal Match Analysis tab shows")
                 + rptCardGrid(
                     [
-                      { label: "Markup Revenue", value: money(revenueStats.markupRevenue), tone: "pos",
-                        note: "Spread revenue earned on client flow." },
-                      { label: "Commission Revenue", value: money(revenueStats.commissionRevenue), tone: "pos",
-                        note: "Commission charged to clients." },
-                      { label: "Gross Revenue", value: money(revenueStats.grossRevenue), tone: "pos",
-                        note: "Markup plus commission plus swap revenue, before LP cost." },
-                      { label: "LP Commission", value: `-${money(revenueStats.lpCommission).replace("-", "")}`, tone: "neg",
-                        note: "Commission paid to the liquidity provider — the cost side." },
-                      { label: "Total Net Revenue", value: money(revenueStats.netRevenue),
-                        tone: revenueStats.netRevenue < 0 ? "neg" : "pos",
-                        note: "Gross revenue less LP commission. What the book actually kept." },
+                      { label: "Markup Revenue", value: money(revenueStats.markupRevenue), tone: "em",
+                        note: `Spread revenue on client flow — ${pctOf(revenueStats.markupRevenue, revenueStats.grossRevenue)} of gross.` },
+                      { label: "Commission Revenue", value: money(revenueStats.commissionRevenue), tone: "am",
+                        note: `Commission charged to clients — ${pctOf(revenueStats.commissionRevenue, revenueStats.grossRevenue)} of gross.` },
                     ],
-                    3,
+                    2,
                   )
               : `<table class="kpis" role="presentation">
             <tr>
@@ -1219,21 +1352,21 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
               ? rptSectionTitle("MT5 client volume", "lots — “deals” count both legs of a round trip, “realized” counts it once")
                 + rptCardGrid(
                     [
-                      { label: "Total MT5 Deals", value: fmtNum(volumeDetail.totalMt5Deals, 2), unit: "lots", tone: "pos",
+                      { label: "Total MT5 Deals", value: fmtNum(volumeDetail.totalMt5Deals, 2), unit: "lots", tone: "em",
                         note: "Client deal lots plus shifting deal lots." },
-                      { label: "Client Deals", value: fmtNum(volumeDetail.clientDeals, 2), unit: "lots", tone: "pos",
+                      { label: "Client Deals", value: fmtNum(volumeDetail.clientDeals, 2), unit: "lots", tone: "em",
                         note: "MT5 client deal lots, each leg counted." },
-                      { label: "MT5 Realized (CFD)", value: fmtNum(volumeDetail.realizedCfd, 2), unit: "lots",
+                      { label: "Realized — CFD", value: fmtNum(volumeDetail.realizedCfd, 2), unit: "lots", tone: "cy",
                         note: "Closed CFD volume, once per round trip." },
-                      { label: "MT5 Realized (Equity)", value: fmtNum(volumeDetail.realizedEquity, 2), unit: "lots",
+                      { label: "Realized — Equity", value: fmtNum(volumeDetail.realizedEquity, 2), unit: "lots", tone: "cy",
                         note: "Closed equity volume. Share-based, so it dwarfs CFD." },
-                      { label: "Shifting Deals", value: fmtNum(volumeDetail.shiftingDeals, 2), unit: "lots", tone: "warn",
+                      { label: "Shifting Deals", value: fmtNum(volumeDetail.shiftingDeals, 2), unit: "lots", tone: "am",
                         note: "Shifting-account deal lots. Already inside Total MT5 Deals." },
-                      { label: "Shifting Realized", value: fmtNum(volumeDetail.shiftingRealized, 2), unit: "lots", tone: "warn",
+                      { label: "Shifting Realized", value: fmtNum(volumeDetail.shiftingRealized, 2), unit: "lots", tone: "am",
                         note: "The closed volume behind those shifting deals." },
-                      { label: "Internal Deals", value: fmtNum(volumeDetail.internalDeals, 2), unit: "lots", tone: "warn",
+                      { label: "Internal Deals", value: fmtNum(volumeDetail.internalDeals, 2), unit: "lots", tone: "in",
                         note: "Internal-account deal lots. A separate bucket, not client flow." },
-                      { label: "Internal Realized", value: fmtNum(volumeDetail.internalRealized, 2), unit: "lots", tone: "warn",
+                      { label: "Internal Realized", value: fmtNum(volumeDetail.internalRealized, 2), unit: "lots", tone: "in",
                         note: "The closed internal-account volume." },
                     ],
                     4,
@@ -1244,10 +1377,10 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       // The share is what the dropped MT5 Volume Flow funnel
                       // contributed that a raw figure does not: 529 lots means
                       // nothing until you know it is 0.07% of the flow.
-                      { label: "Bridge Lots", value: fmtNum(volumeDetail.bridgeLots, 2), unit: "lots", tone: "warn",
-                        note: `Volume that reached the bridge — ${pctOf(volumeDetail.bridgeLots, volumeDetail.totalMt5Deals)} of total MT5 deals.` },
-                      { label: "Matched Lots", value: fmtNum(volumeDetail.matchedLots, 2), unit: "lots", tone: "pos",
-                        note: `Client volume matched to an LP order — ${pctOf(volumeDetail.matchedLots, volumeDetail.totalMt5Deals)} of total MT5 deals.` },
+                      { label: "Bridge Lots", value: fmtNum(volumeDetail.bridgeLots, 2), unit: "lots", tone: "am",
+                        note: `Reached the bridge — ${pctOf(volumeDetail.bridgeLots, volumeDetail.totalMt5Deals)} of total MT5 deals.` },
+                      { label: "Matched Lots", value: fmtNum(volumeDetail.matchedLots, 2), unit: "lots", tone: "em",
+                        note: `Matched to an LP order — ${pctOf(volumeDetail.matchedLots, volumeDetail.bridgeLots)} of bridge lots.` },
                       { label: "Active Clients", value: fmtNum(rows.length, 0),
                         note: "Accounts with lots > 0 in this period — the rows in the table below." },
                     ],

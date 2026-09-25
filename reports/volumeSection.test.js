@@ -943,8 +943,8 @@ describe("every report family renders the volume section", () => {
     for (const label of [
       "Total MT5 Deals",
       "Client Deals",
-      "MT5 Realized (CFD)",
-      "MT5 Realized (Equity)",
+      "Realized — CFD",
+      "Realized — Equity",
       "Shifting Deals",
       "Shifting Realized",
       "Internal Deals",
