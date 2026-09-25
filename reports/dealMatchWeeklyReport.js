@@ -922,7 +922,89 @@ function buildVolumeSection(volume, charts, volumeStats, periodNoun) {
           )}`;
 }
 
-export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, mt5Volume = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
+/* ── Card deck, in the Risk Analysis Report's visual language ─────────────
+ *
+ * Styles are INLINE rather than classes in the shell's <style> block, and that
+ * is the point rather than an oversight. The comments around `.tscroll` and
+ * `table.data` in reports/reportShared.js record what this codebase already
+ * learned the hard way: Zoho ships a 29-property allow-list and silently drops
+ * the rest. A <style> block is a suggestion; a style attribute is not. The
+ * Risk Analysis Report these cards are modelled on is inline throughout, which
+ * is why it survives every client it is sent to.
+ *
+ * The palette is that report's, named here once so a later card cannot invent
+ * its own greys.
+ */
+const RPT_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+const RPT = {
+  ink: "#0f172a",
+  accent: "#22d3ee",
+  cardBg: "#f8fafc",
+  cardBorder: "#e6eaf1",
+  muted: "#64748b",
+  pos: "#059669",
+  neg: "#dc2626",
+  warn: "#b45309",
+};
+
+/**
+ * A section rule: cyan bar, tracked uppercase label, then a lower-case grey
+ * subtitle carrying the METHODOLOGY rather than a restatement of the title.
+ * "— live deal-matching · hedged vs internalised" is the move worth copying:
+ * it says where the number came from in the same breath as naming it.
+ */
+function rptSectionTitle(title, subtitle = "") {
+  const sub = subtitle
+    ? `<span style="font-weight:500;letter-spacing:0;text-transform:none;color:${RPT.muted};font-size:11px"> — ${escapeHtml(subtitle)}</span>`
+    : "";
+  return `<div style="font:700 12px/1.4 ${RPT_FONT};letter-spacing:.09em;text-transform:uppercase;color:${RPT.ink};border-left:3px solid ${RPT.accent};padding-left:9px;margin:22px 0 10px">${escapeHtml(title)}${sub}</div>`;
+}
+
+/**
+ * One KPI card. `tone` colours the FIGURE only — never the card — so colour
+ * stays semantic and a red number means money leaving rather than decoration.
+ * `unit` rides at 13px muted so the magnitude reads first ("802,646.01 lots").
+ */
+function rptCard({ label, value, unit = "", note = "", tone = "ink" }) {
+  const colour = tone === "pos" ? RPT.pos : tone === "neg" ? RPT.neg : tone === "warn" ? RPT.warn : RPT.ink;
+  const unitHtml = unit
+    ? ` <span style="font-size:13px;color:${RPT.muted};font-weight:600">${escapeHtml(unit)}</span>`
+    : "";
+  const noteHtml = note
+    ? `<div style="font:400 10.5px/1.45 ${RPT_FONT};color:${RPT.muted};margin-top:6px">${escapeHtml(note)}</div>`
+    : "";
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="background:${RPT.cardBg};border:1px solid ${RPT.cardBorder};border-radius:10px;height:100%">
+      <tr><td style="padding:14px 16px">
+        <div style="font:600 10px/1.4 ${RPT_FONT};letter-spacing:.08em;text-transform:uppercase;color:${RPT.muted}">${escapeHtml(label)}</div>
+        <div style="font:700 20px/1.25 ${RPT_FONT};color:${colour};margin-top:6px;white-space:nowrap">${value}${unitHtml}</div>
+        ${noteHtml}
+      </td></tr>
+    </table>`;
+}
+
+/**
+ * Cards laid out `perRow` to a line. Short final rows are padded with empty
+ * cells so the last card keeps its column width instead of stretching across
+ * the remainder — a table layout has no grid to fall back on.
+ */
+function rptCardGrid(cards, perRow = 3) {
+  const list = cards.filter(Boolean);
+  if (!list.length) return "";
+  const width = (100 / perRow).toFixed(2);
+  const lines = [];
+  for (let i = 0; i < list.length; i += perRow) {
+    const chunk = list.slice(i, i + perRow);
+    const cells = chunk
+      .map((c) => `<td width="${width}%" valign="top" style="padding:0 6px 12px">${rptCard(c)}</td>`)
+      .join("");
+    const pad = perRow - chunk.length;
+    const filler = pad > 0 ? `<td width="${(Number(width) * pad).toFixed(2)}%" style="padding:0 6px"></td>` : "";
+    lines.push(`<tr>${cells}${filler}</tr>`);
+  }
+  return `<table width="100%" cellpadding="0" cellspacing="0" role="presentation" style="margin:0 -6px">${lines.join("")}</table>`;
+}
+
+export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = null, volumeDetail = null, revenueStats = null, mt5Volume = null, charts = null, chartError = null, ibNotice = null, periodNoun = "week", cadence = "weekly" }) {
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
@@ -970,23 +1052,23 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
          accounts, several webmail clients). This is the ONLY layout -- Zoho
          strips @media entirely, so there is no desktop breakpoint to switch to;
          see the "Single layout, NO @media" note further down. ── */
-      body { margin:0; padding:0; background:#f3f7fb; color:#0f172a; font-family: Arial, Helvetica, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+      body { margin:0; padding:0; background:#eef1f6; color:#0f172a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
       /* box-sizing on the layout wrappers: without it, width:100% + padding
          overflows the viewport and the whole email scrolls sideways. */
       .outer, .wrap, .header, .content { box-sizing:border-box; }
-      .outer { width:100%; background:#f3f7fb; padding:8px 4px; }
+      .outer { width:100%; background:#eef1f6; padding:8px 4px; }
       /* 980px is what Zoho actually gives the message body; pinning the canvas
          there makes the card-per-row maths deterministic instead of depending
          on the reader's window size. */
-      .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#ffffff; border:1px solid #dbe6f2; border-radius:10px; overflow:hidden; }
-      .header { padding:14px 16px; background:linear-gradient(135deg,#0f2d4f,#114b7a); color:#eaf4ff; }
+      .wrap { width:100%; max-width: 980px; margin: 0 auto; background:#ffffff; border:1px solid #e6eaf1; border-radius:14px; overflow:hidden; }
+      .header { padding:22px 24px; background:#0f172a; color:#ffffff; }
       .header-grid { width:100%; border-collapse:collapse; }
       .header-grid td { display:block; width:100% !important; box-sizing:border-box; }
       .header-left { vertical-align:top; text-align:left; }
       .header-right { vertical-align:top; text-align:left; margin-top:10px; }
       .title { margin:0; font-size:19px; font-weight:700; letter-spacing:0.2px; }
-      .subtitle { margin:6px 0 0; font-size:12px; color:#cfe3f8; }
-      .header-meta { margin:0; font-size:11px; line-height:1.55; color:#bcd6ee; }
+      .subtitle { margin:6px 0 0; font-size:12px; font-weight:600; color:#22d3ee; }
+      .header-meta { margin:0; font-size:11px; line-height:1.55; color:#94a3b8; }
       .content { padding:16px; }
       .meta { color:#475569; font-size:13px; margin:0 0 14px; line-height:1.5; }
       /* ── Single layout, NO @media ────────────────────────────────────────
@@ -1019,8 +1101,8 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       .kpi.vol-total { background:#f8fafc; border-color:#e2e8f0; }
       .kpi-label { font-size:10px; text-transform:uppercase; letter-spacing:0.3px; color:#64748b; margin:0 0 5px; line-height:1.25; }
       .kpi-value { font-size:16px; font-weight:700; color:#0f2d4f; margin:0; white-space:nowrap; }
-      .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:4px solid #14b8a6; border-radius:8px; }
-      .section-title { margin: 2px 0 8px; font-size:14px; color:#0f2d4f; font-weight:700; }
+      .kpi-note { font-size:12px; color:#334155; margin:8px 0 10px; padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-left:3px solid #22d3ee; border-radius:8px; }
+      .section-title { margin:22px 0 10px; font-size:12px; font-weight:700; letter-spacing:0.09em; text-transform:uppercase; color:#0f172a; border-left:3px solid #22d3ee; padding-left:9px; }
       /* The full table needs ~860px to stay legible. table.data thead is hidden
          below, which makes every <th width="..."> here inert -- it survives only
          as inline documentation of each column's intended share. Each <td>
@@ -1095,7 +1177,26 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
           </table>
         </div>
         <div class="content">
-          <table class="kpis" role="presentation">
+          ${
+            revenueStats
+              ? rptSectionTitle("Revenue", "whole-run totals from DealMatch/Run — the figures the Deal Match Analysis tab shows")
+                + rptCardGrid(
+                    [
+                      { label: "Markup Revenue", value: money(revenueStats.markupRevenue), tone: "pos",
+                        note: "Spread revenue earned on client flow." },
+                      { label: "Commission Revenue", value: money(revenueStats.commissionRevenue), tone: "pos",
+                        note: "Commission charged to clients." },
+                      { label: "Gross Revenue", value: money(revenueStats.grossRevenue), tone: "pos",
+                        note: "Markup plus commission plus swap revenue, before LP cost." },
+                      { label: "LP Commission", value: `-${money(revenueStats.lpCommission).replace("-", "")}`, tone: "neg",
+                        note: "Commission paid to the liquidity provider — the cost side." },
+                      { label: "Total Net Revenue", value: money(revenueStats.netRevenue),
+                        tone: revenueStats.netRevenue < 0 ? "neg" : "pos",
+                        note: "Gross revenue less LP commission. What the book actually kept." },
+                    ],
+                    3,
+                  )
+              : `<table class="kpis" role="presentation">
             <tr>
               <td class="kpi clients" width="25%">
                 <p class="kpi-label">Active Clients</p>
@@ -1114,7 +1215,47 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 <p class="kpi-value">${money(totals.netRev)}</p>
               </td>
             </tr>
-          </table>
+          </table>`
+          }
+
+          ${
+            volumeDetail
+              ? rptSectionTitle("MT5 client volume", "lots — “deals” count both legs of a round trip, “realized” counts it once")
+                + rptCardGrid(
+                    [
+                      { label: "Total MT5 Deals", value: fmtNum(volumeDetail.totalMt5Deals, 2), unit: "lots", tone: "pos",
+                        note: "Client deal lots plus shifting deal lots." },
+                      { label: "Client Deals", value: fmtNum(volumeDetail.clientDeals, 2), unit: "lots", tone: "pos",
+                        note: "MT5 client deal lots, each leg counted." },
+                      { label: "MT5 Realized (CFD)", value: fmtNum(volumeDetail.realizedCfd, 2), unit: "lots",
+                        note: "Closed CFD volume, once per round trip." },
+                      { label: "MT5 Realized (Equity)", value: fmtNum(volumeDetail.realizedEquity, 2), unit: "lots",
+                        note: "Closed equity volume. Share-based, so it dwarfs CFD." },
+                      { label: "Shifting Deals", value: fmtNum(volumeDetail.shiftingDeals, 2), unit: "lots", tone: "warn",
+                        note: "Shifting-account deal lots. Already inside Total MT5 Deals." },
+                      { label: "Shifting Realized", value: fmtNum(volumeDetail.shiftingRealized, 2), unit: "lots", tone: "warn",
+                        note: "The closed volume behind those shifting deals." },
+                      { label: "Internal Deals", value: fmtNum(volumeDetail.internalDeals, 2), unit: "lots", tone: "warn",
+                        note: "Internal-account deal lots. A separate bucket, not client flow." },
+                      { label: "Internal Realized", value: fmtNum(volumeDetail.internalRealized, 2), unit: "lots", tone: "warn",
+                        note: "The closed internal-account volume." },
+                    ],
+                    4,
+                  )
+                + rptSectionTitle("Bridge / matched", "lots reaching the bridge, and the share matched to an LP order")
+                + rptCardGrid(
+                    [
+                      { label: "Bridge Lots", value: fmtNum(volumeDetail.bridgeLots, 2), unit: "lots", tone: "warn",
+                        note: "Volume that reached the bridge." },
+                      { label: "Matched Lots", value: fmtNum(volumeDetail.matchedLots, 2), unit: "lots", tone: "pos",
+                        note: "Client volume matched to an LP order." },
+                      { label: "Active Clients", value: fmtNum(rows.length, 0),
+                        note: "Accounts with lots > 0 in this period — the rows in the table below." },
+                    ],
+                    3,
+                  )
+              : ""
+          }
 
           <div class="kpi-note">
             Top Net Revenue Client:
@@ -1274,6 +1415,54 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     bridgeLots: n(report?.totalBridgeLots),
     matchedLots: n(report?.totalMatchedLots),
   };
+
+  /**
+   * The figures the Deal Match Analysis tab puts on screen, read from the SAME
+   * scalars that tab reads (DealMatchingTab.tsx:1306-1310) rather than
+   * recomputed here.
+   *
+   * This exists because the email and the tab disagreed, and the email was
+   * wrong. Its KPI cards were built by summing the per-client revenue rows --
+   * which are filtered to `lots > 0` a few lines below and then reduced again
+   * by each client's withdrawn rebate. For 2026-09-24 that produced a Total
+   * Revenue of $389.74 against the tab's $10,256.24 gross / $8,387.97 net, and
+   * management reasonably read the email as broken.
+   *
+   * These are whole-run totals straight off the response, so they are immune to
+   * that filtering and to any per-client rebate lookup failing. The per-client
+   * table below still uses the row-derived numbers -- it is a different
+   * question ("who earned it", net of their rebate) and both belong in the
+   * report, as long as the headline matches the tab.
+   *
+   * Net is computed as gross - |LP commission|, exactly as the tab does it, and
+   * deliberately NOT read from a server net field -- see the note at
+   * DealMatchingTab.tsx:618.
+   */
+  const grossRevenue = n(report?.totalGrossRevenueUsd);
+  const lpCommission = Math.abs(n(report?.totalLpCommissionAllocated));
+  const revenueStats = {
+    markupRevenue: n(report?.totalSpreadRevenueUsd),
+    commissionRevenue: n(report?.totalClientCommission),
+    grossRevenue,
+    lpCommission,
+    netRevenue: grossRevenue - lpCommission,
+  };
+
+  // The volume tiles the tab shows, same source. dealLots/realized*/bridge/
+  // matched already live on volumeStats above; these are the ones the email
+  // had no equivalent for at all.
+  const volumeDetail = {
+    totalMt5Deals: n(report?.totalMt5DealLots) + n(report?.totalShiftingMt5DealLots),
+    clientDeals: n(report?.totalMt5DealLots),
+    realizedCfd: n(report?.totalRealizedLotsCfd),
+    realizedEquity: n(report?.totalRealizedLotsEquity),
+    shiftingDeals: n(report?.totalShiftingMt5DealLots),
+    shiftingRealized: n(report?.totalShiftingRealizedLots),
+    internalDeals: n(report?.totalInternalAccountLots),
+    internalRealized: n(report?.totalInternalAccountRealizedLots),
+    bridgeLots: n(report?.totalBridgeLots),
+    matchedLots: n(report?.totalMatchedLots),
+  };
   // The volume funnel reads the SAME response, deliberately. A second
   // DealMatch/Run here would cost another ~40 seconds for a payload already in
   // hand.
@@ -1356,7 +1545,7 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
     noticeParts.push(`${unresolved} login(s) could not be matched to a CRM client and appear as their own rows`);
   }
   const ibNotice = noticeParts.length ? noticeParts.join("; ") : null;
-  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, mt5Volume, charts: chartUrls, chartError, ibNotice, periodNoun: spec.noun, cadence });
+  const html = buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats, volumeDetail, revenueStats, mt5Volume, charts: chartUrls, chartError, ibNotice, periodNoun: spec.noun, cadence });
   // Charts are referenced by URL and rendered in the body — no attachments.
   await sendBrevoEmail({ subject, html, recipients });
 

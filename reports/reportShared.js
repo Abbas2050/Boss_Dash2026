@@ -538,13 +538,20 @@ export async function crmPost(path, payload, { timeoutMs = 45_000 } = {}) {
 // Do not "tidy" these back to conventional responsive CSS.
 
 const THEMES = {
+  // Palette taken from the Risk Analysis Report the business asked these
+  // emails to look like: slate-900 ink and chrome, one cyan accent, and a
+  // single grey for borders instead of the four near-identical blues this
+  // previously carried. A gradient header was dropped for a flat slate bar --
+  // Outlook renders a CSS gradient as nothing at all, so the old header was
+  // already flat for a large share of recipients, just an unintended flat.
   light: {
-    pageBg: "#f3f7fb", cardBg: "#ffffff", cardBorder: "#dbe6f2",
-    headerBg: "linear-gradient(135deg,#0f2d4f,#114b7a)", headerFg: "#eaf4ff",
-    headerMeta: "#bcd6ee", subtitle: "#cfe3f8",
-    ink: "#0f172a", muted: "#64748b", line: "#e2e8f0", zebra: "#f9fcff",
-    thBg: "#0f2d4f", thFg: "#f8fafc", totalBg: "#eff6ff", totalFg: "#0f2d4f",
-    kpiBg: "#f8fbff", kpiBorder: "#d9e8f8", kpiValue: "#0f2d4f",
+    pageBg: "#eef1f6", cardBg: "#ffffff", cardBorder: "#e6eaf1",
+    headerBg: "#0f172a", headerFg: "#ffffff",
+    headerMeta: "#94a3b8", subtitle: "#e2e8f0",
+    ink: "#0f172a", muted: "#64748b", line: "#e6eaf1", zebra: "#f8fafc",
+    thBg: "#0f172a", thFg: "#cbd5e1", totalBg: "#f8fafc", totalFg: "#0f172a",
+    kpiBg: "#f8fafc", kpiBorder: "#e6eaf1", kpiValue: "#0f172a",
+    accent: "#22d3ee",
   },
   dark: {
     pageBg: "#0b1220", cardBg: "#111a2c", cardBorder: "#1f2a44",
@@ -618,7 +625,12 @@ export function emailShell({ theme = "light", title, subtitle = "", metaLines = 
       .subtitle { margin:6px 0 0; font-size:12px; color:${t.subtitle}; }
       .header-meta { margin:10px 0 0; font-size:11px; line-height:1.55; color:${t.headerMeta}; }
       .content { padding:16px; }
-      .section-title { margin:14px 0 8px; font-size:14px; color:${t.totalFg}; font-weight:700; }
+      /* The Risk Analysis Report's section rule: a cyan bar, then a tracked
+         uppercase label. The bar is what makes a long report scannable -- the
+         eye finds the next section without reading it. The accent token is
+         optional on a theme, so this falls back to the ink colour rather than
+         emitting "border-left:3px solid undefined". */
+      .section-title { margin:22px 0 10px; font-size:12px; font-weight:700; letter-spacing:0.09em; text-transform:uppercase; color:${t.ink}; border-left:3px solid ${t.accent || t.totalFg}; padding-left:9px; }
       .note { margin:0 0 10px; font-size:11px; color:${t.muted}; }
       .kpis { width:100%; border-collapse:collapse; margin:0 0 8px; font-size:0; text-align:center; }
       /* .kpi is named as well as ".kpis td" because that is the class the

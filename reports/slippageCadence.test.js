@@ -168,7 +168,10 @@ describe("the Slippage email is light, not dark", () => {
 
   it("paints the page and the card with the light theme's own colours", () => {
     const out = richHtml();
-    expect(out).toMatch(/background:#f3f7fb/); // page
+    // THEMES.light.pageBg. Updated from #f3f7fb when the report palette moved
+    // to the Risk Analysis Report's slate/cyan scheme; the assertion's point is
+    // that the LIGHT theme rendered rather than the dark one, not this hex.
+    expect(out).toMatch(/background:#eef1f6/); // page
     expect(out).toMatch(/background:#ffffff/); // card
   });
 });

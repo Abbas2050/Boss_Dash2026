@@ -1015,7 +1015,10 @@ describe("the Swaps email is built through the shared light shell", () => {
   it("emits the shell's document, its light palette and table.data", () => {
     const out = html();
     expect(out).toMatch(/^<!doctype html>/);
-    expect(out).toMatch(/background:#f3f7fb/); // light page
+    // THEMES.light.pageBg. Updated from #f3f7fb when the report palette moved
+    // to the Risk Analysis Report's slate/cyan scheme; the assertion's point is
+    // that the LIGHT theme rendered rather than the dark one, not this hex.
+    expect(out).toMatch(/background:#eef1f6/); // light page
     expect(out).toMatch(/background:#ffffff/); // light card
     expect(out).toMatch(/<table class="data/);
     expect(out).toMatch(/<div class="tscroll">/);
