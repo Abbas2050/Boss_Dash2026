@@ -1135,8 +1135,26 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                         note: `Spread revenue on client flow — ${pctOf(revenueStats.markupRevenue, revenueStats.grossRevenue)} of gross.` },
                       { label: "Commission Revenue", value: money(revenueStats.commissionRevenue), tone: "am",
                         note: `Commission charged to clients — ${pctOf(revenueStats.commissionRevenue, revenueStats.grossRevenue)} of gross.` },
+                      { label: "Swap Charged to Clients", value: money(revenueStats.swapCharged), tone: "em",
+                        note: "Swap taken from clients on positions held overnight." },
                     ],
-                    2,
+                    3,
+                  )
+                + rptSectionTitle("Cost", "what came off the gross — and what is already inside it")
+                + rptCardGrid(
+                    [
+                      { label: "LP Commission", value: `−${money(revenueStats.lpCommission).replace("-", "")}`, tone: "ro",
+                        note: `Paid to the liquidity provider — ${pctOf(revenueStats.lpCommission, revenueStats.grossRevenue)} of gross. This is the only figure subtracted from gross to reach net.` },
+                      { label: "Swap Given to Clients", value: `−${money(revenueStats.swapGiven).replace("-", "")}`, tone: "ro",
+                        // Stated on the card, not only in the footer: a cost
+                        // figure beside a net figure invites the reader to
+                        // subtract it, and here that would double-count.
+                        note: "Swap paid out to clients. Already netted inside Gross Revenue — not subtracted again." },
+                      { label: "Net Swap", value: money(revenueStats.swapRevenue),
+                        tone: revenueStats.swapRevenue < 0 ? "ro" : "em",
+                        note: "Charged less given — the swap component of gross revenue." },
+                    ],
+                    3,
                   )
               : `<table class="kpis" role="presentation">
             <tr>
@@ -1410,9 +1428,42 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
    */
   const grossRevenue = n(report?.totalGrossRevenueUsd);
   const lpCommission = Math.abs(n(report?.totalLpCommissionAllocated));
+  const markupRevenue = n(report?.totalSpreadRevenueUsd);
+  const commissionRevenue = n(report?.totalClientCommission);
+
+  /**
+   * Client swap, split by direction.
+   *
+   * There is no whole-run swap scalar on the response -- the tab does not read
+   * one and none exists -- but the formula the backend builds gross with is
+   * markup + commission + swap, so the NET swap is gross less the other two.
+   * That residual is the figure to trust, because it comes from the same three
+   * scalars as everything else on the headline.
+   *
+   * The direction split has to come from the per-client rows, since only they
+   * carry a sign per client. Deliberately computed over the UNFILTERED rows:
+   * `baseRows` below drops clients with no lots, and a swap-only client (swap
+   * charged on a position held open across the period, no deals closed in it)
+   * has exactly that shape. Filtering first would have quietly dropped them and
+   * made the split disagree with the residual.
+   *
+   * ARITHMETIC THAT MATTERS: `given` is ALREADY netted inside gross, because
+   * gross carries swap net of direction. It is reported so the desk can size
+   * what went out, and it must never be subtracted from gross a second time --
+   * that would double-count it. Net revenue below stays gross - LP commission.
+   */
+  const allClientRows = deriveClientRevenueRows(report);
+  const swapCharged = allClientRows.reduce((acc, r) => acc + Math.max(0, Number(r.swap) || 0), 0);
+  const swapGiven = allClientRows.reduce((acc, r) => acc + Math.max(0, -(Number(r.swap) || 0)), 0);
+
   const revenueStats = {
-    markupRevenue: n(report?.totalSpreadRevenueUsd),
-    commissionRevenue: n(report?.totalClientCommission),
+    markupRevenue,
+    commissionRevenue,
+    // The residual, from the backend's own three scalars.
+    swapRevenue: grossRevenue - markupRevenue - commissionRevenue,
+    // The two directions behind that residual, from the client rows.
+    swapCharged,
+    swapGiven,
     grossRevenue,
     lpCommission,
     netRevenue: grossRevenue - lpCommission,

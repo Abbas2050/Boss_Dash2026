@@ -69,3 +69,71 @@ describe("deriveClientRevenueRows matches fallback", () => {
     expect(row.totalRev).toBeCloseTo(30, 2);
   });
 });
+
+// ── swap, split by direction (2026-09-25) ────────────────────────────────────
+//
+// The desk asked to see swap charged from clients as revenue and swap given to
+// clients as a cost. Both are real, and the trap is that they are NOT two new
+// lines on either side of the equation: gross already carries swap NET of
+// direction, so subtracting "given" from gross would count it twice.
+import { buildEmailHtml } from "./dealMatchWeeklyReport.js";
+
+describe("client swap, split by direction", () => {
+  const STATS = {
+    markupRevenue: 6730.74,
+    commissionRevenue: 2811.84,
+    // gross - markup - commission, the residual the backend's own scalars imply
+    swapRevenue: 713.66,
+    swapCharged: 900.0,
+    swapGiven: 186.34,
+    grossRevenue: 10256.24,
+    lpCommission: 1868.27,
+    netRevenue: 8387.97,
+  };
+
+  const html = () =>
+    buildEmailHtml({
+      fromYmd: "2026-09-24",
+      toYmd: "2026-09-24",
+      cadence: "daily",
+      periodNoun: "day",
+      rows: [],
+      volume: null,
+      revenueStats: STATS,
+      volumeDetail: null,
+      mt5Volume: null,
+    });
+
+  it("shows both directions and the net between them", () => {
+    const out = html();
+    expect(out).toContain("Swap Charged to Clients");
+    expect(out).toContain("$900.00");
+    expect(out).toContain("Swap Given to Clients");
+    expect(out).toContain("$186.34");
+    expect(out).toContain("Net Swap");
+    expect(out).toContain("$713.66");
+  });
+
+  it("the two directions reconcile to the net", () => {
+    expect(STATS.swapCharged - STATS.swapGiven).toBeCloseTo(STATS.swapRevenue, 2);
+  });
+
+  it("the net swap is the residual of the backend's own three scalars", () => {
+    // markup + commission + swap = gross. If this drifts, the swap card is
+    // describing a number gross does not contain.
+    expect(STATS.markupRevenue + STATS.commissionRevenue + STATS.swapRevenue).toBeCloseTo(STATS.grossRevenue, 2);
+  });
+
+  it("does not subtract swap given a second time when reaching net", () => {
+    // The whole hazard. Net is gross less LP commission and nothing else --
+    // "given" is already inside gross as the negative half of swap.
+    expect(STATS.grossRevenue - STATS.lpCommission).toBeCloseTo(STATS.netRevenue, 2);
+    expect(STATS.grossRevenue - STATS.lpCommission - STATS.swapGiven).not.toBeCloseTo(STATS.netRevenue, 2);
+  });
+
+  it("says on the card that given is already inside gross", () => {
+    // A cost figure sitting beside a net figure invites the reader to do the
+    // subtraction themselves; the card has to head that off where it is read.
+    expect(html()).toMatch(/Already netted inside Gross Revenue/);
+  });
+});
