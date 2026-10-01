@@ -24,6 +24,17 @@ import { hubAccessTokenFactory } from "@/lib/hubAccessToken";
  */
 
 const LS_KEY = "mw-symbols-v1";
+/**
+ * Ceiling on one "select all".
+ *
+ * Measured against the live list on 2026-10-01: the broker exposes 14,440
+ * symbols, of which "USD" matches 3,374 and the single letter "E" matches
+ * 4,493. Every pick is a hub subscription and a row re-rendering on each tick,
+ * so an uncapped select-all is not a big selection, it is an unusable tab. A
+ * hundred is well past any real watchlist and still well inside what the grid
+ * and the rAF batching handle comfortably.
+ */
+const MAX_BULK_ADD = 100;
 const STALE_MS = 30_000;
 const FLASH_MS = 350;
 
@@ -468,12 +479,23 @@ export function MarketWatchTab({ refreshKey }: { refreshKey: number }) {
 
   // ── Typeahead ───────────────────────────────────────────────────────
 
-  const matches = useMemo(() => {
+  /**
+   * Every symbol matching the query, not just the thirty the list shows.
+   *
+   * The broker list is ~14,400 symbols: "USD" matches 3,374 of them and "E"
+   * matches 4,493. So the count has to be computed separately from the slice,
+   * or "select all" would silently mean "select the first thirty" -- which is
+   * the one behaviour worse than not offering it.
+   */
+  const allMatches = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return [];
     const taken = new Set([...rows.map((r) => r.symbol), ...picked]);
-    return allSymbols.filter((s) => s.toLowerCase().includes(q) && !taken.has(s)).slice(0, 30);
+    return allSymbols.filter((s) => s.toLowerCase().includes(q) && !taken.has(s));
   }, [search, allSymbols, rows, picked]);
+
+  /** What the dropdown renders. The rest are reachable by narrowing the query. */
+  const matches = useMemo(() => allMatches.slice(0, 30), [allMatches]);
 
   /** With no symbol list, whatever was typed is taken at face value. */
   const canAddRaw = useMemo(() => {
@@ -482,12 +504,37 @@ export function MarketWatchTab({ refreshKey }: { refreshKey: number }) {
     return !rows.some((r) => r.symbol === raw) && !picked.includes(raw);
   }, [search, matches, rows, picked]);
 
+  /**
+   * Adds one symbol and LEAVES the search where it is, so the next one is a
+   * second click rather than a retype.
+   *
+   * This used to clear the box and close the list, which made picking five
+   * related symbols five separate searches. The picked symbol drops out of
+   * `allMatches` on the next render (it is in `taken`), so the list shortens as
+   * you work through it and there is no need to clear anything by hand.
+   */
   const addChip = useCallback((sym: string) => {
     setPicked((prev) => (prev.includes(sym) ? prev : [...prev, sym]));
-    setSearch("");
     setHighlight(-1);
-    setListOpen(false);
   }, []);
+
+  /**
+   * Adds every match at once, up to MAX_BULK_ADD.
+   *
+   * The cap is the point rather than a formality. Each picked symbol becomes a
+   * live hub subscription and a row ticking many times a second, and a careless
+   * "USD" would ask for 3,374 of them. Above the cap the control refuses and
+   * says what to do instead, which is cheaper than letting someone wedge the
+   * tab and then work out why.
+   */
+  const addAllMatches = useCallback(() => {
+    const toAdd = allMatches.slice(0, MAX_BULK_ADD);
+    setPicked((prev) => {
+      const have = new Set(prev);
+      return [...prev, ...toAdd.filter((s) => !have.has(s))];
+    });
+    setHighlight(-1);
+  }, [allMatches]);
 
   const setRowField = useCallback((symbol: string, field: "markup" | "comment", value: string) => {
     setRows((prev) =>
@@ -539,8 +586,12 @@ export function MarketWatchTab({ refreshKey }: { refreshKey: number }) {
                 setHighlight((i) => Math.max(i - 1, 0));
               } else if (e.key === "Enter") {
                 e.preventDefault();
-                if (matches.length) addChip(matches[highlight >= 0 ? highlight : 0]);
-                else if (canAddRaw) addChip(search.trim());
+                if (matches.length) {
+                  addChip(matches[highlight >= 0 ? highlight : 0]);
+                } else if (canAddRaw) {
+                  addChip(search.trim());
+                  setSearch("");
+                }
               } else if (e.key === "Escape") {
                 setListOpen(false);
               }
@@ -554,10 +605,43 @@ export function MarketWatchTab({ refreshKey }: { refreshKey: number }) {
           />
           {listOpen && (matches.length > 0 || canAddRaw) && (
             <div className="absolute left-0 right-0 top-full z-50 mt-0.5 max-h-60 overflow-y-auto rounded border border-slate-300 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+              {allMatches.length > 0 && (
+                <div className="sticky top-0 flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-2 py-1.5 dark:border-slate-700 dark:bg-slate-800">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {allMatches.length} match{allMatches.length === 1 ? "" : "es"}
+                    {allMatches.length > matches.length ? ` · showing ${matches.length}` : ""}
+                  </span>
+                  {allMatches.length <= MAX_BULK_ADD ? (
+                    <button
+                      type="button"
+                      // onMouseDown, not onClick: the input's onBlur closes this
+                      // list on a 120ms timer, and a click fires after blur.
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        addAllMatches();
+                      }}
+                      className="rounded bg-blue-600 px-2 py-0.5 text-[11px] font-semibold text-white"
+                    >
+                      Select all {allMatches.length}
+                    </button>
+                  ) : (
+                    // Refuses with the reason and the remedy. A disabled button
+                    // with no explanation would just read as broken.
+                    <span className="text-[11px] italic text-slate-400">
+                      too many to add at once — narrow to {MAX_BULK_ADD} or fewer
+                    </span>
+                  )}
+                </div>
+              )}
               {matches.map((s, i) => (
                 <div
                   key={s}
-                  onMouseDown={() => addChip(s)}
+                  // preventDefault keeps focus in the input, so the list stays
+                  // open and the next symbol is one more click.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    addChip(s);
+                  }}
                   className={`cursor-pointer px-2 py-1 text-xs ${
                     i === highlight
                       ? "bg-emerald-500/15 text-slate-900 dark:text-slate-100"
@@ -569,7 +653,11 @@ export function MarketWatchTab({ refreshKey }: { refreshKey: number }) {
               ))}
               {canAddRaw && (
                 <div
-                  onMouseDown={() => addChip(search.trim())}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    addChip(search.trim());
+                    setSearch("");
+                  }}
                   className="cursor-pointer px-2 py-1 text-xs italic text-slate-500 dark:text-slate-400"
                 >
                   Add “{search.trim()}” as typed
