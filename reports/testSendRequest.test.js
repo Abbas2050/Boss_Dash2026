@@ -389,13 +389,31 @@ describe("admin gating on the report test-send routes", () => {
     expect(SERVER).toMatch(/'\/api\/reports\/swaps-weekly\/test',[\s\S]{0,160}makeReportTestSendHandler\(\{ run: runSwapsEmailReport, allowPeriod: true \}\)/);
   });
 
-  it("puts the Business Summary route on the same handler, fanned out over its three runners", () => {
-    const registration = SERVER.slice(SERVER.indexOf("'/api/reports/summary-weekly/test'"));
-    const body = registration.slice(0, registration.indexOf("));") + 3);
-    expect(body).toContain("makeReportTestSendHandler");
-    expect(body).toContain("makeCadenceRunner");
-    expect(body).toMatch(/daily: runDailyDigest/);
-    expect(body).toMatch(/weekly: runWeeklyBusinessSummary/);
-    expect(body).toMatch(/monthly: runMonthlyReview/);
+  // Replaces "fanned out over its three runners" (pre-2026-09-25).
+  //
+  // summary-weekly used to resolve the cadence to one of three DIFFERENT
+  // reports, so Business Summary + cadence Daily sent the Daily Digest while
+  // the confirmation line still said Business Summary. The digest and the
+  // review have their own routes now, so every route sends the one report it
+  // is named after -- which is what this asserts, one route at a time.
+  it("gives each summary-family report its own route and its own runner", () => {
+    const routeBody = (path) => {
+      const at = SERVER.indexOf(`'${path}'`);
+      expect(at, `${path} is not registered`).toBeGreaterThan(-1);
+      const rest = SERVER.slice(at);
+      return rest.slice(0, rest.indexOf("));") + 3);
+    };
+
+    for (const [path, runner] of [
+      ["/api/reports/summary-weekly/test", "runWeeklyBusinessSummary"],
+      ["/api/reports/daily-digest/test", "runDailyDigest"],
+      ["/api/reports/monthly-review/test", "runMonthlyReview"],
+    ]) {
+      const body = routeBody(path);
+      expect(body).toContain("makeReportTestSendHandler");
+      expect(body).toMatch(new RegExp(`run: ${runner}, allowPeriod: true`));
+      // No fan-out: a route that can reach a second report is the bug.
+      expect(body).not.toContain("makeCadenceRunner");
+    }
   });
 });

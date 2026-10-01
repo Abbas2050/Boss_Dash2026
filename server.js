@@ -46,7 +46,6 @@ import { startAllReportSchedulers } from './reports/schedulers.js';
 import {
   parseTestRecipients,
   makeReportTestSendHandler,
-  makeCadenceRunner,
 } from './reports/testSendRequest.js';
 import { makeReportScheduleHandler } from './reports/reportScheduleRoute.js';
 
@@ -1135,51 +1134,44 @@ app.post(
 
 // On-demand test send of the Business Summary (admin-only).
 //
-// Unlike the two dealing reports, this family is three separate run functions
-// rather than one that takes a cadence, so the cadence is resolved to a runner
-// by makeCadenceRunner. No cadence in the body still means runWeeklyBusinessSummary
-// with recipients only, which is exactly what this route did before.
+// This route used to resolve the cadence to one of THREE runners via
+// makeCadenceRunner: daily -> runDailyDigest, monthly -> runMonthlyReview. That
+// made "Business Summary" with cadence Daily send the Daily Digest, which is
+// exactly what it says on the tin only if you have read this file. An operator
+// testing a business summary got a digest, and the confirmation line called it
+// a Business Summary.
+//
+// The Daily Digest and Monthly Review now have first-class routes of their own
+// below, each period-capable, so nothing is lost by making this one send the
+// report it is named after. makeCadenceRunner stays exported and tested; it is
+// simply no longer the way this family is reached.
 app.post(
   '/api/reports/summary-weekly/test',
   authRequired,
   adminOnly,
-  makeReportTestSendHandler({
-    run: makeCadenceRunner({
-      daily: runDailyDigest,
-      weekly: runWeeklyBusinessSummary,
-      monthly: runMonthlyReview,
-    }),
-    allowPeriod: true,
-  }),
+  makeReportTestSendHandler({ run: runWeeklyBusinessSummary, allowPeriod: true }),
 );
 
-// On-demand test send of the Daily Digest (admin-only). Same contract as the
-// weekly routes: body recipients only, no env fallback, so a green test send
-// never implies the scheduled one has anywhere to go.
-app.post('/api/reports/daily-digest/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  try {
-    const result = await runDailyDigest({ recipients });
-    res.json(result);
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+// On-demand test send of the Daily Digest (admin-only).
+//
+// On the shared handler with allowPeriod, like every other report route.
+// runDailyDigest() has always accepted fromDate/toDate -- it was this route
+// that passed recipients alone and silently dropped any period asked for.
+app.post(
+  '/api/reports/daily-digest/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runDailyDigest, allowPeriod: true }),
+);
 
-// On-demand test send of the Monthly Review (admin-only).
-app.post('/api/reports/monthly-review/test', authRequired, async (req, res) => {
-  if (!canManageUsers(req.auth)) return res.status(403).json({ error: 'forbidden' });
-  const recipients = parseTestRecipients(req.body);
-  if (!recipients.length) return res.status(400).json({ error: 'recipient_required' });
-  try {
-    const result = await runMonthlyReview({ recipients });
-    res.json(result);
-  } catch (e) {
-    res.status(502).json({ ok: false, error: 'send_failed', message: e?.message || String(e) });
-  }
-});
+// On-demand test send of the Monthly Review (admin-only). Same shape and same
+// correction as the Daily Digest route above.
+app.post(
+  '/api/reports/monthly-review/test',
+  authRequired,
+  adminOnly,
+  makeReportTestSendHandler({ run: runMonthlyReview, allowPeriod: true }),
+);
 
 // On-demand test send of the Deal Match email (admin-only). Mirrors the
 // slippage test route: body recipients only, no env fallback, optional cadence.

@@ -6,11 +6,17 @@ import { describePeriod, previousFullPeriodUtc, type ReportCadence } from "@/lib
 // matching /api/reports/<endpoint>/test route on the server.
 //
 // `supportsPeriod` says whether that route honours a cadence or a from/to
-// window. The four built on makeReportTestSendHandler do; Daily Digest and
-// Monthly Review take recipients only and always cover yesterday and last month
-// respectively. The flag is not decoration -- posting a cadence to those two
-// would be accepted and silently ignored, so the panel hides the controls
-// rather than letting an operator choose a period that does nothing.
+// window. All six do today: every route is built on makeReportTestSendHandler
+// with allowPeriod. The flag is kept rather than removed because a route that
+// silently ignores a period is the worst of the three outcomes -- the operator
+// gets a green confirmation for a window they did not get -- so a future entry
+// whose route takes recipients only must be able to say so and have the panel
+// hide the controls.
+//
+// One entry sends one report. "Business Summary" used to resolve its cadence to
+// one of three DIFFERENT reports server-side, so picking it with cadence Daily
+// sent the Daily Digest under a Business Summary heading. That routing is gone;
+// the digest and the review are the two entries below.
 export const TEST_SEND_REPORTS = [
   {
     key: "slippage",
@@ -51,9 +57,7 @@ export const TEST_SEND_REPORTS = [
     key: "digest",
     label: "Daily Digest",
     endpoint: "/api/reports/daily-digest/test",
-    // Its route takes recipients and nothing else -- runDailyDigest() always
-    // covers yesterday. See `supportsPeriod` below.
-    supportsPeriod: false,
+    supportsPeriod: true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.psps ?? 0} PSPs, ${d?.instruments ?? 0} instruments`,
   },
@@ -61,7 +65,7 @@ export const TEST_SEND_REPORTS = [
     key: "review",
     label: "Monthly Review",
     endpoint: "/api/reports/monthly-review/test",
-    supportsPeriod: false,
+    supportsPeriod: true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (d: any) => `${d?.depositors ?? 0} depositors, ${d?.weeks ?? 0} weeks`,
   },
