@@ -100,8 +100,9 @@ verified` and `First time deposit by client` both exist in the same rule
 builder, and are where a later lifecycle sync would hang (§14).
 
 `record_type` is **derived, and derived cautiously**: it is `"client"` only when
-`%client_is_lead%` is a recognised falsy literal (`0`, `false`, `no`, `""`), and
-`"lead"` for anything else, including a value we do not recognise. The literals
+`%client_is_lead%` is a recognised falsy literal (`0`, `false`, `no`, `n`,
+`off`), and `"lead"` for anything else — including absent, empty, and any value
+we do not recognise, all of which mean *unknown* rather than *client*. The literals
 FXBO actually emits are unconfirmed (§9), and the two failure modes are not
 symmetric — a client who misses their welcome message is a support ticket, a
 lead who receives a login link for an account that does not exist is a
