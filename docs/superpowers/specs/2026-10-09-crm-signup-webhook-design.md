@@ -73,6 +73,31 @@ Confirmed present in the parameters table:
 | `marketing_consent` | `%custom_consent_marketing%` | |
 | `source` | `%custom_formname%` | |
 | `fxbo_unique_id` | `%unique_id%` | Per-delivery id |
+| `entity` | `%custom_change_me_field%` | Labelled **Entity** in the CRM. The internal name is leftover boilerplate; it is the right key |
+| `is_ib` | `%client_is_ib%` | |
+| `language` | `%client_language%` | |
+| `full_name` | `%client_full_name%` | Carried only to derive the middle name — see below |
+| `utm_source` | `%client_utm_source%` | |
+| `utm_medium` | `%client_utm_medium%` | |
+| `utm_campaign` | `%client_utm_campaign%` | |
+| `referer` | `%client_referer%` | FXBO's spelling, kept |
+
+Three fields that were asked for **do not exist in FXBO at all**, verified
+against the full parameter table on 2026-10-09:
+
+- **Middle name.** No placeholder. `%client_full_name%` is the only other name
+  field, so the middle name is *derived*: take the full name, remove the first
+  and last name, and whatever remains is the middle. Empty when there is
+  nothing, which is the common case and is fine.
+- **Is test.** No placeholder of any kind. Dropped (§3) rather than faked.
+- **Deposited.** No placeholder, which is correct — it is a lifecycle fact, not
+  a registration one.
+
+`%client_is_verified%` *does* exist but is excluded: at the instant this webhook
+fires, KYC has not run, so it is false for everyone. A field that is confidently
+wrong is worse than a field we do not have. The events `A client has been
+verified` and `First time deposit by client` both exist in the same rule
+builder, and are where a later lifecycle sync would hang (§14).
 
 `record_type` is **derived, and derived cautiously**: it is `"client"` only when
 `%client_is_lead%` is a recognised falsy literal (`0`, `false`, `no`, `""`), and
@@ -112,6 +137,18 @@ flag that exists to govern it. Mitigation agreed: `marketing_consent` is still
 sent to Brevo **as a contact attribute**, so the consent state travels with the
 record and campaign sends can segment on it. Revisit if the list is ever used for
 anything a non-consenting client should not receive.
+
+**`IS_TEST` dropped (2026-10-09).** The original intent was to flag test
+records so campaigns could exclude them. FXBO cannot supply the flag, and the
+alternative — our receiver guessing from delivery shape — would be a field that
+looks authoritative and is not. `SKIP_SOURCES` already gives a way to exclude a
+whole form, which covers the real need.
+
+**Contacts go to list #19 "All Clients" (2026-10-09, user's call).** A dedicated
+list was offered and declined. Consequence to be aware of: that list already
+holds 4,239 contacts from an existing process, so "did the webhook do this?" is
+answered from `signup_events` and the admin view (§10), not from the list
+itself.
 
 **Lives in this app, not a standalone service and not `hook.php`.** MySQL, cron,
 admin routes and the FXBO webhook auth pattern all already exist here. The cost
@@ -261,10 +298,34 @@ a bad key only burns attempts and delays the alert.
 
 `POST /v3/contacts` with `updateEnabled: true` and `listIds: [BREVO_LIST_ID]`.
 
-Four fields and no others: first name, last name, email, and
-`marketing_consent` as an attribute. The brief's list is the first three; the
-fourth is the §3 mitigation and the single deliberate addition to it. Explicitly
-**not** sent: phone, date of birth, country, any document data.
+The brief's original three fields were widened on 2026-10-09 to the set below.
+Two of them reuse attributes Brevo already ships, which is better than minting
+custom twins:
+
+| Brevo attribute | Source | Type | Note |
+|---|---|---|---|
+| `EMAIL` | `email` | — | Identifier |
+| `FIRSTNAME` | `first_name` | Text | Already existed |
+| `LASTNAME` | `last_name` | Text | Already existed |
+| `MIDDLE_NAME` | derived (§2) | Text | Created 2026-10-09 |
+| `EXT_ID` | `crm_client_id` | Text | **Reused**, not created. Brevo's own external-id field — joins a contact back to the CRM record |
+| `OPT_IN` | `marketing_consent` | Boolean | **Reused**, not created. Brevo's own marketing opt-in flag; its double-opt-in and compliance tooling reads this field, and a custom `MARKETING_CONSENT` would be invisible to them |
+| `ENTITY` | `entity` | Text | Created. Which regulated entity the client signed under |
+| `FORM_NAME` | `source` | Text | Created |
+| `LANGUAGE` | `language` | Text | Created. Not `_DETECTED_LANGUAGE`, which Brevo owns and infers |
+| `IS_IB` | `is_ib` | Boolean | Created |
+| `UTM_SOURCE` / `UTM_MEDIUM` / `UTM_CAMPAIGN` | UTM fields | Text | Created |
+| `REFERER` | `referer` | Text | Created |
+
+All nine new attributes were created in Brevo on 2026-10-09 and verified (27
+attributes total, up from 18). **An attribute that does not exist in Brevo makes
+`POST /v3/contacts` return 400**, which this design classifies as permanent — so
+the contact would silently never land. Any future field needs the attribute
+created first.
+
+Still explicitly **not** sent: phone, date of birth, country, nationality, and
+any document data. All are available as FXBO placeholders and all are
+deliberately left out.
 
 Retry transport / 429 / 5xx up to 3 times; any other 4xx is permanent.
 
@@ -289,6 +350,9 @@ stored status.
 - **Whether `%webhook_access_token%` is worth using.** FXBO can inject its own
   token; if it emits something verifiable that is better than a static shared
   secret. Decide after seeing one real delivery.
+
+The parameter table itself is no longer an open question — it was read in full
+on 2026-10-09 and §2 reflects it.
 
 Enabling *Save request snapshot for assistant rule webhooks* makes bodies visible
 in Webhook Stats, which helps here — but it stores PII, so turn it off again
@@ -327,7 +391,7 @@ listing.
 | `WA_FROM_NUMBER` | `+971507192185` |
 | `WA_MAX_ATTEMPTS` | `3` |
 | `BREVO_API_KEY` | Already set. Unset → Brevo skipped silently |
-| `BREVO_LIST_ID` | |
+| `BREVO_LIST_ID` | `19` — "All Clients" |
 | `SKIP_SOURCES` | Comma-separated `%custom_formname%` values never messaged |
 
 Never logged: `WA_API_KEY`, `BREVO_API_KEY`, `CRM_WEBHOOK_SECRET`. Never logged
@@ -369,6 +433,9 @@ appears in Brevo; re-posting the identical webhook sends no second message.
 ## 14. Out of scope
 
 Backfilling clients who registered before this ships. Any CRM event other than
-`Client registered`. Changes to rule 25. Replacing the existing
+`Client registered` — including the lifecycle sync that would keep verification
+and deposit state current in Brevo, which is its own project and would hang off
+the `A client has been verified` and `First time deposit by client` events.
+Changes to rule 25. Replacing the existing
 `hook.php` mirror webhooks. Fixing the frontend build — noted in §10 because it
 constrains the admin view, but it is a separate problem.
