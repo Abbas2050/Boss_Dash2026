@@ -1502,11 +1502,13 @@ git commit -m "CRM signup: signup_events store with per-action retry columns"
 **Files:**
 - Create: `crmSignup/router.js`
 - Test: `crmSignup/router.test.js`
+- Modify: `docusign/fxboPlaceholder.js` (extend `FXBO_PLACEHOLDER_LABELS`)
+- Modify: `docusign/fxboPlaceholder.test.js` (cover the new labels)
 - Modify: `auth/requireSession.js` (add one allow-list entry)
 - Modify: `server.js` (import, register the route, init the store)
 
 **Interfaces:**
-- Consumes: `normaliseSignup`, `maskEmail` from `crmSignup/normalise.js`; `insertSignupEvent`, `markSignupInvalid` from `crmSignup/store.js`.
+- Consumes: `normaliseSignup`, `maskEmail` from `crmSignup/normalise.js`; `insertSignupEvent`, `markSignupInvalid` from `crmSignup/store.js`; `detectUnsubstitutedPlaceholder`, `PLACEHOLDER_NOT_SUBSTITUTED`, `describePlaceholderRejection` from `docusign/fxboPlaceholder.js`.
 - Produces: `makeCrmSignupHandler({ secret, insert, markInvalid, normalise, onStored, logger }): (req, res) => Promise<void>`
 
 - [ ] **Step 1: Write the failing test**
@@ -1672,6 +1674,57 @@ describe("storing", () => {
   });
 });
 
+describe("an FXBO Test webhook press", () => {
+  // Pressing Test sends each parameter's LABEL instead of its value, so
+  // client_id arrives as "Client ID" and email as "Client Email". Those are
+  // non-empty strings, so validation alone would accept them and plant a
+  // contact called "Client First Name" in the live marketing list.
+  const TEST_PRESS = {
+    client_id: "Client ID",
+    first_name: "Client First Name",
+    last_name: "Client Last Name",
+    email: "Client Email",
+    phone: "Client Phone",
+    is_lead: "Client is Lead",
+  };
+
+  it("stores it as invalid and runs neither action", async () => {
+    const d = deps();
+    const res = fakeRes();
+    await makeCrmSignupHandler(d)(req({ authorization: "s3cret" }, TEST_PRESS), res);
+    expect(res.statusCode).toBe(200);
+    expect(d.onStored).not.toHaveBeenCalled();
+    expect(d.markInvalid).toHaveBeenCalledTimes(1);
+    expect(res.body.valid).toBe(false);
+  });
+
+  it("records a reason that names it as a test, not a misconfiguration", async () => {
+    const d = deps();
+    await makeCrmSignupHandler(d)(req({ authorization: "s3cret" }, TEST_PRESS), fakeRes());
+    const [, detail] = d.markInvalid.mock.calls[0];
+    expect(detail).toContain("placeholder_not_substituted");
+  });
+
+  it("leaves a real payload alone", async () => {
+    // The guard must be narrow: a genuine signup must never be read as a test.
+    const d = deps();
+    await makeCrmSignupHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.markInvalid).not.toHaveBeenCalled();
+    expect(d.onStored).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not read one odd-looking field as a test on its own", async () => {
+    // A lone label is not proof -- corroboration from another field is
+    // required, or a real client named in an unlucky way becomes a "test".
+    const d = deps();
+    await makeCrmSignupHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, last_name: "Client Last Name" }),
+      fakeRes()
+    );
+    expect(d.markInvalid).not.toHaveBeenCalled();
+  });
+});
+
 describe("registration in server.js", () => {
   const SERVER = readFileSync(path.resolve("server.js"), "utf8");
 
@@ -1702,6 +1755,11 @@ Create `crmSignup/router.js`:
 ```js
 import { timingSafeEqual } from "crypto";
 import { normaliseSignup, maskEmail } from "./normalise.js";
+import {
+  detectUnsubstitutedPlaceholder,
+  describePlaceholderRejection,
+  PLACEHOLDER_NOT_SUBSTITUTED,
+} from "../docusign/fxboPlaceholder.js";
 
 /**
  * Compare without leaking length or position through timing.
@@ -1742,6 +1800,26 @@ export function makeCrmSignupHandler({
         `[crm-signup] rejected: method=${req?.method} path=${req?.path} ip=${req?.ip} hasHeader=${Boolean(supplied)}`
       );
       return res.status(401).json({ error: "unauthorized" });
+    }
+
+    // An FXBO "Test webhook" press substitutes every parameter with its own
+    // LABEL -- client_id arrives as the literal "Client ID". Those are
+    // non-empty strings, so normalisation alone would accept them and we would
+    // create a Brevo contact called "Client First Name" in the live marketing
+    // list. docusign/fxboPlaceholder.js already recognises this shape, and
+    // deliberately requires corroboration from a second field so that a real
+    // client is never mistaken for a test.
+    const detection = detectUnsubstitutedPlaceholder(req?.body, "client_id");
+    if (detection.placeholder) {
+      const reason = `${PLACEHOLDER_NOT_SUBSTITUTED}: ${describePlaceholderRejection(detection)}`;
+      logger.warn?.(`[crm-signup] ${reason}`);
+      try {
+        await insert({ crmClientId: `test:${Date.now()}`, recordType: "lead" }, req?.body);
+        await markInvalid(`test:${Date.now()}`, reason.slice(0, 500));
+      } catch (error) {
+        logger.error?.(`[crm-signup] could not record test press: ${error?.message || String(error)}`);
+      }
+      return res.status(200).json({ ok: true, stored: true, valid: false, test: true });
     }
 
     let verdict;
@@ -1785,7 +1863,67 @@ export function makeCrmSignupHandler({
 }
 ```
 
-- [ ] **Step 4: Add the allow-list entry**
+- [ ] **Step 4: Extend the shared placeholder label list**
+
+`docusign/fxboPlaceholder.js` already carries the labels DocuSign's rule uses.
+Our rule sends more parameters, and each one is another chance to corroborate a
+test press. Add these to `FXBO_PLACEHOLDER_LABELS`, after `"Client Title (Mr/Mrs/Ms)"`
+— all copied verbatim from FXBO's own table on 2026-10-09:
+
+```js
+  "Client Phone",
+  "Client Language",
+  "Client is Lead",
+  "Client Is IB",
+  "Entity",
+  "Form Name",
+  "UTM Source",
+  "UTM Medium",
+  "UTM Campaign",
+  "Referer",
+  "Unique ID",
+```
+
+Adding labels only ever makes detection more confident, never less, so this
+cannot weaken DocuSign's existing guard. Append to `docusign/fxboPlaceholder.test.js`:
+
+```js
+describe("labels used by the CRM signup rule", () => {
+  it("recognises every label that rule sends", () => {
+    for (const label of [
+      "Client Phone",
+      "Client Language",
+      "Client is Lead",
+      "Client Is IB",
+      "Entity",
+      "Form Name",
+      "UTM Source",
+      "UTM Medium",
+      "UTM Campaign",
+      "Referer",
+      "Unique ID",
+    ]) {
+      expect(isFxboPlaceholderLabel(label), label).toBe(true);
+    }
+  });
+
+  it("still refuses to call an ordinary value a label", () => {
+    // The list is a closed set, not a pattern. A real entity or form name
+    // must not match.
+    expect(isFxboPlaceholderLabel("SVG")).toBe(false);
+    expect(isFxboPlaceholderLabel("NEW_SIGNUP")).toBe(false);
+    expect(isFxboPlaceholderLabel("google")).toBe(false);
+  });
+});
+```
+
+Add `isFxboPlaceholderLabel` to that file's existing import if it is not
+already there.
+
+Run: `npx vitest run docusign/fxboPlaceholder.test.js --reporter=verbose`
+Expected: PASS, including the pre-existing cases.
+
+- [ ] **Step 5: Add the allow-list entry**
 
 In `auth/requireSession.js`, inside `PUBLIC_API_ROUTES`, after the two DocuSign entries:
 
@@ -1795,7 +1933,7 @@ In `auth/requireSession.js`, inside `PUBLIC_API_ROUTES`, after the two DocuSign 
   "POST /api/crm-signup",
 ```
 
-- [ ] **Step 5: Wire it into server.js**
+- [ ] **Step 6: Wire it into server.js**
 
 Add to the import block near the other `docusign` imports (around line 16-19):
 
@@ -1824,15 +1962,16 @@ In the `server.listen` callback, beside `startDocusignReconcileScheduler()`:
     .catch((e) => console.error("[crm-signup] store init failed:", e?.message || String(e)));
 ```
 
-- [ ] **Step 6: Run the tests to verify they pass**
+- [ ] **Step 7: Run the tests to verify they pass**
 
-Run: `npx vitest run crmSignup/router.test.js auth/routeCoverage.test.js --reporter=verbose`
+Run: `npx vitest run crmSignup/router.test.js auth/routeCoverage.test.js docusign/fxboPlaceholder.test.js --reporter=verbose`
 Expected: PASS. `routeCoverage` must still pass — the allow-list is capped at 6 entries and this is the 5th.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crmSignup/router.js crmSignup/router.test.js auth/requireSession.js server.js
+git add crmSignup/router.js crmSignup/router.test.js auth/requireSession.js server.js \
+        docusign/fxboPlaceholder.js docusign/fxboPlaceholder.test.js
 git commit -m "CRM signup: POST /api/crm-signup, authenticated and fail-closed"
 ```
 
@@ -2804,8 +2943,10 @@ never succeeds).
 
 - [ ] **Step 5: Confirm what `%client_is_lead%` actually contains**
 
-Press the rule's **Test webhook** button, then read `raw_payload` for the newest
-row via the admin view's underlying table. If the literal is not one of
+Press the rule's **Test webhook** button. The press itself is recognised and
+stored as `invalid` (Task 5), so it creates no contact and sends no message —
+read `raw_payload` for the newest row to see exactly what FXBO sent. Then
+register one real test client and read `raw_payload` again for the real value. If the literal is not one of
 `0 false no n off`, the record is treated as a lead and no message is sent —
 which is the safe failure, but it means `deriveRecordType` in
 `crmSignup/normalise.js` needs the real literal added.
@@ -2841,6 +2982,13 @@ leaves rule 25 alone.
 **Spec requirements deliberately altered,** both recorded under Global
 Constraints: the single `attempts`/`next_attempt_at` pair is split per action,
 and an empty `%client_is_lead%` resolves to lead rather than client.
+
+**Beyond the spec, added while planning:** the spec does not mention FXBO's
+*Test webhook* button as a hazard to this endpoint. It is one — a press sends
+every parameter's label in place of its value, and "Client First Name" is a
+non-empty string that would pass validation and reach Brevo. Task 5 reuses
+`docusign/fxboPlaceholder.js`, which already solves exactly this for the
+DocuSign rule.
 
 **Spec requirement not met by any task:** none.
 
