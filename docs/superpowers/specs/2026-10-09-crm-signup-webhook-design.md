@@ -141,8 +141,13 @@ anything a non-consenting client should not receive.
 **`IS_TEST` dropped (2026-10-09).** The original intent was to flag test
 records so campaigns could exclude them. FXBO cannot supply the flag, and the
 alternative — our receiver guessing from delivery shape — would be a field that
-looks authoritative and is not. `SKIP_SOURCES` already gives a way to exclude a
-whole form, which covers the real need.
+looks authoritative and is not. That is the whole reason; nothing else in the
+design changes because of it.
+
+`SKIP_SOURCES` is unrelated and unchanged. It is a WhatsApp filter from the
+original brief ("sources that must not be messaged"), it gates no Brevo
+behaviour, and it is not a substitute for `IS_TEST`. `FORM_NAME` is likewise
+unaffected: it is a stored Brevo attribute (§8), kept and created.
 
 **Contacts go to list #19 "All Clients" (2026-10-09, user's call).** A dedicated
 list was offered and declined. Consequence to be aware of: that list already
