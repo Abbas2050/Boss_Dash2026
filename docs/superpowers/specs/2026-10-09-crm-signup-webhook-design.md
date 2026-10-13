@@ -337,12 +337,17 @@ funnel event, identical on every attempt at it.
 plus hashed email and phone already score 9.0/10 on match quality.
 
 Retry transport errors, 429, and 5xx. Also retry a response whose Graph
-`error.code` is one of `1`, `2`, `4`, `17`, `32` or `613` — Meta's throttling
-and transient-failure codes — **whatever HTTP status carries them**. Meta's own
+`error.code` is one of `1`, `2`, `4`, `17`, `32`, `341` or `613` — Meta's
+throttling and transient-failure codes — **whatever HTTP status carries them**. Meta's own
 rate-limiting guidance is that the status is not reliable and the error code is
 what decides; these commonly arrive as a 400, which an
-anything-else-is-permanent rule would silently drop. Everything else stays
-permanent.
+anything-else-is-permanent rule would silently drop.
+
+A **2xx with no usable `events_received`** is retryable too: that shape means a
+proxy answered rather than Meta, so the outcome is unknown rather than refused,
+and the `event_id` makes a retry free of double-counting. An explicit
+`events_received: 0` — Meta itself saying it took nothing — stays permanent,
+because retrying would change nothing. Everything else stays permanent.
 
 `custom_data` carries the two CRM constants and nothing else. `Purchase`
 reports that a deposit happened, not its amount (§4), so the dataset's

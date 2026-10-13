@@ -835,6 +835,19 @@ describe("buildMetaPayload", () => {
     expect(event.event_time).toBe(1673035686);
   });
 
+  it("hashes the normalised values in the payload, not the raw input", () => {
+    // Messy input on purpose. Meta hashes the normalised value on its side, so
+    // the payload must carry the digest of the lowercased address and of the
+    // bare digits, never a digest of the raw strings.
+    const { user_data } = buildMetaPayload({
+      ...base,
+      email: "  Ali.Khan@Example.COM ",
+      phone: "+971 50 719-2185",
+    }).data[0];
+    expect(user_data.em).toEqual(["cefa37b4e787d579251247cab9b2ed08cf8e83e514c6cd887559baf6a9171870"]);
+    expect(user_data.ph).toEqual(["0449fd30f3348d64f7cd0fe7ffcf90c2b045494a653446c41204fe723587751b"]);
+  });
+
   it("passes fbc through untouched", () => {
     // It was frozen at the client's first event; recomputing or reformatting
     // it here would give Meta a different click identity per stage.
@@ -927,9 +940,43 @@ describe("classifyMetaOutcome", () => {
   });
 
   it("retries every Graph throttling code carried on a 400", () => {
-    for (const code of [1, 2, 4, 17, 32, 613]) {
+    for (const code of [1, 2, 4, 17, 32, 341, 613]) {
       const result = classifyMetaOutcome({ httpStatus: 400, body: { error: { message: "m", code } } });
       expect(result.retryable, String(code)).toBe(true);
+    }
+  });
+
+  it("retries a 2xx with no usable count, since the outcome is unknown", () => {
+    // A proxy answering 200 with an HTML page is not Meta saying anything. The
+    // event_id makes a retry safe, so this is retryable.
+    expect(classifyMetaOutcome({ httpStatus: 200, body: null })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 200 no events_received",
+    });
+  });
+
+  it("keeps a 2xx that reports zero events permanent, since Meta said so", () => {
+    expect(classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } })).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "http 200 events_received=0",
+    });
+  });
+
+  it("retries a transient code whatever the HTTP status carrying it", () => {
+    for (const httpStatus of [200, 400, 403, 404, 500]) {
+      const result = classifyMetaOutcome({ httpStatus, body: { error: { message: "m", code: 4 } } });
+      expect(result.retryable, String(httpStatus)).toBe(true);
+      expect(result.status, String(httpStatus)).toBe("failed");
+    }
+  });
+
+  it("keeps Meta's own message on a retryable 429 or 5xx, as it does on a 4xx", () => {
+    for (const httpStatus of [429, 502]) {
+      const result = classifyMetaOutcome({ httpStatus, body: { error: { message: "Upstream timed out" } } });
+      expect(result.retryable, String(httpStatus)).toBe(true);
+      expect(result.detail, String(httpStatus)).toContain("Upstream timed out");
     }
   });
 });
@@ -979,6 +1026,84 @@ describe("sendMetaEvent", () => {
     const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
     expect(result.retryable).toBe(true);
   });
+
+  it("posts to the apiVersion it is given", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", apiVersion: "v99.0", accessToken: "t", payload: {} });
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://graph.facebook.com/v99.0/1/events?access_token=t");
+  });
+
+  it("sends the payload as JSON in the body", async () => {
+    const payload = { data: [{ event_name: "Lead", event_id: "1:lead" }], test_event_code: "TEST1" };
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual(payload);
+  });
+
+  it("percent-encodes the token, and it reads back intact", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "a&b+c%", payload: {} });
+    const [url] = fetchImpl.mock.calls[0];
+    expect(new URL(url).searchParams.get("access_token")).toBe("a&b+c%");
+  });
+
+  it("keeps the token out of the detail when a transport error echoes the URL", async () => {
+    // Native fetch does not echo the URL, but an injected fetchImpl can, and the
+    // detail is logged. The raw and the encoded token must both be removed.
+    const token = "a&b+c%";
+    const fetchImpl = vi.fn(async (url) => {
+      throw new Error(`request to ${url} failed`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(fetchImpl.mock.calls[0][0]).toContain(encodeURIComponent(token));
+    expect(result.retryable).toBe(true);
+    expect(result.detail).not.toContain(token);
+    expect(result.detail).not.toContain(encodeURIComponent(token));
+  });
+
+  it("keeps the raw token out of the detail too, when a transport error echoes it", async () => {
+    const token = "a&b+c%";
+    const fetchImpl = vi.fn(async () => {
+      throw new Error(`rejected token ${token}`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.detail).not.toContain(token);
+  });
+
+  it("redacts a token whose apostrophe the URL class re-encodes", async () => {
+    // encodeURIComponent leaves an apostrophe alone, but the WHATWG URL class
+    // writes it as %27. Neither form is the literal we built, so only the
+    // structural pass can catch it.
+    const token = "a'b";
+    const fetchImpl = vi.fn(async (url) => {
+      throw new Error(`request to ${new URL(url).href} failed`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.retryable).toBe(true);
+    expect(result.detail).not.toContain("a'b");
+    expect(result.detail).not.toContain("a%27b");
+  });
+
+  it("leaves no residue when the token is a substring of its own encoded form", async () => {
+    // "%25" encodes to "%2525", which contains "%25". Replacing the raw form first
+    // would leave "[redacted]25" behind, so the encoded form has to go first.
+    const token = "%25";
+    const fetchImpl = vi.fn(async () => {
+      throw new Error(`rejected ${encodeURIComponent(token)} now`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.detail).toBe("transport: rejected [redacted] now");
+  });
+
+  it("redacts every occurrence of the token, not only the first", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("first a&b+c%, then a&b+c% again");
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "a&b+c%", payload: {} });
+    expect(result.detail).toBe("transport: first [redacted], then [redacted] again");
+  });
+
 });
 ```
 
@@ -1023,8 +1148,10 @@ const LEAD_EVENT_SOURCE = "FXBackOffice";
 //   4   application-level rate limit
 //   17  user-level rate limit
 //   32  page-level rate limit
+//   341 application limit reached, documented as temporary and retryable
 //   613 custom-level rate limit
-const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 613]);
+// 368 (temporary policy block) is left out: it will not clear on a retry.
+const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 341, 613]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -1085,7 +1212,7 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
   return payload;
 }
 
-export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
+export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -1094,26 +1221,30 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
     };
   }
 
-  const code = Number(httpStatus) || 0;
+  const httpStatus = Number(rawStatus) || 0;
   const reason = String(body?.error?.message ?? "").slice(0, 200);
-  const detail = reason ? `http ${code} ${reason}` : `http ${code}`;
+  const detail = reason ? `http ${httpStatus} ${reason}` : `http ${httpStatus}`;
 
   // The Graph code decides, whatever status carries it: Meta throttles with a 400.
   if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (code === 429 || code >= 500) {
-    return { status: "failed", retryable: true, detail: `http ${code}` };
+  if (httpStatus === 429 || httpStatus >= 500) {
+    return { status: "failed", retryable: true, detail };
   }
 
-  if (code >= 200 && code < 300) {
-    // A 200 that reports nothing received is not a success.
+  if (httpStatus >= 200 && httpStatus < 300) {
+    // Meta's success body always carries the count. Without one, a proxy answered
+    // instead of Meta: the outcome is unknown, and event_id makes a retry safe.
+    // An explicit zero is Meta saying so, and a retry would hear the same thing.
     const received = Number(body?.events_received);
-    if (Number.isFinite(received) && received < 1) {
-      return { status: "failed", retryable: false, detail: "http 200 events_received=0" };
+    if (received >= 1) {
+      return { status: "sent", retryable: false, detail: `http ${httpStatus}` };
     }
-    return { status: "sent", retryable: false, detail: `http ${code}` };
+    const noCount = body?.events_received == null || Number.isNaN(received);
+    const reported = noCount ? "no events_received" : `events_received=${received}`;
+    return { status: "failed", retryable: noCount, detail: `http ${httpStatus} ${reported}` };
   }
 
   return { status: "failed", retryable: false, detail };
@@ -1131,6 +1262,13 @@ export async function sendMetaEvent({
     String(accessToken ?? "")
   )}`;
 
+  // A fetch error may echo the request URL, which carries the token in raw and
+  // encoded form. Neither may reach the detail, because the detail is logged.
+  const token = String(accessToken ?? "");
+  // Encoded before raw: a token containing % has a raw form that sits inside its
+  // encoded form (%25 inside %2525), so the raw pass must never run first.
+  const secrets = [encodeURIComponent(token), token].filter(Boolean);
+
   let response;
   try {
     response = await fetchImpl(url, {
@@ -1139,7 +1277,12 @@ export async function sendMetaEvent({
       body: JSON.stringify(payload),
     });
   } catch (transportError) {
-    return classifyMetaOutcome({ transportError });
+    let message = String(transportError?.message || transportError);
+    // Structural first: whatever follows access_token= is the token, in whatever
+    // form the URL class re-serialised it. The literals then catch a bare quoted value.
+    message = message.replace(/access_token=[^&\s]*/gi, "access_token=[redacted]");
+    for (const secret of secrets) message = message.split(secret).join("[redacted]");
+    return classifyMetaOutcome({ transportError: { message } });
   }
 
   let body = null;
