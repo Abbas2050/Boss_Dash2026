@@ -133,6 +133,11 @@ describe("masking", () => {
     expect(maskPhone("+12345678")).toBe("***");
   });
 
+  it("pins the 12-character boundary exactly", () => {
+    expect(maskPhone("+96551234567")).toBe("+965***67"); // 12 characters
+    expect(maskPhone("+6581234567")).toBe("***"); // 11 characters
+  });
+
   it("handles empty and malformed input without throwing", () => {
     expect(maskEmail("")).toBe("");
     expect(maskEmail("not-an-email")).toBe("***");
@@ -209,8 +214,18 @@ describe("normaliseEvent", () => {
     expect(fields.phone).toBe("");
   });
 
-  it("reads is_lead as the record type", () => {
-    expect(normaliseEvent({ ...RAW, is_lead: "1" }).fields.recordType).toBe("lead");
+  it("reads is_lead as the record type, independent of is_ib", () => {
+    const { fields } = normaliseEvent({ ...RAW, is_lead: "1", is_ib: "0" });
+    expect(fields.recordType).toBe("lead");
+    expect(fields.isIb).toBe(false);
+  });
+
+  it("reads marketing_consent and is_ib into their own fields", () => {
+    // RAW has both flags as "1", so a swap of the two wirings is invisible
+    // unless one of them changes here.
+    const { fields } = normaliseEvent({ ...RAW, marketing_consent: "0" });
+    expect(fields.marketingConsent).toBe(false);
+    expect(fields.isIb).toBe(true);
   });
 
   it("treats unrendered template literals as missing, but keeps them in fields", () => {
