@@ -3532,6 +3532,15 @@ export async function latestEventReceivedAt() {
   const rows = await all(`SELECT MAX(received_at) AS latest FROM signup_events`);
   return rows[0]?.latest ?? null;
 }
+
+/**
+ * The newest received_at for each stage, over the whole table: one row per stage that
+ * has ever fired. A stage with no row has never fired, which is not the same as a stage
+ * that has gone quiet. Health reads the two differently, so the distinction is kept here.
+ */
+export async function latestReceivedAtByStage() {
+  return all(`SELECT stage, MAX(received_at) AS latest FROM signup_events GROUP BY stage`);
+}
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -6935,6 +6944,64 @@ describe("grouped counts", () => {
     expect(destinations.brevo.pending).toBe(2000);
   });
 });
+
+describe("per-stage health", () => {
+  const registeredAt = new Date("2026-10-13T11:00:00Z");
+
+  it("reports a stage that fired and then stopped as stale, while the overall figure stays green", () => {
+    // Registrations are still arriving, so the overall figure is fine. The verified
+    // rule last fired 96 hours ago, which the overall figure cannot see.
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [
+        { stage: "registered", latest: registeredAt },
+        { stage: "verified", latest: new Date("2026-10-09T12:00:00Z") },
+      ],
+    });
+    expect(health.stale).toBe(false);
+    expect(health.stages.verified.everSeen).toBe(true);
+    expect(health.stages.verified.stale).toBe(true);
+    expect(health.stages.verified.ageHours).toBeCloseTo(96, 3);
+    expect(health.stages.verified.lastReceivedAt).toBe("2026-10-09T12:00:00.000Z");
+    expect(health.stages.registered.stale).toBe(false);
+  });
+
+  it("does not call a stage stale for never having fired", () => {
+    // lead has no FXBO rule yet. Silence there is expected, not a broken rule.
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [{ stage: "registered", latest: registeredAt }],
+    });
+    expect(health.stages.lead).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+    expect(health.stages.first_deposit).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+  });
+
+  it("reports every stage as never seen on an empty table, while the overall figure is stale", () => {
+    const { health } = summariseCrmEvents([], { now: NOW, latestReceivedAt: null, latestByStage: [] });
+    expect(health.stale).toBe(true);
+    for (const stage of ["lead", "registered", "verified", "live_account", "first_deposit"]) {
+      expect(health.stages[stage], stage).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+    }
+  });
+});
+
+describe("per-stage threshold", () => {
+  it("judges each stage against the same threshold, and only strictly past it", () => {
+    const registeredAt = new Date("2026-10-13T11:00:00Z");
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [
+        { stage: "verified", latest: new Date("2026-10-10T12:00:00Z") }, // exactly 72 hours
+        { stage: "live_account", latest: new Date("2026-10-10T11:59:00Z") }, // 72 hours and a minute
+      ],
+    });
+    expect(health.stages.verified.stale).toBe(false);
+    expect(health.stages.live_account.stale).toBe(true);
+  });
+});
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -6972,13 +7039,24 @@ function toMillis(value) {
 }
 
 /** The newest received_at among the rows, as a Date, or null when there is none. */
-export function newestReceivedAt(rows) {
+function newestReceivedAt(rows) {
   let newest = null;
-  for (const r of Array.isArray(rows) ? rows : []) {
+  for (const r of rows) {
     const t = toMillis(r?.received_at);
     if (t !== null && (newest === null || t > newest)) newest = t;
   }
   return newest === null ? null : new Date(newest);
+}
+
+/** The newest received_at per stage, as {stage, latest} rows, the shape the store returns. */
+function latestByStageOf(rows) {
+  const latest = new Map();
+  for (const r of rows) {
+    const t = toMillis(r?.received_at);
+    const stage = String(r?.stage ?? "");
+    if (t !== null && (!latest.has(stage) || t > latest.get(stage))) latest.set(stage, t);
+  }
+  return [...latest].map(([stage, t]) => ({ stage, latest: new Date(t) }));
 }
 
 /**
@@ -6991,22 +7069,52 @@ function weightOf(row) {
 }
 
 /**
+ * Health for one stage. A stage that never fired is not stale: silence from a
+ * rule that has never existed is expected, and a permanent red for it is a tab
+ * people stop reading. Only a stage that fired and then stopped goes stale.
+ */
+function stageHealth(latestMs, now, staleHours) {
+  if (latestMs === null) return { lastReceivedAt: null, ageHours: null, stale: false, everSeen: false };
+  const ageHours = (now.getTime() - latestMs) / 3_600_000;
+  return {
+    lastReceivedAt: new Date(latestMs).toISOString(),
+    ageHours,
+    stale: ageHours > staleHours,
+    everSeen: true,
+  };
+}
+
+/**
  * Health, funnel and per-destination counters.
  *
  * `rows` is either table rows (one event each) or grouped counts carrying `n`.
- * Health comes from `latestReceivedAt` when the caller passes one -- the newest
- * event in the whole table, read independently of the window -- and otherwise
- * from the newest row given.
+ * Health comes from `latestReceivedAt` (the newest event in the whole table) and
+ * `latestByStage` (the newest event per stage, whole table) when the caller passes
+ * them, and otherwise from the rows given. Both are read independently of the
+ * window, so a short window cannot make a stage look silent.
+ *
+ * The overall figure answers "is anything arriving at all". The per-stage figures
+ * answer "is each rule still firing": one stage can die while another keeps going.
  *
  * Health is the one that earns its place: a broken FXBO rule raises no error
- * anywhere, it simply stops calling. An empty table therefore reports STALE,
- * never healthy -- silence must not read as calm.
+ * anywhere, it simply stops calling. An empty table therefore reports the overall
+ * figure as STALE, never healthy -- silence must not read as calm.
  */
-export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_HOURS, latestReceivedAt } = {}) {
+export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_HOURS, latestReceivedAt, latestByStage } = {}) {
   const list = Array.isArray(rows) ? rows : [];
 
   const newest = toMillis(latestReceivedAt === undefined ? newestReceivedAt(list) : latestReceivedAt);
   const ageHours = newest === null ? null : (now.getTime() - newest) / 3_600_000;
+
+  const stageLatest = new Map(
+    (latestByStage === undefined ? latestByStageOf(list) : latestByStage).map(({ stage, latest }) => [
+      String(stage),
+      toMillis(latest),
+    ])
+  );
+  const stages = Object.fromEntries(
+    STAGES.map((stage) => [stage, stageHealth(stageLatest.get(stage) ?? null, now, staleHours)])
+  );
 
   const funnel = Object.fromEntries(STAGES.map((stage) => [stage, 0]));
   for (const r of list) {
@@ -7027,6 +7135,7 @@ export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_
       lastReceivedAt: newest === null ? null : new Date(newest).toISOString(),
       ageHours,
       stale: newest === null || ageHours > staleHours,
+      stages,
     },
     funnel,
     destinations,
@@ -7114,19 +7223,81 @@ const ROWS = [
   },
 ];
 
+const NOW = new Date("2026-10-13T12:00:00Z");
+
+// The store, as the handler sees it: the four reads, each returning the shape the
+// real query returns. They are computed from `rows` the way SQL would compute them,
+// so a test that passes rows gets the same answer from every read.
+function groupRows(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    const key = [r.stage, r.meta_status, r.whatsapp_status, r.brevo_status].join("|");
+    const g = groups.get(key) ?? {
+      stage: r.stage,
+      meta_status: r.meta_status,
+      whatsapp_status: r.whatsapp_status,
+      brevo_status: r.brevo_status,
+      n: 0,
+    };
+    g.n += 1;
+    groups.set(key, g);
+  }
+  return [...groups.values()];
+}
+
+function storeFor(rows) {
+  const inWindow = (since) => rows.filter((r) => new Date(r.received_at) >= since);
+  return {
+    // Newest first, capped in SQL: the cap is applied by the read, not by the caller.
+    listSince: async (since, cap) => inWindow(since).slice(0, cap),
+    countSince: async (since) => groupRows(inWindow(since)),
+    latestReceivedAt: async () =>
+      rows.reduce((m, r) => {
+        const t = new Date(r.received_at);
+        return m === null || t > m ? t : m;
+      }, null),
+    latestByStage: async () => {
+      const byStage = new Map();
+      for (const r of rows) {
+        const t = new Date(r.received_at);
+        if (!byStage.has(r.stage) || t > byStage.get(r.stage)) byStage.set(r.stage, t);
+      }
+      return [...byStage].map(([stage, latest]) => ({ stage, latest }));
+    },
+  };
+}
+
+/** The handler, built the way production builds it. Any read can be overridden. */
+function build(options = {}) {
+  const { rows = ROWS, ...rest } = options;
+  return makeCrmEventsOverviewHandler({ canManage, now: () => NOW, ...storeFor(rows), ...rest });
+}
+
 describe("access", () => {
   it("refuses a caller who cannot manage users, without reading anything", async () => {
     const listSince = vi.fn(async () => ROWS);
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince })({ auth: VIEWER, query: {} }, res);
+    await build({ listSince })({ auth: VIEWER, query: {} }, res);
     expect(res.statusCode).toBe(403);
     expect(listSince).not.toHaveBeenCalled();
   });
 
   it("refuses a request with no session payload at all", async () => {
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: vi.fn() })({ query: {} }, res);
+    await build({ listSince: vi.fn() })({ query: {} }, res);
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("construction", () => {
+  it("refuses to build without each read, rather than falling back to the rows it was given", () => {
+    // A missing read would count the rows it was handed and undercount with no sign.
+    const reads = storeFor(ROWS);
+    for (const name of Object.keys(reads)) {
+      const rest = { ...reads };
+      delete rest[name];
+      expect(() => makeCrmEventsOverviewHandler({ canManage, ...rest }), name).toThrow(name);
+    }
   });
 });
 
@@ -7135,10 +7306,7 @@ describe("the payload", () => {
 
   it("returns health, funnel, destinations and the table together", async () => {
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ now })({ auth: ADMIN, query: {} }, res);
     expect(res.statusCode).toBe(200);
     expect(Object.keys(res.body).sort()).toEqual([
       "destinations",
@@ -7154,10 +7322,7 @@ describe("the payload", () => {
 
   it("masks PII in the table it returns", async () => {
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ now })({ auth: ADMIN, query: {} }, res);
     const serialised = JSON.stringify(res.body);
     expect(serialised).not.toContain("ali.khan@example.com");
     expect(serialised).not.toContain("+971507192185");
@@ -7165,17 +7330,14 @@ describe("the payload", () => {
 
   it("asks the store for the requested window", async () => {
     const listSince = vi.fn(async () => ROWS);
-    await makeCrmEventsOverviewHandler({ canManage, listSince, now })(
-      { auth: ADMIN, query: { days: "7" } },
-      fakeRes()
-    );
+    await build({ now, listSince })({ auth: ADMIN, query: { days: "7" } }, fakeRes());
     const [since] = listSince.mock.calls[0];
     expect(since.toISOString()).toBe("2026-10-06T12:00:00.000Z");
   });
 
   it("clamps a silly window rather than trusting the query string", async () => {
     const listSince = vi.fn(async () => ROWS);
-    const handler = makeCrmEventsOverviewHandler({ canManage, listSince, now });
+    const handler = build({ now, listSince });
 
     await handler({ auth: ADMIN, query: { days: "99999" } }, fakeRes());
     expect(listSince.mock.calls[0][0].toISOString()).toBe("2026-07-15T12:00:00.000Z"); // 90 days
@@ -7188,13 +7350,11 @@ describe("the payload", () => {
   });
 
   it("caps the table without capping the counts", async () => {
-    // The funnel must count the whole window even when the table shows a page.
+    // The funnel must count the whole window even when the table shows a page. The
+    // store caps the table in SQL and counts the window in SQL, as it does in production.
     const many = Array.from({ length: 10 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now, tableLimit: 3 })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ rows: many, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, res);
     expect(res.body.events).toHaveLength(3);
     expect(res.body.funnel.registered).toBe(10);
   });
@@ -7204,7 +7364,7 @@ describe("the payload", () => {
     const listSince = async () => {
       throw new Error("ER_NO_SUCH_TABLE: signup_events");
     };
-    await makeCrmEventsOverviewHandler({ canManage, listSince, now })({ auth: ADMIN, query: {} }, res);
+    await build({ now, listSince })({ auth: ADMIN, query: {} }, res);
     expect(res.statusCode).toBe(500);
     expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
   });
@@ -7212,24 +7372,18 @@ describe("the payload", () => {
   it("reports health from its own clock and the 72-hour threshold", async () => {
     const ninetySixHoursAgo = [{ ...ROWS[0], received_at: "2026-10-09T12:00:00Z" }];
     const old = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ninetySixHoursAgo, now })(
-      { auth: ADMIN, query: {} },
-      old
-    );
+    await build({ rows: ninetySixHoursAgo, now })({ auth: ADMIN, query: {} }, old);
     expect(old.body.health.stale).toBe(true);
     expect(old.body.health.ageHours).toBeCloseTo(96, 3);
 
     const recent = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
-      { auth: ADMIN, query: {} },
-      recent
-    );
+    await build({ now })({ auth: ADMIN, query: {} }, recent);
     expect(recent.body.health.stale).toBe(false);
     expect(recent.body.health.ageHours).toBeCloseTo(1, 3);
   });
 
   it("reports the window it actually used, after clamping", async () => {
-    const handler = makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now });
+    const handler = build({ now });
     const seven = fakeRes();
     await handler({ auth: ADMIN, query: { days: "7" } }, seven);
     expect(seven.body.windowDays).toBe(7);
@@ -7243,20 +7397,14 @@ describe("the payload", () => {
     // listEventsSince returns newest first, so the table is the head of the list.
     const many = Array.from({ length: 10 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now, tableLimit: 3 })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ rows: many, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, res);
     expect(res.body.events.map((e) => e.id)).toEqual([1, 2, 3]);
   });
 
   it("caps the table at 200 rows by default, and still counts all of them", async () => {
     const many = Array.from({ length: 201 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ rows: many, now })({ auth: ADMIN, query: {} }, res);
     expect(res.body.events).toHaveLength(200);
     expect(res.body.funnel.registered).toBe(201);
   });
@@ -7264,10 +7412,7 @@ describe("the payload", () => {
   it("reads the real clock when none is injected", async () => {
     const anHourAgo = new Date(Date.now() - 3_600_000).toISOString();
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => [{ ...ROWS[0], received_at: anHourAgo }] })(
-      { auth: ADMIN, query: {} },
-      res
-    );
+    await build({ now: undefined, rows: [{ ...ROWS[0], received_at: anHourAgo }] })({ auth: ADMIN, query: {} }, res);
     expect(res.body.health.stale).toBe(false);
     expect(res.body.health.ageHours).toBeCloseTo(1, 1);
   });
@@ -7279,27 +7424,39 @@ describe("the payload", () => {
       const listSince = async () => {
         throw new Error("ER_NO_SUCH_TABLE: signup_events");
       };
-      await makeCrmEventsOverviewHandler({ canManage, listSince })({ auth: ADMIN, query: {} }, res);
+      await build({ listSince })({ auth: ADMIN, query: {} }, res);
       expect(spy.mock.calls.flat().join(" ")).toContain("ER_NO_SUCH_TABLE");
       expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
     } finally {
       spy.mockRestore();
     }
   });
+
   it("takes health from the whole table, so a short window cannot read as no events", async () => {
-    // The newest event is 30 hours old: inside the 72-hour threshold, outside a one-day window.
+    // The only event is 30 hours old: inside the 72-hour threshold, outside a one-day window.
+    const thirtyHoursAgo = [{ ...ROWS[0], stage: "lead", received_at: "2026-10-12T06:00:00Z" }];
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({
-      canManage,
-      listSince: async () => [],
-      countSince: async () => [],
-      latestReceivedAt: async () => new Date("2026-10-12T06:00:00Z"),
-      now,
-    })({ auth: ADMIN, query: { days: "1" } }, res);
+    await build({ rows: thirtyHoursAgo, now })({ auth: ADMIN, query: { days: "1" } }, res);
     expect(res.body.health.lastReceivedAt).toBe("2026-10-12T06:00:00.000Z");
     expect(res.body.health.ageHours).toBeCloseTo(30, 3);
     expect(res.body.health.stale).toBe(false);
+    expect(res.body.health.stages.lead).toMatchObject({ everSeen: true, stale: false });
     expect(res.body.funnel.lead).toBe(0); // the counts still follow the window
+    expect(res.body.events).toHaveLength(0);
+  });
+
+  it("reports per-stage health from the whole table, so a dead stage cannot hide behind a live one", async () => {
+    // Registrations are arriving; the verified rule last fired four days ago.
+    const rows = [
+      ROWS[0],
+      { ...ROWS[0], id: 2, stage: "verified", received_at: "2026-10-09T12:00:00Z" },
+    ];
+    const res = fakeRes();
+    await build({ rows, now })({ auth: ADMIN, query: {} }, res);
+    expect(res.body.health.stale).toBe(false);
+    expect(res.body.health.stages.verified).toMatchObject({ everSeen: true, stale: true });
+    expect(res.body.health.stages.registered).toMatchObject({ everSeen: true, stale: false });
+    expect(res.body.health.stages.lead).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
   });
 
   it("counts from the grouped rows, so a window far past the table cap is counted in full", async () => {
@@ -7309,11 +7466,9 @@ describe("the payload", () => {
     ];
     const threeRows = Array.from({ length: 3 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
-    await makeCrmEventsOverviewHandler({
-      canManage,
+    await build({
       listSince: async () => threeRows,
       countSince: async () => groups,
-      latestReceivedAt: async () => new Date("2026-10-13T11:00:00Z"),
       now,
       tableLimit: 3,
     })({ auth: ADMIN, query: {} }, res);
@@ -7327,8 +7482,27 @@ describe("the payload", () => {
 
   it("asks the store for no more rows than the table shows", async () => {
     const listSince = vi.fn(async () => ROWS);
-    await makeCrmEventsOverviewHandler({ canManage, listSince, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, fakeRes());
+    await build({ listSince, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, fakeRes());
     expect(listSince.mock.calls[0][1]).toBe(3);
+  });
+
+  it("shows no more rows than the table holds, even if the store hands back more", async () => {
+    // The store caps the table in SQL. The route keeps its own cap too, so a read that
+    // ignores the cap still cannot push the table past its size.
+    const many = Array.from({ length: 10 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
+    const res = fakeRes();
+    await build({ now, tableLimit: 3, listSince: async () => many })({ auth: ADMIN, query: {} }, res);
+    expect(res.body.events.map((e) => e.id)).toEqual([1, 2, 3]);
+  });
+
+  it("counts every group, even when there are more groups than the table shows", async () => {
+    // Five stages of 1,000 events each. The table shows three rows; the counts show all five.
+    const stages = ["lead", "registered", "verified", "live_account", "first_deposit"];
+    const groups = stages.map((stage) => ({ stage, meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1000 }));
+    const res = fakeRes();
+    await build({ now, tableLimit: 3, countSince: async () => groups })({ auth: ADMIN, query: {} }, res);
+    for (const stage of stages) expect(res.body.funnel[stage], stage).toBe(1000);
+    expect(res.body.destinations.meta.sent).toBe(5000);
   });
 });
 
@@ -7337,24 +7511,26 @@ describe("wiring in server.js", () => {
   // admin gate, or one added to the public allow-list, would pass every test.
   const SERVER = readFileSync(path.resolve("server.js"), "utf8");
 
-  it("imports the handler and the three store reads", () => {
+  it("imports the handler and the store reads", () => {
     expect(SERVER).toMatch(/import \{ makeCrmEventsOverviewHandler \} from "\.\/crmSignup\/overviewRoute\.js";/);
     expect(SERVER).toMatch(/import \{[^}]*\blistEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
     expect(SERVER).toMatch(/import \{[^}]*\bcountEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
     expect(SERVER).toMatch(/import \{[^}]*\blatestEventReceivedAt\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\blatestReceivedAtByStage\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
   });
 
   it("registers it behind the session check and the admin check", () => {
     expect(SERVER).toMatch(/app\.get\('\/api\/crm-events\/overview',\s*authRequired,\s*adminOnly,\s*makeCrmEventsOverviewHandler\(\{/);
   });
 
-  it("wires the admin predicate, the table read, the grouped count and the whole-table latest timestamp", () => {
+  it("wires the admin predicate and all four reads", () => {
     const block = SERVER.match(/app\.get\('\/api\/crm-events\/overview'[\s\S]*?\}\)\);/);
     expect(block, "the registration was not found").not.toBeNull();
     expect(block[0]).toMatch(/\bcanManage:\s*canManageUsers\s*,/);
     expect(block[0]).toMatch(/\blistSince:\s*listEventsSince\s*,/);
     expect(block[0]).toMatch(/\bcountSince:\s*countEventsSince\s*,/);
     expect(block[0]).toMatch(/\blatestReceivedAt:\s*latestEventReceivedAt\s*,/);
+    expect(block[0]).toMatch(/\blatestByStage:\s*latestReceivedAtByStage\s*,/);
   });
 
   it("is not on the public allow-list, because it reads the database for an admin", () => {
@@ -7368,7 +7544,7 @@ describe("wiring in server.js", () => {
 Create `crmSignup/overviewRoute.js`:
 
 ```js
-import { newestReceivedAt, summariseCrmEvents, toTableRow } from "./stats.js";
+import { summariseCrmEvents, toTableRow } from "./stats.js";
 
 const DEFAULT_DAYS = 30;
 const MIN_DAYS = 1;
@@ -7383,10 +7559,15 @@ function windowDays(raw) {
 /**
  * GET /api/crm-events/overview?days=30
  *
- * Everything the settings tab needs in one call, from three reads:
+ * Everything the settings tab needs in one call, from four reads. All four are
+ * required: a missing read would fall back to the rows it was given, and the
+ * counts would undercount with no sign of it.
+ *
  *   listSince(since, tableLimit)  the newest rows in the window, capped in SQL. Table only.
  *   countSince(since)             grouped counts over the whole window, never capped.
  *   latestReceivedAt()            the newest event in the whole table, ignoring the window.
+ *   latestByStage()               the newest event per stage, whole table. A stage with no
+ *                                 row has never fired, and is not the same as one gone quiet.
  *
  * Counts and the table follow the window. Health does not: a one-day window must
  * not make an event from thirty hours ago look like silence.
@@ -7396,10 +7577,16 @@ export function makeCrmEventsOverviewHandler({
   listSince,
   countSince,
   latestReceivedAt,
+  latestByStage,
   tableLimit = 200,
   now = () => new Date(),
   logger = console,
 }) {
+  const reads = { listSince, countSince, latestReceivedAt, latestByStage };
+  for (const [name, read] of Object.entries(reads)) {
+    if (typeof read !== "function") throw new TypeError(`makeCrmEventsOverviewHandler: ${name} is required`);
+  }
+
   return async function crmEventsOverviewHandler(req, res) {
     if (!canManage(req?.auth)) return res.status(403).json({ error: "forbidden" });
 
@@ -7410,18 +7597,23 @@ export function makeCrmEventsOverviewHandler({
     let rows;
     let counted;
     let latest;
+    let byStage;
     try {
       rows = await listSince(since, tableLimit);
-      // Without a grouped count the rows are counted, which is only as complete as the rows.
-      counted = countSince ? await countSince(since) : rows;
-      latest = latestReceivedAt ? await latestReceivedAt() : newestReceivedAt(rows);
+      counted = await countSince(since);
+      latest = await latestReceivedAt();
+      byStage = await latestByStage();
     } catch (error) {
       // The message can name internal schema, so it is logged, not returned.
       logger.error?.(`[crm-events] overview failed: ${error?.message || String(error)}`);
       return res.status(500).json({ error: "overview_failed" });
     }
 
-    const { health, funnel, destinations } = summariseCrmEvents(counted, { now: at, latestReceivedAt: latest });
+    const { health, funnel, destinations } = summariseCrmEvents(counted, {
+      now: at,
+      latestReceivedAt: latest,
+      latestByStage: byStage,
+    });
 
     return res.status(200).json({
       windowDays: days,
@@ -7514,7 +7706,18 @@ const SESSION_KEY = "slc.session.v2";
 
 const OVERVIEW = {
   windowDays: 30,
-  health: { lastReceivedAt: "2026-10-13T11:00:00.000Z", ageHours: 1, stale: false },
+  health: {
+    lastReceivedAt: "2026-10-13T11:00:00.000Z",
+    ageHours: 1,
+    stale: false,
+    stages: {
+      lead: { lastReceivedAt: null, ageHours: null, stale: false, everSeen: false },
+      registered: { lastReceivedAt: "2026-10-13T11:00:00.000Z", ageHours: 1, stale: false, everSeen: true },
+      verified: { lastReceivedAt: "2026-10-09T11:00:00.000Z", ageHours: 96, stale: true, everSeen: true },
+      live_account: { lastReceivedAt: null, ageHours: null, stale: false, everSeen: false },
+      first_deposit: { lastReceivedAt: null, ageHours: null, stale: false, everSeen: false },
+    },
+  },
   funnel: { lead: 0, registered: 12, verified: 5, live_account: 3, first_deposit: 2 },
   destinations: {
     meta: { pending: 0, sent: 20, skipped: 0, retrying: 1, failed: 1, rejected: 0, invalid: 0 },
@@ -7604,6 +7807,31 @@ describe("health strip", () => {
     });
     render(<CrmEventsPage />);
     expect(await screen.findByRole("alert")).toBeTruthy();
+  });
+});
+
+describe("per-stage health", () => {
+  it("warns about a stage that fired and then stopped, even while the overall reading is green", async () => {
+    // The funnel runs five separate FXBO rules. One global timestamp stays
+    // green as long as ANY rule is firing, so a dead `verified` rule is
+    // invisible there -- and the 30-day funnel count still shows its
+    // pre-failure number for most of a month.
+    installFetch();
+    render(<CrmEventsPage />);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/verified/i);
+    expect(alert).toHaveTextContent(/4 days/i);
+  });
+
+  it("does not warn about a stage that has never fired", async () => {
+    // `lead` has no FXBO rule yet, because the trigger does not exist. A tab
+    // permanently red for a reason nobody can fix is one people stop reading.
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("funnel-lead");
+    const alerts = screen.queryAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.join(" ")).not.toMatch(/\blead\b/i);
+    expect(screen.getByTestId("stage-health-lead")).toHaveTextContent(/never/i);
   });
 });
 

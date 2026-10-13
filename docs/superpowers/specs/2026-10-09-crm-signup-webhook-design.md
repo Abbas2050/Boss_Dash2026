@@ -502,10 +502,17 @@ settings page uses: one `src/pages/settings/CrmEventsPage.tsx`, lazy-loaded in
 `App.tsx`, with a menu entry in `src/lib/permissions.ts`. It reads one JSON
 endpoint, `GET /api/crm-events/overview`, and shows four things:
 
-- **A health strip** — when the last event arrived, and a warning when nothing
-  has come in for 72 hours. This is the one that earns its place: a broken FXBO
-  rule raises no error anywhere, it simply stops calling, and nothing else in
-  the system would notice. An empty window reports stale, never healthy.
+- **A health strip**, overall and **per stage**. The overall figure is when
+  the last event of any kind arrived, with a warning after 72 hours. But the
+  funnel runs five separate FXBO rules, and one global timestamp stays green
+  while an individual rule is dead — the funnel count cannot reveal it either,
+  since a 30-day total still shows a stage's pre-failure number for most of a
+  month. So each stage reports its own last-seen and staleness. A stage that
+  has fired and then gone quiet warns; one that has **never** fired says so
+  and does not warn, because `lead` has no FXBO trigger yet and a tab
+  permanently red for a reason nobody can fix is a tab people stop reading.
+  This is the panel that catches a silently broken rule, and an empty window
+  reports stale rather than healthy.
 - **Funnel counts** — how many at each stage over the period, zeroes included,
   because a zero says that stage's rule is not firing.
 - **Per-destination counters** — sent / failed / rejected / retrying / skipped
