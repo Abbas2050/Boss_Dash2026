@@ -84,6 +84,15 @@ describe("skip decisions", () => {
     expect(decideWhatsappSkip({ ...base, apiKey: "   " })).toEqual({ reason: "whatsapp not configured" });
   });
 
+  it("treats every blank or missing key as unconfigured", () => {
+    // The same four values decideBrevoSkip is held to, so the two cannot drift apart.
+    for (const apiKey of ["", "   ", undefined, null]) {
+      expect(decideWhatsappSkip({ ...base, apiKey }), String(apiKey)).toEqual({
+        reason: "whatsapp not configured",
+      });
+    }
+  });
+
   it("accepts skipSources as the raw env string, not only a parsed Set", () => {
     expect(decideWhatsappSkip({ ...base, source: "manual", skipSources: "CSV_UPLOAD, manual" })).toEqual({
       reason: "source excluded",
