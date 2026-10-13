@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
 import { makeCrmEventsHandler } from "./router.js";
+import { buildInsertParams, INSERT_COLUMNS } from "./store.js";
 import { PUBLIC_API_ROUTES } from "../auth/requireSession.js";
 
 function fakeRes() {
@@ -296,5 +297,257 @@ describe("registration in server.js", () => {
     // match, and five literal paths would breach the six-entry cap.
     expect(PUBLIC_API_ROUTES.size).toBeLessThanOrEqual(6);
     expect(SERVER).not.toContain("/api/crm-events/:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Everything below was added after mutation testing. The cases above leave each
+// of these open: the comment on each names the mutant that survived without it.
+// ---------------------------------------------------------------------------
+
+describe("authentication, further", () => {
+  it("rejects a request with no header when no secret is configured", async () => {
+    // The fail-open this guards is "" meeting "": an unset secret and an absent
+    // header. The case above sends a non-empty header, which the length check
+    // rejects by itself, so it cannot tell a guard from an accident. Removing
+    // both the `!expected` guard and the empty-buffer check survived without it.
+    for (const secret of [undefined, null, ""]) {
+      for (const headers of [{}, { authorization: "" }]) {
+        const d = deps({ secret });
+        const res = fakeRes();
+        await makeCrmEventsHandler(d)(req(headers, VALID_BODY), res);
+        expect(res.statusCode, `secret=${String(secret)} headers=${JSON.stringify(headers)}`).toBe(401);
+        expect(d.insert).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("logs a rejection with what an operator needs to find the caller", async () => {
+    // Deleting the log line, hard-wiring hasHeader, and dropping the ip all
+    // survived: the existing test only checks the secret is absent from a log
+    // that could be empty. hasHeader tells a rule with no header configured
+    // apart from one with the wrong value.
+    const wrong = deps();
+    await makeCrmEventsHandler(wrong)(req({ authorization: "nope" }, VALID_BODY), fakeRes());
+    const none = deps();
+    await makeCrmEventsHandler(none)(req({}, VALID_BODY), fakeRes());
+
+    expect(wrong.logger.warn).toHaveBeenCalledTimes(1);
+    const line = wrong.logger.warn.mock.calls[0][0];
+    expect(line).toContain("POST");
+    expect(line).toContain("/api/crm-events");
+    expect(line).toContain("1.2.3.4");
+    expect(line).toContain("hasHeader=true");
+    expect(none.logger.warn.mock.calls[0][0]).toContain("hasHeader=false");
+  });
+});
+
+describe("a normaliser that throws", () => {
+  it("stores nothing, says so, and answers 200 rather than crash", async () => {
+    // The whole branch was unexercised: removing it, answering 500, dropping the
+    // log, or falling through to store an empty event all survived.
+    const d = deps({
+      normalise: () => {
+        throw new Error("boom");
+      },
+    });
+    const res = fakeRes();
+    await expect(
+      makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res)
+    ).resolves.toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true, stored: false, valid: false });
+    expect(d.insert).not.toHaveBeenCalled();
+    expect(d.onStored).not.toHaveBeenCalled();
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    expect(d.logger.error.mock.calls[0][0]).toContain("boom");
+  });
+});
+
+describe("telling a test press from a broken rule", () => {
+  const LABELS = {
+    stage: "registered",
+    client_id: "Client ID",
+    first_name: "Client First Name",
+    last_name: "Client Last Name",
+    email: "Client Email",
+    phone: "Client Phone",
+  };
+
+  it("keys on client_id: a real id is not a test press however odd the other fields look", async () => {
+    // The press fixture above is labels in every field, so detecting on email or
+    // first_name instead of client_id gave identical output. The id is the
+    // dedupe key a placeholder would poison, which is why it is the one examined.
+    const d = deps();
+    await makeCrmEventsHandler(d)(
+      req(
+        { authorization: "s3cret" },
+        { ...VALID_BODY, first_name: "Client First Name", last_name: "Client Last Name", email: "Client Email" }
+      ),
+      fakeRes()
+    );
+    expect(d.insert.mock.calls[0][3]).toBeNull();
+    expect(d.onStored).toHaveBeenCalledTimes(1);
+  });
+
+  it("still names it a test press when the payload is also missing a required field", async () => {
+    // Which of the two reasons wins decides whether an operator sees "somebody
+    // pressed Test" or "the rule is broken", the distinction fxboPlaceholder.js
+    // exists to keep. Letting the missing-fields text win survived.
+    const { email, ...withoutEmail } = LABELS;
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, withoutEmail), fakeRes());
+    const reason = d.insert.mock.calls[0][3];
+    expect(reason).toContain("placeholder_not_substituted");
+    expect(reason).not.toContain("missing required fields");
+  });
+
+  it("logs a test press as one, and an invalid payload with the email masked", async () => {
+    // The log is where an operator looks, and the spec forbids a full email in
+    // it. Logging the raw address, deleting the line, and mislabelling a test
+    // press as an invalid payload each survived.
+    const press = deps();
+    await makeCrmEventsHandler(press)(req({ authorization: "s3cret" }, LABELS), fakeRes());
+    expect(press.logger.warn).toHaveBeenCalledTimes(1);
+    expect(press.logger.warn.mock.calls[0][0]).toContain("test press");
+
+    const bad = deps();
+    await makeCrmEventsHandler(bad)(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }), fakeRes());
+    expect(bad.logger.warn).toHaveBeenCalledTimes(1);
+    const line = bad.logger.warn.mock.calls[0][0];
+    expect(line).toContain("invalid payload");
+    expect(line).toContain("a***@example.com");
+    expect(line).not.toContain("ali.khan");
+  });
+});
+
+describe("the click id lookup, further", () => {
+  it("is keyed on the CRM client id", async () => {
+    // findFbc is a stub that answers the same whatever it is asked, so looking a
+    // client up by stage instead survived. The freeze depends on this key.
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.findFbc).toHaveBeenCalledWith("88214");
+  });
+
+  it("derives from the landing URL with the injected clock, and says why, when the lookup throws", async () => {
+    // The existing case only checks the event was stored. Falling back to an
+    // empty click id, reading the real clock, and not logging all survived.
+    const d = deps({
+      findFbc: vi.fn(async () => {
+        throw new Error("db down");
+      }),
+    });
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][1].fbc).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    expect(d.logger.error.mock.calls[0][0]).toContain("db down");
+  });
+});
+
+describe("what the handler hands the store", () => {
+  // insertSignupEvent reads (fields, derived, rawPayload, invalidReason) by
+  // position, and the mocked insert above accepts any order. Handing it the raw
+  // body as the fields, no raw payload, or the fields as the raw payload all
+  // survived. Running the real parameter builder over the call pins the seam.
+  const column = (params, name) => params[INSERT_COLUMNS.indexOf(name)];
+
+  it("fills the right columns for a valid event", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    const params = buildInsertParams(...d.insert.mock.calls[0]);
+    expect(column(params, "crm_client_id")).toBe("88214");
+    expect(column(params, "stage")).toBe("registered");
+    expect(column(params, "email")).toBe("ali.khan@example.com");
+    expect(column(params, "fbc")).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    expect(column(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
+    expect(column(params, "meta_status")).toBe("pending");
+    expect(column(params, "whatsapp_status")).toBe("pending");
+    expect(column(params, "brevo_status")).toBe("pending");
+    expect(JSON.parse(column(params, "raw_payload"))).toEqual(VALID_BODY);
+  });
+
+  it("marks all three destinations invalid, with the reason, for a bad one", async () => {
+    const d = deps();
+    const body = { ...VALID_BODY, stage: "typo" };
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, body), fakeRes());
+    const params = buildInsertParams(...d.insert.mock.calls[0]);
+    for (const status of ["meta_status", "whatsapp_status", "brevo_status"]) {
+      expect(column(params, status), status).toBe("invalid");
+    }
+    expect(column(params, "meta_detail")).toContain("missing required fields");
+    expect(JSON.parse(column(params, "raw_payload"))).toEqual(body);
+  });
+});
+
+describe("storing, further", () => {
+  it("still says whether the payload was valid when the database throws", async () => {
+    // Only `stored` was asserted, so reporting a constant valid survived.
+    const failing = () =>
+      deps({
+        insert: vi.fn(async () => {
+          throw new Error("ER_LOCK_WAIT_TIMEOUT");
+        }),
+      });
+    const bad = fakeRes();
+    await makeCrmEventsHandler(failing())(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }),
+      bad
+    );
+    expect(bad.body).toEqual({ ok: true, stored: false, valid: false });
+    const good = fakeRes();
+    await makeCrmEventsHandler(failing())(req({ authorization: "s3cret" }, VALID_BODY), good);
+    expect(good.body).toEqual({ ok: true, stored: false, valid: true });
+  });
+
+  it("reports a failed worker kick as a failed kick, not a failed store", async () => {
+    // The row IS stored. Without its own catch the kick's exception fell into
+    // the store handler's, which answered stored:false and logged "store failed".
+    const d = deps({
+      onStored: vi.fn(() => {
+        throw new Error("worker exploded");
+      }),
+    });
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
+    expect(res.body).toEqual({ ok: true, stored: true, duplicate: false });
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    expect(d.logger.error.mock.calls[0][0]).toContain("worker kick failed");
+  });
+
+  it("works with no worker wired in", async () => {
+    // onStored is optional. Removing its default made every stored event log a
+    // spurious "worker kick failed".
+    const d = deps();
+    delete d.onStored;
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
+    expect(res.body).toEqual({ ok: true, stored: true, duplicate: false });
+    expect(d.logger.error).not.toHaveBeenCalled();
+  });
+});
+
+describe("wiring in server.js, further", () => {
+  const SERVER = readFileSync(path.resolve("server.js"), "utf8");
+
+  it("hands the handler the secret, the lookup and the insert, each under its own name", () => {
+    // The checks above find the route string and nothing about what is passed to
+    // it. A misspelt env var rejects every FXBO delivery (it fails closed, so
+    // loudly, but only after deploy); swapping the lookup and the insert
+    // compiles. All of these survived.
+    const registration = SERVER.match(/app\.post\('\/api\/crm-events',\s*makeCrmEventsHandler\(\{([\s\S]*?)\}\)\);/);
+    expect(registration, "the registration block was not found").not.toBeNull();
+    const wired = registration[1];
+    expect(wired).toMatch(/\bsecret:\s*process\.env\.CRM_WEBHOOK_SECRET\s*,/);
+    expect(wired).toMatch(/\bfindFbc:\s*findExistingFbc\s*,/);
+    expect(wired).toMatch(/\binsert:\s*insertSignupEvent\s*,/);
+  });
+
+  it("initialises the store at boot, and a failure there cannot take the process down", () => {
+    // An un-caught rejection is fatal on current Node, so a database that is
+    // unreachable at start would stop the whole dashboard. Dropping the init and
+    // dropping the catch both survived.
+    const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
+    expect(listen).toMatch(/initCrmSignupStore\(\)(?:\s*\.then\(.*\))*\s*\.catch\(/);
   });
 });
