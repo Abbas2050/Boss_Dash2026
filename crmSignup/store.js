@@ -92,6 +92,7 @@ export const INSERT_COLUMNS = [
   "whatsapp_detail",
   "brevo_status",
   "brevo_detail",
+  "received_at",
   "raw_payload",
 ];
 
@@ -106,10 +107,11 @@ const bool = (v) => (v ? 1 : 0);
 const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
 const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
 
-// fbc and the provider's message id are never cut. A cut click id is attribution that
-// silently never matches. A cut message id would fail the UPDATE that records a send
-// already made, which leaves the row due for a second welcome. Over-width writes NULL
-// and warns; the event, and the status it records, are still stored.
+// fbc and the provider's message id are never cut, because a cut id is a wrong id, not
+// a shorter one. A cut click id is attribution that silently never matches. An uncut
+// over-width message id would fail the UPDATE that records a send already made, which
+// leaves the row due for a second welcome. Over-width writes NULL and warns instead; the
+// event, and the status it records, are still stored.
 // whatsapp_request_id is the one identifier that is cut rather than NULLed: the worker
 // reads it back from the row on every attempt, and a NULL would mint a fresh id each time.
 const identifier = (v, column) => {
@@ -131,8 +133,11 @@ const identifier = (v, column) => {
  * Pure except in one place: an over-width fbc is written as NULL and `console.warn`
  * is called with the column name and the length seen. The warning appears without
  * the caller having to arrange for it, which is the point of it.
+ *
+ * `receivedAt` is the Node clock. The column default is the database clock, and a
+ * mismatch between the two would shift every event_time, so Node writes it.
  */
-export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
+export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null, receivedAt = new Date()) {
   let serialised;
   try {
     serialised = typeof rawPayload === "string" ? rawPayload : JSON.stringify(rawPayload ?? {});
@@ -147,10 +152,12 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
   const detail = invalid ? String(invalidReason).slice(0, 500) : null;
 
   return [
-    // Never cut: this is the dedupe key. An over-width id fails the INSERT rather than
-    // colliding with another client's id. It is NOT NULL, so NULL is not an option.
+    // Never cut: this is the dedupe key. insertSignupEvent refuses an over-width one
+    // before it gets here, because NULL is not an option on a NOT NULL key either.
     String(fields.crmClientId ?? ""),
-    fit(fields.stage ?? "", "stage"),
+    // Never cut, for the same reason as crm_client_id: insertSignupEvent refuses an
+    // over-width key before it reaches here.
+    String(fields.stage ?? ""),
     str(fields.fxboUniqueId, "fxbo_unique_id"),
     str(fields.firstName, "first_name"),
     str(fields.middleName, "middle_name"),
@@ -176,6 +183,7 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     detail,
     status,
     detail,
+    receivedAt,
     serialised,
   ];
 }
@@ -239,6 +247,28 @@ export async function findExistingFbc(crmClientId) {
 }
 
 /**
+ * The dedupe key is (crm_client_id, stage). Neither half is ever cut: two values that
+ * cut to one would collide into one row. An over-width value is refused here, before
+ * any statement runs, so the error names the column. This does not depend on the
+ * server's sql_mode, which a host move could change.
+ */
+const dedupeKey = (fields) => ({
+  crm_client_id: String(fields?.crmClientId ?? ""),
+  stage: String(fields?.stage ?? ""),
+});
+
+function refuseOverWidthDedupeKey(fields) {
+  for (const [column, value] of Object.entries(dedupeKey(fields))) {
+    const over = Array.from(value).length;
+    if (over > COLUMN_WIDTHS[column]) {
+      throw new Error(
+        `${column} is ${over} characters, over its ${COLUMN_WIDTHS[column]}-character column; the event is refused, not stored`
+      );
+    }
+  }
+}
+
+/**
  * Stores one event. A redelivery of a stored client and stage is a duplicate-key
  * error from MySQL, which is returned as `inserted: false` rather than thrown.
  *
@@ -252,6 +282,7 @@ export async function findExistingFbc(crmClientId) {
  * matters for an FXBO test press.
  */
 export async function insertSignupEvent(fields, derived, rawPayload, invalidReason = null) {
+  refuseOverWidthDedupeKey(fields);
   const placeholders = INSERT_COLUMNS.map(() => "?").join(", ");
   try {
     const result = await run(

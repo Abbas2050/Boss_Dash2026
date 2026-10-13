@@ -65,6 +65,9 @@ const FIELDS = {
 };
 
 const at = (params, column) => params[INSERT_COLUMNS.indexOf(column)];
+// received_at is stamped at call time, so two builds differ by milliseconds. Every
+// other parameter is compared exactly.
+const withoutClock = (params) => params.map((p, i) => (INSERT_COLUMNS[i] === "received_at" ? null : p));
 const duplicateKeyError = () => Object.assign(new Error("Duplicate entry"), { code: "ER_DUP_ENTRY", errno: 1062 });
 
 let ddlCalls = [];
@@ -94,7 +97,8 @@ describe("insertSignupEvent", () => {
     expect(db.state.calls).toHaveLength(1);
     expect(db.state.calls[0].sql).toMatch(/^\s*INSERT INTO signup_events \(/);
     expect(db.state.calls[0].sql).not.toMatch(/ON DUPLICATE/i);
-    expect(db.state.calls[0].params).toEqual(buildInsertParams(FIELDS, derived, "{}"));
+    expect(withoutClock(db.state.calls[0].params)).toEqual(withoutClock(buildInsertParams(FIELDS, derived, "{}")));
+    expect(at(db.state.calls[0].params, "received_at")).toBeInstanceOf(Date);
     expect(result).toEqual({ inserted: true, id: 42 });
   });
 
@@ -135,6 +139,26 @@ describe("insertSignupEvent", () => {
     expect(columns.split(",").map((c) => c.trim())).toEqual(INSERT_COLUMNS);
     expect(placeholders.split(",").map((p) => p.trim())).toEqual(INSERT_COLUMNS.map(() => "?"));
     expect(params).toHaveLength(INSERT_COLUMNS.length);
+  });
+
+  it("refuses an over-width client id before any statement runs, rather than cutting it", async () => {
+    await expect(insertSignupEvent({ ...FIELDS, crmClientId: "9".repeat(256) }, {}, "{}")).rejects.toThrow(
+      /crm_client_id is 256 characters/
+    );
+    expect(db.state.calls).toHaveLength(0);
+  });
+
+  it("counts characters, not UTF-16 units, so 255 emoji are accepted as a 255-character id", async () => {
+    // 255 emoji are 510 UTF-16 units but 255 characters: the column takes them.
+    await insertSignupEvent({ ...FIELDS, crmClientId: "😀".repeat(255) }, {}, "{}");
+    expect(db.state.calls).toHaveLength(1);
+  });
+
+  it("refuses an over-width stage too, since it is the other half of the dedupe key", async () => {
+    await expect(insertSignupEvent({ ...FIELDS, stage: "s".repeat(33) }, {}, "{}")).rejects.toThrow(
+      /stage is 33 characters/
+    );
+    expect(db.state.calls).toHaveLength(0);
   });
 
   it("reports a missing insert id as null, not undefined", async () => {

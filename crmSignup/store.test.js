@@ -37,7 +37,6 @@ const widthOf = (column) => Number(definitionOf(column).match(/VARCHAR\((\d+)\)/
 
 // The text columns buildInsertParams cuts, with the field that feeds each one.
 const CUT_COLUMNS = [
-  ["stage", "stage"],
   ["record_type", "recordType"],
   ["fxbo_unique_id", "fxboUniqueId"],
   ["first_name", "firstName"],
@@ -187,6 +186,7 @@ describe("buildInsertParams", () => {
   // and a UUID landing in `fbc` is the "quietly broken funnel" this module
   // exists to avoid.
   const at = (params, column) => params[INSERT_COLUMNS.indexOf(column)];
+const RECEIVED = new Date("2026-10-13T10:00:00Z");
 
   it("puts every parameter in its own column", () => {
     const params = buildInsertParams(FIELDS, {}, "{}");
@@ -233,7 +233,9 @@ describe("buildInsertParams", () => {
     const params = buildInsertParams(
       FIELDS,
       { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
-      "{}"
+      "{}",
+      null,
+      RECEIVED
     );
     const expected = {
       crm_client_id: "88214",
@@ -263,6 +265,7 @@ describe("buildInsertParams", () => {
       whatsapp_detail: null,
       brevo_status: "pending",
       brevo_detail: null,
+      received_at: RECEIVED,
       raw_payload: "{}",
     };
     // The table must cover every column, so a new column cannot slip in unpinned.
@@ -321,13 +324,22 @@ describe("buildInsertParams", () => {
     expect(Array.from(phone).every((c) => c === "😀")).toBe(true);
   });
 
-  it("never cuts crm_client_id, so an over-width id fails the insert instead", () => {
-    // It is the dedupe key. Two ids that share a 255-character prefix would cut to one
-    // value and collide into one row, and findExistingFbc looks the id up uncut, so it
-    // would never find the truncated row. It is NOT NULL, so NULL is not available
-    // either. A lost event that is logged beats two different clients sharing a row.
-    const params = buildInsertParams({ crmClientId: "9".repeat(256) }, {}, "{}");
+  it("never cuts the dedupe key: crm_client_id and stage reach the builder whole", () => {
+    // Two values that cut to one would collide into one row, and findExistingFbc looks
+    // the id up uncut. insertSignupEvent refuses an over-width key before any statement
+    // runs (store.sql.test.js); the builder must not hide it first.
+    const params = buildInsertParams({ crmClientId: "9".repeat(256), stage: "s".repeat(40) }, {}, "{}");
     expect(at(params, "crm_client_id")).toHaveLength(256);
+    expect(at(params, "stage")).toHaveLength(40);
+  });
+
+  it("writes received_at from the Node clock, so one mysql2 conversion covers the write and the read", () => {
+    // The column default is the database clock. Node writing it means the same process
+    // clock and the same driver conversion apply on the way in and on the way out.
+    expect(at(buildInsertParams(FIELDS, {}, "{}", null, RECEIVED), "received_at")).toBe(RECEIVED);
+    const stamped = at(buildInsertParams(FIELDS, {}, "{}"), "received_at");
+    expect(stamped).toBeInstanceOf(Date);
+    expect(Math.abs(stamped.getTime() - Date.now())).toBeLessThan(5000);
   });
 
   it("writes NULL for a null click id or request id, not the word null", () => {
