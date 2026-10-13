@@ -4269,66 +4269,47 @@ export function makeCrmEventsHandler({
 }
 ```
 
-- [ ] **Step 4: Extend the shared placeholder label list**
+- [ ] **Step 4: Leave `FXBO_PLACEHOLDER_LABELS` alone**
 
-`docusign/fxboPlaceholder.js` already carries the labels DocuSign's rule uses.
-Ours sends more parameters, and each is another chance to corroborate a test
-press. Add these to `FXBO_PLACEHOLDER_LABELS`, after `"Client Title (Mr/Mrs/Ms)"`
-— all copied verbatim from FXBO's own table on 2026-10-09:
+An earlier draft of this plan told the implementer to append twelve labels here,
+on the reasoning that more labels "only ever make detection more confident,
+never less". **That reasoning is wrong**, and it was proven wrong on the real
+code: more labels means more fields classify as labels, which means more
+payloads reach the corroboration threshold. A DocuSign payload carrying
+`roleName: "Entity"` and otherwise real values flips from `placeholder:false` to
+`placeholder:true`, so DocuSign reports an FXBO test press where it previously
+reported an invalid application id — the precise distinction that module exists
+to preserve. `Entity`, `Referer`, `Form Name` and `Unique ID` are ordinary
+English words.
 
-```js
-  "Client Phone",
-  "Client Language",
-  "Client is Lead",
-  "Client Is IB",
-  "Entity",
-  "Form Name",
-  "UTM Source",
-  "UTM Medium",
-  "UTM Campaign",
-  "Referer",
-  "Unique ID",
-  "Visited registration page full link",
-```
+The additions bought nothing anyway. A real Test press substitutes **every**
+parameter at once, so `client_id` arrives as `"Client ID"` and corroboration
+comes from `"Client First Name"` and `"Client Email"` — all three already in the
+list.
 
-Adding labels only ever makes detection more confident, never less, so this
-cannot weaken DocuSign's existing guard. Append to `docusign/fxboPlaceholder.test.js`:
+Instead, pin the list with `toEqual` against its full contents, so a future
+append has to be a deliberate edit to a test rather than a quiet one-liner:
 
 ```js
-describe("labels used by the CRM events rules", () => {
-  it("recognises every label those rules send", () => {
-    for (const label of [
-      "Client Phone",
-      "Client Language",
-      "Client is Lead",
-      "Client Is IB",
-      "Entity",
-      "Form Name",
-      "UTM Source",
-      "UTM Medium",
-      "UTM Campaign",
-      "Referer",
-      "Unique ID",
-      "Visited registration page full link",
-    ]) {
-      expect(isFxboPlaceholderLabel(label), label).toBe(true);
-    }
-  });
-
-  it("still refuses to call an ordinary value a label", () => {
-    // The list is a closed set, not a pattern. A real entity or form name
-    // must not match.
-    expect(isFxboPlaceholderLabel("SVG")).toBe(false);
-    expect(isFxboPlaceholderLabel("UAE")).toBe(false);
-    expect(isFxboPlaceholderLabel("meta")).toBe(false);
-  });
+it("is a closed set, so widening it is a deliberate change", () => {
+  expect(FXBO_PLACEHOLDER_LABELS).toEqual([
+    "Application ID + Link",
+    "Application Type",
+    "Client ID",
+    "Client ID + Link",
+    "Client Full Name",
+    "Client First Name",
+    "Client Last Name",
+    "Client Email",
+    "Client Country",
+    "Client Title (Mr/Mrs/Ms)",
+    "Current Time",
+  ]);
 });
 ```
 
-Add `isFxboPlaceholderLabel` to that file's existing import if it is not there.
-
 Run: `npx vitest run docusign/fxboPlaceholder.test.js --reporter=verbose`
-Expected: PASS, including the pre-existing cases.
+
 
 - [ ] **Step 5: Add the allow-list entry**
 
@@ -4375,9 +4356,10 @@ app.post('/api/crm-events', makeCrmEventsHandler({
 In the `server.listen` callback, beside `startDocusignReconcileScheduler()`:
 
 ```js
-  if (!process.env.CRM_WEBHOOK_SECRET) {
-    console.warn(
-      "[crm-events] CRM_WEBHOOK_SECRET is not set; every CRM webhook will be rejected with 401"
+  if (!String(process.env.CRM_WEBHOOK_SECRET || "").trim()) {
+    console.error(
+      "[crm-events] CRM_WEBHOOK_SECRET is not set. Every CRM webhook to " +
+        "POST /api/crm-events will be rejected with 401 until it is set."
     );
   }
 
