@@ -32,9 +32,9 @@
 |---|---|---|---|
 | `lead` | `Lead` | no | no |
 | `registered` | `CompleteRegistration` | **yes** | **yes** |
-| `verified` | `SubmitApplication` | no | no |
+| `verified` | `Client_Verified` | no | no |
 | `live_account` | `TradingAccountOpened` | no | no |
-| `first_deposit` | `Purchase` + value/currency | no | no |
+| `first_deposit` | `Purchase` | no | no |
 
 ### The stage arrives as a body parameter, not a path segment
 
@@ -46,21 +46,22 @@ to session auth. Five literal paths would need five allow-list entries, and
 `auth/routeCoverage.test.js` caps that list at six (four are already used). One
 path, one entry.
 
-### Two stages rest on unanswered questions — stated, not hidden
+### One stage is still blocked — stated, not hidden
 
-Per the user's decision on 2026-10-12, all five stages are planned now.
+**`lead` needs no code assumption.** The endpoint is stage-agnostic, so the code
+is complete regardless. Only its *FXBO rule* is blocked: the dropdown offers
+`A new lead has been assigned to you` and `A lead has been assigned to other
+manager`, both assignment rather than creation. Task 12 marks that rule blocked
+pending FXBO. The other four stages are fully specified.
 
-- **`lead` needs no code assumption.** The endpoint is stage-agnostic, so the
-  code is complete regardless. Only its *FXBO rule* is blocked: the dropdown
-  offers `A new lead has been assigned to you` and `A lead has been assigned to
-  other manager`, both assignment rather than creation. Task 12 marks that rule
-  blocked pending FXBO.
-- **`first_deposit` needs the deposit amount, and no placeholder carries it.**
-  Task 7 does not guess the REST field names: it has a discovery step that calls
-  the API once and prints the shape, and isolates the mapping in a single
-  exported constant so that is the only thing that changes. The Meta send
-  tolerates a missing value rather than failing, because the
-  financial-services restriction on this dataset may reject `value` anyway.
+### `Purchase` carries no value or currency (2026-10-13, user's call)
+
+An earlier draft fetched the deposit amount over the FXBO REST API so `Purchase`
+could carry it. That is gone: no REST call, no discovery script, no deposit
+columns, and the dataset's financial-category restriction on custom parameters
+stops mattering. The trade-off, already noted in the user's own integration
+plan, is that Meta learns a deposit happened but not what it was worth, so there
+is no return-on-ad-spend measurement.
 
 ---
 
@@ -74,11 +75,13 @@ Per the user's decision on 2026-10-12, all five stages are planned now.
 | `crmSignup/whatsapp.js` | DoubleTick payload, skip decision, outcome classifier, send. |
 | `crmSignup/brevo.js` | Contact builder, outcome classifier, upsert. |
 | `crmSignup/store.js` | MySQL: schema, insert-if-absent, `fbc` reuse, status updates, claim-due, list-recent. |
-| `crmSignup/fxboClient.js` | REST enrichment for the deposit amount. |
 | `crmSignup/router.js` | `makeCrmEventsHandler` — auth, test-press guard, validate, store, 200. |
 | `crmSignup/worker.js` | `planRetry`, `processSignupEvent`, the sweeper. |
-| `crmSignup/adminRoute.js` | Server-rendered recent-events view. |
+| `crmSignup/stats.js` | Pure. Rows → health, funnel counts, per-destination counters, masked table rows. |
+| `crmSignup/overviewRoute.js` | `GET /api/crm-events/overview` — the JSON the settings page reads. |
+| `src/pages/settings/CrmEventsPage.tsx` | The settings tab. |
 | `server.js` | Register two routes, init the store, start the worker. |
+| `src/App.tsx`, `src/lib/permissions.ts` | Route and menu entry for the settings tab. |
 | `auth/requireSession.js` | Add `POST /api/crm-events` to `PUBLIC_API_ROUTES`. |
 | `docusign/fxboPlaceholder.js` | Extend `FXBO_PLACEHOLDER_LABELS`. |
 
@@ -637,7 +640,7 @@ describe("event names", () => {
     expect(META_EVENT_NAMES).toEqual({
       lead: "Lead",
       registered: "CompleteRegistration",
-      verified: "SubmitApplication",
+      verified: "Client_Verified",
       live_account: "TradingAccountOpened",
       first_deposit: "Purchase",
     });
@@ -706,7 +709,7 @@ describe("buildMetaPayload", () => {
 
   it("uses the stage's event name and the given time", () => {
     const event = buildMetaPayload(base).data[0];
-    expect(event.event_name).toBe("SubmitApplication");
+    expect(event.event_name).toBe("Client_Verified");
     expect(event.event_time).toBe(1673035686);
   });
 
@@ -723,26 +726,13 @@ describe("buildMetaPayload", () => {
     expect(user_data.em).toBeDefined();
   });
 
-  it("adds value and currency only for a deposit that has them", () => {
-    const withValue = buildMetaPayload({
-      ...base,
-      stage: "first_deposit",
-      value: 500,
-      currency: "USD",
-    }).data[0];
-    expect(withValue.custom_data.value).toBe(500);
-    expect(withValue.custom_data.currency).toBe("USD");
-
-    // The deposit amount comes from a REST call that may not have answered,
-    // and this dataset's financial-category restriction may reject value
-    // anyway. A Purchase with no value still beats no Purchase.
-    const without = buildMetaPayload({ ...base, stage: "first_deposit" }).data[0];
-    expect("value" in without.custom_data).toBe(false);
-    expect("currency" in without.custom_data).toBe(false);
-
-    // And no other stage ever carries them.
-    const registered = buildMetaPayload({ ...base, stage: "registered", value: 500, currency: "USD" }).data[0];
-    expect("value" in registered.custom_data).toBe(false);
+  it("never carries a value or a currency, at any stage", () => {
+    // Decided 2026-10-13: Meta learns that a deposit happened, not what it was
+    // worth. custom_data holds the two CRM constants and nothing else.
+    for (const stage of ["registered", "verified", "live_account", "first_deposit"]) {
+      const { custom_data } = buildMetaPayload({ ...base, stage }).data[0];
+      expect(Object.keys(custom_data).sort(), stage).toEqual(["event_source", "lead_event_source"]);
+    }
   });
 
   it("includes a test event code only when one is configured", () => {
@@ -839,7 +829,7 @@ export const GRAPH_HOST = "https://graph.facebook.com";
 export const META_EVENT_NAMES = {
   lead: "Lead",
   registered: "CompleteRegistration",
-  verified: "SubmitApplication",
+  verified: "Client_Verified",
   live_account: "TradingAccountOpened",
   first_deposit: "Purchase",
 };
@@ -866,16 +856,7 @@ export function hashPhone(phone) {
   return digits ? sha256(digits) : "";
 }
 
-export function buildMetaPayload({
-  stage,
-  email,
-  phone,
-  fbc,
-  eventTimeSeconds,
-  value,
-  currency,
-  testEventCode,
-}) {
+export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, testEventCode }) {
   const user_data = {};
 
   const em = hashEmail(email);
@@ -889,20 +870,12 @@ export function buildMetaPayload({
   const click = String(fbc ?? "").trim();
   if (click) user_data.fbc = click;
 
+  // The two CRM constants and nothing else. A deposit reports that it
+  // happened, not what it was worth (decided 2026-10-13).
   const custom_data = {
     event_source: EVENT_SOURCE,
     lead_event_source: LEAD_EVENT_SOURCE,
   };
-
-  // Only a deposit carries money, and only when the REST enrichment answered.
-  if (stage === "first_deposit") {
-    const amount = Number(value);
-    const ccy = String(currency ?? "").trim();
-    if (Number.isFinite(amount) && amount > 0 && ccy) {
-      custom_data.value = amount;
-      custom_data.currency = ccy;
-    }
-  }
 
   const payload = {
     data: [
@@ -1741,8 +1714,7 @@ git commit -m "CRM events: Brevo upsert against the attributes that exist"
   - `updateMetaStatus(id, { status, detail, attempts, nextAttemptAt }): Promise<void>`
   - `updateWhatsappStatus(id, { status, messageId, detail, attempts, nextAttemptAt }): Promise<void>`
   - `updateBrevoStatus(id, { status, detail, attempts, nextAttemptAt }): Promise<void>`
-  - `updateDepositAmount(id, { amount, currency }): Promise<void>`
-  - `listRecentSignupEvents(limit): Promise<Row[]>`
+  - `listEventsSince(since, cap): Promise<Row[]>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1782,11 +1754,6 @@ describe("signup_events schema", () => {
 
   it("stores the click id, so it can be frozen across stages", () => {
     expect(SIGNUP_EVENTS_SCHEMA).toMatch(/\bfbc\b/);
-  });
-
-  it("stores the deposit amount and currency", () => {
-    expect(SIGNUP_EVENTS_SCHEMA).toContain("deposit_amount");
-    expect(SIGNUP_EVENTS_SCHEMA).toContain("deposit_currency");
   });
 
   it("stores the raw payload", () => {
@@ -1903,8 +1870,6 @@ export const SIGNUP_EVENTS_SCHEMA = `
     referer VARCHAR(512) NULL,
     full_link VARCHAR(1024) NULL,
     fbc VARCHAR(255) NULL,
-    deposit_amount DECIMAL(18,2) NULL,
-    deposit_currency VARCHAR(8) NULL,
     meta_status VARCHAR(16) NOT NULL DEFAULT 'pending',
     meta_detail TEXT NULL,
     meta_attempts INT NOT NULL DEFAULT 0,
@@ -2119,24 +2084,24 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
   );
 }
 
-export async function updateDepositAmount(id, { amount, currency }) {
-  await run(`UPDATE signup_events SET deposit_amount = ?, deposit_currency = ? WHERE id = ?`, [
-    Number.isFinite(Number(amount)) ? Number(amount) : null,
-    str(currency),
-    id,
-  ]);
-}
-
-export async function listRecentSignupEvents(limit = 100) {
+/**
+ * Every event since a date, newest first, capped.
+ *
+ * The overview aggregates in JavaScript rather than SQL: the volume is low
+ * (a few hundred rows in a 30-day window) and a pure function is testable
+ * without a database, which GROUP BY is not.
+ */
+export async function listEventsSince(since, cap = 2000) {
   return all(
     `SELECT id, crm_client_id, stage, first_name, last_name, email, phone, record_type, source,
             meta_status, meta_detail, meta_attempts,
             whatsapp_status, whatsapp_detail, whatsapp_attempts,
             brevo_status, brevo_detail, brevo_attempts, received_at
        FROM signup_events
+      WHERE received_at >= ?
       ORDER BY received_at DESC
       LIMIT ?`,
-    [Number(limit) || 100]
+    [since, Number(cap) || 2000]
   );
 }
 ```
@@ -2155,282 +2120,7 @@ git commit -m "CRM events: one row per client per stage, with a frozen click id"
 
 ---
 
-## Task 7: Deposit enrichment
-
-The one field no FXBO placeholder carries. **This task does not guess the field
-names** — Step 1 discovers them against the live API, and the mapping lives in a
-single exported constant so that is the only thing that ever changes.
-
-**Files:**
-- Create: `crmSignup/deposit.js`
-- Test: `crmSignup/deposit.test.js`
-- Create: `scripts/fxbo-discover-deposit.mjs`
-
-**Interfaces:**
-- Consumes: `fetchCrmUserById`, `isCrmConfigured` from `docusign/crm.js` — the FXBO REST client that already exists, with its own base URL, bearer token and version query. **Do not build a second client.**
-- Produces:
-  - `DEPOSIT_FIELD_CANDIDATES: { amount: string[], currency: string[] }`
-  - `pickDeposit(record): { amount: number | null, currency: string }`
-  - `fetchDepositForClient(crmClientId, deps): Promise<{ amount, currency }>`
-
-- [ ] **Step 1: Discover the real field names**
-
-Create `scripts/fxbo-discover-deposit.mjs`:
-
-```js
-// Prints the shape of one CRM user record so the deposit field names can be
-// read rather than guessed. Run against a client known to have deposited.
-//
-//   node scripts/fxbo-discover-deposit.mjs <crm_client_id>
-//
-// Prints KEYS ONLY by default -- the record holds client PII and this output
-// may end up in a terminal log. Pass --values to see values, and do not paste
-// that anywhere.
-import { fetchCrmUserById, isCrmConfigured } from "../docusign/crm.js";
-
-const [, , clientId, flag] = process.argv;
-if (!clientId) {
-  console.error("usage: node scripts/fxbo-discover-deposit.mjs <crm_client_id> [--values]");
-  process.exit(1);
-}
-if (!isCrmConfigured()) {
-  console.error("CRM API token not configured (API_TOKEN).");
-  process.exit(1);
-}
-
-const record = await fetchCrmUserById(clientId);
-const showValues = flag === "--values";
-
-function walk(value, path = "") {
-  if (value === null || typeof value !== "object") {
-    console.log(showValues ? `${path} = ${JSON.stringify(value)}` : path);
-    return;
-  }
-  if (Array.isArray(value)) {
-    console.log(`${path}[] (${value.length})`);
-    if (value.length) walk(value[0], `${path}[0]`);
-    return;
-  }
-  for (const [key, child] of Object.entries(value)) {
-    walk(child, path ? `${path}.${key}` : key);
-  }
-}
-
-walk(record);
-```
-
-Run it against a client who has deposited:
-
-```bash
-node scripts/fxbo-discover-deposit.mjs <crm_client_id>
-```
-
-Read the output for anything amount-like and currency-like. **Record what you
-find in `DEPOSIT_FIELD_CANDIDATES` in Step 3.** If nothing on the user record
-carries a deposit, that is a finding, not a blocker — leave the candidates as
-written, note it in the commit message, and move on. The Meta send is built to
-work without a value, and the deposit stage is tested first for exactly this
-reason (spec §8).
-
-- [ ] **Step 2: Write the failing test**
-
-Create `crmSignup/deposit.test.js`:
-
-```js
-// @vitest-environment node
-//
-// The deposit amount is the one field no FXBO webhook placeholder carries, so
-// it comes from a REST call. The mapping is a guess until Step 1's discovery
-// confirms it, which is exactly why it is isolated in one constant and why
-// everything here degrades to "no value" rather than to an error.
-import { describe, it, expect, vi } from "vitest";
-import { DEPOSIT_FIELD_CANDIDATES, pickDeposit, fetchDepositForClient } from "./deposit.js";
-
-describe("pickDeposit", () => {
-  it("reads the first candidate field that holds a usable number", () => {
-    expect(pickDeposit({ firstDepositAmount: 500, firstDepositCurrency: "USD" })).toEqual({
-      amount: 500,
-      currency: "USD",
-    });
-  });
-
-  it("accepts a numeric string, because REST APIs send those", () => {
-    expect(pickDeposit({ firstDepositAmount: "500.50", firstDepositCurrency: "usd" }).amount).toBe(500.5);
-  });
-
-  it("uppercases the currency, since Meta expects ISO form", () => {
-    expect(pickDeposit({ firstDepositAmount: 1, firstDepositCurrency: "usd" }).currency).toBe("USD");
-  });
-
-  it("returns nothing rather than zero when no candidate matches", () => {
-    // Zero would be sent to Meta as a real purchase value of 0.
-    expect(pickDeposit({ unrelated: 1 })).toEqual({ amount: null, currency: "" });
-    expect(pickDeposit({})).toEqual({ amount: null, currency: "" });
-    expect(pickDeposit(null)).toEqual({ amount: null, currency: "" });
-  });
-
-  it("rejects a zero or negative amount", () => {
-    expect(pickDeposit({ firstDepositAmount: 0 }).amount).toBeNull();
-    expect(pickDeposit({ firstDepositAmount: -5 }).amount).toBeNull();
-  });
-
-  it("looks inside a nested candidate path", () => {
-    expect(pickDeposit({ firstDeposit: { amount: 250, currency: "EUR" } })).toEqual({
-      amount: 250,
-      currency: "EUR",
-    });
-  });
-
-  it("lists its candidates, so the discovery step has somewhere to land", () => {
-    expect(DEPOSIT_FIELD_CANDIDATES.amount.length).toBeGreaterThan(0);
-    expect(DEPOSIT_FIELD_CANDIDATES.currency.length).toBeGreaterThan(0);
-  });
-});
-
-describe("fetchDepositForClient", () => {
-  it("returns the mapped amount on success", async () => {
-    const fetchUser = vi.fn(async () => ({ firstDepositAmount: 750, firstDepositCurrency: "USD" }));
-    const result = await fetchDepositForClient("88214", { fetchUser, isConfigured: () => true });
-    expect(result).toEqual({ amount: 750, currency: "USD" });
-    expect(fetchUser).toHaveBeenCalledWith("88214");
-  });
-
-  it("returns nothing when the CRM client is not configured, without calling it", async () => {
-    const fetchUser = vi.fn();
-    expect(await fetchDepositForClient("88214", { fetchUser, isConfigured: () => false })).toEqual({
-      amount: null,
-      currency: "",
-    });
-    expect(fetchUser).not.toHaveBeenCalled();
-  });
-
-  it("swallows a thrown REST call", async () => {
-    // A Purchase with no value still beats no Purchase, and this dataset's
-    // financial-category restriction may reject the value anyway.
-    const fetchUser = vi.fn(async () => {
-      throw new Error("503 from CRM");
-    });
-    expect(await fetchDepositForClient("88214", { fetchUser, isConfigured: () => true })).toEqual({
-      amount: null,
-      currency: "",
-    });
-  });
-
-  it("never puts the client record into a thrown error", async () => {
-    const logger = { warn: vi.fn() };
-    const fetchUser = async () => {
-      throw new Error("boom ali.khan@example.com");
-    };
-    await fetchDepositForClient("88214", { fetchUser, isConfigured: () => true, logger });
-    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("ali.khan@example.com");
-  });
-});
-```
-
-- [ ] **Step 3: Write the implementation**
-
-Create `crmSignup/deposit.js`:
-
-```js
-import { fetchCrmUserById, isCrmConfigured } from "../docusign/crm.js";
-
-/**
- * Where the deposit amount might live on a CRM user record.
- *
- * THIS IS THE ONLY THING THAT CHANGES when scripts/fxbo-discover-deposit.mjs
- * tells us the real field names. Paths are dot-separated and tried in order.
- * Everything downstream copes with finding nothing.
- */
-export const DEPOSIT_FIELD_CANDIDATES = {
-  amount: [
-    "firstDepositAmount",
-    "first_deposit_amount",
-    "firstDeposit.amount",
-    "firstDeposit.sum",
-    "deposit.amount",
-  ],
-  currency: [
-    "firstDepositCurrency",
-    "first_deposit_currency",
-    "firstDeposit.currency",
-    "deposit.currency",
-    "currency",
-  ],
-};
-
-function readPath(record, path) {
-  let node = record;
-  for (const key of String(path).split(".")) {
-    if (node === null || typeof node !== "object") return undefined;
-    node = node[key];
-  }
-  return node;
-}
-
-export function pickDeposit(record) {
-  if (!record || typeof record !== "object") return { amount: null, currency: "" };
-
-  let amount = null;
-  for (const path of DEPOSIT_FIELD_CANDIDATES.amount) {
-    const value = Number(readPath(record, path));
-    // Zero is rejected: sent to Meta it would be a real purchase worth nothing.
-    if (Number.isFinite(value) && value > 0) {
-      amount = value;
-      break;
-    }
-  }
-
-  let currency = "";
-  for (const path of DEPOSIT_FIELD_CANDIDATES.currency) {
-    const value = String(readPath(record, path) ?? "").trim();
-    if (value) {
-      currency = value.toUpperCase();
-      break;
-    }
-  }
-
-  return { amount, currency };
-}
-
-const NOTHING = { amount: null, currency: "" };
-
-/**
- * Best-effort enrichment. Never throws, and never blocks the Meta send: a
- * Purchase with no value still beats no Purchase, and the financial-category
- * restriction on this dataset may reject the value regardless.
- */
-export async function fetchDepositForClient(
-  crmClientId,
-  { fetchUser = fetchCrmUserById, isConfigured = isCrmConfigured, logger = console } = {}
-) {
-  if (!isConfigured()) return NOTHING;
-
-  try {
-    const record = await fetchUser(String(crmClientId));
-    return pickDeposit(record);
-  } catch (error) {
-    // The message can carry the record; only its shape is logged.
-    logger.warn?.(`[crm-events] deposit lookup failed for client ${crmClientId}: ${error?.name || "Error"}`);
-    return NOTHING;
-  }
-}
-```
-
-- [ ] **Step 4: Run the test to verify it passes**
-
-Run: `npx vitest run crmSignup/deposit.test.js --reporter=verbose`
-Expected: PASS, 11 tests
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add crmSignup/deposit.js crmSignup/deposit.test.js scripts/fxbo-discover-deposit.mjs
-git commit -m "CRM events: deposit enrichment, with the field names discovered not guessed"
-```
-
----
-
-## Task 8: The route handler and its registration
+## Task 7: The route handler and its registration
 
 **Files:**
 - Create: `crmSignup/router.js`
@@ -2907,13 +2597,13 @@ Add near the other `docusign` imports (around line 16-19):
 
 ```js
 import { makeCrmEventsHandler } from "./crmSignup/router.js";
-import { makeCrmEventsAdminHandler } from "./crmSignup/adminRoute.js";
+import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
 import {
   initCrmSignupStore,
   findExistingFbc,
   insertSignupEvent,
   markSignupInvalid,
-  listRecentSignupEvents,
+  listEventsSince,
 } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 ```
@@ -2930,9 +2620,9 @@ app.post('/api/crm-events', makeCrmEventsHandler({
   onStored: kickCrmEventsWorker,
 }));
 
-app.get('/api/crm-events/recent', authRequired, adminOnly, makeCrmEventsAdminHandler({
+app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
   canManage: canManageUsers,
-  listRecent: listRecentSignupEvents,
+  listSince: listEventsSince,
 }));
 ```
 
@@ -2959,14 +2649,14 @@ git commit -m "CRM events: POST /api/crm-events, authenticated, fail-closed, sta
 
 ---
 
-## Task 9: The worker
+## Task 8: The worker
 
 **Files:**
 - Create: `crmSignup/worker.js`
 - Test: `crmSignup/worker.test.js`
 
 **Interfaces:**
-- Consumes: everything from Tasks 2-7.
+- Consumes: everything from Tasks 2-6.
 - Produces:
   - `planRetry({ attempts, maxAttempts, retryable, finalStatus, now, delayMinutes }): { status, attempts, nextAttemptAt }`
   - `rowToFields(row): Fields`
@@ -3049,8 +2739,6 @@ function row(overrides = {}) {
     referer: "",
     full_link: "",
     fbc: "fb.1.1673035686000.ABC",
-    deposit_amount: null,
-    deposit_currency: null,
     received_at: new Date("2026-10-12T12:00:00Z"),
     meta_status: "pending",
     meta_attempts: 0,
@@ -3083,11 +2771,9 @@ function deps(overrides = {}) {
     sendMeta: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
     sendWhatsapp: vi.fn(async () => ({ status: "sent", retryable: false, detail: "SENT", messageId: "m-1" })),
     upsertBrevo: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 201" })),
-    fetchDeposit: vi.fn(async () => ({ amount: null, currency: "" })),
     saveMeta: vi.fn(async () => {}),
     saveWhatsapp: vi.fn(async () => {}),
     saveBrevo: vi.fn(async () => {}),
-    saveDeposit: vi.fn(async () => {}),
     newMessageId: () => "uuid-fixed",
     now: () => new Date("2026-10-12T12:00:00Z"),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -3150,28 +2836,13 @@ describe("processSignupEvent", () => {
     expect(payload.data[0].event_time).toBe(1791806400);
   });
 
-  it("enriches a deposit before sending, and stores what it found", async () => {
-    const d = deps({ fetchDeposit: vi.fn(async () => ({ amount: 500, currency: "USD" })) });
-    await processSignupEvent(row({ stage: "first_deposit" }), d);
-    expect(d.saveDeposit).toHaveBeenCalledWith(7, { amount: 500, currency: "USD" });
-    const { payload } = d.sendMeta.mock.calls[0][0];
-    expect(payload.data[0].custom_data.value).toBe(500);
-  });
-
-  it("sends a deposit with no value rather than not sending it", async () => {
-    // The REST lookup may find nothing, and this dataset's financial-category
-    // restriction may reject value anyway.
+  it("sends a deposit with no value attached", async () => {
     const d = deps();
     await processSignupEvent(row({ stage: "first_deposit" }), d);
     expect(d.sendMeta).toHaveBeenCalledTimes(1);
     const { payload } = d.sendMeta.mock.calls[0][0];
+    expect(payload.data[0].event_name).toBe("Purchase");
     expect("value" in payload.data[0].custom_data).toBe(false);
-  });
-
-  it("does not look up a deposit for any other stage", async () => {
-    const d = deps();
-    await processSignupEvent(row(), d);
-    expect(d.fetchDeposit).not.toHaveBeenCalled();
   });
 
   it("skips a lead's WhatsApp with the documented reason, but still adds the contact", async () => {
@@ -3260,13 +2931,11 @@ import {
   parseSkipSources,
 } from "./whatsapp.js";
 import { decideBrevoSkip, buildBrevoContact, upsertBrevoContact } from "./brevo.js";
-import { fetchDepositForClient } from "./deposit.js";
 import {
   claimDueEvents,
   updateMetaStatus,
   updateWhatsappStatus,
   updateBrevoStatus,
-  updateDepositAmount,
 } from "./store.js";
 
 const SETTLED = new Set(["sent", "skipped", "rejected", "failed", "invalid"]);
@@ -3323,23 +2992,10 @@ export function rowToFields(row = {}) {
 const eventTimeSeconds = (row) => Math.floor(new Date(row.received_at).getTime() / 1000);
 
 async function runMetaStep(row, fields, deps) {
-  const { config, sendMeta, fetchDeposit, saveDeposit, now, logger } = deps;
+  const { config, sendMeta, now, logger } = deps;
 
   if (!str(config.metaAccessToken)) {
     return { status: "skipped", detail: "meta not configured", attempts: Number(row.meta_attempts) || 0, nextAttemptAt: null };
-  }
-
-  let value = row.deposit_amount == null ? null : Number(row.deposit_amount);
-  let currency = str(row.deposit_currency);
-
-  // Only a deposit carries money, and only this stage pays for the REST call.
-  if (fields.stage === "first_deposit" && value == null) {
-    const found = await fetchDeposit(fields.crmClientId);
-    if (found.amount != null) {
-      value = found.amount;
-      currency = found.currency;
-      await saveDeposit(row.id, found);
-    }
   }
 
   const payload = buildMetaPayload({
@@ -3349,8 +3005,6 @@ async function runMetaStep(row, fields, deps) {
     // Verbatim from the row: frozen at this client's first event.
     fbc: str(row.fbc),
     eventTimeSeconds: eventTimeSeconds(row),
-    value,
-    currency,
     testEventCode: config.metaTestEventCode,
   });
 
@@ -3521,11 +3175,9 @@ function liveDeps() {
     sendMeta: (args) => sendMetaEvent(args),
     sendWhatsapp: ({ apiKey, payload }) => sendWhatsappTemplate({ apiKey, payload }),
     upsertBrevo: ({ apiKey, contact }) => upsertBrevoContact({ apiKey, contact }),
-    fetchDeposit: (clientId) => fetchDepositForClient(clientId),
     saveMeta: updateMetaStatus,
     saveWhatsapp: updateWhatsappStatus,
     saveBrevo: updateBrevoStatus,
-    saveDeposit: updateDepositAmount,
     newMessageId: () => randomUUID(),
     now: () => new Date(),
     logger: console,
@@ -3595,56 +3247,44 @@ git commit -m "CRM events: worker fanning out to three destinations, independent
 
 ---
 
-## Task 10: The admin view
+## Task 9: The overview endpoint
+
+The JSON behind the settings tab: health, funnel counts, per-destination
+counters and the recent-events table, in one call.
 
 **Files:**
-- Create: `crmSignup/adminRoute.js`
-- Test: `crmSignup/adminRoute.test.js`
+- Create: `crmSignup/stats.js`, `crmSignup/stats.test.js`
+- Create: `crmSignup/overviewRoute.js`, `crmSignup/overviewRoute.test.js`
 
 **Interfaces:**
-- Consumes: `maskEmail`, `maskPhone` from `crmSignup/normalise.js`.
-- Produces: `makeCrmEventsAdminHandler({ canManage, listRecent, limit, logger }): (req, res) => Promise<void>`
+- Consumes: `maskEmail`, `maskPhone` from `crmSignup/normalise.js`; `STAGES` from `crmSignup/normalise.js`; `listEventsSince` from `crmSignup/store.js`.
+- Produces:
+  - `STALE_HOURS: number`
+  - `summariseCrmEvents(rows, { now, staleHours }): { health, funnel, destinations }`
+  - `toTableRow(row): object`
+  - `makeCrmEventsOverviewHandler({ canManage, listSince, windowDays, tableLimit, now, logger }): (req, res) => Promise<void>`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test for the aggregation**
 
-Create `crmSignup/adminRoute.test.js`:
+Create `crmSignup/stats.test.js`:
 
 ```js
 // @vitest-environment node
 //
-// "Did this client get their welcome message?" answered without a database
-// query. Server-rendered on purpose: the React bundle has not deployed since
-// 2026-09-25, so a settings page would be invisible.
-import { describe, it, expect, vi } from "vitest";
-import { makeCrmEventsAdminHandler } from "./adminRoute.js";
+// Aggregated in JavaScript rather than SQL on purpose: the volume is low and a
+// pure function is testable without a database, which GROUP BY is not.
+//
+// The health figure is the one that matters most. A broken FXBO rule produces
+// no errors anywhere -- it simply stops calling, and nothing else in the system
+// would ever notice.
+import { describe, it, expect } from "vitest";
+import { STALE_HOURS, summariseCrmEvents, toTableRow } from "./stats.js";
 
-function fakeRes() {
+const NOW = new Date("2026-10-13T12:00:00Z");
+
+function row(overrides = {}) {
   return {
-    statusCode: 200,
-    body: undefined,
-    headers: {},
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    json(payload) {
-      this.body = payload;
-      return this;
-    },
-    type(value) {
-      this.headers["Content-Type"] = value;
-      return this;
-    },
-    send(payload) {
-      this.body = payload;
-      return this;
-    },
-  };
-}
-
-const ROWS = [
-  {
-    id: 7,
+    id: 1,
     crm_client_id: "88214",
     stage: "registered",
     first_name: "Ali",
@@ -3662,192 +3302,979 @@ const ROWS = [
     brevo_status: "sent",
     brevo_detail: "http 201",
     brevo_attempts: 1,
-    received_at: "2026-10-12T12:00:00Z",
-  },
+    received_at: "2026-10-13T11:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("health", () => {
+  it("reports how long ago the newest event arrived", () => {
+    const { health } = summariseCrmEvents([row()], { now: NOW });
+    expect(health.ageHours).toBeCloseTo(1, 3);
+    expect(health.stale).toBe(false);
+    expect(health.lastReceivedAt).toBe("2026-10-13T11:00:00.000Z");
+  });
+
+  it("goes stale past the threshold", () => {
+    const old = row({ received_at: "2026-10-09T12:00:00Z" }); // 96 hours
+    const { health } = summariseCrmEvents([old], { now: NOW });
+    expect(health.ageHours).toBeCloseTo(96, 3);
+    expect(health.stale).toBe(true);
+  });
+
+  it("reports no events at all as stale, never as healthy", () => {
+    // Silence is the symptom of a broken rule, so it must not read as calm.
+    const { health } = summariseCrmEvents([], { now: NOW });
+    expect(health.lastReceivedAt).toBeNull();
+    expect(health.stale).toBe(true);
+    expect(health.ageHours).toBeNull();
+  });
+
+  it("takes the newest row regardless of the order it was given them", () => {
+    const rows = [row({ received_at: "2026-10-10T12:00:00Z" }), row({ received_at: "2026-10-13T11:30:00Z" })];
+    expect(summariseCrmEvents(rows, { now: NOW }).health.ageHours).toBeCloseTo(0.5, 3);
+  });
+
+  it("ignores a row whose timestamp will not parse", () => {
+    const rows = [row({ received_at: "not a date" }), row()];
+    expect(summariseCrmEvents(rows, { now: NOW }).health.ageHours).toBeCloseTo(1, 3);
+  });
+});
+
+describe("funnel", () => {
+  it("counts every stage, including the ones with nothing in them", () => {
+    // A zero is information: it says that stage's rule is not firing.
+    const rows = [row({ stage: "registered" }), row({ stage: "registered" }), row({ stage: "verified" })];
+    expect(summariseCrmEvents(rows, { now: NOW }).funnel).toEqual({
+      lead: 0,
+      registered: 2,
+      verified: 1,
+      live_account: 0,
+      first_deposit: 0,
+    });
+  });
+
+  it("ignores a stage it does not recognise rather than inventing a key", () => {
+    const rows = [row({ stage: "registered" }), row({ stage: "nonsense" })];
+    expect(summariseCrmEvents(rows, { now: NOW }).funnel.registered).toBe(1);
+    expect("nonsense" in summariseCrmEvents(rows, { now: NOW }).funnel).toBe(false);
+  });
+});
+
+describe("destinations", () => {
+  it("counts each status separately for each of the three", () => {
+    const rows = [
+      row(),
+      row({ meta_status: "failed", whatsapp_status: "skipped", brevo_status: "retrying" }),
+      row({ meta_status: "failed", whatsapp_status: "rejected", brevo_status: "sent" }),
+    ];
+    const { destinations } = summariseCrmEvents(rows, { now: NOW });
+    expect(destinations.meta.sent).toBe(1);
+    expect(destinations.meta.failed).toBe(2);
+    expect(destinations.whatsapp.skipped).toBe(1);
+    expect(destinations.whatsapp.rejected).toBe(1);
+    expect(destinations.brevo.retrying).toBe(1);
+    expect(destinations.brevo.sent).toBe(2);
+  });
+
+  it("always reports every status key, so a zero renders rather than vanishing", () => {
+    const { destinations } = summariseCrmEvents([row()], { now: NOW });
+    for (const name of ["meta", "whatsapp", "brevo"]) {
+      expect(Object.keys(destinations[name]).sort(), name).toEqual([
+        "failed",
+        "invalid",
+        "pending",
+        "rejected",
+        "retrying",
+        "sent",
+        "skipped",
+      ]);
+    }
+  });
+
+  it("counts an unknown status under nothing rather than throwing", () => {
+    const { destinations } = summariseCrmEvents([row({ meta_status: "weird" })], { now: NOW });
+    expect(destinations.meta.sent).toBe(0);
+  });
+});
+
+describe("toTableRow", () => {
+  it("masks the email and the phone", () => {
+    const view = toTableRow(row());
+    expect(view.email).toBe("a***@example.com");
+    expect(view.phone).toBe("+971***85");
+    expect(JSON.stringify(view)).not.toContain("ali.khan@example.com");
+    expect(JSON.stringify(view)).not.toContain("+971507192185");
+  });
+
+  it("keeps the stage, the id and all three statuses with their reasons", () => {
+    const view = toTableRow(row({ whatsapp_status: "skipped", whatsapp_detail: "lead, not client" }));
+    expect(view.stage).toBe("registered");
+    expect(view.crmClientId).toBe("88214");
+    expect(view.whatsapp).toEqual({ status: "skipped", detail: "lead, not client", attempts: 1 });
+    expect(view.meta.status).toBe("sent");
+    expect(view.brevo.status).toBe("sent");
+  });
+});
+
+describe("STALE_HOURS", () => {
+  it("is 72, matching the DocuSign webhook health window", () => {
+    expect(STALE_HOURS).toBe(72);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run crmSignup/stats.test.js --reporter=verbose`
+Expected: FAIL — `Failed to load url ./stats.js`
+
+- [ ] **Step 3: Write the aggregation**
+
+Create `crmSignup/stats.js`:
+
+```js
+import { STAGES, maskEmail, maskPhone } from "./normalise.js";
+
+/** Matches docusign/webhookLog.js, which calls the same silence the same way. */
+export const STALE_HOURS = 72;
+
+const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected", "invalid"];
+
+const DESTINATIONS = [
+  ["meta", "meta_status", "meta_detail", "meta_attempts"],
+  ["whatsapp", "whatsapp_status", "whatsapp_detail", "whatsapp_attempts"],
+  ["brevo", "brevo_status", "brevo_detail", "brevo_attempts"],
 ];
+
+function zeroCounts() {
+  return Object.fromEntries(STATUSES.map((k) => [k, 0]));
+}
+
+/**
+ * Health, funnel and per-destination counters from a window of rows.
+ *
+ * Health is the one that earns its place: a broken FXBO rule raises no error
+ * anywhere, it simply stops calling. An empty window therefore reports STALE,
+ * never healthy -- silence must not read as calm.
+ */
+export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_HOURS } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+
+  const times = list
+    .map((r) => Date.parse(String(r?.received_at ?? "")))
+    .filter((t) => Number.isFinite(t));
+
+  const newest = times.length ? Math.max(...times) : null;
+  const ageHours = newest === null ? null : (now.getTime() - newest) / 3_600_000;
+
+  const funnel = Object.fromEntries(STAGES.map((stage) => [stage, 0]));
+  for (const r of list) {
+    const stage = String(r?.stage ?? "");
+    if (stage in funnel) funnel[stage] += 1;
+  }
+
+  const destinations = Object.fromEntries(DESTINATIONS.map(([name]) => [name, zeroCounts()]));
+  for (const r of list) {
+    for (const [name, statusColumn] of DESTINATIONS) {
+      const status = String(r?.[statusColumn] ?? "");
+      if (status in destinations[name]) destinations[name][status] += 1;
+    }
+  }
+
+  return {
+    health: {
+      lastReceivedAt: newest === null ? null : new Date(newest).toISOString(),
+      ageHours,
+      stale: newest === null || ageHours > staleHours,
+    },
+    funnel,
+    destinations,
+  };
+}
+
+/** One row for the table, with the two PII fields masked. */
+export function toTableRow(row = {}) {
+  const view = {
+    id: row.id,
+    receivedAt: row.received_at,
+    stage: String(row.stage ?? ""),
+    crmClientId: String(row.crm_client_id ?? ""),
+    name: [row.first_name, row.last_name].filter(Boolean).join(" "),
+    email: maskEmail(row.email),
+    phone: maskPhone(row.phone),
+    recordType: String(row.record_type ?? ""),
+    source: String(row.source ?? ""),
+  };
+
+  for (const [name, statusColumn, detailColumn, attemptsColumn] of DESTINATIONS) {
+    view[name] = {
+      status: String(row[statusColumn] ?? ""),
+      detail: row[detailColumn] ?? null,
+      attempts: Number(row[attemptsColumn]) || 0,
+    };
+  }
+
+  return view;
+}
+```
+
+- [ ] **Step 4: Write the failing test for the route**
+
+Create `crmSignup/overviewRoute.test.js`:
+
+```js
+// @vitest-environment node
+import { describe, it, expect, vi } from "vitest";
+import { makeCrmEventsOverviewHandler } from "./overviewRoute.js";
+
+function fakeRes() {
+  return {
+    statusCode: 200,
+    body: undefined,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.body = payload;
+      return this;
+    },
+  };
+}
 
 const ADMIN = { sub: "1", role: "admin" };
 const VIEWER = { sub: "2", role: "viewer" };
 const canManage = (auth) => auth?.role === "admin";
 
+const ROWS = [
+  {
+    id: 1,
+    crm_client_id: "88214",
+    stage: "registered",
+    first_name: "Ali",
+    last_name: "Khan",
+    email: "ali.khan@example.com",
+    phone: "+971507192185",
+    record_type: "client",
+    source: "SVG",
+    meta_status: "sent",
+    meta_detail: "http 200",
+    meta_attempts: 1,
+    whatsapp_status: "sent",
+    whatsapp_detail: "SENT",
+    whatsapp_attempts: 1,
+    brevo_status: "sent",
+    brevo_detail: "http 201",
+    brevo_attempts: 1,
+    received_at: "2026-10-13T11:00:00Z",
+  },
+];
+
 describe("access", () => {
   it("refuses a caller who cannot manage users, without reading anything", async () => {
-    const listRecent = vi.fn(async () => ROWS);
+    const listSince = vi.fn(async () => ROWS);
     const res = fakeRes();
-    await makeCrmEventsAdminHandler({ canManage, listRecent })({ auth: VIEWER }, res);
+    await makeCrmEventsOverviewHandler({ canManage, listSince })({ auth: VIEWER, query: {} }, res);
     expect(res.statusCode).toBe(403);
-    expect(listRecent).not.toHaveBeenCalled();
+    expect(listSince).not.toHaveBeenCalled();
   });
 
   it("refuses a request with no session payload at all", async () => {
     const res = fakeRes();
-    await makeCrmEventsAdminHandler({ canManage, listRecent: vi.fn() })({}, res);
+    await makeCrmEventsOverviewHandler({ canManage, listSince: vi.fn() })({ query: {} }, res);
     expect(res.statusCode).toBe(403);
   });
 });
 
-describe("rendering", () => {
-  it("shows the stage and all three statuses", async () => {
+describe("the payload", () => {
+  const now = () => new Date("2026-10-13T12:00:00Z");
+
+  it("returns health, funnel, destinations and the table together", async () => {
     const res = fakeRes();
-    await makeCrmEventsAdminHandler({ canManage, listRecent: async () => ROWS })({ auth: ADMIN }, res);
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
+      { auth: ADMIN, query: {} },
+      res
+    );
     expect(res.statusCode).toBe(200);
-    expect(res.headers["Content-Type"]).toMatch(/html/);
-    expect(res.body).toContain("88214");
-    expect(res.body).toContain("registered");
-    expect(res.body).toContain("SVG");
-    // Meta, WhatsApp and Brevo columns all present.
-    expect(res.body).toContain("Meta");
-    expect(res.body).toContain("WhatsApp");
-    expect(res.body).toContain("Brevo");
+    expect(Object.keys(res.body).sort()).toEqual([
+      "destinations",
+      "events",
+      "funnel",
+      "health",
+      "windowDays",
+    ]);
+    expect(res.body.funnel.registered).toBe(1);
+    expect(res.body.destinations.meta.sent).toBe(1);
+    expect(res.body.events).toHaveLength(1);
   });
 
-  it("masks the email and the phone", async () => {
+  it("masks PII in the table it returns", async () => {
     const res = fakeRes();
-    await makeCrmEventsAdminHandler({ canManage, listRecent: async () => ROWS })({ auth: ADMIN }, res);
-    expect(res.body).not.toContain("ali.khan@example.com");
-    expect(res.body).not.toContain("+971507192185");
-    expect(res.body).toContain("a***@example.com");
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
+      { auth: ADMIN, query: {} },
+      res
+    );
+    const serialised = JSON.stringify(res.body);
+    expect(serialised).not.toContain("ali.khan@example.com");
+    expect(serialised).not.toContain("+971507192185");
   });
 
-  it("escapes values rather than letting them become markup", async () => {
-    const res = fakeRes();
-    const nasty = [{ ...ROWS[0], source: "<script>alert(1)</script>" }];
-    await makeCrmEventsAdminHandler({ canManage, listRecent: async () => nasty })({ auth: ADMIN }, res);
-    expect(res.body).not.toContain("<script>");
-    expect(res.body).toContain("&lt;script&gt;");
+  it("asks the store for the requested window", async () => {
+    const listSince = vi.fn(async () => ROWS);
+    await makeCrmEventsOverviewHandler({ canManage, listSince, now })(
+      { auth: ADMIN, query: { days: "7" } },
+      fakeRes()
+    );
+    const [since] = listSince.mock.calls[0];
+    expect(since.toISOString()).toBe("2026-10-06T12:00:00.000Z");
   });
 
-  it("renders an empty state rather than failing on no rows", async () => {
-    const res = fakeRes();
-    await makeCrmEventsAdminHandler({ canManage, listRecent: async () => [] })({ auth: ADMIN }, res);
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toMatch(/no crm events/i);
+  it("clamps a silly window rather than trusting the query string", async () => {
+    const listSince = vi.fn(async () => ROWS);
+    const handler = makeCrmEventsOverviewHandler({ canManage, listSince, now });
+
+    await handler({ auth: ADMIN, query: { days: "99999" } }, fakeRes());
+    expect(listSince.mock.calls[0][0].toISOString()).toBe("2026-07-15T12:00:00.000Z"); // 90 days
+
+    await handler({ auth: ADMIN, query: { days: "0" } }, fakeRes());
+    expect(listSince.mock.calls[1][0].toISOString()).toBe("2026-10-12T12:00:00.000Z"); // 1 day
+
+    await handler({ auth: ADMIN, query: { days: "nonsense" } }, fakeRes());
+    expect(listSince.mock.calls[2][0].toISOString()).toBe("2026-09-13T12:00:00.000Z"); // 30, the default
   });
 
-  it("answers 500 as JSON when the store throws, and leaks nothing", async () => {
+  it("caps the table without capping the counts", async () => {
+    // The funnel must count the whole window even when the table shows a page.
+    const many = Array.from({ length: 10 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
-    const listRecent = async () => {
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now, tableLimit: 3 })(
+      { auth: ADMIN, query: {} },
+      res
+    );
+    expect(res.body.events).toHaveLength(3);
+    expect(res.body.funnel.registered).toBe(10);
+  });
+
+  it("answers 500 without leaking the database message", async () => {
+    const res = fakeRes();
+    const listSince = async () => {
       throw new Error("ER_NO_SUCH_TABLE: signup_events");
     };
-    await makeCrmEventsAdminHandler({ canManage, listRecent })({ auth: ADMIN }, res);
+    await makeCrmEventsOverviewHandler({ canManage, listSince, now })({ auth: ADMIN, query: {} }, res);
     expect(res.statusCode).toBe(500);
     expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
   });
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [ ] **Step 5: Write the route**
 
-Run: `npx vitest run crmSignup/adminRoute.test.js --reporter=verbose`
-Expected: FAIL — `Failed to load url ./adminRoute.js`
-
-- [ ] **Step 3: Write the implementation**
-
-Create `crmSignup/adminRoute.js`:
+Create `crmSignup/overviewRoute.js`:
 
 ```js
-import { maskEmail, maskPhone } from "./normalise.js";
+import { summariseCrmEvents, toTableRow } from "./stats.js";
 
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const DEFAULT_DAYS = 30;
+const MIN_DAYS = 1;
+const MAX_DAYS = 90;
 
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
-}
-
-const TONE = {
-  sent: "#16a34a",
-  skipped: "#64748b",
-  pending: "#0891b2",
-  retrying: "#ca8a04",
-  failed: "#dc2626",
-  rejected: "#dc2626",
-  invalid: "#dc2626",
-};
-
-function cell(status, detail, attempts) {
-  const value = String(status ?? "");
-  const colour = TONE[value] || "#64748b";
-  return `<td><span style="color:${colour};font-weight:600">${esc(value)}</span><br><small>${esc(detail)} (${esc(attempts)})</small></td>`;
-}
-
-function renderRow(row) {
-  return `<tr>
-    <td>${esc(row.received_at)}</td>
-    <td>${esc(row.stage)}</td>
-    <td>${esc(row.crm_client_id)}</td>
-    <td>${esc(row.first_name)} ${esc(row.last_name)}</td>
-    <td>${esc(maskEmail(row.email))}</td>
-    <td>${esc(maskPhone(row.phone))}</td>
-    <td>${esc(row.record_type)}</td>
-    <td>${esc(row.source)}</td>
-    ${cell(row.meta_status, row.meta_detail, row.meta_attempts)}
-    ${cell(row.whatsapp_status, row.whatsapp_detail, row.whatsapp_attempts)}
-    ${cell(row.brevo_status, row.brevo_detail, row.brevo_attempts)}
-  </tr>`;
+function windowDays(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_DAYS;
+  return Math.min(MAX_DAYS, Math.max(MIN_DAYS, Math.floor(n)));
 }
 
 /**
- * GET /api/crm-events/recent.
+ * GET /api/crm-events/overview?days=30
  *
- * Server-rendered rather than a React settings page: the frontend bundle has
- * not deployed since 2026-09-25. Contacts here are client PII, so email and
- * phone are masked and the route sits behind authRequired + adminOnly.
+ * Everything the settings tab needs in one call. The counts cover the whole
+ * window; only the table is capped, so a busy month still reports an accurate
+ * funnel.
  */
-export function makeCrmEventsAdminHandler({ canManage, listRecent, limit = 100, logger = console }) {
-  return async function crmEventsAdminHandler(req, res) {
+export function makeCrmEventsOverviewHandler({
+  canManage,
+  listSince,
+  tableLimit = 200,
+  now = () => new Date(),
+  logger = console,
+}) {
+  return async function crmEventsOverviewHandler(req, res) {
     if (!canManage(req?.auth)) return res.status(403).json({ error: "forbidden" });
+
+    const days = windowDays(req?.query?.days);
+    const at = now();
+    const since = new Date(at.getTime() - days * 24 * 3_600_000);
 
     let rows;
     try {
-      rows = await listRecent(limit);
+      rows = await listSince(since);
     } catch (error) {
       // The message can name internal schema, so it is logged, not returned.
-      logger.error?.(`[crm-events] admin view failed: ${error?.message || String(error)}`);
-      return res.status(500).json({ error: "listing_failed" });
+      logger.error?.(`[crm-events] overview failed: ${error?.message || String(error)}`);
+      return res.status(500).json({ error: "overview_failed" });
     }
 
-    const body = rows.length
-      ? `<table>
-          <thead><tr>
-            <th>Received</th><th>Stage</th><th>CRM id</th><th>Name</th><th>Email</th>
-            <th>Phone</th><th>Type</th><th>Form</th><th>Meta</th><th>WhatsApp</th><th>Brevo</th>
-          </tr></thead>
-          <tbody>${rows.map(renderRow).join("")}</tbody>
-        </table>`
-      : `<p class="empty">No CRM events recorded yet.</p>`;
+    const { health, funnel, destinations } = summariseCrmEvents(rows, { now: at });
 
-    return res.type("text/html; charset=utf-8").send(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CRM events</title>
-<style>
-  body { font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 24px; color: #0f172a; background: #f8fafc; }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  p.sub { color: #64748b; margin: 0 0 20px; }
-  table { border-collapse: collapse; width: 100%; background: #fff; }
-  th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; }
-  th { background: #f1f5f9; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #475569; }
-  small { color: #64748b; }
-  .empty { color: #64748b; }
-</style></head><body>
-<h1>CRM events</h1>
-<p class="sub">Most recent ${esc(rows.length)}. Email and phone are masked.</p>
-${body}
-</body></html>`);
+    return res.status(200).json({
+      windowDays: days,
+      health,
+      funnel,
+      destinations,
+      events: rows.slice(0, tableLimit).map(toTableRow),
+    });
   };
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 6: Run both tests**
 
-Run: `npx vitest run crmSignup/adminRoute.test.js auth/routeCoverage.test.js --reporter=verbose`
-Expected: PASS. `/api/crm-events/recent` is guarded, so it must NOT be in `PUBLIC_API_ROUTES`.
+Run: `npx vitest run crmSignup/stats.test.js crmSignup/overviewRoute.test.js auth/routeCoverage.test.js --reporter=verbose`
+Expected: PASS. `/api/crm-events/overview` is guarded, so it must NOT appear in `PUBLIC_API_ROUTES`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add crmSignup/adminRoute.js crmSignup/adminRoute.test.js
-git commit -m "CRM events: admin view of recent events, masked and admin-gated"
+git add crmSignup/stats.js crmSignup/stats.test.js crmSignup/overviewRoute.js crmSignup/overviewRoute.test.js
+git commit -m "CRM events: overview endpoint with health, funnel and per-destination counts"
+```
+
+---
+
+## Task 10: The settings tab
+
+**Files:**
+- Create: `src/pages/settings/CrmEventsPage.tsx`
+- Test: `src/pages/settings/CrmEventsPage.test.tsx`
+- Modify: `src/App.tsx` (lazy import + `SETTINGS_PAGES` entry)
+- Modify: `src/lib/permissions.ts` (menu entry)
+
+**Interfaces:**
+- Consumes: `GET /api/crm-events/overview` from Task 9; `authHeaders` from `@/lib/auth`.
+- Produces: `CrmEventsPage` (named export, matching every other settings page).
+
+> **This page is invisible until someone runs `npm run build` on the server.**
+> Verified 2026-10-13: the deployed bundle was built 2026-10-01 13:39 while that
+> day's frontend commits landed at 16:24. Nothing rebuilds on push. Task 11
+> step 6 covers it.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `src/pages/settings/CrmEventsPage.test.tsx`:
+
+```tsx
+// The CRM events tab. jsdom is the project default, so no environment comment.
+//
+// The health strip is the reason this page exists: a broken FXBO rule produces
+// no error anywhere, it just stops calling, and nothing else would notice.
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { CrmEventsPage } from "./CrmEventsPage";
+
+const SESSION_KEY = "slc.session.v2";
+
+const OVERVIEW = {
+  windowDays: 30,
+  health: { lastReceivedAt: "2026-10-13T11:00:00.000Z", ageHours: 1, stale: false },
+  funnel: { lead: 0, registered: 12, verified: 5, live_account: 3, first_deposit: 2 },
+  destinations: {
+    meta: { pending: 0, sent: 20, skipped: 0, retrying: 1, failed: 1, rejected: 0, invalid: 0 },
+    whatsapp: { pending: 0, sent: 10, skipped: 12, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
+    brevo: { pending: 0, sent: 12, skipped: 10, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
+  },
+  events: [
+    {
+      id: 1,
+      receivedAt: "2026-10-13T11:00:00.000Z",
+      stage: "registered",
+      crmClientId: "88214",
+      name: "Ali Khan",
+      email: "a***@example.com",
+      phone: "+971***85",
+      recordType: "client",
+      source: "SVG",
+      meta: { status: "sent", detail: "http 200", attempts: 1 },
+      whatsapp: { status: "sent", detail: "SENT", attempts: 1 },
+      brevo: { status: "sent", detail: "http 201", attempts: 1 },
+    },
+    {
+      id: 2,
+      receivedAt: "2026-10-13T10:00:00.000Z",
+      stage: "verified",
+      crmClientId: "88215",
+      name: "Sara Noor",
+      email: "s***@example.com",
+      phone: "+971***12",
+      recordType: "client",
+      source: "UAE",
+      meta: { status: "failed", detail: "http 400 Invalid parameter", attempts: 3 },
+      whatsapp: { status: "skipped", detail: "stage not applicable", attempts: 0 },
+      brevo: { status: "skipped", detail: "stage not applicable", attempts: 0 },
+    },
+  ],
+};
+
+function installFetch(payload: unknown = OVERVIEW, status = 200) {
+  const fn = vi.fn(
+    async () =>
+      new Response(JSON.stringify(payload), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      }),
+  );
+  globalThis.fetch = fn as unknown as typeof fetch;
+  return fn;
+}
+
+beforeEach(() => {
+  localStorage.setItem(
+    SESSION_KEY,
+    JSON.stringify({
+      token: "test.session.jwt",
+      user: { id: "u1", name: "T", email: "t@t", role: "Super Admin", access: [], status: "active" },
+      at: Date.now(),
+    }),
+  );
+});
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  vi.restoreAllMocks();
+});
+
+describe("health strip", () => {
+  it("shows when the last event arrived", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText(/last event/i);
+    expect(screen.getByText(/1 hour/i)).toBeTruthy();
+  });
+
+  it("warns loudly when nothing has arrived recently", async () => {
+    // The whole point of the strip: silence is the symptom of a broken rule.
+    installFetch({ ...OVERVIEW, health: { lastReceivedAt: null, ageHours: null, stale: true } });
+    render(<CrmEventsPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/no (crm )?events/i);
+  });
+
+  it("warns when events have stopped, even though some exist", async () => {
+    installFetch({
+      ...OVERVIEW,
+      health: { lastReceivedAt: "2026-10-01T11:00:00.000Z", ageHours: 300, stale: true },
+    });
+    render(<CrmEventsPage />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+  });
+});
+
+describe("counts", () => {
+  it("shows a tile for every funnel stage, zeroes included", async () => {
+    // A zero says that stage's rule is not firing, which is information.
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText(/registered/i);
+    for (const label of [/lead/i, /registered/i, /verified/i, /live account/i, /first deposit/i]) {
+      expect(screen.getAllByText(label).length, String(label)).toBeGreaterThan(0);
+    }
+    expect(screen.getByTestId("funnel-registered")).toHaveTextContent("12");
+    expect(screen.getByTestId("funnel-lead")).toHaveTextContent("0");
+  });
+
+  it("shows sent and failed per destination", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("dest-meta");
+    expect(screen.getByTestId("dest-meta")).toHaveTextContent("20");
+    expect(screen.getByTestId("dest-meta")).toHaveTextContent("1");
+    expect(screen.getByTestId("dest-whatsapp")).toHaveTextContent("10");
+  });
+});
+
+describe("the events table", () => {
+  it("lists events with all three statuses", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    expect(screen.getByText("88215")).toBeTruthy();
+    expect(screen.getByText(/http 400 Invalid parameter/)).toBeTruthy();
+  });
+
+  it("filters by stage", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+
+    fireEvent.change(screen.getByLabelText(/stage/i), { target: { value: "verified" } });
+
+    await waitFor(() => expect(screen.queryByText("88214")).toBeNull());
+    expect(screen.getByText("88215")).toBeTruthy();
+  });
+
+  it("filters to problems only", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+
+    // 88215 has a failed Meta send; 88214 is clean.
+    await waitFor(() => expect(screen.queryByText("88214")).toBeNull());
+    expect(screen.getByText("88215")).toBeTruthy();
+  });
+
+  it("says so plainly when the window holds nothing", async () => {
+    installFetch({ ...OVERVIEW, events: [] });
+    render(<CrmEventsPage />);
+    expect(await screen.findByText(/no events in this period/i)).toBeTruthy();
+  });
+});
+
+describe("loading and failure", () => {
+  it("reports a failed request instead of rendering empty tiles", async () => {
+    installFetch({ error: "overview_failed" }, 500);
+    render(<CrmEventsPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not load/i);
+  });
+
+  it("sends the session token", async () => {
+    const fn = installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    const [, init] = fn.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: expect.stringContaining("test.session.jwt") });
+  });
+
+  it("refetches when the window changes", async () => {
+    const fn = installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+
+    fireEvent.change(screen.getByLabelText(/period/i), { target: { value: "7" } });
+
+    await waitFor(() => expect(fn).toHaveBeenCalledTimes(2));
+    expect(String(fn.mock.calls[1][0])).toContain("days=7");
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx vitest run src/pages/settings/CrmEventsPage.test.tsx --reporter=verbose`
+Expected: FAIL — cannot resolve `./CrmEventsPage`
+
+- [ ] **Step 3: Write the page**
+
+Create `src/pages/settings/CrmEventsPage.tsx`:
+
+```tsx
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { authHeaders } from "@/lib/auth";
+
+const OVERVIEW_URL = "/api/crm-events/overview";
+
+const STAGE_LABELS: Record<string, string> = {
+  lead: "Lead",
+  registered: "Registered",
+  verified: "Verified",
+  live_account: "Live account",
+  first_deposit: "First deposit",
+};
+
+const DESTINATIONS = [
+  ["meta", "Meta"],
+  ["whatsapp", "WhatsApp"],
+  ["brevo", "Brevo"],
+] as const;
+
+/** A status that means something needs attention, as opposed to one that is
+ *  simply not applicable at this stage. */
+const PROBLEM = new Set(["failed", "rejected", "invalid", "retrying"]);
+
+type Counts = Record<string, number>;
+
+type DestinationStatus = { status: string; detail: string | null; attempts: number };
+
+type EventRow = {
+  id: number;
+  receivedAt: string;
+  stage: string;
+  crmClientId: string;
+  name: string;
+  email: string;
+  phone: string;
+  recordType: string;
+  source: string;
+  meta: DestinationStatus;
+  whatsapp: DestinationStatus;
+  brevo: DestinationStatus;
+};
+
+type Overview = {
+  windowDays: number;
+  health: { lastReceivedAt: string | null; ageHours: number | null; stale: boolean };
+  funnel: Counts;
+  destinations: Record<string, Counts>;
+  events: EventRow[];
+};
+
+function describeAge(hours: number | null): string {
+  if (hours === null) return "never";
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} minutes ago`;
+  if (hours < 48) return `${Math.round(hours)} hour${Math.round(hours) === 1 ? "" : "s"} ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+function toneFor(status: string): string {
+  if (status === "sent") return "text-emerald-600";
+  if (PROBLEM.has(status)) return "text-red-600";
+  return "text-slate-500";
+}
+
+export function CrmEventsPage() {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState<Overview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [stage, setStage] = useState("all");
+  const [problemsOnly, setProblemsOnly] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await fetch(`${OVERVIEW_URL}?days=${days}`, { headers: { ...authHeaders() } });
+      if (!resp.ok) throw new Error(String(resp.status));
+      setData((await resp.json()) as Overview);
+    } catch {
+      // The server's message can name internal schema, so it is not shown.
+      setError("Could not load CRM events.");
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [days]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const rows = useMemo(() => {
+    const all = data?.events ?? [];
+    return all.filter((row) => {
+      if (stage !== "all" && row.stage !== stage) return false;
+      if (!problemsOnly) return true;
+      return [row.meta, row.whatsapp, row.brevo].some((d) => PROBLEM.has(d.status));
+    });
+  }, [data, stage, problemsOnly]);
+
+  return (
+    <div className="space-y-6 p-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-semibold">CRM Events</h1>
+          <p className="text-sm text-slate-500">
+            Every FXBO funnel webhook, and what we sent to Meta, WhatsApp and Brevo.
+          </p>
+        </div>
+        <label className="text-sm">
+          <span className="mr-2">Period</span>
+          <select
+            aria-label="Period"
+            className="rounded border px-2 py-1"
+            value={String(days)}
+            onChange={(e) => setDays(Number(e.target.value))}
+          >
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </label>
+      </header>
+
+      {error ? (
+        <div role="alert" className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      ) : null}
+
+      {data?.health.stale ? (
+        <div role="alert" className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
+          {data.health.lastReceivedAt
+            ? `No CRM events for ${describeAge(data.health.ageHours)}. A rule in FXBO may have stopped firing.`
+            : "No CRM events received at all. Check that the FXBO rules exist and point at this endpoint."}
+        </div>
+      ) : null}
+
+      {data && !data.health.stale ? (
+        <p className="text-sm text-slate-600">
+          Last event {describeAge(data.health.ageHours)}.
+        </p>
+      ) : null}
+
+      {loading && !data ? <p className="text-sm text-slate-500">Loading…</p> : null}
+
+      {data ? (
+        <>
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Funnel</h2>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {Object.entries(STAGE_LABELS).map(([key, label]) => (
+                <div key={key} data-testid={`funnel-${key}`} className="rounded border bg-white p-3">
+                  <div className="text-2xl font-semibold tabular-nums">{data.funnel[key] ?? 0}</div>
+                  <div className="text-xs text-slate-500">{label}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">Destinations</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {DESTINATIONS.map(([key, label]) => {
+                const counts = data.destinations[key] ?? {};
+                return (
+                  <div key={key} data-testid={`dest-${key}`} className="rounded border bg-white p-3">
+                    <div className="mb-1 text-sm font-medium">{label}</div>
+                    <dl className="grid grid-cols-2 gap-x-3 text-sm">
+                      {["sent", "failed", "rejected", "retrying", "skipped"].map((status) => (
+                        <div key={status} className="flex justify-between">
+                          <dt className={toneFor(status)}>{status}</dt>
+                          <dd className="tabular-nums">{counts[status] ?? 0}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-2 flex flex-wrap items-center gap-4">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Events</h2>
+              <label className="text-sm">
+                <span className="mr-2">Stage</span>
+                <select
+                  aria-label="Stage"
+                  className="rounded border px-2 py-1"
+                  value={stage}
+                  onChange={(e) => setStage(e.target.value)}
+                >
+                  <option value="all">All stages</option>
+                  {Object.entries(STAGE_LABELS).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  aria-label="Problems only"
+                  checked={problemsOnly}
+                  onChange={(e) => setProblemsOnly(e.target.checked)}
+                />
+                Problems only
+              </label>
+            </div>
+
+            {rows.length === 0 ? (
+              <p className="text-sm text-slate-500">No events in this period.</p>
+            ) : (
+              <div className="overflow-x-auto rounded border bg-white">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="p-2 text-left">Received</th>
+                      <th className="p-2 text-left">Stage</th>
+                      <th className="p-2 text-left">CRM id</th>
+                      <th className="p-2 text-left">Name</th>
+                      <th className="p-2 text-left">Email</th>
+                      <th className="p-2 text-left">Phone</th>
+                      <th className="p-2 text-left">Form</th>
+                      <th className="p-2 text-left">Meta</th>
+                      <th className="p-2 text-left">WhatsApp</th>
+                      <th className="p-2 text-left">Brevo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.id} className="border-t align-top">
+                        <td className="p-2 whitespace-nowrap">{row.receivedAt}</td>
+                        <td className="p-2">{STAGE_LABELS[row.stage] ?? row.stage}</td>
+                        <td className="p-2">{row.crmClientId}</td>
+                        <td className="p-2">{row.name}</td>
+                        <td className="p-2">{row.email}</td>
+                        <td className="p-2">{row.phone}</td>
+                        <td className="p-2">{row.source}</td>
+                        {DESTINATIONS.map(([key]) => {
+                          const d = row[key];
+                          return (
+                            <td key={key} className="p-2">
+                              <span className={`font-medium ${toneFor(d.status)}`}>{d.status}</span>
+                              {d.detail ? <div className="text-xs text-slate-500">{d.detail}</div> : null}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      ) : null}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 4: Register the route**
+
+In `src/App.tsx`, beside the other settings imports:
+
+```tsx
+const CrmEventsPage = lazy(() => import("./pages/settings/CrmEventsPage").then((m) => ({ default: m.CrmEventsPage })));
+```
+
+and in the `SETTINGS_PAGES` map, after `alerts`:
+
+```tsx
+  "crm-events": CrmEventsPage,
+```
+
+- [ ] **Step 5: Add the menu entry**
+
+In `src/lib/permissions.ts`, after the `client-account-monitor` entry:
+
+```ts
+  // Sits under the alert pages: like them, its job is to make a silent
+  // failure visible -- here, an FXBO rule that has stopped firing.
+  { key: "crm-events", name: "CRM Events", path: "/settings/crm-events", icon: "Share2", group: "core", requiredPermissions: ["Settings"] },
+```
+
+The route is gated by the same rule as the menu (`canAccessSettingsItem`), so
+this entry is what makes the page reachable at all — without it the URL 404s
+even for an admin.
+
+- [ ] **Step 6: Run the tests and the type check**
+
+Run: `npx vitest run src/pages/settings/CrmEventsPage.test.tsx --reporter=verbose`
+Expected: PASS, 11 tests
+
+Run: `npm run typecheck`
+Expected: no errors.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/pages/settings/CrmEventsPage.tsx src/pages/settings/CrmEventsPage.test.tsx \
+        src/App.tsx src/lib/permissions.ts
+git commit -m "CRM events: a settings tab showing health, funnel and per-destination status"
 ```
 
 ---
@@ -3911,7 +4338,7 @@ Design: `../docs/superpowers/specs/2026-10-09-crm-signup-webhook-design.md`
 | Route | Guard |
 |---|---|
 | `POST /api/crm-events` | `CRM_WEBHOOK_SECRET` in the `Authorization` header. On the `PUBLIC_API_ROUTES` allow-list because FXBO cannot carry a session. |
-| `GET /api/crm-events/recent` | `authRequired` + `adminOnly`. |
+| `GET /api/crm-events/overview` | `authRequired` + `adminOnly`. Feeds the settings tab. |
 
 The stage is a **body parameter**, not a path segment, and all five rules post
 to the one path. `auth/requireSession.js` matches its allow-list against actual
@@ -3958,7 +4385,7 @@ Expected: PASS, including the pre-existing suites.
 
 - [ ] **Step 4: Lint**
 
-Run: `npx eslint crmSignup/ scripts/fxbo-discover-deposit.mjs`
+Run: `npx eslint crmSignup/ src/pages/settings/CrmEventsPage.tsx`
 Expected: no errors.
 
 - [ ] **Step 5: Commit**
@@ -3976,7 +4403,7 @@ These change live systems. Each needs the account owner present.
 
 - [ ] **Step 1: Set the environment variables on the server**
 
-There is no `.env` in the repo. Add the Task 11 block wherever the existing
+There is no `.env` in the repo. Add the Task 10 block wherever the existing
 variables live (Plesk → Node.js → Custom environment variables), then recycle.
 Generate the secret with:
 
@@ -4053,22 +4480,25 @@ never succeeds).
 - [ ] **Step 5: Confirm what `%client_is_lead%` actually contains**
 
 Press a rule's **Test webhook** button. The press is recognised and stored as
-`invalid` (Task 8), so it creates no contact and posts no conversion — read
+`invalid` (Task 7), so it creates no contact and posts no conversion — read
 `raw_payload` on that row to see exactly what FXBO sends. Then register one real
 test client and read `raw_payload` again for the real value. If it is not one of
 `0 false no n off`, add the real literal to `FALSY` in `crmSignup/normalise.js`;
 until then every client is treated as a lead and gets no WhatsApp.
 
-- [ ] **Step 6: Test the deposit stage first**
+- [ ] **Step 6: Build the frontend, or the settings tab will not appear**
 
-Not last. The financial-category restriction on this dataset blocks custom
-parameters and may reject `value` and `currency` on `Purchase`. Without value
-there is no return-on-ad-spend measurement, which is much of the point. Check
-Events Manager → Diagnostics after the first deposit event.
+On the server: `npm ci && npm run build`, then recycle.
 
-Run `node scripts/fxbo-discover-deposit.mjs <client_id>` (Task 7) against a
-client who has deposited, and fill in `DEPOSIT_FIELD_CANDIDATES` if the guesses
-missed.
+This is not optional and not automatic. Verified on 2026-10-13: the deployed
+bundle was built 2026-10-01 13:39, while that day's two frontend commits landed
+at 16:24 — so the last build predates them. Nothing rebuilds on push.
+
+Use `npm run build` (`scripts/build.mjs`, unhashed `assets/index.js`), **not**
+`npx vite build`, which emits hashed filenames the server's `index.html` does
+not reference.
+
+Confirm with: `curl -sI https://app.skylinkscapital.com/assets/index.js | grep -i last-modified`
 
 - [ ] **Step 7: Acceptance test**
 
@@ -4111,24 +4541,24 @@ promo page and form.
 
 ## Self-Review
 
-**Spec coverage.** §1 → Task 12 steps 3-4. §2 → Tasks 1, 2 and Task 12 step 4's
-parameter table. §3 → Tasks 1, 3, 4, 5 (the stage gates). §4 → Tasks 5, 12
-step 9. §5 → the File Structure table. §6 → Task 6. §7 → Tasks 8, 9. §8 →
-Tasks 3, 4, 5, 7. §9 → Task 8. §10 → Task 8 steps 1, 3, 4. §11 → Task 12
-steps 5, 6. §12 → Task 10. §13 → Task 11. §14 → the tests in Tasks 1-10 plus
-Task 12 step 7. §15 → Task 12. §16 → not built; Task 12 step 10 hands the promo
-fix on rather than doing it.
+**Spec coverage.** §1 → Task 11 steps 3-4. §2 → Tasks 1, 2 and Task 11 step 4's
+parameter table. §3 → Tasks 1, 3, 4, 5 (the stage gates). §4 → Tasks 5, 11
+step 9. §5 → the File Structure table. §6 → Task 6. §7 → Tasks 7, 8. §8 →
+Tasks 3, 4, 5. §9 → Task 7. §10 → Task 7 steps 1, 3, 4. §11 → Task 11 step 5.
+§12 → Tasks 9, 10. §13 → Task 10. §14 → the tests in Tasks 1-10 plus Task 11
+step 7. §15 → Task 11. §16 → not built; Task 11 step 10 hands the promo fix on
+rather than doing it.
 
 **Spec requirements deliberately altered,** recorded under Global Constraints:
 the single `attempts`/`next_attempt_at` pair is split three ways; an empty
-`%client_is_lead%` resolves to lead; and the stage travels in the body rather
-than the path, for the allow-list reason given there.
+`%client_is_lead%` resolves to lead; the stage travels in the body rather than
+the path, for the allow-list reason given there; `Purchase` carries no value or
+currency; and the verified stage sends the custom event `Client_Verified`
+rather than the standard `SubmitApplication`.
 
-**Written against stated assumptions, per the user's 2026-10-12 decision to plan
-all five stages now:** the `first_deposit` REST field names (Task 7 discovers
-them rather than trusting the guesses, and everything degrades to "no value"),
-and the `lead` stage's FXBO trigger (Task 12 step 4 marks it blocked; no code
-depends on it).
+**Still blocked, stated rather than assumed:** the `lead` stage's FXBO trigger.
+Task 11 step 4 marks that rule blocked; no code depends on it, because the
+endpoint takes the stage as a parameter.
 
 **Spec requirement not met by any task:** none.
 

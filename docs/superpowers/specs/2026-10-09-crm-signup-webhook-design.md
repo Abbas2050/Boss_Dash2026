@@ -1,6 +1,6 @@
 # CRM events webhook — Meta CAPI + WhatsApp welcome + Brevo contact
 
-**Date:** 2026-10-09, scope widened 2026-10-12
+**Date:** 2026-10-09, scope widened 2026-10-12, revised 2026-10-13
 **Status:** Approved design, pending implementation plan
 
 Receive FXBO Assistant Rule webhooks at five points in the client funnel, store
@@ -111,13 +111,12 @@ the CRM derives ClickID by extracting `fbclid` from `full_link`. The same
 ourselves and never need the REST API to learn it. That closes the plan's open
 questions about REST field names for ClickID and UTM source.
 
-### So: parameters *and* the id, with REST as enrichment
+### So: parameters, and no REST call at all
 
-The rules send the full parameter set **and** the client id. REST is then an
-enrichment for the one thing no placeholder provides — **the deposit amount and
-currency** on a first-deposit event — rather than a hard runtime dependency on
-the critical path of every event. If a REST call fails we still hold a complete
-record; under the pure-fetch design we would hold an id and nothing else.
+The rules send the full parameter set. Since `Purchase` no longer carries a
+value (§4), there is nothing left that a placeholder cannot supply — so the
+service never calls the FXBO REST API, and an outage there cannot stop a
+conversion, a message or a contact.
 
 ### `record_type` is derived, and derived cautiously
 
@@ -154,9 +153,9 @@ One endpoint, five rules, one `stage` on each row.
 |---|---|---|---|---|
 | `lead` | (none yet, §11) | `Lead` | no | no |
 | `registered` | `Client registered` | `CompleteRegistration` | **yes** | **yes** |
-| `verified` | `A client has been verified` | `SubmitApplication` | no | no |
+| `verified` | `A client has been verified` | `Client_Verified` | no | no |
 | `live_account` | `Client opened new live account` | `TradingAccountOpened` | no | no |
-| `first_deposit` | `First time deposit by client` | `Purchase` + value/currency | no | no |
+| `first_deposit` | `First time deposit by client` | `Purchase` | no | no |
 
 Meta fires at every stage. WhatsApp and Brevo fire only at `registered`; at
 every other stage they are stored `skipped` with reason `stage not applicable`,
@@ -196,6 +195,19 @@ flag and which its double-opt-in and compliance tooling reads. Campaigns segment
 on it. Revisit if the list is ever used for something a non-consenting client
 should not receive.
 
+**The verified stage sends a custom event, `Client_Verified` (2026-10-13,
+user's call).** Not the standard `SubmitApplication`. Nothing needs creating in
+Events Manager first — Meta registers an unrecognised `event_name` as a custom
+event the moment it arrives. The consequence to know: custom events do not get
+standard-event optimisation automatically, so optimising a campaign toward this
+one means defining a **Custom Conversion** on it.
+
+**`Purchase` carries no value or currency (2026-10-13, user's call).** This
+removes the FXBO REST dependency entirely, along with the deposit columns and
+the financial-category risk. The trade-off, already stated in the user's own
+integration plan: Meta learns that a deposit happened but not what it was worth,
+so there is no return-on-ad-spend measurement.
+
 **Lives in this app.** MySQL, cron, admin routes and an FXBO webhook endpoint
 all already exist here. The cost is inheriting IIS recycle behaviour, which §7
 is designed around.
@@ -222,8 +234,11 @@ crmSignup/
   whatsapp.js    DoubleTick payload builder + outcome classifier + send
   brevo.js       contact upsert
   worker.js      cron sweeper: claim due rows, run all three independently
-  adminRoute.js  server-rendered recent-events view
+  stats.js       pure: rows -> health, funnel counts, per-destination counters
+  overviewRoute.js  GET /api/crm-events/overview, the JSON the settings tab reads
 ```
+
+Plus `src/pages/settings/CrmEventsPage.tsx` — the settings tab itself (§12).
 
 `normalise.js`, `clickId.js`, the payload builders and the outcome classifiers
 are pure and tested directly. That is where the subtle bugs live: the
@@ -316,11 +331,9 @@ plus hashed email and phone already score 9.0/10 on match quality.
 
 Retry only transport errors, 429 and 5xx; everything else is permanent.
 
-**Known constraint:** Meta has applied financial-services data-sharing
-restrictions to this dataset, blocking custom parameters. This may reject
-`value` and `currency` on `Purchase`. Without value there is no return-on-ad-spend
-measurement, which is much of the point — so the deposit stage is tested first,
-not last.
+`custom_data` carries the two CRM constants and nothing else. `Purchase`
+reports that a deposit happened, not its amount (§4), so the dataset's
+financial-category restriction on custom parameters never comes into play.
 
 ### WhatsApp (DoubleTick)
 
@@ -411,10 +424,6 @@ mistaken for a test. A detected press is stored `invalid` and runs nothing.
   `A new lead has been assigned to you` and `A lead has been assigned to other
   manager` — both assignment, not creation. The `lead` stage ships last and may
   need FXBO to add a trigger.
-- **Deposit amount and currency** — whether a placeholder exists, or a REST call
-  is needed. The only field confirmed to need REST.
-- **Whether Meta accepts `value` and `currency`** given the financial-category
-  restriction (§8).
 
 Enabling *Save request snapshot for assistant rule webhooks* makes bodies
 visible in Webhook Stats, which helps — but it stores PII, so turn it off again
@@ -422,19 +431,32 @@ after testing.
 
 ---
 
-## 12. Admin view
+## 12. The settings tab
 
-A server-rendered page listing recent events with all three statuses, so "did
-this client get their welcome message?" is answerable without a database query.
+A settings page at `/settings/crm-events`, following the pattern every other
+settings page uses: one `src/pages/settings/CrmEventsPage.tsx`, lazy-loaded in
+`App.tsx`, with a menu entry in `src/lib/permissions.ts`. It reads one JSON
+endpoint, `GET /api/crm-events/overview`, and shows four things:
 
-**Deliberately not a React settings page.** The frontend build has not deployed
-since 2026-09-25 — `dist/` is gitignored and the server never runs
-`npm run build`, so a React page would be invisible until that is fixed.
+- **A health strip** — when the last event arrived, and a warning when nothing
+  has come in for 72 hours. This is the one that earns its place: a broken FXBO
+  rule raises no error anywhere, it simply stops calling, and nothing else in
+  the system would notice. An empty window reports stale, never healthy.
+- **Funnel counts** — how many at each stage over the period, zeroes included,
+  because a zero says that stage's rule is not firing.
+- **Per-destination counters** — sent / failed / rejected / retrying / skipped
+  for Meta, WhatsApp and Brevo separately.
+- **The events table** — masked email and phone, the stage, and all three
+  statuses with their reasons. Filterable by stage, and by problems only.
 
-Behind `authRequired, adminOnly`, the pair the report routes already use.
-`/account-alerts.html` is the precedent for *server-rendered rather than React*,
-not for access control — it is a static `sendFile` with no guard, and this page
-holds client PII. Phone numbers and email addresses masked.
+Both the endpoint and the page sit behind `authRequired, adminOnly`, the pair
+the report routes already use. The counts cover the whole window; only the table
+is capped, so a busy month still reports an accurate funnel.
+
+**Prerequisite.** The page is invisible until someone runs `npm run build` on
+the server. Verified 2026-10-13: the deployed bundle was built 2026-10-01 13:39,
+while that day's two frontend commits landed at 16:24 — the last build predates
+them, and nothing rebuilds on push. One command, but not an optional one.
 
 ---
 
@@ -480,9 +502,8 @@ nothing and sends nothing; the same client at a *different* stage inserts a new
 row and reuses the stored `fbc`.
 
 **Acceptance:** Meta events first, with `META_TEST_EVENT_CODE` set — they appear
-under Test events within minutes and touch no real data. Test the `Purchase`
-stage early, because the financial-category restriction may reject its value.
-Then one real registration: the WhatsApp message **arrives on a handset**, not
+under Test events within minutes and touch no real data. Check that
+`Client_Verified` shows up as a custom event. Then one real registration: the WhatsApp message **arrives on a handset**, not
 merely a 2xx; the contact appears in Brevo list 19; re-posting the identical
 webhook sends no second message.
 
@@ -496,11 +517,13 @@ webhook sends no second message.
 3. Create the rules (§1 table), starting with `registered`. Each: method
    `Outcoming webhook`, POST, `Authorization` header, parameters per §2, "update
    parameters on retry" off, 401 out of the retry codes.
-4. Run the acceptance tests.
-5. **Disable the WhatsApp send and the `CompleteRegistration` pixel event in the
+4. Run `npm ci && npm run build` on the server and recycle, or the settings
+   tab will not appear (§12).
+5. Run the acceptance tests.
+6. **Disable the WhatsApp send and the `CompleteRegistration` pixel event in the
    `slc-crm` WordPress plugin.** Until this is done, every website signup gets
    two WhatsApp messages and two Meta conversions.
-6. Switch off FXBO's own Meta integration once this is live.
+7. Switch off FXBO's own Meta integration once this is live.
 
 ---
 
