@@ -6693,12 +6693,12 @@ counters and the recent-events table, in one call.
 - Create: `crmSignup/overviewRoute.js`, `crmSignup/overviewRoute.test.js`
 
 **Interfaces:**
-- Consumes: `maskEmail`, `maskPhone` from `crmSignup/normalise.js`; `STAGES` from `crmSignup/normalise.js`; `listEventsSince` from `crmSignup/store.js`.
+- Consumes: `maskEmail`, `maskPhone`, `STAGES` from `crmSignup/normalise.js`; `listEventsSince`, `countEventsSince` and `latestEventReceivedAt` from `crmSignup/store.js`.
 - Produces:
   - `STALE_HOURS: number`
   - `summariseCrmEvents(rows, { now, staleHours }): { health, funnel, destinations }`
   - `toTableRow(row): object`
-  - `makeCrmEventsOverviewHandler({ canManage, listSince, windowDays, tableLimit, now, logger }): (req, res) => Promise<void>`
+  - `makeCrmEventsOverviewHandler({ canManage, listSince, countSince, latestReceivedAt, tableLimit, now, logger }): (req, res) => Promise<void>`
 
 - [ ] **Step 1: Write the failing test for the aggregation**
 
@@ -7444,8 +7444,9 @@ Expected: PASS. `/api/crm-events/overview` is guarded, so it must NOT appear in 
 Task 7 left this out because this file did not exist then. Without it the
 settings tab in Task 10 has nothing to read.
 
-Add the two imports beside the other `crmSignup` ones — note `listEventsSince`
-joins the existing store import rather than starting a new one:
+Add the handler import beside the other `crmSignup` ones, and three store
+readers to the existing store import rather than starting a new one —
+`listEventsSince`, `countEventsSince` and `latestEventReceivedAt`:
 
 ```js
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
@@ -7457,8 +7458,15 @@ and register it after the webhook route, behind both guards:
 app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
   canManage: canManageUsers,
   listSince: listEventsSince,
+  countSince: countEventsSince,
+  latestReceivedAt: latestEventReceivedAt,
 }));
 ```
+
+All four are required. The counts come from a grouped query rather than from
+the listed rows, and health from a window-independent `MAX(received_at)` — pass
+fewer and the page silently reverts to undercounted funnels and a window-bound
+health reading.
 
 This route is **guarded**, so it must NOT go on `PUBLIC_API_ROUTES`. Verify with
 `node --check server.js` and `npx vitest run auth/routeCoverage.test.js`.
@@ -7466,7 +7474,7 @@ This route is **guarded**, so it must NOT go on `PUBLIC_API_ROUTES`. Verify with
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crmSignup/stats.js crmSignup/stats.test.js crmSignup/overviewRoute.js crmSignup/overviewRoute.test.js server.js
+git add crmSignup/stats.js crmSignup/stats.test.js crmSignup/overviewRoute.js crmSignup/overviewRoute.test.js         crmSignup/store.js crmSignup/store.sql.test.js server.js
 git commit -m "CRM events: overview endpoint with health, funnel and per-destination counts"
 ```
 
