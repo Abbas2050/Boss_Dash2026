@@ -4855,6 +4855,11 @@ Confirm with: `curl -sI https://app.skylinkscapital.com/assets/index.js | grep -
 1. Meta events appear under **Test events** within minutes.
 2. One real registration: the WhatsApp message **arrives on a handset** — not
    merely a 200 from us, and not merely a 2xx from DoubleTick.
+   Then check the row's `whatsapp_status` reads `sent`. A `rejected` row beside a
+   message that visibly arrived means DoubleTick returned a success value outside
+   our allowlist of `SENT` / `ENQUEUED` — the detail column names it, and it
+   needs adding. This is the designed way to discover a third value: loud and
+   immediate, rather than silently counted as a success forever.
 3. The contact appears in Brevo list 19 with `EXT_ID` and `OPT_IN` populated.
 4. Re-posting the identical webhook sends no second message and creates no
    second row.

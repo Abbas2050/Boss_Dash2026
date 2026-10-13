@@ -369,7 +369,14 @@ siblings of `content`, `from`, `to` and `messageId`. Fresh UUID v4 per attempt.
 `messages[0].status`, and these are failures, case-insensitively: `FAILED`,
 `ERROR`, `REJECTED`, `UNDELIVERED`, `UNDELIVERABLE`, `INVALID`.
 
-**A status outside that list is also not a send (2026-10-13).** The brief
+**Only `SENT` and `ENQUEUED` count as a send.** DoubleTick changed this value
+and did not update its API reference: the reference still shows `SENT`, while
+their help article records that template sends now return `ENQUEUED`. Both are
+allowed, because we do not know which this account's plan returns. Had we
+allowed only the documented `SENT`, every welcome message would have been
+recorded as rejected while arriving perfectly well.
+
+**A status outside that pair is also not a send (2026-10-13).** The brief
 enumerated six failure values, which makes a denylist: anything else — a status
 DoubleTick adds later, or one we never knew about — would read as a successful
 send. That is the same silent failure this section exists to prevent, moved one
