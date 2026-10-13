@@ -247,7 +247,7 @@ describe("classifyWhatsappOutcome", () => {
   });
 
   it("rejects the statuses DoubleTick does not document, so a new one is a deliberate change", () => {
-    for (const status of ["QUEUED", "SUBMITTED", "ACCEPTED"]) {
+    for (const status of ["QUEUED", "SUBMITTED", "ACCEPTED", "NOT_SENT", "SENT_FAILED"]) {
       const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
       expect(r, status).toEqual({
         status: "rejected",
@@ -262,6 +262,69 @@ describe("classifyWhatsappOutcome", () => {
     const r = classifyWhatsappOutcome({ httpStatus: 408, body: {} });
     expect(r.status).toBe("failed");
     expect(r.retryable).toBe(true);
+  });
+
+  it("treats any 2xx as accepted, so a 201 or 202 carrying a healthy status is sent", () => {
+    expect(
+      classifyWhatsappOutcome({ httpStatus: 201, body: { messages: [{ status: "SENT", messageId: "m-21" }] } })
+    ).toEqual({ status: "sent", retryable: false, detail: "SENT", messageId: "m-21" });
+    expect(
+      classifyWhatsappOutcome({ httpStatus: 202, body: { messages: [{ status: "ENQUEUED", messageId: "m-22" }] } })
+    ).toEqual({ status: "sent", retryable: false, detail: "ENQUEUED", messageId: "m-22" });
+  });
+
+  it("does not accept 199 or 300 as a 2xx, even with a healthy status in the body", () => {
+    for (const httpStatus of [199, 300]) {
+      const r = classifyWhatsappOutcome({ httpStatus, body: { messages: [{ status: "SENT" }] } });
+      expect(r.status, String(httpStatus)).toBe("rejected");
+      expect(r.retryable, String(httpStatus)).toBe(false);
+    }
+  });
+
+  it("reports a thrown transport error as a failed, retryable outcome carrying its message", () => {
+    expect(classifyWhatsappOutcome({ transportError: new Error("ECONNRESET") })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "transport: ECONNRESET",
+      messageId: null,
+    });
+  });
+
+  it("refuses a status that is not a string, rather than coercing it into a match", () => {
+    for (const status of [123, {}, ["SENT"]]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status, messageId: "m-23" }] } });
+      expect(r, JSON.stringify(status)).toEqual({
+        status: "rejected",
+        retryable: false,
+        detail: `unrecognised status: ${JSON.stringify(status)}`,
+        messageId: "m-23",
+      });
+    }
+  });
+
+  it("never classifies a non-allowlist outcome as sent", () => {
+    // The file's headline invariant, pinned once for every branch that is not a send.
+    const sentBody = { messages: [{ status: "SENT" }] };
+    const cases = [
+      ["transport error", { transportError: new Error("ECONNRESET") }],
+      ...[408, 429, 500, 502, 503, 504].map((httpStatus) => [`http ${httpStatus}`, { httpStatus, body: sentBody }]),
+      ...[199, 300, 301, 400, 401, 403, 404, 422].map((httpStatus) => [`http ${httpStatus}`, { httpStatus, body: sentBody }]),
+      ...["FAILED", "ERROR", "REJECTED", "UNDELIVERED", "UNDELIVERABLE", "INVALID"].map((status) => [
+        status,
+        { httpStatus: 200, body: { messages: [{ status }] } },
+      ]),
+      ["unrecognised status", { httpStatus: 200, body: { messages: [{ status: "ACCEPTED_PENDING_REVIEW" }] } }],
+      ["near-miss NOT_SENT", { httpStatus: 200, body: { messages: [{ status: "NOT_SENT" }] } }],
+      ["near-miss SENT_FAILED", { httpStatus: 200, body: { messages: [{ status: "SENT_FAILED" }] } }],
+      ["non-string 123", { httpStatus: 200, body: { messages: [{ status: 123 }] } }],
+      ["non-string {}", { httpStatus: 200, body: { messages: [{ status: {} }] } }],
+      ["non-string [SENT]", { httpStatus: 200, body: { messages: [{ status: ["SENT"] }] } }],
+      ["no message status", { httpStatus: 200, body: {} }],
+      ["empty messages array", { httpStatus: 200, body: { messages: [] } }],
+    ];
+    for (const [label, input] of cases) {
+      expect(classifyWhatsappOutcome(input).status, label).not.toBe("sent");
+    }
   });
 });
 
@@ -340,5 +403,14 @@ describe("sendWhatsappTemplate", () => {
       "rejected"
     );
     expect((await sendWhatsappTemplate({ fetchImpl: sent, apiKey: "k", payload: {} })).status).toBe("sent");
+  });
+
+  it("treats a thrown falsy value as a transport failure, not as a rejection", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw undefined;
+    });
+    const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
   });
 });

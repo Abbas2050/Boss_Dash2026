@@ -103,7 +103,19 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
   }
 
   const message = Array.isArray(body?.messages) ? body.messages[0] : null;
-  const status = String(message?.status ?? "").trim();
+  const rawStatus = message?.status;
+
+  // Only a string can be matched. Coercing anything else would let ["SENT"] pass as SENT.
+  if (rawStatus !== undefined && rawStatus !== null && typeof rawStatus !== "string") {
+    return {
+      status: "rejected",
+      retryable: false,
+      detail: `unrecognised status: ${JSON.stringify(rawStatus)}`,
+      messageId: message?.messageId ?? null,
+    };
+  }
+
+  const status = String(rawStatus ?? "").trim();
 
   if (!status) {
     return {
@@ -149,7 +161,8 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
       body: JSON.stringify(payload),
     });
   } catch (transportError) {
-    return classifyWhatsappOutcome({ transportError });
+    // A thrown falsy value is still a transport failure, not something that falls through.
+    return classifyWhatsappOutcome({ transportError: transportError ?? new Error("unknown") });
   }
 
   let body = null;
