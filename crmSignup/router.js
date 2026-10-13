@@ -82,8 +82,14 @@ export function makeCrmEventsHandler({
       try {
         fbc = (await findFbc(fields.crmClientId)) || deriveFbc(fields.fullLink, now().getTime());
       } catch (error) {
+        // Empty, NOT derived. When the lookup fails we cannot know whether a
+        // frozen id already exists, and deriving one here would stamp this stage
+        // with a fresh timestamp: a different click identity for the same person.
+        // A missing matcher is recoverable (Meta falls back to the hashed email
+        // and phone, and a later event still picks up the frozen value from an
+        // earlier row); an inconsistent one is silently wrong.
         logger.error?.(`[crm-events] click id lookup failed: ${error?.message || String(error)}`);
-        fbc = deriveFbc(fields.fullLink, now().getTime());
+        fbc = "";
       }
 
       // Generated once, here, and reused on every send attempt. A send times

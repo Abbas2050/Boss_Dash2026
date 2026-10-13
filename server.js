@@ -1389,6 +1389,14 @@ server.listen(PORT, () => {
     .then((r) => console.log("[docusign-migrate]", JSON.stringify(r)))
     .catch((e) => console.error("[docusign-migrate] failed:", e?.message || String(e)));
   startDocusignReconcileScheduler();
+  // Failing closed is silent from FXBO's side: it only sees 401s. Say why, once,
+  // where configuration problems surface (the iisnode log).
+  if (!process.env.CRM_WEBHOOK_SECRET) {
+    console.error(
+      '[crm-events] CRM_WEBHOOK_SECRET is not set. Every CRM webhook to POST /api/crm-events ' +
+        'will be rejected with 401 until it is set. Set CRM_WEBHOOK_SECRET in .env and restart.',
+    );
+  }
   initCrmSignupStore()
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
 

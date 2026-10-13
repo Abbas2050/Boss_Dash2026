@@ -430,16 +430,25 @@ describe("the click id lookup, further", () => {
     expect(d.findFbc).toHaveBeenCalledWith("88214");
   });
 
-  it("derives from the landing URL with the injected clock, and says why, when the lookup throws", async () => {
-    // The existing case only checks the event was stored. Falling back to an
-    // empty click id, reading the real clock, and not logging all survived.
+  it("leaves the click id empty, and says why, when the lookup throws", async () => {
+    // Empty, not derived. A failed lookup cannot tell us whether a frozen id
+    // already exists, and deriving one here stamps this stage with a fresh
+    // timestamp: a different click identity for the same person, which is the
+    // quietly broken funnel the freeze exists to prevent. The landing URL below
+    // does carry a fbclid, so a derived value would be non-empty. A missing
+    // matcher is recoverable (Meta falls back to the hashed email and phone, and
+    // a later event picks up the frozen value from an earlier row); an
+    // inconsistent one is silently wrong. The event itself is still stored.
     const d = deps({
       findFbc: vi.fn(async () => {
         throw new Error("db down");
       }),
     });
-    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
-    expect(d.insert.mock.calls[0][1].fbc).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
+    expect(d.insert).toHaveBeenCalledTimes(1);
+    expect(d.insert.mock.calls[0][1].fbc).toBe("");
+    expect(res.body).toEqual({ ok: true, stored: true, duplicate: false });
     expect(d.logger.error).toHaveBeenCalledTimes(1);
     expect(d.logger.error.mock.calls[0][0]).toContain("db down");
   });
@@ -549,5 +558,18 @@ describe("wiring in server.js, further", () => {
     // dropping the catch both survived.
     const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
     expect(listen).toMatch(/initCrmSignupStore\(\)(?:\s*\.then\(.*\))*\s*\.catch\(/);
+  });
+
+  it("says at boot, naming the variable, that an unset secret rejects every webhook", () => {
+    // The handler fails closed, which from FXBO's side is only a stream of 401s
+    // after a deploy. The warning is the one place that says why. Dropping it,
+    // inverting its condition, and dropping the variable's name all pass every
+    // other test.
+    const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
+    const warning = listen.match(/if \(!process\.env\.CRM_WEBHOOK_SECRET\)\s*\{([^}]*)\}/);
+    expect(warning, "no boot-time check of CRM_WEBHOOK_SECRET in the listen callback").not.toBeNull();
+    expect(warning[1]).toContain("console.error(");
+    expect(warning[1]).toContain("CRM_WEBHOOK_SECRET is not set");
+    expect(warning[1]).toContain("rejected");
   });
 });
