@@ -81,7 +81,7 @@ export function buildWhatsappPayload({
   };
 }
 
-export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {}) {
+export function classifyWhatsappOutcome({ transportError, httpStatus, body, bodyTimedOut } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -122,7 +122,10 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
     return {
       status: "failed",
       retryable: false,
-      detail: "no message status in a 2xx response",
+      // Never retried either way: a 2xx means the message may have gone out. But
+      // the timeout signal bounds the body read too, and a row that fails here
+      // should say the body timed out rather than blame a field DoubleTick omitted.
+      detail: bodyTimedOut ? "body timed out in a 2xx response" : "no message status in a 2xx response",
       messageId: message?.messageId ?? null,
     };
   }
@@ -169,11 +172,14 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
   }
 
   let body = null;
+  let bodyTimedOut = false;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
     body = null;
+    // The timeout signal covers reading the body as well as the headers.
+    bodyTimedOut = error?.name === "TimeoutError";
   }
 
-  return classifyWhatsappOutcome({ httpStatus: response?.status, body });
+  return classifyWhatsappOutcome({ httpStatus: response?.status, body, bodyTimedOut });
 }

@@ -4,7 +4,7 @@
 // status says the request was accepted. messages[0].status says what happened
 // to the message. Only the second one is the outcome.
 import { describe, it, expect, vi } from "vitest";
-import { describeSendTimeout } from "./sendTimeout.contract.js";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   WHATSAPP_FAILURE_STATUSES,
   parseSkipSources,
@@ -450,4 +450,67 @@ describeSendTimeout("sendWhatsappTemplate", {
       json: async () => ({ messages: [{ status: "SENT", messageId: "m-30" }] }),
     })),
   send: (fetchImpl) => sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} }),
+});
+
+describe("sendWhatsappTemplate when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+
+  it("does not retry a 2xx whose body timed out, and says the body timed out", async () => {
+    // A 2xx means the request was accepted and the message may well have gone
+    // out. A retry would be a second welcome, so this stays terminal.
+    const r = await send(vi.fn(async () => stalledBodyResponse(200)));
+    expect(r).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "body timed out in a 2xx response",
+      messageId: null,
+    });
+  });
+
+  it("keeps the old detail when the body failed to read for any other reason", async () => {
+    for (const thrown of [new SyntaxError("Unexpected token <"), new Error("socket hang up"), undefined, null, "oops"]) {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw thrown;
+        },
+      }));
+      const r = await send(fetchImpl);
+      expect(r, String(thrown)).toEqual({
+        status: "failed",
+        retryable: false,
+        detail: "no message status in a 2xx response",
+        messageId: null,
+      });
+    }
+  });
+
+  it("still retries a 5xx and rejects a 4xx whose body timed out, since the status decides first", async () => {
+    expect(await send(vi.fn(async () => stalledBodyResponse(503)))).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 503",
+      messageId: null,
+    });
+    expect(await send(vi.fn(async () => stalledBodyResponse(400)))).toEqual({
+      status: "rejected",
+      retryable: false,
+      detail: "http 400",
+      messageId: null,
+    });
+  });
+
+  it("names a body timeout only when the sender reports one", () => {
+    expect(classifyWhatsappOutcome({ httpStatus: 200, body: null, bodyTimedOut: true }).detail).toBe(
+      "body timed out in a 2xx response"
+    );
+    expect(classifyWhatsappOutcome({ httpStatus: 200, body: null }).detail).toBe(
+      "no message status in a 2xx response"
+    );
+  });
 });

@@ -115,7 +115,8 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
   try {
     body = await response.json();
   } catch {
-    // 204 has no body, and that is a success, not a parse failure.
+    // 204 has no body, and that is a success, not a parse failure. A body cut off
+    // by the timeout lands here too, and the 2xx has already said the upsert worked.
     body = null;
   }
 

@@ -169,6 +169,8 @@ export async function sendMetaEvent({
   try {
     body = await response.json();
   } catch {
+    // Also a body cut off by the timeout. No count then is an unknown outcome,
+    // which is retryable here; the same stall on a 400 loses its throttle code.
     body = null;
   }
 

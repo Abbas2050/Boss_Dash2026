@@ -5,7 +5,7 @@
 // attribute Brevo does not know returns 400, which this design treats as
 // permanent -- so a typo here means the contact silently never lands.
 import { describe, it, expect, vi } from "vitest";
-import { describeSendTimeout } from "./sendTimeout.contract.js";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   decideBrevoSkip,
   buildBrevoContact,
@@ -290,4 +290,24 @@ describe("upsertBrevoContact", () => {
 describeSendTimeout("upsertBrevoContact", {
   ok: () => vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 1 }) })),
   send: (fetchImpl) => upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} }),
+});
+
+describe("upsertBrevoContact when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} });
+
+  it("counts a 2xx whose body timed out as sent: the status already says the upsert worked", async () => {
+    // The upsert is idempotent and nothing in the body is needed, so there is
+    // nothing to retry.
+    const r = await send(vi.fn(async () => stalledBodyResponse(201)));
+    expect(r).toEqual({ status: "sent", retryable: false, detail: "http 201" });
+  });
+
+  it("still retries a 5xx whose body timed out, since the status decides", async () => {
+    const r = await send(vi.fn(async () => stalledBodyResponse(503)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+  });
 });

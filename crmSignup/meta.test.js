@@ -4,7 +4,7 @@
 // error at all -- Meta accepts the event and silently fails to match it -- so
 // the hashing and the fixed constants are pinned by test rather than by care.
 import { describe, it, expect, vi } from "vitest";
-import { describeSendTimeout } from "./sendTimeout.contract.js";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   META_EVENT_NAMES,
   hashEmail,
@@ -383,4 +383,37 @@ describe("sendMetaEvent", () => {
 describeSendTimeout("sendMetaEvent", {
   ok: () => vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) })),
   send: (fetchImpl) => sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} }),
+});
+
+describe("sendMetaEvent when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
+
+  it("retries a 2xx whose body timed out: no count is an unknown outcome, and event_id makes a retry safe", async () => {
+    const r = await send(vi.fn(async () => stalledBodyResponse(200)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 200 no events_received" });
+  });
+
+  it("loses a throttle code with the body, so a throttled 400 whose body timed out is permanent", async () => {
+    // Meta carries its throttle codes in the body (a 400 with code 4), so a body
+    // that never arrives takes the code with it and a throttle reads as a rejection.
+    // Pinned as it stands, so changing it is a decision and not an accident.
+    const readable = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: "(#4) Application request limit reached", code: 4 } }),
+    }));
+    expect((await send(readable)).retryable).toBe(true);
+
+    const r = await send(vi.fn(async () => stalledBodyResponse(400)));
+    expect(r).toEqual({ status: "failed", retryable: false, detail: "http 400" });
+  });
+
+  it("still retries a 5xx whose body timed out, since the status decides", async () => {
+    const r = await send(vi.fn(async () => stalledBodyResponse(503)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+  });
 });
