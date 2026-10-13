@@ -182,11 +182,17 @@ events at all. One owner per stage, so there is no pixel/CAPI overlap and no
 to firing a conversion, this assumption breaks silently and the funnel
 double-counts.
 
-**Brevo keeps the full twelve-field set (2026-10-12, user's call).** The
+**Brevo keeps the full attribute set (2026-10-12, user's call).** The
 integration plan says "first name, last name, email. Nothing else." That was put
 to the user against the 9 October decision and the wider set was kept. The nine
 custom attributes created in Brevo on 2026-10-09 stand. Attribution and entity
 fields cannot be backfilled after signup, which is the argument that decided it.
+As shipped, `buildBrevoContact` sends the contact's email plus up to thirteen
+attributes: Brevo's own `FIRSTNAME` and `LASTNAME`, the two reused ones `EXT_ID`
+and `OPT_IN`, and the nine created on 9 October. An earlier draft of this section
+said "twelve", which never matched any count of the code. `IS_TEST` is not among
+them -- FXBO exposes no placeholder for it, so there is nothing to send and
+nothing to create.
 
 **Brevo is not gated on marketing consent (2026-10-12, user's call).** The
 integration plan gates it; the 9 October decision does not, and was reaffirmed.
