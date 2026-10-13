@@ -19,6 +19,7 @@ import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { initCrmSignupStore, findExistingFbc, insertSignupEvent } from "./crmSignup/store.js";
+import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
@@ -1312,6 +1313,7 @@ app.post('/api/crm-events', makeCrmEventsHandler({
   secret: CRM_WEBHOOK_SECRET,
   findFbc: findExistingFbc,
   insert: insertSignupEvent,
+  onStored: kickCrmEventsWorker,
 }));
 
 app.use("/oauth", oauthRouter);
@@ -1399,6 +1401,7 @@ server.listen(PORT, () => {
     );
   }
   initCrmSignupStore()
+    .then(() => startCrmEventsWorker())
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
