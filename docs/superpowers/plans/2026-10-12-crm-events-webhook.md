@@ -2725,6 +2725,27 @@ function ddlSegments() {
 }
 
 const definitionOf = (column) => ddlSegments().find((segment) => segment.startsWith(`${column} `));
+const widthOf = (column) => Number(definitionOf(column).match(/VARCHAR\((\d+)\)/)[1]);
+
+// The text columns buildInsertParams cuts, with the field that feeds each one.
+const CUT_COLUMNS = [
+  ["stage", "stage"],
+  ["record_type", "recordType"],
+  ["fxbo_unique_id", "fxboUniqueId"],
+  ["first_name", "firstName"],
+  ["middle_name", "middleName"],
+  ["last_name", "lastName"],
+  ["email", "email"],
+  ["phone", "phone"],
+  ["entity", "entity"],
+  ["source", "source"],
+  ["language", "language"],
+  ["utm_source", "utmSource"],
+  ["utm_medium", "utmMedium"],
+  ["utm_campaign", "utmCampaign"],
+  ["referer", "referer"],
+  ["full_link", "fullLink"],
+];
 
 // A column is a name, a type, then only the modifiers this table uses. Anything
 // else after the type (two definitions run together by a missing comma) fails.
@@ -2955,35 +2976,61 @@ describe("buildInsertParams", () => {
     // The empty-id test above covers the identifiers. Every other text field
     // reaches the row through the same str() path, and an empty one is absent,
     // not a stored "".
-    const params = buildInsertParams({ email: "", utmSource: "", fullLink: "" }, {}, "{}");
+    const params = buildInsertParams({ email: "", utmSource: null, fullLink: "" }, {}, "{}");
     expect(at(params, "email")).toBeNull();
     expect(at(params, "utm_source")).toBeNull();
     expect(at(params, "full_link")).toBeNull();
   });
 
-  it("never writes the word undefined for an empty payload", () => {
+  it("never writes the word undefined, or null as text, for an empty payload", () => {
     // Dropping any of these defaults would write the literal text "undefined"
-    // into a row, the class of bug this module exists to stop.
+    // into a row, the class of bug this module exists to stop. Checking the whole
+    // row catches a default dropped from any text field, not just three of them.
     const params = buildInsertParams({}, {}, null);
+    expect(params).not.toContain("undefined");
+    expect(params).not.toContain("null");
     expect(at(params, "crm_client_id")).toBe("");
     expect(at(params, "stage")).toBe("");
     expect(at(params, "record_type")).toBe("lead");
   });
 
-  it("cuts a value to its column width rather than letting MySQL reject the row", () => {
+  it("cuts every text column to its own schema width, not a neighbour's", () => {
     // normalise.js does not bound these lengths. ER_DATA_TOO_LONG would surface as
-    // a 200 with the event lost, so FXBO would never retry it. These two are
-    // diagnostic, so a cut still says where the signup came from. Identifiers are
-    // not cut at all; see the boundary tests below.
-    const params = buildInsertParams({ fullLink: "x".repeat(2000), referer: "y".repeat(600) }, {}, "{}");
-    expect(at(params, "full_link")).toHaveLength(1024);
-    expect(at(params, "referer")).toHaveLength(512);
+    // a 200 with the event lost, so FXBO would never retry it. Each column is fed
+    // one character over its own width and must come out exactly at it.
+    for (const [column, key] of CUT_COLUMNS) {
+      const params = buildInsertParams({ [key]: "x".repeat(widthOf(column) + 1) }, {}, "{}");
+      expect(at(params, column), column).toHaveLength(widthOf(column));
+    }
   });
 
-  // An identifier is never cut. A truncated click id is a wrong click id that still
-  // looks like attribution; a truncated request id is not the one a retry would
-  // replay. Over-width writes NULL and warns, and the event itself is still kept.
-  describe("identifiers at their width boundary", () => {
+  it("cuts by code point, so a surrogate pair is never split", () => {
+    // Every other value in this file is ASCII, where a UTF-16 unit and a character
+    // are the same thing. A cut that counts units would leave half a pair at the end.
+    const params = buildInsertParams({ phone: "😀".repeat(33) }, {}, "{}");
+    const phone = at(params, "phone");
+    expect(Array.from(phone)).toHaveLength(32);
+    expect(Array.from(phone).every((c) => c === "😀")).toBe(true);
+  });
+
+  it("never cuts crm_client_id, so an over-width id fails the insert instead", () => {
+    // It is the dedupe key. Two ids that share a 255-character prefix would cut to one
+    // value and collide into one row, and findExistingFbc looks the id up uncut, so it
+    // would never find the truncated row. It is NOT NULL, so NULL is not available
+    // either. A lost event that is logged beats two different clients sharing a row.
+    const params = buildInsertParams({ crmClientId: "9".repeat(256) }, {}, "{}");
+    expect(at(params, "crm_client_id")).toHaveLength(256);
+  });
+
+  it("writes NULL for a null click id or request id, not the word null", () => {
+    const params = buildInsertParams(FIELDS, { fbc: null, whatsappRequestId: null }, "{}");
+    expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "whatsapp_request_id")).toBeNull();
+  });
+
+  // fbc is never cut: a truncated click id is attribution that silently never matches.
+  // Over-width writes NULL and warns, and the event itself is still kept.
+  describe("fbc at its width boundary", () => {
     afterEach(() => vi.restoreAllMocks());
 
     it("keeps a click id of exactly its column width, with no warning", () => {
@@ -3006,6 +3053,14 @@ describe("buildInsertParams", () => {
       expect(at(params, "crm_client_id")).toBe("88214");
     });
 
+  });
+
+  // whatsapp_request_id is cut, not NULLed. The worker reads it back from the row on
+  // every attempt, so a NULL would mint a fresh id per attempt: the second welcome the
+  // column exists to prevent. A cut value is replayed verbatim, so the freeze holds.
+  describe("whatsapp_request_id at its width boundary", () => {
+    afterEach(() => vi.restoreAllMocks());
+
     it("keeps a request id of exactly its column width, with no warning", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const id = "1".repeat(64);
@@ -3014,14 +3069,11 @@ describe("buildInsertParams", () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it("writes NULL, and warns with the column and length, for a request id one over", () => {
+    it("cuts a request id one over to its width, and never writes NULL for it", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const params = buildInsertParams(FIELDS, { whatsappRequestId: "1".repeat(65) }, "{}");
-      expect(at(params, "whatsapp_request_id")).toBeNull();
-      expect(warn).toHaveBeenCalledTimes(1);
-      const message = String(warn.mock.calls[0][0]);
-      expect(message).toMatch(/\bwhatsapp_request_id\b/);
-      expect(message).toMatch(/\b65\b/);
+      expect(at(params, "whatsapp_request_id")).toBe("1".repeat(64));
+      expect(warn).not.toHaveBeenCalled();
       expect(at(params, "crm_client_id")).toBe("88214");
     });
   });
@@ -3154,11 +3206,12 @@ const bool = (v) => (v ? 1 : 0);
 const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
 const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
 
-// An identifier is never cut. A truncated click id is a wrong click id that still
-// looks like attribution, and a truncated request id is not the one a retry would
-// replay. The provider's message id is written after a send has already happened,
-// and a failed write there would leave the row due for a second welcome. Over-width
-// writes NULL and says so; the event, and the status it records, are still stored.
+// fbc and the provider's message id are never cut. A cut click id is attribution that
+// silently never matches. A cut message id would fail the UPDATE that records a send
+// already made, which leaves the row due for a second welcome. Over-width writes NULL
+// and warns; the event, and the status it records, are still stored.
+// whatsapp_request_id is the one identifier that is cut rather than NULLed: the worker
+// reads it back from the row on every attempt, and a NULL would mint a fresh id each time.
 const identifier = (v, column) => {
   if (v === undefined || v === null || v === "") return null;
   const text = String(v);
@@ -3175,10 +3228,9 @@ const identifier = (v, column) => {
 /**
  * The parameters for the INSERT, in INSERT_COLUMNS order.
  *
- * Pure except in one place: an over-width identifier (fbc, whatsapp_request_id)
- * is written as NULL and `console.warn` is called with the column name and the
- * length seen. The warning appears without the caller having to arrange for it,
- * which is the point of it.
+ * Pure except in one place: an over-width fbc is written as NULL and `console.warn`
+ * is called with the column name and the length seen. The warning appears without
+ * the caller having to arrange for it, which is the point of it.
  */
 export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
@@ -3195,7 +3247,9 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
   const detail = invalid ? String(invalidReason).slice(0, 500) : null;
 
   return [
-    fit(fields.crmClientId ?? "", "crm_client_id"),
+    // Never cut: this is the dedupe key. An over-width id fails the INSERT rather than
+    // colliding with another client's id. It is NOT NULL, so NULL is not an option.
+    String(fields.crmClientId ?? ""),
     fit(fields.stage ?? "", "stage"),
     str(fields.fxboUniqueId, "fxbo_unique_id"),
     str(fields.firstName, "first_name"),
@@ -3215,7 +3269,7 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     str(fields.referer, "referer"),
     str(fields.fullLink, "full_link"),
     identifier(derived.fbc, "fbc"),
-    identifier(derived.whatsappRequestId, "whatsapp_request_id"),
+    str(derived.whatsappRequestId, "whatsapp_request_id"),
     status,
     detail,
     status,
@@ -3310,23 +3364,6 @@ export async function insertSignupEvent(fields, derived, rawPayload, invalidReas
     if (error?.code === "ER_DUP_ENTRY") return { inserted: false, id: null };
     throw error;
   }
-}
-
-/**
- * A payload that failed validation. All three action statuses carry `invalid`,
- * because there is no event-level status column and inventing one would mean
- * two places to look.
- */
-export async function markSignupInvalid(crmClientId, stage, detail) {
-  const text = String(detail ?? "").slice(0, 500);
-  await run(
-    `UPDATE signup_events
-        SET meta_status = 'invalid', meta_detail = ?,
-            whatsapp_status = 'invalid', whatsapp_detail = ?,
-            brevo_status = 'invalid', brevo_detail = ?
-      WHERE crm_client_id = ? AND stage = ?`,
-    [text, text, text, String(crmClientId ?? ""), String(stage ?? "")]
-  );
 }
 
 /**
@@ -5897,6 +5934,17 @@ Delivery & Retry: **"Update parameters' values on retry" OFF** (a redelivery
 must carry an identical payload or our dedupe reasons about a different event),
 and **401 excluded from the retry error codes** (retrying a rejected secret
 never succeeds).
+
+- [ ] **Step 4b: Confirm the server runs in strict SQL mode**
+
+`crm_client_id` is deliberately **not** truncated: it is the dedupe key, and two
+over-width ids sharing a prefix would silently collide into one row while
+`findExistingFbc` looked them up uncut and found neither. Letting the INSERT
+fail loudly is the safe failure — but it only fails under `STRICT_TRANS_TABLES`.
+A non-strict server would truncate silently and reinstate the collision.
+
+Run: `SELECT @@sql_mode;` and confirm `STRICT_TRANS_TABLES` is present. It is
+MySQL 8's default, so this is a check rather than an expected change.
 
 - [ ] **Step 5: Confirm what `%client_is_lead%` actually contains**
 
