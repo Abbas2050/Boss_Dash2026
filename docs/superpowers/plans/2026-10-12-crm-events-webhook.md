@@ -2743,6 +2743,15 @@ describe("signup_events schema", () => {
       );
     }
   });
+
+  it("names every insert column as a real column of the table", () => {
+    // INSERT_COLUMNS and the schema are two lists that must agree. A mismatch
+    // fails the first live webhook on an unknown column, and a bare toContain
+    // would pass `whatsapp_request_idx` for `whatsapp_request_id`.
+    for (const column of INSERT_COLUMNS) {
+      expect(SIGNUP_EVENTS_SCHEMA, column).toMatch(new RegExp(`^\\s+${column}\\s`, "m"));
+    }
+  });
 });
 
 describe("buildInsertParams", () => {
@@ -2818,6 +2827,54 @@ describe("buildInsertParams", () => {
     const circular = {};
     circular.self = circular;
     expect(() => buildInsertParams(FIELDS, {}, circular)).not.toThrow();
+  });
+
+  it("pins every column to its own value, not just the four above", () => {
+    // The tests above name only some columns. Every value here is distinct, so
+    // swapping any two parameters (two names, two UTM fields, the two booleans)
+    // moves a value and fails a line.
+    const params = buildInsertParams(
+      FIELDS,
+      { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
+      "{}"
+    );
+    const expected = {
+      crm_client_id: "88214",
+      stage: "registered",
+      fxbo_unique_id: "d3f1-aa",
+      first_name: "Ali",
+      middle_name: "Hassan",
+      last_name: "Khan",
+      email: "ali.khan@example.com",
+      phone: "+971507192185",
+      record_type: "client",
+      marketing_consent: 1,
+      is_ib: 0,
+      entity: "SVG Ltd",
+      source: "SVG",
+      language: "en",
+      utm_source: "meta",
+      utm_medium: "cpc",
+      utm_campaign: "zero-spread",
+      referer: "https://skylinkscapital.com/en/",
+      full_link: "https://skylinkscapital.com/en/?fbclid=ABC",
+      fbc: "fb.1.1673035686000.ABC",
+      whatsapp_request_id: "11111111-2222-4333-8444-555555555555",
+      raw_payload: "{}",
+    };
+    // The table must cover every column, so a new column cannot slip in unpinned.
+    expect(Object.keys(expected).sort()).toEqual([...INSERT_COLUMNS].sort());
+    for (const [column, value] of Object.entries(expected)) {
+      expect(at(params, column), column).toBe(value);
+    }
+  });
+
+  it("writes NULL for an empty id too, not only for an absent one", () => {
+    // deriveFbc returns "" for every lead that carried no Meta click, so an
+    // empty string is the common case here, not an edge case.
+    const params = buildInsertParams(FIELDS, { fbc: "", whatsappRequestId: "" }, "{}");
+    expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 });
 ```
@@ -3046,6 +3103,18 @@ export async function markSignupInvalid(crmClientId, stage, detail) {
   );
 }
 
+/**
+ * Rows due for an action. This takes NO lock and claims NOTHING: it is a plain
+ * SELECT. Two concurrent callers would both receive the same rows and both
+ * send -- duplicate WhatsApp welcomes to real clients.
+ *
+ * The only thing preventing that today is single-process execution, guarded by
+ * the in-process `sweeping` flag in the worker. Anyone adding a second worker
+ * process, or a second app pool that runs the sweeper, must first add a real
+ * claim here (e.g. SELECT ... FOR UPDATE SKIP LOCKED inside a transaction, or
+ * an atomic status flip). The name is kept deliberately so this constraint is
+ * met where the function is defined.
+ */
 export async function claimDueEvents(limit = 25, now = new Date()) {
   return all(
     `SELECT * FROM signup_events
