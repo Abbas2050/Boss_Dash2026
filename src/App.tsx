@@ -24,6 +24,7 @@ const WSTestPage = lazy(() => import("./pages/settings/WSTestPage").then((m) => 
 const UserManagementPage = lazy(() => import("./pages/settings/UserManagementPage").then((m) => ({ default: m.UserManagementPage })));
 const AlertsSettingsPage = lazy(() => import("./pages/settings/AlertsSettingsPage").then((m) => ({ default: m.AlertsSettingsPage })));
 const ClientAccountMonitorPage = lazy(() => import("./pages/settings/ClientAccountMonitorPage").then((m) => ({ default: m.ClientAccountMonitorPage })));
+const CrmEventsPage = lazy(() => import("./pages/settings/CrmEventsPage").then((m) => ({ default: m.CrmEventsPage })));
 const ApiClientsPage = lazy(() => import("./pages/settings/ApiClientsPage").then((m) => ({ default: m.ApiClientsPage })));
 const ApiVendorUrlsPage = lazy(() => import("./pages/settings/ApiVendorUrlsPage").then((m) => ({ default: m.ApiVendorUrlsPage })));
 const FinaltoAccountsPage = lazy(() => import("./pages/settings/FinaltoAccountsPage").then((m) => ({ default: m.FinaltoAccountsPage })));
@@ -47,6 +48,7 @@ const settingsPageComponents = {
   "symbol-mapping": SymbolMappingPage,
   alerts: AlertsSettingsPage,
   "client-account-monitor": ClientAccountMonitorPage,
+  "crm-events": CrmEventsPage,
   "lp-statements": LpStatementsPage,
   "ws-test": WSTestPage,
   "api-clients": ApiClientsPage,

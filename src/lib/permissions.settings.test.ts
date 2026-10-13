@@ -22,7 +22,7 @@ const item = (key: string) => {
 };
 
 const CORE = ["coverage", "google-sheet-mapping", "lp-manager", "lp-info", "internal-accounts",
-  "symbol-mapping", "alerts", "client-account-monitor", "ws-test"];
+  "symbol-mapping", "alerts", "client-account-monitor", "crm-events", "ws-test"];
 const ADMIN = ["api-clients", "api-vendor-urls", "finalto-accounts", "finalto-admin", "lp-equity-history"];
 
 describe("settings page chips", () => {

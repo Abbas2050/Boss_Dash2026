@@ -159,7 +159,7 @@ export type SettingsMenuItem = {
   key: string;
   name: string;
   path: string;
-  icon: "Workflow" | "Briefcase" | "Link2" | "Bell" | "ShieldCheck" | "Users";
+  icon: "Workflow" | "Briefcase" | "Link2" | "Bell" | "ShieldCheck" | "Users" | "Share2";
   group: "core" | "admin";
   requiredPermissions: string[];
 };
@@ -175,6 +175,9 @@ export const SETTINGS_MENU_ITEMS = [
   // Sits directly under Alerts on purpose: that page is the LP-side margin
   // watch and this is the client-side counterpart of it.
   { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
+  // Sits under the alert pages: like them, its job is to make a silent
+  // failure visible -- here, an FXBO rule that has stopped firing.
+  { key: "crm-events", name: "CRM Events", path: "/settings/crm-events", icon: "Share2", group: "core", requiredPermissions: ["Settings"] },
   // LP Statements is for the back office as well as for an admin, and the menu
   // model has no OR: getVisibleSettingsMenuItems -> canAccessAll uses .every(),
   // so requiredPermissions is a conjunction and cannot say "either of two

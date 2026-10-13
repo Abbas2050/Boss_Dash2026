@@ -1,6 +1,6 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Bell, Briefcase, Link2, ShieldCheck, Users, Workflow } from "lucide-react";
+import { Bell, Briefcase, Link2, Share2, ShieldCheck, Users, Workflow } from "lucide-react";
 import { Separator } from "./ui/separator";
 import { getCurrentUser } from "@/lib/auth";
 import { getVisibleSettingsMenuItems } from "@/lib/permissions";
@@ -9,6 +9,7 @@ const settingsIconMap = {
   Bell,
   Briefcase,
   Link2,
+  Share2,
   ShieldCheck,
   Users,
   Workflow,
