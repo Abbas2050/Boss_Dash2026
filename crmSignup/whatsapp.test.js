@@ -59,9 +59,22 @@ describe("skip decisions", () => {
     expect(decideWhatsappSkip({ ...base, source: "SVG", skipSources })).toBeNull();
   });
 
+  it("matches the webhook's source case-insensitively, not only the configured list", () => {
+    const skipSources = parseSkipSources("manual");
+    expect(decideWhatsappSkip({ ...base, source: "MANUAL", skipSources })).toEqual({
+      reason: "source excluded",
+    });
+  });
+
   it("reports an unconfigured key before anything about the client", () => {
     // An unconfigured environment is our problem, not a fact about the lead.
     expect(decideWhatsappSkip({ ...base, apiKey: "", recordType: "lead" })).toEqual({
+      reason: "whatsapp not configured",
+    });
+  });
+
+  it("reports an unconfigured key ahead of the funnel stage as well", () => {
+    expect(decideWhatsappSkip({ ...base, apiKey: "", stage: "lead" })).toEqual({
       reason: "whatsapp not configured",
     });
   });
@@ -118,6 +131,22 @@ describe("buildWhatsappPayload", () => {
     expect(payload.messages[0].messageId).toBeTruthy();
     expect(payload.from).toBeUndefined();
   });
+
+  it("keeps the body placeholder and the button URL as two separate values", () => {
+    // The shared fixture above uses one URL for both, so swapping them passes.
+    const data = buildWhatsappPayload({
+      templateName: "t",
+      language: "en",
+      firstName: "Ali",
+      bodyParam: "BODY-PARAM",
+      buttonUrl: "BUTTON-URL",
+      from: "+971507192185",
+      to: "+971500000000",
+      messageId: "uuid-2",
+    }).messages[0].content.templateData;
+    expect(data.body.placeholders).toEqual(["BODY-PARAM"]);
+    expect(data.buttons[0].parameter).toBe("BUTTON-URL");
+  });
 });
 
 describe("classifyWhatsappOutcome", () => {
@@ -161,6 +190,13 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.retryable).toBe(false);
     expect(r.detail).toMatch(/no message status/i);
   });
+
+  it("names each of the six documented failure statuses, not just whatever the list holds", () => {
+    for (const status of ["FAILED", "ERROR", "REJECTED", "UNDELIVERED", "UNDELIVERABLE", "INVALID"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
+      expect(r.status, status).toBe("rejected");
+    }
+  });
 });
 
 describe("sendWhatsappTemplate", () => {
@@ -197,5 +233,46 @@ describe("sendWhatsappTemplate", () => {
     const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
     expect(r.status).toBe("failed");
     expect(r.retryable).toBe(false);
+  });
+
+  it("posts the payload as JSON to the template endpoint", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "SENT", messageId: "m-10" }] }),
+    }));
+    const payload = { messages: [{ to: "+971500000000" }] };
+
+    await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload });
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("https://public.doubletick.io/whatsapp/message/template");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body)).toEqual(payload);
+  });
+
+  it("reads the provider's HTTP status, so a 503 is retried rather than treated as a rejection", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }));
+    const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
+  });
+
+  it("reads messages[0].status from a 2xx body, so a FAILED message is rejected and a SENT one is sent", async () => {
+    const undeliverable = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "UNDELIVERABLE", messageId: "m-7" }] }),
+    }));
+    const sent = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "SENT", messageId: "m-8" }] }),
+    }));
+    expect((await sendWhatsappTemplate({ fetchImpl: undeliverable, apiKey: "k", payload: {} })).status).toBe(
+      "rejected"
+    );
+    expect((await sendWhatsappTemplate({ fetchImpl: sent, apiKey: "k", payload: {} })).status).toBe("sent");
   });
 });
