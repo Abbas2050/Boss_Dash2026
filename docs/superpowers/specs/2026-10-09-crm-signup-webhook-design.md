@@ -369,9 +369,24 @@ siblings of `content`, `from`, `to` and `messageId`. Fresh UUID v4 per attempt.
 `messages[0].status`, and these are failures, case-insensitively: `FAILED`,
 `ERROR`, `REJECTED`, `UNDELIVERED`, `UNDELIVERABLE`, `INVALID`.
 
-Retry only transport errors, 429 and 5xx. Any other non-2xx, and any 2xx
-carrying a failure status, is permanent — retrying an unapproved template or a
-bad key only burns attempts and delays the alert.
+**A status outside that list is also not a send (2026-10-13).** The brief
+enumerated six failure values, which makes a denylist: anything else — a status
+DoubleTick adds later, or one we never knew about — would read as a successful
+send. That is the same silent failure this section exists to prevent, moved one
+step along, so an unrecognised status is recorded as `rejected` with the value
+itself in the detail.
+
+It is deliberately **not** retryable. A status we do not understand may well
+mean the message was delivered, and retrying would send the client a second
+welcome. The worst case this way is a row marked rejected for a message that
+arrived — visible in the admin view, harmless to the client. The worst case the
+other way is a client who silently never hears from us while every count reads
+healthy.
+
+Retry transport errors, 408, 429 and 5xx. A Request Timeout is transient by
+definition and is exactly the case a retry fixes. Any other non-2xx, and any 2xx
+carrying a failure or unrecognised status, is permanent — retrying an unapproved
+template or a bad key only burns attempts and delays the alert.
 
 ### Brevo
 
