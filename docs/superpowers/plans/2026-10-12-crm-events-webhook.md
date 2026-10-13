@@ -6786,6 +6786,14 @@ must carry an identical payload or our dedupe reasons about a different event),
 and **401 excluded from the retry error codes** (retrying a rejected secret
 never succeeds).
 
+**503 must be IN the retry codes, and delivery check must be on.** The endpoint
+answers 503 only when it could not store the event, so that row does not exist
+and FXBO's redelivery is the single recovery available — the composite unique
+key makes a redelivery harmless. Without 503 in the list, a database blip
+silently loses every event that arrives during it. 500, 502 and 504 belong there
+for the same reason. Leave 400 and 404 out: both mean the request itself is
+wrong, and a retry would be identical.
+
 - [ ] **Step 4b: Confirm the server runs in strict SQL mode**
 
 `crm_client_id` is deliberately **not** truncated: it is the dedupe key, and two
