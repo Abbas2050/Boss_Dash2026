@@ -420,3 +420,12 @@ export async function latestEventReceivedAt() {
   const rows = await all(`SELECT MAX(received_at) AS latest FROM signup_events`);
   return rows[0]?.latest ?? null;
 }
+
+/**
+ * The newest received_at for each stage, over the whole table: one row per stage that
+ * has ever fired. A stage with no row has never fired, which is not the same as a stage
+ * that has gone quiet. Health reads the two differently, so the distinction is kept here.
+ */
+export async function latestReceivedAtByStage() {
+  return all(`SELECT stage, MAX(received_at) AS latest FROM signup_events GROUP BY stage`);
+}

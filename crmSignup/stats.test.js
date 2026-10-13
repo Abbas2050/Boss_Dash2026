@@ -228,3 +228,61 @@ describe("grouped counts", () => {
     expect(destinations.brevo.pending).toBe(2000);
   });
 });
+
+describe("per-stage health", () => {
+  const registeredAt = new Date("2026-10-13T11:00:00Z");
+
+  it("reports a stage that fired and then stopped as stale, while the overall figure stays green", () => {
+    // Registrations are still arriving, so the overall figure is fine. The verified
+    // rule last fired 96 hours ago, which the overall figure cannot see.
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [
+        { stage: "registered", latest: registeredAt },
+        { stage: "verified", latest: new Date("2026-10-09T12:00:00Z") },
+      ],
+    });
+    expect(health.stale).toBe(false);
+    expect(health.stages.verified.everSeen).toBe(true);
+    expect(health.stages.verified.stale).toBe(true);
+    expect(health.stages.verified.ageHours).toBeCloseTo(96, 3);
+    expect(health.stages.verified.lastReceivedAt).toBe("2026-10-09T12:00:00.000Z");
+    expect(health.stages.registered.stale).toBe(false);
+  });
+
+  it("does not call a stage stale for never having fired", () => {
+    // lead has no FXBO rule yet. Silence there is expected, not a broken rule.
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [{ stage: "registered", latest: registeredAt }],
+    });
+    expect(health.stages.lead).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+    expect(health.stages.first_deposit).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+  });
+
+  it("reports every stage as never seen on an empty table, while the overall figure is stale", () => {
+    const { health } = summariseCrmEvents([], { now: NOW, latestReceivedAt: null, latestByStage: [] });
+    expect(health.stale).toBe(true);
+    for (const stage of ["lead", "registered", "verified", "live_account", "first_deposit"]) {
+      expect(health.stages[stage], stage).toEqual({ lastReceivedAt: null, ageHours: null, stale: false, everSeen: false });
+    }
+  });
+});
+
+describe("per-stage threshold", () => {
+  it("judges each stage against the same threshold, and only strictly past it", () => {
+    const registeredAt = new Date("2026-10-13T11:00:00Z");
+    const { health } = summariseCrmEvents([row({ stage: "registered" })], {
+      now: NOW,
+      latestReceivedAt: registeredAt,
+      latestByStage: [
+        { stage: "verified", latest: new Date("2026-10-10T12:00:00Z") }, // exactly 72 hours
+        { stage: "live_account", latest: new Date("2026-10-10T11:59:00Z") }, // 72 hours and a minute
+      ],
+    });
+    expect(health.stages.verified.stale).toBe(false);
+    expect(health.stages.live_account.stale).toBe(true);
+  });
+});

@@ -1,4 +1,4 @@
-import { newestReceivedAt, summariseCrmEvents, toTableRow } from "./stats.js";
+import { summariseCrmEvents, toTableRow } from "./stats.js";
 
 const DEFAULT_DAYS = 30;
 const MIN_DAYS = 1;
@@ -13,10 +13,15 @@ function windowDays(raw) {
 /**
  * GET /api/crm-events/overview?days=30
  *
- * Everything the settings tab needs in one call, from three reads:
+ * Everything the settings tab needs in one call, from four reads. All four are
+ * required: a missing read would fall back to the rows it was given, and the
+ * counts would undercount with no sign of it.
+ *
  *   listSince(since, tableLimit)  the newest rows in the window, capped in SQL. Table only.
  *   countSince(since)             grouped counts over the whole window, never capped.
  *   latestReceivedAt()            the newest event in the whole table, ignoring the window.
+ *   latestByStage()               the newest event per stage, whole table. A stage with no
+ *                                 row has never fired, and is not the same as one gone quiet.
  *
  * Counts and the table follow the window. Health does not: a one-day window must
  * not make an event from thirty hours ago look like silence.
@@ -26,10 +31,16 @@ export function makeCrmEventsOverviewHandler({
   listSince,
   countSince,
   latestReceivedAt,
+  latestByStage,
   tableLimit = 200,
   now = () => new Date(),
   logger = console,
 }) {
+  const reads = { listSince, countSince, latestReceivedAt, latestByStage };
+  for (const [name, read] of Object.entries(reads)) {
+    if (typeof read !== "function") throw new TypeError(`makeCrmEventsOverviewHandler: ${name} is required`);
+  }
+
   return async function crmEventsOverviewHandler(req, res) {
     if (!canManage(req?.auth)) return res.status(403).json({ error: "forbidden" });
 
@@ -40,18 +51,23 @@ export function makeCrmEventsOverviewHandler({
     let rows;
     let counted;
     let latest;
+    let byStage;
     try {
       rows = await listSince(since, tableLimit);
-      // Without a grouped count the rows are counted, which is only as complete as the rows.
-      counted = countSince ? await countSince(since) : rows;
-      latest = latestReceivedAt ? await latestReceivedAt() : newestReceivedAt(rows);
+      counted = await countSince(since);
+      latest = await latestReceivedAt();
+      byStage = await latestByStage();
     } catch (error) {
       // The message can name internal schema, so it is logged, not returned.
       logger.error?.(`[crm-events] overview failed: ${error?.message || String(error)}`);
       return res.status(500).json({ error: "overview_failed" });
     }
 
-    const { health, funnel, destinations } = summariseCrmEvents(counted, { now: at, latestReceivedAt: latest });
+    const { health, funnel, destinations } = summariseCrmEvents(counted, {
+      now: at,
+      latestReceivedAt: latest,
+      latestByStage: byStage,
+    });
 
     return res.status(200).json({
       windowDays: days,
