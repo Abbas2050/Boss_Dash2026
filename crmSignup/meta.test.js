@@ -91,6 +91,19 @@ describe("buildMetaPayload", () => {
     expect(event.event_time).toBe(1673035686);
   });
 
+  it("hashes the normalised values in the payload, not the raw input", () => {
+    // Messy input on purpose. Meta hashes the normalised value on its side, so
+    // the payload must carry the digest of the lowercased address and of the
+    // bare digits, never a digest of the raw strings.
+    const { user_data } = buildMetaPayload({
+      ...base,
+      email: "  Ali.Khan@Example.COM ",
+      phone: "+971 50 719-2185",
+    }).data[0];
+    expect(user_data.em).toEqual(["cefa37b4e787d579251247cab9b2ed08cf8e83e514c6cd887559baf6a9171870"]);
+    expect(user_data.ph).toEqual(["0449fd30f3348d64f7cd0fe7ffcf90c2b045494a653446c41204fe723587751b"]);
+  });
+
   it("passes fbc through untouched", () => {
     // It was frozen at the client's first event; recomputing or reformatting
     // it here would give Meta a different click identity per stage.
@@ -183,9 +196,32 @@ describe("classifyMetaOutcome", () => {
   });
 
   it("retries every Graph throttling code carried on a 400", () => {
-    for (const code of [1, 2, 4, 17, 32, 613]) {
+    for (const code of [1, 2, 4, 17, 32, 341, 613]) {
       const result = classifyMetaOutcome({ httpStatus: 400, body: { error: { message: "m", code } } });
       expect(result.retryable, String(code)).toBe(true);
+    }
+  });
+
+  it("does not call a 2xx with no events_received a success", () => {
+    // A proxy answering 200 with an HTML page has no count, and is not a conversion.
+    const result = classifyMetaOutcome({ httpStatus: 200, body: null });
+    expect(result.status).toBe("failed");
+    expect(result.retryable).toBe(false);
+  });
+
+  it("retries a transient code whatever the HTTP status carrying it", () => {
+    for (const httpStatus of [200, 400, 403, 404, 500]) {
+      const result = classifyMetaOutcome({ httpStatus, body: { error: { message: "m", code: 4 } } });
+      expect(result.retryable, String(httpStatus)).toBe(true);
+      expect(result.status, String(httpStatus)).toBe("failed");
+    }
+  });
+
+  it("keeps Meta's own message on a retryable 429 or 5xx, as it does on a 4xx", () => {
+    for (const httpStatus of [429, 502]) {
+      const result = classifyMetaOutcome({ httpStatus, body: { error: { message: "Upstream timed out" } } });
+      expect(result.retryable, String(httpStatus)).toBe(true);
+      expect(result.detail, String(httpStatus)).toContain("Upstream timed out");
     }
   });
 });
@@ -234,5 +270,49 @@ describe("sendMetaEvent", () => {
     }));
     const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
     expect(result.retryable).toBe(true);
+  });
+
+  it("posts to the apiVersion it is given", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", apiVersion: "v99.0", accessToken: "t", payload: {} });
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://graph.facebook.com/v99.0/1/events?access_token=t");
+  });
+
+  it("sends the payload as JSON in the body", async () => {
+    const payload = { data: [{ event_name: "Lead", event_id: "1:lead" }], test_event_code: "TEST1" };
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual(payload);
+  });
+
+  it("percent-encodes the token, and it reads back intact", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) }));
+    await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "a&b+c%", payload: {} });
+    const [url] = fetchImpl.mock.calls[0];
+    expect(new URL(url).searchParams.get("access_token")).toBe("a&b+c%");
+  });
+
+  it("keeps the token out of the detail when a transport error echoes the URL", async () => {
+    // Native fetch does not echo the URL, but an injected fetchImpl can, and the
+    // detail is logged. The raw and the encoded token must both be removed.
+    const token = "a&b+c%";
+    const fetchImpl = vi.fn(async (url) => {
+      throw new Error(`request to ${url} failed`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(fetchImpl.mock.calls[0][0]).toContain(encodeURIComponent(token));
+    expect(result.retryable).toBe(true);
+    expect(result.detail).not.toContain(token);
+    expect(result.detail).not.toContain(encodeURIComponent(token));
+  });
+
+  it("keeps the raw token out of the detail too, when a transport error echoes it", async () => {
+    const token = "a&b+c%";
+    const fetchImpl = vi.fn(async () => {
+      throw new Error(`rejected token ${token}`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.detail).not.toContain(token);
   });
 });

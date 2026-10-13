@@ -24,8 +24,10 @@ const LEAD_EVENT_SOURCE = "FXBackOffice";
 //   4   application-level rate limit
 //   17  user-level rate limit
 //   32  page-level rate limit
+//   341 application limit reached, documented as temporary and retryable
 //   613 custom-level rate limit
-const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 613]);
+// 368 (temporary policy block) is left out: it will not clear on a retry.
+const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 341, 613]);
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
@@ -95,26 +97,28 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
     };
   }
 
-  const code = Number(httpStatus) || 0;
+  const status = Number(httpStatus) || 0;
   const reason = String(body?.error?.message ?? "").slice(0, 200);
-  const detail = reason ? `http ${code} ${reason}` : `http ${code}`;
+  const detail = reason ? `http ${status} ${reason}` : `http ${status}`;
 
   // The Graph code decides, whatever status carries it: Meta throttles with a 400.
   if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (code === 429 || code >= 500) {
-    return { status: "failed", retryable: true, detail: `http ${code}` };
+  if (status === 429 || status >= 500) {
+    return { status: "failed", retryable: true, detail };
   }
 
-  if (code >= 200 && code < 300) {
-    // A 200 that reports nothing received is not a success.
+  if (status >= 200 && status < 300) {
+    // Meta's success body always carries the count. Anything short of one,
+    // including no count at all (a proxy's HTML page), is not a conversion.
     const received = Number(body?.events_received);
-    if (Number.isFinite(received) && received < 1) {
-      return { status: "failed", retryable: false, detail: "http 200 events_received=0" };
+    if (!(received >= 1)) {
+      const reported = body?.events_received == null ? "no events_received" : `events_received=${received}`;
+      return { status: "failed", retryable: false, detail: `http ${status} ${reported}` };
     }
-    return { status: "sent", retryable: false, detail: `http ${code}` };
+    return { status: "sent", retryable: false, detail: `http ${status}` };
   }
 
   return { status: "failed", retryable: false, detail };
@@ -132,6 +136,11 @@ export async function sendMetaEvent({
     String(accessToken ?? "")
   )}`;
 
+  // A fetch error may echo the request URL, which carries the token in raw and
+  // encoded form. Neither may reach the detail, because the detail is logged.
+  const token = String(accessToken ?? "");
+  const secrets = [token, encodeURIComponent(token)].filter(Boolean);
+
   let response;
   try {
     response = await fetchImpl(url, {
@@ -140,7 +149,9 @@ export async function sendMetaEvent({
       body: JSON.stringify(payload),
     });
   } catch (transportError) {
-    return classifyMetaOutcome({ transportError });
+    let message = String(transportError?.message || transportError);
+    for (const secret of secrets) message = message.split(secret).join("[redacted]");
+    return classifyMetaOutcome({ transportError: { message } });
   }
 
   let body = null;
