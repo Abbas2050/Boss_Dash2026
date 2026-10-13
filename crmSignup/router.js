@@ -142,9 +142,11 @@ export function makeCrmEventsHandler({
     const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
 
     try {
-      // Frozen: assembled once, at whichever stage arrives first, then reused
-      // verbatim. Recomputing per stage gives Meta a different click identity
-      // for the same person at each step.
+      // Frozen: assembled once, at the first stage whose full_link carries an
+      // fbclid, then reused verbatim. An earlier stage without one stores
+      // nothing, so the freeze starts at the first stage that has a click.
+      // Recomputing per stage gives Meta a different click identity for the
+      // same person at each step.
       let fbc = "";
       try {
         fbc = (await findFbc(fields.crmClientId)) || deriveFbc(fields.fullLink, now().getTime());
@@ -170,8 +172,21 @@ export function makeCrmEventsHandler({
       );
 
       if (invalidReason) {
+        // The identifiers, as the normalise-throw and store-failure paths log
+        // them. Without them a body with no renderable email carried no stage,
+        // no client id and no unique_id -- and because a missing client_id is
+        // stored as "", every such event after the first collides on ("", stage)
+        // and is swallowed as a duplicate. These are the payloads an operator
+        // most needs to find: spec section 11 and CUTOVER step 5 settle what
+        // %client_is_lead% contains by reading raw_payload off one of them.
+        const event = describeEvent({
+          client: fields.crmClientId,
+          stage: fields.stage,
+          uniqueId: fields.fxboUniqueId,
+        });
         logger.warn?.(
-          `[crm-events] ${isTestPress ? "test press" : "invalid payload"} for ${maskEmail(fields.email) || "(no email)"}`
+          `[crm-events] ${isTestPress ? "test press" : "invalid payload"} for ` +
+            `${maskEmail(fields.email) || "(no email)"}: ${event} missing=${JSON.stringify(missing.join(",") || null)}`
         );
         return reply(200, { ok: true, stored: true, duplicate: !inserted, valid: false });
       }

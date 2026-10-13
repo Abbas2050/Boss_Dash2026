@@ -174,6 +174,22 @@ describe("the payload", () => {
     expect(listSince.mock.calls[2][0].toISOString()).toBe("2026-09-13T12:00:00.000Z"); // 30, the default
   });
 
+  it("treats a blank days as absent rather than as a one-day window", async () => {
+    // `?days=` arrives as "", Number("") is 0 and 0 is finite, so the clamp
+    // raised it to the MINIMUM: the tab reported one day's funnel while saying
+    // nothing about the window it had used.
+    const listSince = vi.fn(async () => ROWS);
+    const handler = build({ now, listSince });
+    for (const days of ["", "   ", undefined, null]) {
+      const res = fakeRes();
+      await handler({ auth: ADMIN, query: { days } }, res);
+      expect(res.body.windowDays, JSON.stringify(days)).toBe(30);
+    }
+    for (const [since] of listSince.mock.calls) {
+      expect(since.toISOString()).toBe("2026-09-13T12:00:00.000Z");
+    }
+  });
+
   it("caps the table without capping the counts", async () => {
     // The funnel must count the whole window even when the table shows a page. The
     // store caps the table in SQL and counts the window in SQL, as it does in production.

@@ -175,11 +175,13 @@ export const SETTINGS_MENU_ITEMS = [
   // Sits directly under Alerts on purpose: that page is the LP-side margin
   // watch and this is the client-side counterpart of it.
   { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
-  // Sits under the alert pages: like them, its job is to make a silent
-  // failure visible -- here, an FXBO rule that has stopped firing. Admin group
-  // and the API Clients pair because GET /api/crm-events/overview is mounted
-  // behind authRequired + adminOnly (canManageUsers): a Settings-only user
-  // would be shown the tab and could only ever read "Could not load".
+  // Kin to the alert pages: like them, its job is to make a silent failure
+  // visible -- here, an FXBO rule that has stopped firing. It does not sit with
+  // them in the menu, though: SETTINGS_MENU_CORE and _ADMIN filter by `group`,
+  // so this is filed under admin wherever it appears in this array. Admin group
+  // and the API Clients permission pair because GET /api/crm-events/overview is
+  // mounted behind authRequired + adminOnly (canManageUsers): a Settings-only
+  // user would be shown the tab and could only ever read "Could not load".
   {
     key: "crm-events",
     name: "CRM Events",

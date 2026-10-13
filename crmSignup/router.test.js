@@ -428,6 +428,36 @@ describe("telling a test press from a broken rule", () => {
     expect(line).toContain("a***@example.com");
     expect(line).not.toContain("ali.khan");
   });
+
+  it("names the event and the missing fields, as the other two lost-event paths do", async () => {
+    // Without them an invalid payload whose email will not render carried no
+    // stage, no client id and no unique_id at all -- and because a missing
+    // client_id is stored as "", every such event after the first collides on
+    // ("", stage) and is swallowed as a duplicate. Spec section 11 and CUTOVER
+    // step 5 settle what %client_is_lead% contains by reading raw_payload off
+    // exactly one of these rows, so finding it matters.
+    const d = deps();
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo", email: "", unique_id: "FX-9001" }),
+      fakeRes()
+    );
+    const line = d.logger.warn.mock.calls[0][0];
+    expect(line).toContain('client="88214"');
+    // The stage did not validate, so it is logged as the empty string it became.
+    expect(line).toContain('stage=""');
+    expect(line).toContain('unique_id="FX-9001"');
+    expect(line).toContain('missing="stage,email"');
+    expect(line).toContain("(no email)");
+  });
+
+  it("names the event on a test press too, which is the row the cutover reads", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, LABELS), fakeRes());
+    const line = d.logger.warn.mock.calls[0][0];
+    expect(line).toContain("test press");
+    expect(line).toContain('client="Client ID"');
+    expect(line).toContain("unique_id=");
+  });
 });
 
 describe("the click id lookup, further", () => {

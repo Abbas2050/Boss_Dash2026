@@ -5,6 +5,10 @@ const MIN_DAYS = 1;
 const MAX_DAYS = 90;
 
 function windowDays(raw) {
+  // A blank value is an absent one. `?days=` arrives as "", Number("") is 0, and
+  // 0 is finite -- so without this the clamp turned it into a ONE-day window and
+  // the tab reported a day's funnel as though it were the default month.
+  if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_DAYS;
   const n = Number(raw);
   if (!Number.isFinite(n)) return DEFAULT_DAYS;
   return Math.min(MAX_DAYS, Math.max(MIN_DAYS, Math.floor(n)));

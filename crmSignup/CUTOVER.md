@@ -62,8 +62,9 @@ Two other lines worth recognising in that log:
 - `[crm-events] CRM_WEBHOOK_SECRET is not set or is blank…` — the endpoint is
   failing closed. Without this warning a deploy that lost the secret looks
   exactly like FXBO being misconfigured.
-- `[crm-events] worker disabled by CRM_EVENTS_WORKER_ENABLED=false` — see the
-  note at the bottom of this file; it does **not** stop sends.
+- `[crm-events] worker disabled by CRM_EVENTS_WORKER_ENABLED=false` — nothing
+  will be sent at all until that is changed back, webhooks included. See the
+  note at the bottom of this file.
 
 ## 3. Allow-list the endpoint in the CRM
 
@@ -259,14 +260,19 @@ promo page and form.
 
 ## Two things to know before you need them
 
-**`CRM_EVENTS_WORKER_ENABLED=false` does not stop sends.** Only the literal
-`false` (any case) is recognised — `0` and `off` leave the worker on — and it
-disables only the polling timer. A newly stored event still calls
-`kickCrmEventsWorker`, which sweeps immediately without consulting the flag. So
-setting this during an incident stops *retries* from being picked up on a timer;
-it does not stop new events going out. To actually halt sending, unset the
-provider key for the destination concerned, bearing in mind that rows stored
-while it is unset are marked `skipped` permanently.
+**`CRM_EVENTS_WORKER_ENABLED=false` is how you pause sending.** Only the literal
+`false` (any case) is recognised — `0` and `off` leave the worker on. It stops
+the polling timer *and* every sweep, including the immediate one a newly stored
+event triggers through `kickCrmEventsWorker`. The endpoint keeps answering 200
+and the events keep landing in `signup_events`; nothing is sent, and nothing is
+lost. Each destination's clock is a column rather than a timer, so the first
+sweep after you set it back to `true` catches up everything that came due in
+between.
+
+Do **not** reach for an unset provider key instead: a row stored while the key is
+missing is marked `skipped`, which is final, and putting the key back never
+resends it. Stopping the app pool is worse again — the webhook answers 503 until
+FXBO has spent its twelve retries on each event.
 
 **Two workers during a deploy is fine.** The host performs overlapped recycles,
 so a draining worker and a new one do briefly sweep together, and

@@ -231,10 +231,11 @@ export async function initCrmSignupStore() {
 /**
  * The click id this client already has, if any.
  *
- * This is what freezes it. The fbc is assembled once, at whichever stage
- * arrives first, and every later stage reuses the exact string -- recomputing
- * it would give Meta a different click identity for the same person at each
- * step, with no error anywhere.
+ * This is what freezes it. The fbc is assembled once, at the first stage whose
+ * full_link carries an fbclid -- a stage that arrives earlier without one
+ * stores nothing here -- and every later stage reuses the exact string.
+ * Recomputing it would give Meta a different click identity for the same person
+ * at each step, with no error anywhere.
  */
 export async function findExistingFbc(crmClientId) {
   const rows = await all(
@@ -473,9 +474,10 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
 /**
  * Every event since a date, newest first, capped.
  *
- * The overview aggregates in JavaScript rather than SQL: the volume is low
- * (a few hundred rows in a 30-day window) and a pure function is testable
- * without a database, which GROUP BY is not.
+ * This feeds the events TABLE and nothing else. The counts beside it come from
+ * countEventsSince, grouped in SQL and never capped: counting this capped list
+ * in JavaScript is exactly the silent undercount Task 9 removed, so nothing
+ * aggregated belongs here.
  */
 export async function listEventsSince(since, cap = 2000) {
   return all(

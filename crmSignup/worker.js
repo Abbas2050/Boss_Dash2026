@@ -375,7 +375,26 @@ function liveDeps() {
 
 let sweeping = false;
 
+/**
+ * Whether the worker may send anything at all.
+ *
+ * Only the literal "false", any case, turns it off: `0` and `off` leave it on,
+ * which is what .env.example and the runbook say. Read on every sweep rather
+ * than once where the timer starts, because kickCrmEventsWorker comes straight
+ * to sweepOnce on every webhook -- so a flag read only at startup stopped the
+ * timer and nothing else, and there was no safe way to pause sending during an
+ * incident: removing a provider key stores `skipped`, which is final and never
+ * resent, and stopping the app pool answers the webhook 503 until FXBO has
+ * spent its twelve retries.
+ */
+function workerEnabled(env = process.env) {
+  return String(env.CRM_EVENTS_WORKER_ENABLED || "true").toLowerCase() !== "false";
+}
+
 export async function sweepOnce() {
+  // Rows accumulate untouched while this is off -- their clocks are columns, not
+  // timers, so the first sweep after it is turned back on catches them all up.
+  if (!workerEnabled()) return { disabled: true };
   if (sweeping) return { skipped: true };
   sweeping = true;
   try {
@@ -408,8 +427,8 @@ export function kickCrmEventsWorker() {
  * the next_attempt_at columns, so a recycle costs at most one interval.
  */
 export function startCrmEventsWorker() {
-  const enabled = String(process.env.CRM_EVENTS_WORKER_ENABLED || "true").toLowerCase() !== "false";
-  if (!enabled) {
+  // The same flag sweepOnce reads, so the log line and the sends agree.
+  if (!workerEnabled()) {
     console.log("[crm-events] worker disabled by CRM_EVENTS_WORKER_ENABLED=false");
     return null;
   }

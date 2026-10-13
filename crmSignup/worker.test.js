@@ -1225,6 +1225,58 @@ describe("the production wiring", () => {
     });
   });
 
+  describe("CRM_EVENTS_WORKER_ENABLED", () => {
+    // The flag used to be read only where the timer starts. kickCrmEventsWorker
+    // comes straight to sweepOnce on every webhook, so setting it to false left
+    // every new event -- and every due retry the sweep picked up with it --
+    // going out, and there was no safe way to pause sending during an incident.
+
+    it("stops the sweep itself, so nothing is sent and nothing is written", async () => {
+      setEnv({ ...SECRETS, CRM_EVENTS_WORKER_ENABLED: "false" });
+      store.claimDueEvents.mockResolvedValue([liveRow()]);
+      expect(await sweepOnce()).toEqual({ disabled: true });
+      expect(store.claimDueEvents).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      for (const writer of [store.updateMetaStatus, store.updateWhatsappStatus, store.updateBrevoStatus]) {
+        expect(writer).not.toHaveBeenCalled();
+      }
+    });
+
+    it("stops the kick a webhook makes, which is the path that used to send anyway", async () => {
+      setEnv({ ...SECRETS, CRM_EVENTS_WORKER_ENABLED: "false" });
+      store.claimDueEvents.mockResolvedValue([liveRow()]);
+      kickCrmEventsWorker();
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(store.claimDueEvents).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("is read on every sweep, so turning it back on catches the rows up", async () => {
+      // The clocks are columns, not timers: nothing is lost while it is off.
+      setEnv({ ...SECRETS, CRM_EVENTS_WORKER_ENABLED: "false" });
+      store.claimDueEvents.mockResolvedValue([liveRow()]);
+      await sweepOnce();
+      process.env.CRM_EVENTS_WORKER_ENABLED = "true";
+      expect(await sweepOnce()).toEqual({ processed: 1 });
+      expect(fetched(DOUBLETICK_TEMPLATE_URL)).toHaveLength(1);
+    });
+
+    it("recognises only the literal false, exactly as the timer does", async () => {
+      store.claimDueEvents.mockResolvedValue([]);
+      for (const setting of ["false", "FALSE", "False"]) {
+        process.env.CRM_EVENTS_WORKER_ENABLED = setting;
+        expect(await sweepOnce(), setting).toEqual({ disabled: true });
+      }
+      for (const setting of ["true", "0", "off", "", "yes"]) {
+        process.env.CRM_EVENTS_WORKER_ENABLED = setting;
+        expect(await sweepOnce(), setting).toEqual({ processed: 0 });
+      }
+      delete process.env.CRM_EVENTS_WORKER_ENABLED;
+      expect(await sweepOnce()).toEqual({ processed: 0 });
+    });
+  });
+
   describe("kickCrmEventsWorker", () => {
     const tick = () => new Promise((resolve) => setImmediate(resolve));
 
