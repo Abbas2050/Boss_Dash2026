@@ -3465,8 +3465,8 @@ the newest click id rather than the first, defeating the freeze.
 Create `crmSignup/store.sql.test.js`: inject a fake pool, then assert the
 statement and parameters for each `update*Status` writer, `findExistingFbc`'s
 ordering and its `id ASC` tie-break, `claimDueEvents`' three independent
-clauses, `markSignupInvalid`'s WHERE, `listEventsSince`, and the `ER_DUP_ENTRY`
-branch of `insertSignupEvent`.
+clauses, `listEventsSince`, and the `ER_DUP_ENTRY` branch of
+`insertSignupEvent`.
 
 Run: `npx vitest run crmSignup/store.sql.test.js --reporter=verbose`
 
