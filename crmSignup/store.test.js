@@ -1,12 +1,44 @@
 // @vitest-environment node
 //
-// The MySQL wrapper itself is not unit-tested -- docusign/store.js sets that
-// precedent, and a pool needs a database. What IS tested is the schema text and
-// the parameter builder, because both encode decisions a later edit could
-// quietly undo: the composite key that makes a redelivery a no-op while still
-// allowing five rows per client, and the per-action retry columns.
+// The schema text and the parameter builder are tested here, because both encode
+// decisions a later edit could quietly undo: the composite key that makes a
+// redelivery a no-op while still allowing five rows per client, and the
+// per-action retry columns. The SQL statements themselves run against a fake
+// pool in store.sql.test.js; no real MySQL server is involved in either file.
 import { describe, it, expect } from "vitest";
 import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, buildInsertParams } from "./store.js";
+
+// The DDL body split on top-level commas. A comma inside parentheses belongs to
+// a type or a key, not to the list, so depth is tracked.
+function ddlSegments() {
+  const body = SIGNUP_EVENTS_SCHEMA.slice(
+    SIGNUP_EVENTS_SCHEMA.indexOf("(") + 1,
+    SIGNUP_EVENTS_SCHEMA.lastIndexOf(")")
+  );
+  const segments = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of body) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth -= 1;
+    if (ch === "," && depth === 0) {
+      segments.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) segments.push(current.trim());
+  return segments;
+}
+
+const definitionOf = (column) => ddlSegments().find((segment) => segment.startsWith(`${column} `));
+
+// A column is a name, a type, then only the modifiers this table uses. Anything
+// else after the type (two definitions run together by a missing comma) fails.
+const COLUMN_DEFINITION =
+  /^[a-z_]+ (BIGINT UNSIGNED|BIGINT|INT|TINYINT\(1\)|VARCHAR\(\d+\)|TEXT|LONGTEXT|DATETIME)( NOT NULL| NULL| DEFAULT ('[^']*'|\d+|CURRENT_TIMESTAMP)| AUTO_INCREMENT| ON UPDATE CURRENT_TIMESTAMP)*$/;
+const KEY_DEFINITION = /^(PRIMARY KEY \(\w+\)|UNIQUE KEY \w+ \(\w+(, \w+)*\))$/;
 
 describe("signup_events schema", () => {
   it("is unique on client AND stage, not client alone", () => {
@@ -59,6 +91,42 @@ describe("signup_events schema", () => {
     for (const column of INSERT_COLUMNS) {
       expect(SIGNUP_EVENTS_SCHEMA, column).toMatch(new RegExp(`^\\s+${column}\\s`, "m"));
     }
+  });
+
+  it("never lets an empty payload write NULL into a NOT NULL column", () => {
+    // A NOT NULL column that an organic lead leaves null (no Meta click, so no
+    // fbc) would reject every such signup. The route turns that into a 200, so
+    // FXBO never retries it and the event is lost.
+    const params = buildInsertParams({}, {}, null);
+    expect(params).toContain(null);
+    INSERT_COLUMNS.forEach((column, i) => {
+      if (params[i] === null) expect(definitionOf(column), column).not.toMatch(/NOT NULL/);
+    });
+  });
+
+  it("requires every NOT NULL column without a default to be an insert column", () => {
+    const required = ddlSegments()
+      .filter((s) => /NOT NULL/.test(s) && !/DEFAULT/.test(s) && !s.startsWith("id "))
+      .map((s) => s.split(" ")[0]);
+    expect(required.length).toBeGreaterThan(0);
+    for (const column of required) {
+      expect(INSERT_COLUMNS, column).toContain(column);
+    }
+  });
+
+  it("splits into well-formed column and key definitions, so a missing comma fails here", () => {
+    const segments = ddlSegments();
+    expect(segments.length).toBeGreaterThan(20);
+    for (const segment of segments) {
+      expect(COLUMN_DEFINITION.test(segment) || KEY_DEFINITION.test(segment), segment).toBe(true);
+    }
+    expect(segments).toContain("PRIMARY KEY (id)");
+  });
+
+  it("pins the two frozen id columns to the widths their values need", () => {
+    // fbc is a Meta click id and needs room; the WhatsApp request id is a UUID.
+    expect(definitionOf("fbc")).toBe("fbc VARCHAR(255) NULL");
+    expect(definitionOf("whatsapp_request_id")).toBe("whatsapp_request_id VARCHAR(64) NULL");
   });
 });
 
@@ -168,6 +236,12 @@ describe("buildInsertParams", () => {
       full_link: "https://skylinkscapital.com/en/?fbclid=ABC",
       fbc: "fb.1.1673035686000.ABC",
       whatsapp_request_id: "11111111-2222-4333-8444-555555555555",
+      meta_status: "pending",
+      meta_detail: null,
+      whatsapp_status: "pending",
+      whatsapp_detail: null,
+      brevo_status: "pending",
+      brevo_detail: null,
       raw_payload: "{}",
     };
     // The table must cover every column, so a new column cannot slip in unpinned.
@@ -183,5 +257,35 @@ describe("buildInsertParams", () => {
     const params = buildInsertParams(FIELDS, { fbc: "", whatsappRequestId: "" }, "{}");
     expect(at(params, "fbc")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
+  });
+
+  it("never writes the word undefined for an empty payload", () => {
+    // Dropping any of these defaults would write the literal text "undefined"
+    // into a row, the class of bug this module exists to stop.
+    const params = buildInsertParams({}, {}, null);
+    expect(at(params, "crm_client_id")).toBe("");
+    expect(at(params, "stage")).toBe("");
+    expect(at(params, "record_type")).toBe("lead");
+  });
+
+  it("cuts a value to its column width rather than letting MySQL reject the row", () => {
+    // normalise.js does not bound these lengths. ER_DATA_TOO_LONG would surface as
+    // a 200 with the event lost, so FXBO would never retry it.
+    const params = buildInsertParams(
+      { fullLink: "x".repeat(2000), referer: "y".repeat(600) },
+      { fbc: "f".repeat(300) },
+      "{}"
+    );
+    expect(at(params, "full_link")).toHaveLength(1024);
+    expect(at(params, "referer")).toHaveLength(512);
+    expect(at(params, "fbc")).toHaveLength(255);
+  });
+
+  it("writes all three actions as invalid, with the reason, when given one", () => {
+    const params = buildInsertParams(FIELDS, {}, "{}", "missing required fields: email");
+    for (const action of ["meta", "whatsapp", "brevo"]) {
+      expect(at(params, `${action}_status`), action).toBe("invalid");
+      expect(at(params, `${action}_detail`), action).toBe("missing required fields: email");
+    }
   });
 });

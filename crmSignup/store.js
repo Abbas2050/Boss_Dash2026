@@ -86,13 +86,27 @@ export const INSERT_COLUMNS = [
   "full_link",
   "fbc",
   "whatsapp_request_id",
+  "meta_status",
+  "meta_detail",
+  "whatsapp_status",
+  "whatsapp_detail",
+  "brevo_status",
+  "brevo_detail",
   "raw_payload",
 ];
 
-const bool = (v) => (v ? 1 : 0);
-const str = (v) => (v === undefined || v === null || v === "" ? null : String(v));
+// The width of each VARCHAR column, read from the schema text so the two cannot
+// drift. A value longer than its column would make MySQL reject the whole row.
+const COLUMN_WIDTHS = Object.fromEntries(
+  [...SIGNUP_EVENTS_SCHEMA.matchAll(/^\s+(\w+) VARCHAR\((\d+)\)/gm)].map((m) => [m[1], Number(m[2])])
+);
 
-export function buildInsertParams(fields = {}, derived = {}, rawPayload = null) {
+const bool = (v) => (v ? 1 : 0);
+// Cut by code point, which is how MySQL counts VARCHAR length in utf8mb4.
+const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
+const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
+
+export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
   try {
     serialised = typeof rawPayload === "string" ? rawPayload : JSON.stringify(rawPayload ?? {});
@@ -100,28 +114,40 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null) 
     serialised = '{"unserialisable":true}';
   }
 
+  // An invalid payload is stored as invalid in the same statement that stores it,
+  // so no sweeper can send it in between. A valid payload is written as pending.
+  const invalid = invalidReason !== null && invalidReason !== undefined;
+  const status = invalid ? "invalid" : "pending";
+  const detail = invalid ? String(invalidReason).slice(0, 500) : null;
+
   return [
-    String(fields.crmClientId ?? ""),
-    String(fields.stage ?? ""),
-    str(fields.fxboUniqueId),
-    str(fields.firstName),
-    str(fields.middleName),
-    str(fields.lastName),
-    str(fields.email),
-    str(fields.phone),
-    String(fields.recordType ?? "lead"),
+    fit(fields.crmClientId ?? "", "crm_client_id"),
+    fit(fields.stage ?? "", "stage"),
+    str(fields.fxboUniqueId, "fxbo_unique_id"),
+    str(fields.firstName, "first_name"),
+    str(fields.middleName, "middle_name"),
+    str(fields.lastName, "last_name"),
+    str(fields.email, "email"),
+    str(fields.phone, "phone"),
+    fit(fields.recordType ?? "lead", "record_type"),
     bool(fields.marketingConsent),
     bool(fields.isIb),
-    str(fields.entity),
-    str(fields.source),
-    str(fields.language),
-    str(fields.utmSource),
-    str(fields.utmMedium),
-    str(fields.utmCampaign),
-    str(fields.referer),
-    str(fields.fullLink),
-    str(derived.fbc),
-    str(derived.whatsappRequestId),
+    str(fields.entity, "entity"),
+    str(fields.source, "source"),
+    str(fields.language, "language"),
+    str(fields.utmSource, "utm_source"),
+    str(fields.utmMedium, "utm_medium"),
+    str(fields.utmCampaign, "utm_campaign"),
+    str(fields.referer, "referer"),
+    str(fields.fullLink, "full_link"),
+    str(derived.fbc, "fbc"),
+    str(derived.whatsappRequestId, "whatsapp_request_id"),
+    status,
+    detail,
+    status,
+    detail,
+    status,
+    detail,
     serialised,
   ];
 }
@@ -177,22 +203,39 @@ export async function findExistingFbc(crmClientId) {
   const rows = await all(
     `SELECT fbc FROM signup_events
       WHERE crm_client_id = ? AND fbc IS NOT NULL AND fbc <> ''
-      ORDER BY received_at ASC
+      ORDER BY received_at ASC, id ASC
       LIMIT 1`,
     [String(crmClientId ?? "")]
   );
   return rows.length ? String(rows[0].fbc) : "";
 }
 
-export async function insertSignupEvent(fields, derived, rawPayload) {
+/**
+ * Stores one event. A redelivery of a stored client and stage is a duplicate-key
+ * error from MySQL, which is returned as `inserted: false` rather than thrown.
+ *
+ * This is a plain INSERT on purpose. `ON DUPLICATE KEY UPDATE` reports an
+ * affected-row count that depends on the connection's CLIENT_FOUND_ROWS flag, so
+ * `affectedRows === 1` would be true for a duplicate too. The error code does not
+ * depend on any connection setting.
+ *
+ * Pass `invalidReason` and all three actions are stored as `invalid` in this same
+ * statement. There is no window in which a sweeper could send the payload, which
+ * matters for an FXBO test press.
+ */
+export async function insertSignupEvent(fields, derived, rawPayload, invalidReason = null) {
   const placeholders = INSERT_COLUMNS.map(() => "?").join(", ");
-  const result = await run(
-    `INSERT INTO signup_events (${INSERT_COLUMNS.join(", ")})
-     VALUES (${placeholders})
-     ON DUPLICATE KEY UPDATE id = id`,
-    buildInsertParams(fields, derived, rawPayload)
-  );
-  return { inserted: Number(result?.affectedRows) === 1, id: result?.insertId ?? null };
+  try {
+    const result = await run(
+      `INSERT INTO signup_events (${INSERT_COLUMNS.join(", ")})
+       VALUES (${placeholders})`,
+      buildInsertParams(fields, derived, rawPayload, invalidReason)
+    );
+    return { inserted: true, id: result?.insertId ?? null };
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") return { inserted: false, id: null };
+    throw error;
+  }
 }
 
 /**
@@ -218,11 +261,13 @@ export async function markSignupInvalid(crmClientId, stage, detail) {
  * send -- duplicate WhatsApp welcomes to real clients.
  *
  * The only thing preventing that today is single-process execution, guarded by
- * the in-process `sweeping` flag in the worker. Anyone adding a second worker
- * process, or a second app pool that runs the sweeper, must first add a real
- * claim here (e.g. SELECT ... FOR UPDATE SKIP LOCKED inside a transaction, or
- * an atomic status flip). The name is kept deliberately so this constraint is
- * met where the function is defined.
+ * the in-process `sweeping` flag in the worker. That is not a hypothetical
+ * boundary on this host: IIS overlapped app-pool recycling can briefly run two
+ * Node workers, each with its own `sweeping` flag, so two sweepers can overlap.
+ * Anyone adding a second worker process, or a second app pool that runs the
+ * sweeper, must first add a real claim here (e.g. SELECT ... FOR UPDATE SKIP
+ * LOCKED inside a transaction, or an atomic status flip). The name is kept
+ * deliberately so this constraint is met where the function is defined.
  */
 export async function claimDueEvents(limit = 25, now = new Date()) {
   return all(
