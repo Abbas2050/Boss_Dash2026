@@ -108,11 +108,23 @@ describe("buildBrevoContact", () => {
     expect(attributes.IS_IB).toBe(false);
   });
 
+  it("carries both booleans as true together: a consenting introducing broker", () => {
+    // The fourth combination, and a realistic production state. Each boolean
+    // must stand on its own field rather than be derived from the other.
+    const { attributes } = buildBrevoContact(
+      { ...FIELDS, marketingConsent: true, isIb: true },
+      { listId: "19" }
+    );
+    expect(attributes.OPT_IN).toBe(true);
+    expect(attributes.IS_IB).toBe(true);
+  });
+
   it("never sends the phone, and never sends an attribute Brevo lacks", () => {
     const contact = buildBrevoContact(FIELDS, { listId: "19" });
     const { attributes } = contact;
     expect(JSON.stringify(contact)).not.toContain("971507192185");
-    expect(Object.keys(contact)).toEqual(["email", "updateEnabled", "attributes", "listIds"]);
+    // Insertion order means nothing to Brevo, so compare the keys as a set.
+    expect(Object.keys(contact).sort()).toEqual(["email", "updateEnabled", "attributes", "listIds"].sort());
     expect(attributes.PHONE).toBeUndefined();
     expect(attributes.SMS).toBeUndefined();
     expect(attributes.MARKETING_CONSENT).toBeUndefined(); // consent rides on OPT_IN
