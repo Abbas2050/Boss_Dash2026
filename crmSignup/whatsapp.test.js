@@ -239,6 +239,25 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.status).toBe("sent");
   });
 
+  it("treats ENQUEUED as sent, the current value DoubleTick returns, whatever its case", () => {
+    for (const status of ["ENQUEUED", "enqueued"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status, messageId: "m-20" }] } });
+      expect(r, status).toEqual({ status: "sent", retryable: false, detail: status, messageId: "m-20" });
+    }
+  });
+
+  it("rejects the statuses DoubleTick does not document, so a new one is a deliberate change", () => {
+    for (const status of ["QUEUED", "SUBMITTED", "ACCEPTED"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
+      expect(r, status).toEqual({
+        status: "rejected",
+        retryable: false,
+        detail: `unrecognised status: ${status}`,
+        messageId: null,
+      });
+    }
+  });
+
   it("retries a 408 Request Timeout, which is transient by definition", () => {
     const r = classifyWhatsappOutcome({ httpStatus: 408, body: {} });
     expect(r.status).toBe("failed");

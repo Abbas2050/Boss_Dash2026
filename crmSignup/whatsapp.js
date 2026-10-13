@@ -16,8 +16,14 @@ export const WHATSAPP_FAILURE_STATUSES = [
 const FAILURE_SET = new Set(WHATSAPP_FAILURE_STATUSES);
 
 /** The messages[0].status values that mean the MESSAGE was accepted for sending.
- *  Anything else is not treated as sent, including a failure this list omits. */
-const SUCCESS_SET = new Set(["SENT"]);
+ *  Two, because DoubleTick changed the value and the API reference never recorded
+ *  it: SENT is the historical value, which the reference still documents, and
+ *  ENQUEUED is the current one, per DoubleTick's help article on the template-send
+ *  response. We do not know which this account's plan returns, so both are kept.
+ *  Nothing else is: an unlisted status is rejected loudly, with its value in the
+ *  detail, rather than assumed to be a send. */
+const SENT_STATUSES = ["SENT", "ENQUEUED"];
+const SENT_SET = new Set(SENT_STATUSES);
 
 export function parseSkipSources(raw) {
   return new Set(
@@ -111,7 +117,7 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
   const messageId = message?.messageId ?? null;
   const upper = status.toUpperCase();
 
-  if (SUCCESS_SET.has(upper)) {
+  if (SENT_SET.has(upper)) {
     return { status: "sent", retryable: false, detail: status, messageId };
   }
 
