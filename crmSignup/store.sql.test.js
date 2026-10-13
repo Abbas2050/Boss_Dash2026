@@ -4,7 +4,7 @@
 // behaves, but it does show which statement runs, which parameter binds to which
 // placeholder, and how a duplicate-key error becomes a return value. Those are
 // the things a careless edit to store.js would change silently.
-import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import {
   SIGNUP_EVENTS_SCHEMA,
   INSERT_COLUMNS,
@@ -216,6 +216,33 @@ describe("the three action writers", () => {
     );
     expect(sql).not.toMatch(/meta_|whatsapp/);
     expect(params).toEqual(["sent", null, 0, null, 7]);
+  });
+});
+
+describe("whatsapp_message_id at its width boundary", () => {
+  // The provider's id is written after a send has already happened. An UPDATE that
+  // throws here leaves the row due, so the next sweep sends the welcome again.
+  // Over-width therefore writes NULL and warns; it never fails the write.
+  afterEach(() => vi.restoreAllMocks());
+
+  it("keeps a message id of exactly its column width, with no warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const id = "m".repeat(64);
+    await updateWhatsappStatus(7, { status: "sent", messageId: id, detail: "ok", attempts: 1, nextAttemptAt: null });
+    expect(db.state.calls[0].params[1]).toBe(id);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("writes NULL, still records the send as sent, and warns for a message id one over", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await updateWhatsappStatus(7, { status: "sent", messageId: "m".repeat(65), detail: "ok", attempts: 1, nextAttemptAt: null });
+    const { params } = db.state.calls[0];
+    expect(params[0]).toBe("sent");
+    expect(params[1]).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const message = String(warn.mock.calls[0][0]);
+    expect(message).toMatch(/\bwhatsapp_message_id\b/);
+    expect(message).toMatch(/\b65\b/);
   });
 });
 

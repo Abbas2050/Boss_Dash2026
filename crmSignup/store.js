@@ -108,7 +108,9 @@ const str = (v, column) => (v === undefined || v === null || v === "" ? null : f
 
 // An identifier is never cut. A truncated click id is a wrong click id that still
 // looks like attribution, and a truncated request id is not the one a retry would
-// replay. Over-width writes NULL and says so; the event itself is still stored.
+// replay. The provider's message id is written after a send has already happened,
+// and a failed write there would leave the row due for a second welcome. Over-width
+// writes NULL and says so; the event, and the status it records, are still stored.
 const identifier = (v, column) => {
   if (v === undefined || v === null || v === "") return null;
   const text = String(v);
@@ -122,6 +124,14 @@ const identifier = (v, column) => {
   return text;
 };
 
+/**
+ * The parameters for the INSERT, in INSERT_COLUMNS order.
+ *
+ * Pure except in one place: an over-width identifier (fbc, whatsapp_request_id)
+ * is written as NULL and `console.warn` is called with the column name and the
+ * length seen. The warning appears without the caller having to arrange for it,
+ * which is the point of it.
+ */
 export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
   try {
@@ -314,7 +324,7 @@ export async function updateWhatsappStatus(id, { status, messageId, detail, atte
       WHERE id = ?`,
     [
       String(status),
-      str(messageId),
+      identifier(messageId, "whatsapp_message_id"),
       String(detail ?? "").slice(0, 500) || null,
       Number(attempts) || 0,
       nextAttemptAt ?? null,
