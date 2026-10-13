@@ -78,6 +78,17 @@ describe("skip decisions", () => {
       reason: "whatsapp not configured",
     });
   });
+
+  it("counts a whitespace-only key as unset", () => {
+    expect(decideWhatsappSkip({ ...base, apiKey: "   " })).toEqual({ reason: "whatsapp not configured" });
+  });
+
+  it("accepts skipSources as the raw env string, not only a parsed Set", () => {
+    expect(decideWhatsappSkip({ ...base, source: "manual", skipSources: "CSV_UPLOAD, manual" })).toEqual({
+      reason: "source excluded",
+    });
+    expect(decideWhatsappSkip({ ...base, source: "SVG", skipSources: "CSV_UPLOAD, manual" })).toBeNull();
+  });
 });
 
 describe("parseSkipSources", () => {
@@ -194,8 +205,44 @@ describe("classifyWhatsappOutcome", () => {
   it("names each of the six documented failure statuses, not just whatever the list holds", () => {
     for (const status of ["FAILED", "ERROR", "REJECTED", "UNDELIVERED", "UNDELIVERABLE", "INVALID"]) {
       const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
-      expect(r.status, status).toBe("rejected");
+      // The detail is the status itself, not the unrecognised fallback, so a dropped entry shows.
+      expect(r, status).toEqual({ status: "rejected", retryable: false, detail: status, messageId: null });
     }
+  });
+
+  it("names a known failure in its detail, whatever the case DoubleTick used", () => {
+    const upper = classifyWhatsappOutcome({
+      httpStatus: 200,
+      body: { messages: [{ status: "UNDELIVERABLE", messageId: "m-11" }] },
+    });
+    expect(upper).toEqual({ status: "rejected", retryable: false, detail: "UNDELIVERABLE", messageId: "m-11" });
+
+    const mixed = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status: "uNdElIvErAbLe" }] } });
+    expect(mixed.detail).toBe("uNdElIvErAbLe");
+  });
+
+  it("does not send an unrecognised status, and does not retry it either", () => {
+    const r = classifyWhatsappOutcome({
+      httpStatus: 200,
+      body: { messages: [{ status: "ACCEPTED_PENDING_REVIEW", messageId: "m-12" }] },
+    });
+    expect(r).toEqual({
+      status: "rejected",
+      retryable: false,
+      detail: "unrecognised status: ACCEPTED_PENDING_REVIEW",
+      messageId: "m-12",
+    });
+  });
+
+  it("matches a healthy status regardless of case, as it does the failures", () => {
+    const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status: "sent", messageId: "m-13" }] } });
+    expect(r.status).toBe("sent");
+  });
+
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    const r = classifyWhatsappOutcome({ httpStatus: 408, body: {} });
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
   });
 });
 

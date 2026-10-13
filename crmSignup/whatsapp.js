@@ -15,6 +15,10 @@ export const WHATSAPP_FAILURE_STATUSES = [
 
 const FAILURE_SET = new Set(WHATSAPP_FAILURE_STATUSES);
 
+/** The messages[0].status values that mean the MESSAGE was accepted for sending.
+ *  Anything else is not treated as sent, including a failure this list omits. */
+const SUCCESS_SET = new Set(["SENT"]);
+
 export function parseSkipSources(raw) {
   return new Set(
     String(raw ?? "")
@@ -82,7 +86,8 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
 
   const code = Number(httpStatus) || 0;
 
-  if (code === 429 || code >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (code === 408 || code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}`, messageId: null };
   }
 
@@ -103,11 +108,24 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
     };
   }
 
+  const messageId = message?.messageId ?? null;
+  const upper = status.toUpperCase();
+
+  if (SUCCESS_SET.has(upper)) {
+    return { status: "sent", retryable: false, detail: status, messageId };
+  }
+
+  if (FAILURE_SET.has(upper)) {
+    return { status: "rejected", retryable: false, detail: status, messageId };
+  }
+
+  // A status we do not recognise is not a send. It is not retried either: it may
+  // well mean the message was delivered, and a retry would send a second welcome.
   return {
-    status: FAILURE_SET.has(status.toUpperCase()) ? "rejected" : "sent",
+    status: "rejected",
     retryable: false,
-    detail: status,
-    messageId: message?.messageId ?? null,
+    detail: `unrecognised status: ${status}`,
+    messageId,
   };
 }
 
