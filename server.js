@@ -17,6 +17,8 @@ import docusignRouter from "./docusign/router.js";
 import { runAppIdMigration } from "./docusign/migrateAppIds.js";
 import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
+import { makeCrmEventsHandler } from "./crmSignup/router.js";
+import { initCrmSignupStore, findExistingFbc, insertSignupEvent } from "./crmSignup/store.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
@@ -1300,6 +1302,17 @@ app.use("/api/agent", agentRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/ClientProfile", clientProfileRouter);
 app.use("/api/docusign", docusignRouter);
+
+// FXBO's funnel rules. Public to the network (allow-listed in
+// auth/requireSession.js) but not unauthenticated: the handler checks
+// CRM_WEBHOOK_SECRET itself and rejects everything when it is unset.
+// Single-quoted path on purpose -- auth/routeCoverage.test.js greps for it.
+app.post('/api/crm-events', makeCrmEventsHandler({
+  secret: process.env.CRM_WEBHOOK_SECRET,
+  findFbc: findExistingFbc,
+  insert: insertSignupEvent,
+}));
+
 app.use("/oauth", oauthRouter);
 
 // Serve the development copy of account-alerts.html for quick testing
@@ -1376,6 +1389,8 @@ server.listen(PORT, () => {
     .then((r) => console.log("[docusign-migrate]", JSON.stringify(r)))
     .catch((e) => console.error("[docusign-migrate] failed:", e?.message || String(e)));
   startDocusignReconcileScheduler();
+  initCrmSignupStore()
+    .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
   const profileCronExpr = String(process.env.CLIENT_PROFILE_CRON || "15 2 * * *");

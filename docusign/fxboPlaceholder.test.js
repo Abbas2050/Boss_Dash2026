@@ -105,3 +105,32 @@ describe("detectUnsubstitutedPlaceholder", () => {
     expect(d.placeholder).toBe(false);
   });
 });
+
+describe("labels used by the CRM events rules", () => {
+  it("recognises every label those rules send", () => {
+    for (const label of [
+      "Client Phone",
+      "Client Language",
+      "Client is Lead",
+      "Client Is IB",
+      "Entity",
+      "Form Name",
+      "UTM Source",
+      "UTM Medium",
+      "UTM Campaign",
+      "Referer",
+      "Unique ID",
+      "Visited registration page full link",
+    ]) {
+      expect(isFxboPlaceholderLabel(label), label).toBe(true);
+    }
+  });
+
+  it("still refuses to call an ordinary value a label", () => {
+    // The list is a closed set, not a pattern. A real entity or form name
+    // must not match.
+    expect(isFxboPlaceholderLabel("SVG")).toBe(false);
+    expect(isFxboPlaceholderLabel("UAE")).toBe(false);
+    expect(isFxboPlaceholderLabel("meta")).toBe(false);
+  });
+});

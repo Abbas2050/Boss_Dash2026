@@ -9,10 +9,11 @@ import { describe, it, expect } from "vitest";
 import { PUBLIC_API_ROUTES, isPublicApiRoute } from "./requireSession.js";
 
 describe("allow-list", () => {
-  it("contains exactly the four routes that cannot carry a session", () => {
+  it("contains exactly the five routes that cannot carry a session", () => {
     expect([...PUBLIC_API_ROUTES].sort()).toEqual([
       "GET /api/docusign/health",
       "POST /api/auth/login",
+      "POST /api/crm-events",
       "POST /api/docusign/webhooks/connect",
       "POST /api/docusign/webhooks/fxbo/application-approved",
     ]);

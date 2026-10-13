@@ -22,6 +22,11 @@ export const PUBLIC_API_ROUTES = new Set([
   // DOCUSIGN_CONNECT_HMAC_SECRET). Exempt from SESSION auth, not from auth.
   "POST /api/docusign/webhooks/fxbo/application-approved",
   "POST /api/docusign/webhooks/connect",
+  // FXBO's funnel rules. Carries CRM_WEBHOOK_SECRET in the Authorization
+  // header -- exempt from SESSION auth, not from auth. One path for all five
+  // stages: the stage is a body parameter, because this list is matched
+  // against actual request paths and is capped at six entries.
+  "POST /api/crm-events",
 ]);
 
 const GUARDED_PREFIXES = ["/api", "/rest"];
