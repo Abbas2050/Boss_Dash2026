@@ -440,6 +440,86 @@ describe("the attempt is written before the request goes out", () => {
   });
 });
 
+describe("the pre-send write is the claim", () => {
+  // claimDueEvents takes no lock, and an overlapped IIS recycle runs two Node
+  // workers whose in-process `sweeping` flags know nothing of each other: the
+  // new worker sweeps on its first webhook while the draining one's interval is
+  // still firing. The store applies a claiming write only while the action is
+  // unsent and its clock is due, so the loser learns it from the row count.
+  // Meta is protected by event_id and Brevo's upsert is idempotent; the WhatsApp
+  // welcome has no defence of its own at all.
+
+  for (const a of ACTIONS) {
+    it(`sends no ${a.name}, and records nothing, when the claiming write matched no row`, async () => {
+      const lost = vi.fn(async () => 0);
+      const d = deps({ [a.save]: lost });
+      const result = await processSignupEvent(row(), d);
+      expect(d[a.send]).not.toHaveBeenCalled();
+      // One call, the claim itself. An aborted step is not a failure: a status
+      // written here would overwrite the owner's, and there is nothing to retry.
+      expect(lost).toHaveBeenCalledTimes(1);
+      expect(result[a.name]).toBeNull();
+      expect(d.logger.error).not.toHaveBeenCalled();
+      // The row's other actions are not this sweeper's to abandon.
+      for (const other of ACTIONS.filter((x) => x !== a)) expect(d[other.send], other.name).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it("carries the moment it claims for, and claims nothing when it records the outcome", async () => {
+    // The outcome write must land on whatever the claim left in the status
+    // column -- including the `failed` a final attempt writes before sending.
+    const d = deps();
+    await processSignupEvent(row(), d);
+    for (const a of ACTIONS) {
+      const [claim, outcome] = d[a.save].mock.calls;
+      expect(claim, a.name).toEqual([7, expect.objectContaining({ detail: IN_FLIGHT }), NOW]);
+      expect(outcome, a.name).toEqual([7, expect.objectContaining({ status: "sent" })]);
+    }
+  });
+
+  it("holds a claim the store could not report a count for", async () => {
+    // Only a reported 0 is a lost claim. Reading a missing count as lost would
+    // stop every send in the module.
+    for (const count of [undefined, null]) {
+      const d = deps({ saveMeta: vi.fn(async () => count) });
+      await processSignupEvent(row(), d);
+      expect(d.sendMeta, String(count)).toHaveBeenCalledTimes(1);
+    }
+  });
+});
+
+describe("an outcome write that fails after the send succeeded", () => {
+  // The message is gone and the row still says `retrying` with its clock due, so
+  // the next sweep sends a second welcome. One dropped connection is enough for
+  // this; it needs no second process.
+  for (const a of ACTIONS) {
+    it(`re-records ${a.name}'s completed send once before letting the error through`, async () => {
+      const save = vi.fn();
+      save.mockResolvedValueOnce(undefined); // the claim
+      save.mockRejectedValueOnce(new Error("ECONNRESET")); // the outcome
+      save.mockResolvedValue(undefined); // the second try at the outcome
+      const d = deps({ [a.save]: save });
+      await processSignupEvent(row(), d);
+      expect(save).toHaveBeenCalledTimes(3);
+      expect(save.mock.calls[2]).toEqual([7, expect.objectContaining({ status: "sent" })]);
+    });
+
+    it(`gives ${a.name} no second write when there was no send to lose`, async () => {
+      // A permanent refusal that cannot be written is left to throw on the first
+      // failure: repeating it only delays a row nothing was sent for.
+      const save = vi.fn();
+      save.mockResolvedValueOnce(undefined);
+      save.mockRejectedValue(new Error("ECONNRESET"));
+      const d = deps({
+        [a.save]: save,
+        [a.send]: vi.fn(async () => ({ status: "rejected", retryable: false, detail: "http 400", messageId: null })),
+      });
+      await expect(processSignupEvent(row(), d)).rejects.toThrow("ECONNRESET");
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+  }
+});
+
 describe("each action keeps its own clock", () => {
   // claimDueEvents selects a row when ANY of its actions is due. Without this
   // check, one action coming due ran its waiting siblings early, and, with the
@@ -969,7 +1049,12 @@ describe("the production wiring", () => {
         [store.updateBrevoStatus, "http 201"],
       ]) {
         expect(writer).toHaveBeenCalledTimes(2);
-        expect(writer.mock.calls[0]).toEqual([7, expect.objectContaining({ status: "retrying", attempts: 1 })]);
+        // The claim carries the sweeper's own clock; the outcome write does not.
+        expect(writer.mock.calls[0]).toEqual([
+          7,
+          expect.objectContaining({ status: "retrying", attempts: 1 }),
+          expect.any(Date),
+        ]);
         expect(writer.mock.calls[1]).toEqual([7, expect.objectContaining({ status: "sent", attempts: 1, detail })]);
       }
       expect(store.updateWhatsappStatus.mock.calls[1][1].messageId).toBe("wamid-live");

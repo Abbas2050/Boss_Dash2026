@@ -313,18 +313,16 @@ export async function insertSignupEvent(fields, derived, rawPayload, invalidReas
 }
 
 /**
- * Rows due for an action. This takes NO lock and claims NOTHING: it is a plain
- * SELECT. Two concurrent callers would both receive the same rows and both
- * send -- duplicate WhatsApp welcomes to real clients.
+ * The rows that look due for an action. This takes no lock: it is a plain
+ * SELECT, and two concurrent callers do receive the same rows.
  *
- * The only thing preventing that today is single-process execution, guarded by
- * the in-process `sweeping` flag in the worker. That is not a hypothetical
- * boundary on this host: IIS overlapped app-pool recycling can briefly run two
- * Node workers, each with its own `sweeping` flag, so two sweepers can overlap.
- * Anyone adding a second worker process, or a second app pool that runs the
- * sweeper, must first add a real claim here (e.g. SELECT ... FOR UPDATE SKIP
- * LOCKED inside a transaction, or an atomic status flip). The name is kept
- * deliberately so this constraint is met where the function is defined.
+ * That is safe because the claim is one statement later, in the three writers
+ * below: a sweeper sends only after its own pre-send UPDATE has reported that
+ * it, and not the other one, moved the row. IIS overlapped app-pool recycling
+ * briefly runs two Node workers, each with its own in-process `sweeping` flag,
+ * so this is not a hypothetical boundary on this host -- but a second reader
+ * here is harmless where a second sender is not. Anything new that sends from
+ * this list must take the same claim.
  */
 export async function claimDueEvents(limit = 25, now = new Date()) {
   return all(
@@ -338,21 +336,83 @@ export async function claimDueEvents(limit = 25, now = new Date()) {
   );
 }
 
-export async function updateMetaStatus(id, { status, detail, attempts, nextAttemptAt }) {
-  await run(
-    `UPDATE signup_events
-        SET meta_status = ?, meta_detail = ?, meta_attempts = ?, meta_next_attempt_at = ?
-      WHERE id = ?`,
-    [String(status), String(detail ?? "").slice(0, 500) || null, Number(attempts) || 0, nextAttemptAt ?? null, id]
-  );
+/**
+ * The precondition that turns a pre-send write into the claim on a row.
+ *
+ * Both halves are needed, and each covers what the other cannot:
+ *
+ *   `<action>_status IN ('pending','retrying')` -- the action is still ours to
+ *   attempt. One that another sweeper has already settled (`sent`, `rejected`,
+ *   `failed`, `skipped`, `invalid`) matches nothing, so a stale worker cannot
+ *   overwrite `sent` with `retrying` and leave the next sweep a second send.
+ *
+ *   the clock is not in the future -- the pre-send write itself moves the clock
+ *   five minutes out, and `retrying` is claimable again, so without this the
+ *   loser of a race would match the winner's own fresh row and send as well. On
+ *   the final attempt the pre-send write stores `failed` with no clock, and
+ *   there it is the status half that stops the loser.
+ *
+ * `claimAt` is the sweeper's own "now", the instant claimDueEvents compared
+ * against. A write with NO claimAt is not a claim: it records the outcome of a
+ * send already made, on a row this worker owns, and has to land whatever status
+ * the claim left behind -- including the `failed` of a final attempt.
+ */
+function claimClause(action, claimAt) {
+  if (claimAt === null || claimAt === undefined) return { sql: "", params: [] };
+  return {
+    sql: `
+        AND ${action}_status IN ('pending','retrying')
+        AND (${action}_next_attempt_at IS NULL OR ${action}_next_attempt_at <= ?)`,
+    params: [claimAt],
+  };
 }
 
-export async function updateWhatsappStatus(id, { status, messageId, detail, attempts, nextAttemptAt }) {
-  await run(
+/**
+ * How many rows the UPDATE matched, or null when the driver did not say.
+ *
+ * mysql2 connects with CLIENT_FOUND_ROWS, under which `affectedRows` counts the
+ * rows MATCHED rather than the rows whose values changed. That is what a claim
+ * needs: re-writing the identical status and attempt count is still a won
+ * claim. (The same flag is why insertSignupEvent tells a duplicate apart by
+ * error code and not by this number.) A result carrying no count is not a lost
+ * claim but a driver that did not report one, and reading it as lost would stop
+ * every send.
+ */
+const matchedRows = (result) => (typeof result?.affectedRows === "number" ? result.affectedRows : null);
+
+/**
+ * The three action writers. Each writes only its own action's columns, and each
+ * returns how many rows it matched.
+ *
+ * Pass `claimAt` and the write is a claim (see claimClause): a 0 back means
+ * another sweeper owns this action and the caller must send nothing. Leave it
+ * out and the write records the outcome of a send already made.
+ */
+export async function updateMetaStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+  const claim = claimClause("meta", claimAt);
+  const result = await run(
+    `UPDATE signup_events
+        SET meta_status = ?, meta_detail = ?, meta_attempts = ?, meta_next_attempt_at = ?
+      WHERE id = ?${claim.sql}`,
+    [
+      String(status),
+      String(detail ?? "").slice(0, 500) || null,
+      Number(attempts) || 0,
+      nextAttemptAt ?? null,
+      id,
+      ...claim.params,
+    ]
+  );
+  return matchedRows(result);
+}
+
+export async function updateWhatsappStatus(id, { status, messageId, detail, attempts, nextAttemptAt }, claimAt = null) {
+  const claim = claimClause("whatsapp", claimAt);
+  const result = await run(
     `UPDATE signup_events
         SET whatsapp_status = ?, whatsapp_message_id = ?, whatsapp_detail = ?,
             whatsapp_attempts = ?, whatsapp_next_attempt_at = ?
-      WHERE id = ?`,
+      WHERE id = ?${claim.sql}`,
     [
       String(status),
       identifier(messageId, "whatsapp_message_id"),
@@ -360,17 +420,28 @@ export async function updateWhatsappStatus(id, { status, messageId, detail, atte
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,
+      ...claim.params,
     ]
   );
+  return matchedRows(result);
 }
 
-export async function updateBrevoStatus(id, { status, detail, attempts, nextAttemptAt }) {
-  await run(
+export async function updateBrevoStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+  const claim = claimClause("brevo", claimAt);
+  const result = await run(
     `UPDATE signup_events
         SET brevo_status = ?, brevo_detail = ?, brevo_attempts = ?, brevo_next_attempt_at = ?
-      WHERE id = ?`,
-    [String(status), String(detail ?? "").slice(0, 500) || null, Number(attempts) || 0, nextAttemptAt ?? null, id]
+      WHERE id = ?${claim.sql}`,
+    [
+      String(status),
+      String(detail ?? "").slice(0, 500) || null,
+      Number(attempts) || 0,
+      nextAttemptAt ?? null,
+      id,
+      ...claim.params,
+    ]
   );
+  return matchedRows(result);
 }
 
 /**

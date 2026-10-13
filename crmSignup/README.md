@@ -76,8 +76,10 @@ columns, so a recycle costs at most one interval.
 - A destination with no key is recorded as `skipped`, and a skipped row is
   final. Set `META_CAPI_ACCESS_TOKEN`, `WA_API_KEY` and `BREVO_API_KEY` before
   pointing FXBO at the endpoint.
-- Run one Node process. The sweeper takes no lock, so two of them would both
-  pick up the same due rows and could send a client the same welcome twice.
+- Two workers can run at once, and the host arranges exactly that during an
+  overlapped recycle. The sweeper's `SELECT` takes no lock, so both read the
+  same due rows; the pre-send write is the claim, and the one whose `UPDATE`
+  matches no row sends nothing. Nothing here needs one Node process.
 - The settings tab does not appear until someone has run `npm run build` on the
   server (spec section 12).
 

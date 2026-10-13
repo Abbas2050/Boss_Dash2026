@@ -41,10 +41,19 @@ const db = vi.hoisted(() => {
       return state.respond(sql, params);
     },
   };
+  // The options are kept because one of them matters: the claim reads
+  // affectedRows, which counts matched rows only while FOUND_ROWS is on.
   return { state, pool };
 });
 
-vi.mock("mysql2/promise", () => ({ default: { createPool: () => db.pool } }));
+vi.mock("mysql2/promise", () => ({
+  default: {
+    createPool: (options) => {
+      db.state.poolOptions = options;
+      return db.pool;
+    },
+  },
+}));
 
 const FIELDS = {
   stage: "registered",
@@ -293,6 +302,72 @@ describe("the three action writers", () => {
       expect(params[0]).toBe("failed");
       expect(params[1]).toBeNull();
     }
+  });
+});
+
+describe("a claiming write", () => {
+  // The pre-send write IS the claim on the row. claimDueEvents takes no lock and
+  // an overlapped IIS recycle runs two workers, so dropping either half of this
+  // predicate puts a second WhatsApp welcome back on the table. Each half is
+  // pinned per writer, because they are three separate statements.
+  const claimAt = new Date("2026-10-13T12:00:00Z");
+  const WRITERS = [
+    ["meta", updateMetaStatus],
+    ["whatsapp", updateWhatsappStatus],
+    ["brevo", updateBrevoStatus],
+  ];
+
+  for (const [action, write] of WRITERS) {
+    it(`${action} claims only a row still unsent, whose clock has come due`, async () => {
+      await write(7, { status: "retrying", detail: "x", attempts: 1, nextAttemptAt: claimAt }, claimAt);
+      const { sql, params } = db.state.calls[0];
+      expect(sql).toMatch(new RegExp(`WHERE id = \\?\\s+AND ${action}_status IN \\('pending','retrying'\\)`));
+      expect(sql).toMatch(
+        new RegExp(`AND \\(${action}_next_attempt_at IS NULL OR ${action}_next_attempt_at <= \\?\\)`)
+      );
+      // The claim moment binds last, after the row id.
+      expect(params.at(-2)).toBe(7);
+      expect(params.at(-1)).toBe(claimAt);
+    });
+
+    it(`${action} reports the rows it matched, so a worker can tell a lost claim from a won one`, async () => {
+      db.state.respond = () => [{ affectedRows: 1 }];
+      expect(await write(7, { status: "retrying" }, claimAt)).toBe(1);
+      db.state.respond = () => [{ affectedRows: 0 }];
+      expect(await write(7, { status: "retrying" }, claimAt)).toBe(0);
+    });
+
+    it(`${action} takes no claim when it records an outcome, so a final attempt's still lands`, async () => {
+      // The claim on the last attempt stores `failed`, which the predicate does
+      // not match. Holding the write that records what the provider said to the
+      // same predicate would read a third-attempt send as failed for ever.
+      await write(7, { status: "sent", detail: "ok", attempts: 3, nextAttemptAt: null });
+      const { sql, params } = db.state.calls[0];
+      expect(sql).toMatch(/WHERE id = \?$/);
+      expect(sql).not.toContain("IN ('pending','retrying')");
+      expect(params.at(-1)).toBe(7);
+    });
+  }
+
+  it("counts a row it matched but did not change as claimed, as CLIENT_FOUND_ROWS reports it", async () => {
+    // mysql2 connects with CLIENT_FOUND_ROWS, so affectedRows counts the rows
+    // MATCHED. A claim that rewrites an identical status and count changes
+    // nothing and is still won; reading changedRows would abandon it.
+    db.state.respond = () => [{ affectedRows: 1, changedRows: 0 }];
+    expect(await updateMetaStatus(7, { status: "retrying" }, claimAt)).toBe(1);
+  });
+
+  it("does not build the pool with FOUND_ROWS turned off", async () => {
+    // This exact flag already produced one defect on this branch (insertSignupEvent's
+    // docstring records it). Off, every unchanged claim would read as lost and
+    // nothing would ever be sent.
+    expect(db.state.poolOptions, "createPool was not called with options").toBeTruthy();
+    expect(String(db.state.poolOptions.flags ?? "")).not.toMatch(/FOUND_ROWS/i);
+  });
+
+  it("reads a result with no count at all as unknown rather than lost", async () => {
+    db.state.respond = () => [{}];
+    expect(await updateBrevoStatus(7, { status: "retrying" }, claimAt)).toBeNull();
   });
 });
 

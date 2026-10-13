@@ -268,6 +268,11 @@ it does not stop new events going out. To actually halt sending, unset the
 provider key for the destination concerned, bearing in mind that rows stored
 while it is unset are marked `skipped` permanently.
 
-**Run one Node process.** `claimDueEvents` takes no row lock, so two workers
-sweeping the same rows can both send. The host performs overlapped recycles
-during a deploy, which briefly gives you exactly that.
+**Two workers during a deploy is fine.** The host performs overlapped recycles,
+so a draining worker and a new one do briefly sweep together, and
+`claimDueEvents` takes no row lock — both read the same due rows. What keeps a
+client from being messaged twice is the pre-send write: it only lands while the
+action is still unsent and its clock is due, and the worker whose write matches
+no row sends nothing and records nothing. In the log that worker says
+`left to the sweeper that claimed row <id>`, which is a normal line during a
+recycle and not a failure.

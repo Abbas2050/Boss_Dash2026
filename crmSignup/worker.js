@@ -27,6 +27,11 @@ const BREVO_MAX_ATTEMPTS = 3;
 // moment it is known, so a person reads this only if the process died first.
 const IN_FLIGHT_DETAIL = "send started; outcome not recorded";
 
+// The `code` on the error `begin` throws when its claiming UPDATE matched no
+// row. Not a failure of this step: another sweeper owns the action and is
+// sending it, so this one must write nothing at all (see processSignupEvent).
+const CLAIM_LOST = "CRM_EVENT_CLAIM_LOST";
+
 /**
  * What to write after one attempt.
  *
@@ -228,6 +233,27 @@ function isWaiting(clock, now) {
 }
 
 /**
+ * The outcome write, retried once when what it records is a send.
+ *
+ * A send that succeeded and could not be recorded is the one write failure that
+ * costs a client a second message: the row stays `retrying` with its clock due,
+ * and the next sweep sends again. One dropped connection is enough, and no
+ * second process is needed for it. Anything else is left to fail on the first
+ * attempt -- repeating it only delays a row that has not been sent anyway.
+ */
+async function saveOutcome(save, id, outcome, logger) {
+  try {
+    return await save(id, outcome);
+  } catch (error) {
+    if (outcome?.status !== "sent") throw error;
+    logger?.warn?.(
+      `[crm-events] could not record a completed send, retrying the write: ${error?.message || String(error)}`
+    );
+    return save(id, outcome);
+  }
+}
+
+/**
  * One row, three actions, independently.
  *
  * Each action has its own status, attempt count and clock in the row, and its own
@@ -238,6 +264,10 @@ function isWaiting(clock, now) {
  * A write to the store that fails is NOT caught, deliberately: when the row cannot
  * be written, nothing further is sent for it, because a send that cannot be
  * recorded is a send the next sweep repeats.
+ *
+ * A step whose claim is lost is the one case that records nothing: the action
+ * belongs to the sweeper that claimed it, and it is left alone rather than
+ * retried or marked failed.
  */
 export async function processSignupEvent(row, deps) {
   const fields = rowToFields(row);
@@ -262,15 +292,38 @@ export async function processSignupEvent(row, deps) {
     // the same plan reads `failed`, so a crash there is not retried at all. A step
     // that sends nothing (a skip) never calls it and spends nothing. The outcome
     // replaces this, computed from the same count.
-    const begin = () =>
-      save(row.id, {
-        ...planRetry({ attempts, maxAttempts, retryable: true, now: deps.now() }),
-        detail: IN_FLIGHT_DETAIL,
-      });
+    //
+    // It is also the claim: the write carries the moment it claims for, and the
+    // store only applies it while the action is still unsent and its clock is
+    // due. claimDueEvents takes no lock, and an overlapped IIS recycle runs two
+    // workers whose `sweeping` flags know nothing of each other, so this is the
+    // one thing standing between that overlap and a second WhatsApp welcome --
+    // Meta has event_id and Brevo's upsert is idempotent, WhatsApp has neither.
+    const begin = async () => {
+      const claimed = await save(
+        row.id,
+        {
+          ...planRetry({ attempts, maxAttempts, retryable: true, now: deps.now() }),
+          detail: IN_FLIGHT_DETAIL,
+        },
+        deps.now()
+      );
+      // Strictly 0, which is the store reporting that it matched no row. A store
+      // that does not report a count at all returns null, and a count we were
+      // never given must not read as a lost claim: that would stop every send.
+      if (claimed === 0) throw Object.assign(new Error(`${key} is claimed elsewhere`), { code: CLAIM_LOST });
+    };
 
     try {
       result[key] = await run(row, fields, deps, begin);
     } catch (error) {
+      // Another sweeper got there first. Nothing was sent and nothing may be
+      // written: a status from here would overwrite the owner's, and this is not
+      // a failure to retry or to record.
+      if (error?.code === CLAIM_LOST) {
+        deps.logger.warn?.(`[crm-events] ${key} left to the sweeper that claimed row ${row.id}`);
+        continue;
+      }
       deps.logger.error?.(`[crm-events] ${key} step threw: ${error?.message || String(error)}`);
       result[key] = {
         ...planRetry({ attempts, maxAttempts, retryable: true, now: deps.now() }),
@@ -278,7 +331,9 @@ export async function processSignupEvent(row, deps) {
         messageId: null,
       };
     }
-    await save(row.id, result[key]);
+    // No claim moment: this row's action is ours, and the outcome has to land on
+    // whatever the claim left in the status column.
+    await saveOutcome(save, row.id, result[key], deps.logger);
   }
 
   return result;
