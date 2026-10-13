@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { sendTimeoutSignal } from "./sendTimeout.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
@@ -152,6 +153,8 @@ export async function sendMetaEvent({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     let message = String(transportError?.message || transportError);

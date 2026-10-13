@@ -3,7 +3,8 @@
 // The trap: DoubleTick answers 200 to a message it then rejects. The HTTP
 // status says the request was accepted. messages[0].status says what happened
 // to the message. Only the second one is the outcome.
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { DEFAULT_SEND_TIMEOUT_MS, SEND_TIMEOUT_ENV } from "./sendTimeout.js";
 import {
   WHATSAPP_FAILURE_STATUSES,
   parseSkipSources,
@@ -429,5 +430,76 @@ describe("sendWhatsappTemplate", () => {
       expect(r.status, String(thrown)).toBe("failed");
       expect(r.retryable, String(thrown)).toBe(true);
     }
+  });
+});
+
+describe("sendWhatsappTemplate timeout", () => {
+  // Node's fetch has no timeout of its own, so without a signal a stalled
+  // connection would hold the worker's sweep for hours.
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  const ok = () => vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ messages: [{ status: "SENT", messageId: "m-30" }] }),
+  }));
+  const send = (fetchImpl) => sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+
+  it("bounds the request with the shared default timeout", async () => {
+    vi.stubEnv(SEND_TIMEOUT_ENV, undefined);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchImpl = ok();
+    await send(fetchImpl);
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(timeout).toHaveBeenCalledWith(DEFAULT_SEND_TIMEOUT_MS);
+    expect(init.signal).toBe(timeout.mock.results[0].value);
+    expect(init.signal.aborted).toBe(false);
+  });
+
+  it("takes its duration from CRM_SEND_TIMEOUT_MS, not from a number of its own", async () => {
+    vi.stubEnv(SEND_TIMEOUT_ENV, "1234");
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchImpl = ok();
+    await send(fetchImpl);
+    expect(timeout).toHaveBeenCalledWith(1234);
+    expect(fetchImpl.mock.calls[0][1].signal).toBe(timeout.mock.results[0].value);
+  });
+
+  it("gives every send its own signal, so one expiry cannot abort the next", async () => {
+    const fetchImpl = ok();
+    await send(fetchImpl);
+    await send(fetchImpl);
+    const [first, second] = fetchImpl.mock.calls.map(([, init]) => init.signal);
+    expect(first).toBeInstanceOf(AbortSignal);
+    expect(second).toBeInstanceOf(AbortSignal);
+    expect(second).not.toBe(first);
+  });
+
+  it("abandons a stalled request and reports a retryable transport failure, not an exception", async () => {
+    vi.stubEnv(SEND_TIMEOUT_ENV, "20");
+    let reason;
+    const stalled = vi.fn(
+      (url, init) =>
+        new Promise((resolve, reject) => {
+          init.signal.addEventListener(
+            "abort",
+            () => {
+              reason = init.signal.reason;
+              reject(reason);
+            },
+            { once: true }
+          );
+        })
+    );
+    const r = await send(stalled);
+    // What fetch really throws on an abort: a DOMException named TimeoutError.
+    expect(reason).toBeInstanceOf(DOMException);
+    expect(reason.name).toBe("TimeoutError");
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
+    expect(r.detail).toMatch(/^transport: /);
   });
 });

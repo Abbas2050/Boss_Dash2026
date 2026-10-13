@@ -1,4 +1,5 @@
 import { PHONE_RE } from "./normalise.js";
+import { sendTimeoutSignal } from "./sendTimeout.js";
 
 export const DOUBLETICK_TEMPLATE_URL = "https://public.doubletick.io/whatsapp/message/template";
 
@@ -159,6 +160,8 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     // A thrown falsy value is still a transport failure, not something that falls through.

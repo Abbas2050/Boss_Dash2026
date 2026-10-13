@@ -1,3 +1,5 @@
+import { sendTimeoutSignal } from "./sendTimeout.js";
+
 export const BREVO_CONTACTS_URL = "https://api.brevo.com/v3/contacts";
 
 const text = (v) => String(v ?? "").trim();
@@ -101,6 +103,8 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
         Accept: "application/json",
       },
       body: JSON.stringify(contact),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     // A thrown falsy value is still a transport failure, not something that falls through.
