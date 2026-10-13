@@ -89,7 +89,7 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
   return payload;
 }
 
-export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body } = {}) {
+export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body, bodyTimedOut } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -100,7 +100,13 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
 
   const httpStatus = Number(rawStatus) || 0;
   const reason = String(body?.error?.message ?? "").slice(0, 200);
-  const detail = reason ? `http ${httpStatus} ${reason}` : `http ${httpStatus}`;
+  // With no reason to give, say why: an operator reading a row that was retried
+  // and then failed should know we never saw Meta's reason, not that we ignored it.
+  const detail = reason
+    ? `http ${httpStatus} ${reason}`
+    : bodyTimedOut
+      ? `http ${httpStatus} body timed out`
+      : `http ${httpStatus}`;
 
   // The Graph code decides, whatever status carries it: Meta throttles with a 400.
   if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
@@ -112,7 +118,17 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
     return { status: "failed", retryable: true, detail };
   }
 
-  if (httpStatus >= 200 && httpStatus < 300) {
+  // Meta puts its throttle codes in the body, so a non-2xx whose body timed out is
+  // a throttle (retryable) or a bad parameter (permanent) and nothing tells which.
+  // The costs are lopsided: retrying a real rejection wastes a few calls and fails
+  // the same way, while not retrying a throttle silently drops a conversion. And
+  // event_id means a retry cannot double-count.
+  const isSuccess = httpStatus >= 200 && httpStatus < 300;
+  if (bodyTimedOut && !isSuccess) {
+    return { status: "failed", retryable: true, detail };
+  }
+
+  if (isSuccess) {
     // Meta's success body always carries the count. Without one, a proxy answered
     // instead of Meta: the outcome is unknown, and event_id makes a retry safe.
     // An explicit zero is Meta saying so, and a retry would hear the same thing.
@@ -166,13 +182,14 @@ export async function sendMetaEvent({
   }
 
   let body = null;
+  let bodyTimedOut = false;
   try {
     body = await response.json();
-  } catch {
-    // Also a body cut off by the timeout. No count then is an unknown outcome,
-    // which is retryable here; the same stall on a 400 loses its throttle code.
+  } catch (error) {
     body = null;
+    // The timeout signal covers reading the body as well as the headers.
+    bodyTimedOut = error?.name === "TimeoutError";
   }
 
-  return classifyMetaOutcome({ httpStatus: response?.status, body });
+  return classifyMetaOutcome({ httpStatus: response?.status, body, bodyTimedOut });
 }

@@ -397,23 +397,61 @@ describe("sendMetaEvent when the response body times out", () => {
     expect(r).toEqual({ status: "failed", retryable: true, detail: "http 200 no events_received" });
   });
 
-  it("loses a throttle code with the body, so a throttled 400 whose body timed out is permanent", async () => {
+  it("retries a 400 whose body timed out, since a throttle and a rejection cannot be told apart", async () => {
     // Meta carries its throttle codes in the body (a 400 with code 4), so a body
-    // that never arrives takes the code with it and a throttle reads as a rejection.
-    // Pinned as it stands, so changing it is a decision and not an accident.
-    const readable = vi.fn(async () => ({
-      ok: false,
-      status: 400,
-      json: async () => ({ error: { message: "(#4) Application request limit reached", code: 4 } }),
-    }));
-    expect((await send(readable)).retryable).toBe(true);
+    // that never arrives leaves a 400 that is either one. A readable throttle is
+    // retried and a readable rejection is not; the unreadable one is retried,
+    // because not retrying a throttle drops a conversion while retrying a
+    // rejection only wastes a call, and event_id makes the retry safe.
+    const readable = (error) =>
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error }) }));
+    expect((await send(readable({ message: "(#4) Application request limit reached", code: 4 }))).retryable).toBe(true);
+    expect((await send(readable({ message: "Invalid parameter", code: 100 }))).retryable).toBe(false);
 
     const r = await send(vi.fn(async () => stalledBodyResponse(400)));
-    expect(r).toEqual({ status: "failed", retryable: false, detail: "http 400" });
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 400 body timed out" });
   });
 
-  it("still retries a 5xx whose body timed out, since the status decides", async () => {
-    const r = await send(vi.fn(async () => stalledBodyResponse(503)));
-    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+  it("retries every non-2xx whose body timed out, and says the body timed out", async () => {
+    for (const status of [400, 401, 403, 404, 422, 503]) {
+      const r = await send(vi.fn(async () => stalledBodyResponse(status)));
+      expect(r, String(status)).toEqual({ status: "failed", retryable: true, detail: `http ${status} body timed out` });
+    }
+  });
+
+  it("does not retry a non-2xx whose body failed for any other reason", async () => {
+    // Only a timeout is a body we never saw. A body that arrived and would not
+    // parse is a different case, and so is anything thrown that is not an error.
+    for (const thrown of [new SyntaxError("Unexpected token <"), new Error("socket hang up"), undefined, null, "oops"]) {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => {
+          throw thrown;
+        },
+      }));
+      expect(await send(fetchImpl), String(thrown)).toEqual({ status: "failed", retryable: false, detail: "http 400" });
+    }
+  });
+
+  it("leaves a 2xx whose body timed out as it was: an unknown outcome, retryable, no count", async () => {
+    // The new rule is for a non-2xx. A 2xx keeps its own wording and its own rule.
+    const r = await send(vi.fn(async () => stalledBodyResponse(201)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 201 no events_received" });
+  });
+});
+
+describe("classifyMetaOutcome and a body that timed out", () => {
+  it("retries a non-2xx only when told the body timed out, not for a missing body alone", () => {
+    expect(classifyMetaOutcome({ httpStatus: 400, body: null, bodyTimedOut: true })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 400 body timed out",
+    });
+    expect(classifyMetaOutcome({ httpStatus: 400, body: null })).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "http 400",
+    });
   });
 });
