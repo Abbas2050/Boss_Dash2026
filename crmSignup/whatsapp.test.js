@@ -264,13 +264,16 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.retryable).toBe(true);
   });
 
-  it("treats any 2xx as accepted, so a 201 or 202 carrying a healthy status is sent", () => {
+  it("treats any 2xx as accepted, from 201 through 299, when it carries a healthy status", () => {
     expect(
       classifyWhatsappOutcome({ httpStatus: 201, body: { messages: [{ status: "SENT", messageId: "m-21" }] } })
     ).toEqual({ status: "sent", retryable: false, detail: "SENT", messageId: "m-21" });
     expect(
       classifyWhatsappOutcome({ httpStatus: 202, body: { messages: [{ status: "ENQUEUED", messageId: "m-22" }] } })
     ).toEqual({ status: "sent", retryable: false, detail: "ENQUEUED", messageId: "m-22" });
+    expect(
+      classifyWhatsappOutcome({ httpStatus: 299, body: { messages: [{ status: "SENT", messageId: "m-24" }] } })
+    ).toEqual({ status: "sent", retryable: false, detail: "SENT", messageId: "m-24" });
   });
 
   it("does not accept 199 or 300 as a 2xx, even with a healthy status in the body", () => {
@@ -321,6 +324,9 @@ describe("classifyWhatsappOutcome", () => {
       ["non-string [SENT]", { httpStatus: 200, body: { messages: [{ status: ["SENT"] }] } }],
       ["no message status", { httpStatus: 200, body: {} }],
       ["empty messages array", { httpStatus: 200, body: { messages: [] } }],
+      ["no HTTP status at all", { body: sentBody }],
+      ["multi-entry, FAILED then SENT", { httpStatus: 200, body: { messages: [{ status: "FAILED" }, { status: "SENT" }] } }],
+      ["messages is not an array", { httpStatus: 200, body: { messages: { 0: { status: "SENT" } } } }],
     ];
     for (const [label, input] of cases) {
       expect(classifyWhatsappOutcome(input).status, label).not.toBe("sent");
@@ -406,11 +412,13 @@ describe("sendWhatsappTemplate", () => {
   });
 
   it("treats a thrown falsy value as a transport failure, not as a rejection", async () => {
-    const fetchImpl = vi.fn(async () => {
-      throw undefined;
-    });
-    const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
-    expect(r.status).toBe("failed");
-    expect(r.retryable).toBe(true);
+    for (const thrown of [undefined, null, 0, "", false]) {
+      const fetchImpl = vi.fn(async () => {
+        throw thrown;
+      });
+      const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+      expect(r.status, String(thrown)).toBe("failed");
+      expect(r.retryable, String(thrown)).toBe(true);
+    }
   });
 });

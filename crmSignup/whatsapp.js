@@ -162,7 +162,7 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
     });
   } catch (transportError) {
     // A thrown falsy value is still a transport failure, not something that falls through.
-    return classifyWhatsappOutcome({ transportError: transportError ?? new Error("unknown") });
+    return classifyWhatsappOutcome({ transportError: transportError || new Error("unknown") });
   }
 
   let body = null;
