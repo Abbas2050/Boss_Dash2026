@@ -12,6 +12,9 @@ import {
   upsertBrevoContact,
 } from "./brevo.js";
 
+// The two booleans are set in opposite polarity to each other, so a swapped or
+// hardcoded boolean cannot produce the same output as the right one. The
+// opposite pair is exercised again in its own case below.
 const FIELDS = {
   stage: "registered",
   crmClientId: "88214",
@@ -21,10 +24,10 @@ const FIELDS = {
   email: "ali.khan@example.com",
   phone: "+971507192185",
   recordType: "client",
-  marketingConsent: true,
+  marketingConsent: false,
   source: "SVG",
   entity: "SVG Ltd",
-  isIb: false,
+  isIb: true,
   language: "en",
   utmSource: "meta",
   utmMedium: "cpc",
@@ -50,6 +53,18 @@ describe("skip decisions", () => {
     });
   });
 
+  it("treats every blank or missing key as unconfigured", () => {
+    for (const apiKey of ["", "   ", undefined, null]) {
+      expect(decideBrevoSkip({ stage: "registered", apiKey }), String(apiKey)).toEqual({
+        reason: "brevo not configured",
+      });
+    }
+  });
+
+  it("reports an unconfigured key ahead of the stage", () => {
+    expect(decideBrevoSkip({ stage: "lead", apiKey: "" })).toEqual({ reason: "brevo not configured" });
+  });
+
   it("does not gate on marketing consent", () => {
     // Decided 2026-10-09 and reaffirmed 2026-10-12: everyone lands in Brevo
     // with consent recorded as OPT_IN, and campaigns segment on it.
@@ -59,7 +74,7 @@ describe("skip decisions", () => {
 
 describe("buildBrevoContact", () => {
   it("builds an idempotent upsert into the configured list", () => {
-    const contact = buildBrevoContact(FIELDS, { listId: "19" });
+    const contact = buildBrevoContact({ ...FIELDS, email: "  Ali.Khan@Example.COM " }, { listId: "19" });
     expect(contact.email).toBe("ali.khan@example.com");
     expect(contact.updateEnabled).toBe(true);
     expect(contact.listIds).toEqual([19]);
@@ -71,11 +86,11 @@ describe("buildBrevoContact", () => {
       LASTNAME: "Khan",
       MIDDLE_NAME: "Hassan",
       EXT_ID: "88214",
-      OPT_IN: true,
+      OPT_IN: false,
       ENTITY: "SVG Ltd",
       FORM_NAME: "SVG",
       LANGUAGE: "en",
-      IS_IB: false,
+      IS_IB: true,
       UTM_SOURCE: "meta",
       UTM_MEDIUM: "cpc",
       UTM_CAMPAIGN: "zero-spread-ind-2",
@@ -83,13 +98,22 @@ describe("buildBrevoContact", () => {
     });
   });
 
+  it("carries each boolean from its own field, in the opposite pair too", () => {
+    const { attributes } = buildBrevoContact(
+      { ...FIELDS, marketingConsent: true, isIb: false },
+      { listId: "19" }
+    );
+    expect(attributes.OPT_IN).toBe(true);
+    expect(attributes.IS_IB).toBe(false);
+  });
+
   it("never sends the phone, and never sends an attribute Brevo lacks", () => {
-    const { attributes } = buildBrevoContact(FIELDS, { listId: "19" });
-    expect(JSON.stringify(attributes)).not.toContain("971507192185");
+    const contact = buildBrevoContact(FIELDS, { listId: "19" });
+    const { attributes } = contact;
+    expect(JSON.stringify(contact)).not.toContain("971507192185");
+    expect(Object.keys(contact)).toEqual(["email", "updateEnabled", "attributes", "listIds"]);
     expect(attributes.PHONE).toBeUndefined();
     expect(attributes.SMS).toBeUndefined();
-    expect(attributes.COUNTRY).toBeUndefined();
-    expect(attributes.IS_TEST).toBeUndefined();
     expect(attributes.MARKETING_CONSENT).toBeUndefined(); // consent rides on OPT_IN
     expect(attributes.CRM_CLIENT_ID).toBeUndefined(); // the id rides on EXT_ID
     expect(attributes.FULL_LINK).toBeUndefined();
@@ -97,7 +121,7 @@ describe("buildBrevoContact", () => {
 
   it("omits empty text attributes but always sends the booleans", () => {
     const { attributes } = buildBrevoContact(
-      { ...FIELDS, middleName: "", entity: "", utmMedium: "", marketingConsent: false },
+      { ...FIELDS, middleName: "", entity: "", utmMedium: "", marketingConsent: false, isIb: false },
       { listId: "19" }
     );
     expect("MIDDLE_NAME" in attributes).toBe(false);
@@ -108,15 +132,28 @@ describe("buildBrevoContact", () => {
     expect(attributes.IS_IB).toBe(false);
   });
 
+  it("omits a missing or null text field rather than sending the word for it", () => {
+    const { attributes } = buildBrevoContact(
+      { ...FIELDS, middleName: undefined, utmMedium: null },
+      { listId: "19" }
+    );
+    expect("MIDDLE_NAME" in attributes).toBe(false);
+    expect("UTM_MEDIUM" in attributes).toBe(false);
+  });
+
   it("omits listIds entirely when no list is configured", () => {
     expect("listIds" in buildBrevoContact(FIELDS, { listId: "" })).toBe(false);
   });
 });
 
 describe("classifyBrevoOutcome", () => {
-  it("treats 201 created and 204 updated as sent", () => {
-    expect(classifyBrevoOutcome({ httpStatus: 201, body: { id: 5 } }).status).toBe("sent");
-    expect(classifyBrevoOutcome({ httpStatus: 204, body: null }).status).toBe("sent");
+  it("treats 201 created and 204 updated as sent, and never as retryable", () => {
+    const created = classifyBrevoOutcome({ httpStatus: 201, body: { id: 5 } });
+    const updated = classifyBrevoOutcome({ httpStatus: 204, body: null });
+    expect(created.status).toBe("sent");
+    expect(updated.status).toBe("sent");
+    expect(created.retryable).toBe(false);
+    expect(updated.retryable).toBe(false);
   });
 
   it("retries transport errors, 429 and 5xx", () => {
@@ -168,24 +205,6 @@ describe("upsertBrevoContact", () => {
     expect(init.headers["api-key"]).toBe("brevo-key");
   });
 
-  it("turns a thrown fetch into a retryable outcome rather than an exception", async () => {
-    const fetchImpl = vi.fn(async () => {
-      throw new Error("ENOTFOUND");
-    });
-    expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).retryable).toBe(true);
-  });
-
-  it("treats a 204 with no body as success", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      status: 204,
-      json: async () => {
-        throw new Error("no content");
-      },
-    }));
-    expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).status).toBe("sent");
-  });
-
   it("posts the contact as JSON to the contacts endpoint", async () => {
     const fetchImpl = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 1 }) }));
     const contact = { email: "ali.khan@example.com", updateEnabled: true, attributes: { EXT_ID: "88214" } };
@@ -193,7 +212,26 @@ describe("upsertBrevoContact", () => {
     const [, init] = fetchImpl.mock.calls[0];
     expect(init.method).toBe("POST");
     expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(init.headers.Accept).toBe("application/json");
     expect(JSON.parse(init.body)).toEqual(contact);
+  });
+
+  it("carries Brevo's own code and message into the detail of a rejection", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ code: "invalid_parameter", message: "Attribute ENTITY does not exist" }),
+    }));
+    const r = await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} });
+    expect(r.detail).toBe("http 400 invalid_parameter: Attribute ENTITY does not exist");
+    expect(r.retryable).toBe(false);
+  });
+
+  it("turns a thrown fetch into a retryable outcome rather than an exception", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("ENOTFOUND");
+    });
+    expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).retryable).toBe(true);
   });
 
   it("treats a thrown falsy value as a retryable transport failure", async () => {
@@ -205,5 +243,16 @@ describe("upsertBrevoContact", () => {
       expect(r.status, String(thrown)).toBe("failed");
       expect(r.retryable, String(thrown)).toBe(true);
     }
+  });
+
+  it("treats a 204 with no body as success", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new Error("no content");
+      },
+    }));
+    expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).status).toBe("sent");
   });
 });
