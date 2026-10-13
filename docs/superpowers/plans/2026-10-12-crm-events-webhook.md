@@ -175,12 +175,13 @@ describe("record type", () => {
     expect(deriveRecordType("1")).toBe("lead");
   });
 
-  it("does not let a serialised null or undefined pass as a client", () => {
-    // These ARE in the general falsy set, because for an ordinary flag they
-    // mean false. For the record type they mean unknown, so the two sets are
-    // deliberately separate.
-    expect(deriveRecordType("null")).toBe("lead");
-    expect(deriveRecordType("undefined")).toBe("lead");
+  it("does not read null or undefined as a client", () => {
+    // Both are falsy for consent and IB flags, where absent means no. For the
+    // record type they mean unknown: a template variable that failed to render
+    // arrives as one of these strings, and unknown resolves to lead.
+    for (const v of ["null", "undefined"]) {
+      expect(deriveRecordType(v), v).toBe("lead");
+    }
   });
 });
 
@@ -189,6 +190,11 @@ describe("isFalsyLiteral", () => {
     expect(isFalsyLiteral("")).toBe(true);
     expect(isFalsyLiteral(undefined)).toBe(true);
     expect(isFalsyLiteral("1")).toBe(false);
+  });
+
+  it("still treats null and undefined as falsy, unlike the record type", () => {
+    expect(isFalsyLiteral("null")).toBe(true);
+    expect(isFalsyLiteral("undefined")).toBe(true);
   });
 });
 
@@ -208,6 +214,10 @@ describe("middle name derivation", () => {
     expect(deriveMiddleName("John Smith Jones", "John", "Brown")).toBe("");
   });
 
+  it("keeps a multi-word surname as the end it matches", () => {
+    expect(deriveMiddleName("Ahmed Mohammed Al Mansoori", "Ahmed", "Al Mansoori")).toBe("Mohammed");
+  });
+
   it("is not confused by case or extra spacing", () => {
     expect(deriveMiddleName("  ali   hassan   khan ", "Ali", "KHAN")).toBe("hassan");
   });
@@ -222,6 +232,22 @@ describe("masking", () => {
   it("keeps enough to identify a record by eye", () => {
     expect(maskEmail("abbas@skylinkscapital.com")).toBe("a***@skylinkscapital.com");
     expect(maskPhone("+971507192185")).toBe("+971***85");
+  });
+
+  it("does not leak a second address when a field holds two", () => {
+    // Splitting on the first '@' would show the second address whole.
+    expect(maskEmail("a@x.com, bob.smith@y.com")).toBe("a***@y.com");
+  });
+
+  it("masks a short number entirely rather than barely", () => {
+    // Four leading and two trailing characters is most of an 8-digit number.
+    expect(maskPhone("12345678")).toBe("***");
+    expect(maskPhone("+12345678")).toBe("***");
+  });
+
+  it("pins the 12-character boundary exactly", () => {
+    expect(maskPhone("+96551234567")).toBe("+965***67"); // 12 characters
+    expect(maskPhone("+6581234567")).toBe("***"); // 11 characters
   });
 
   it("handles empty and malformed input without throwing", () => {
@@ -245,7 +271,7 @@ describe("normaliseEvent", () => {
     marketing_consent: "1",
     source: "SVG",
     entity: "SVG Ltd",
-    is_ib: "0",
+    is_ib: "1",
     language: "en",
     utm_source: "meta",
     utm_medium: "cpc",
@@ -271,7 +297,7 @@ describe("normaliseEvent", () => {
       marketingConsent: true,
       source: "SVG",
       entity: "SVG Ltd",
-      isIb: false,
+      isIb: true,
       language: "en",
       utmSource: "meta",
       utmMedium: "cpc",
@@ -298,6 +324,35 @@ describe("normaliseEvent", () => {
     const { valid, fields } = normaliseEvent({ ...RAW, phone: "" });
     expect(valid).toBe(true);
     expect(fields.phone).toBe("");
+  });
+
+  it("reads is_lead as the record type, independent of is_ib", () => {
+    const { fields } = normaliseEvent({ ...RAW, is_lead: "1", is_ib: "0" });
+    expect(fields.recordType).toBe("lead");
+    expect(fields.isIb).toBe(false);
+  });
+
+  it("reads marketing_consent and is_ib into their own fields", () => {
+    // RAW has both flags as "1", so a swap of the two wirings is invisible
+    // unless one of them changes here.
+    const { fields } = normaliseEvent({ ...RAW, marketing_consent: "0" });
+    expect(fields.marketingConsent).toBe(false);
+    expect(fields.isIb).toBe(true);
+  });
+
+  it("treats unrendered template literals as missing, but keeps them in fields", () => {
+    // A template variable that failed to render arrives as "null" or "undefined".
+    // Left as a key, every such event would collide on one row.
+    const { valid, missing, fields } = normaliseEvent({
+      stage: "registered",
+      client_id: "null",
+      first_name: "undefined",
+      email: "null",
+    });
+    expect(valid).toBe(false);
+    expect(missing).toEqual(["crmClientId", "firstName", "email"]);
+    expect(fields.crmClientId).toBe("null");
+    expect(normaliseEvent({ ...RAW, client_id: "NULL" }).missing).toEqual(["crmClientId"]);
   });
 
   it("defaults absent flags to false and never throws on an empty body", () => {
@@ -345,15 +400,20 @@ export const PHONE_RE = /^\+[1-9]\d{7,14}$/;
  *  create in Brevo. A missing phone is NOT fatal -- it is a WhatsApp skip. */
 export const REQUIRED_FIELDS = ["stage", "crmClientId", "firstName", "email"];
 
+/** A template variable that failed to render arrives as one of these strings.
+ *  For the required fields it counts as missing, so a "null" client id cannot
+ *  act as a shared key. The values themselves stay in `fields`. */
+const UNRENDERED = new Set(["null", "undefined"]);
+
 const FALSY = new Set(["", "0", "false", "no", "n", "off", "null", "undefined"]);
 
 /**
- * Deliberately NARROWER than FALSY, and not shared with it.
- *
- * For an ordinary flag, a value of "null" or "undefined" sensibly means false.
- * For the record type it means we do not know, and unknown must resolve to
- * lead: a client who misses a welcome message is a support ticket, a lead who
- * receives a login link for an account that does not exist is a complaint.
+ * The client-meaning literals for the record type, exactly as spec §2 names
+ * them. Deliberately narrower than FALSY: the asymmetry is intentional, because
+ * a lead who receives a login link for an account that does not exist is worse
+ * than a client who misses a welcome message. So "null" and "undefined" stay out
+ * here, even though they are falsy for consent and IB flags, where absent
+ * legitimately means no.
  */
 const CLIENT_LITERALS = new Set(["0", "false", "no", "n", "off"]);
 
@@ -366,9 +426,10 @@ export function isFalsyLiteral(value) {
 /**
  * Lead or client.
  *
- * Only a RECOGNISED client literal makes a client. Absent, empty and anything
- * unrecognised resolve to "lead", the side that cannot cause harm: the welcome
- * message links to a login page, and a lead has no account to log into.
+ * Only a recognised client literal (see CLIENT_LITERALS) makes a client. Absent,
+ * empty and anything unrecognised resolve to "lead", the side that cannot cause
+ * harm: the welcome message links to a login page, and a lead has no account to
+ * log into.
  */
 export function deriveRecordType(isLead) {
   return CLIENT_LITERALS.has(text(isLead).toLowerCase()) ? "client" : "lead";
@@ -377,20 +438,26 @@ export function deriveRecordType(isLead) {
 /**
  * FXBO has no middle-name placeholder, so it comes out of the full name.
  * Conservative: the full name must begin with the first name and end with the
- * last, or we cannot say which part is the middle and return nothing.
+ * last, or we cannot say which part is the middle and return nothing. Matching
+ * is on the whole first and last name, so a multi-word surname works.
  */
 export function deriveMiddleName(fullName, firstName, lastName) {
-  const parts = text(fullName).split(/\s+/).filter(Boolean);
-  if (parts.length < 3) return "";
-  if (parts[0].toLowerCase() !== text(firstName).toLowerCase()) return "";
-  if (parts[parts.length - 1].toLowerCase() !== text(lastName).toLowerCase()) return "";
-  return parts.slice(1, -1).join(" ");
+  const collapse = (v) => text(v).replace(/\s+/g, " ");
+  const full = collapse(fullName);
+  const fullLower = full.toLowerCase();
+  const first = collapse(firstName).toLowerCase();
+  const last = collapse(lastName).toLowerCase();
+  if (!full || !first || !last) return "";
+  if (!fullLower.startsWith(`${first} `) || !fullLower.endsWith(` ${last}`)) return "";
+  return full.slice(first.length, full.length - last.length).trim();
 }
 
 export function maskEmail(email) {
   const v = text(email);
   if (!v) return "";
-  const at = v.indexOf("@");
+  // The last '@' is the one that begins the domain. Splitting on the first
+  // would leave a second address in a multi-address value whole.
+  const at = v.lastIndexOf("@");
   if (at < 1) return "***";
   return `${v.slice(0, 1)}***${v.slice(at)}`;
 }
@@ -398,7 +465,8 @@ export function maskEmail(email) {
 export function maskPhone(phone) {
   const v = text(phone);
   if (!v) return "";
-  if (v.length < 8) return "***";
+  // Four leading and two trailing characters must not cover most of a short number.
+  if (v.length < 12) return "***";
   return `${v.slice(0, 4)}***${v.slice(-2)}`;
 }
 
@@ -430,7 +498,9 @@ export function normaliseEvent(raw = {}) {
     fxboUniqueId: text(body.unique_id),
   };
 
-  const missing = REQUIRED_FIELDS.filter((key) => !fields[key]);
+  const missing = REQUIRED_FIELDS.filter(
+    (key) => !fields[key] || UNRENDERED.has(fields[key].toLowerCase()),
+  );
   return { valid: missing.length === 0, missing, fields };
 }
 ```
