@@ -212,6 +212,18 @@ export async function markSignupInvalid(crmClientId, stage, detail) {
   );
 }
 
+/**
+ * Rows due for an action. This takes NO lock and claims NOTHING: it is a plain
+ * SELECT. Two concurrent callers would both receive the same rows and both
+ * send -- duplicate WhatsApp welcomes to real clients.
+ *
+ * The only thing preventing that today is single-process execution, guarded by
+ * the in-process `sweeping` flag in the worker. Anyone adding a second worker
+ * process, or a second app pool that runs the sweeper, must first add a real
+ * claim here (e.g. SELECT ... FOR UPDATE SKIP LOCKED inside a transaction, or
+ * an atomic status flip). The name is kept deliberately so this constraint is
+ * met where the function is defined.
+ */
 export async function claimDueEvents(limit = 25, now = new Date()) {
   return all(
     `SELECT * FROM signup_events
