@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./router.js";
-import { buildInsertParams, INSERT_COLUMNS } from "./store.js";
+import { buildInsertParams, INSERT_COLUMNS, insertSignupEvent } from "./store.js";
 import { PUBLIC_API_ROUTES } from "../auth/requireSession.js";
 
 function fakeRes() {
@@ -840,5 +840,128 @@ describe("a failed store, further", () => {
         VALID_BODY
       )
     ).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Added after the second review: a payload that can never be stored, and the
+// identifiers on the one path that still had none.
+// ---------------------------------------------------------------------------
+
+describe("a key that can never be stored", () => {
+  // The REAL insertSignupEvent is used, not a hand-built error. It refuses an
+  // over-width client id before any statement runs, so no database is needed, and
+  // the code the store sets and the code the handler reads are checked against
+  // each other. Collapsing the two outcomes survived without this.
+  const OVER_WIDTH = "9".repeat(256);
+
+  it("answers 200 and logs that the event is dropped, instead of asking FXBO to retry", async () => {
+    // 503 means "try again", and FXBO would try up to twelve times, each failing
+    // identically. The event is lost either way; the log is the honest record.
+    const d = deps({ insert: insertSignupEvent });
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, client_id: OVER_WIDTH, unique_id: "FX-9001" }),
+      res
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: false, stored: false, valid: true, error: "key_unstorable" });
+    expect(d.onStored).not.toHaveBeenCalled();
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain("DROPPED");
+    expect(line).toContain(`client="${OVER_WIDTH}"`);
+    expect(line).toContain('stage="registered"');
+    expect(line).toContain('unique_id="FX-9001"');
+    expect(line).toContain("crm_client_id is 256 characters");
+    expect(line).not.toContain("ali.khan");
+
+    // `valid` still reports the payload's own verdict, not a constant.
+    const invalid = fakeRes();
+    await makeCrmEventsHandler(deps({ insert: insertSignupEvent }))(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, client_id: OVER_WIDTH, stage: "typo" }),
+      invalid
+    );
+    expect(invalid.statusCode).toBe(200);
+    expect(invalid.body).toEqual({ ok: false, stored: false, valid: false, error: "key_unstorable" });
+  });
+
+  it("still answers 503 for every genuine store failure", async () => {
+    // The first case is the real store with no pool, an ordinary failure of the
+    // moment that carries no code at all. The rest are the shapes a driver and a
+    // careless throw produce. None of them may be read as "unstorable".
+    const failures = [
+      { insert: insertSignupEvent },
+      { insert: vi.fn(async () => { throw Object.assign(new Error("Lock wait timeout"), { code: "ER_LOCK_WAIT_TIMEOUT" }); }) },
+      { insert: vi.fn(async () => { throw Object.assign(new Error("gone"), { code: "PROTOCOL_CONNECTION_LOST" }); }) },
+      { insert: vi.fn(async () => { throw new Error("plain"); }) },
+      { insert: vi.fn(async () => { throw "a string was thrown"; }) },
+      { insert: vi.fn(async () => { throw null; }) },
+    ];
+    for (const [index, failure] of failures.entries()) {
+      const d = deps(failure);
+      const res = fakeRes();
+      await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
+      expect(res.statusCode, `failure ${index}`).toBe(503);
+      expect(res.body, `failure ${index}`).toEqual({ ok: false, stored: false, valid: true, error: "store_failed" });
+      expect(d.logger.error.mock.calls[0][0], `failure ${index}`).toContain("store failed");
+      expect(d.logger.error.mock.calls[0][0], `failure ${index}`).not.toContain("DROPPED");
+    }
+  });
+});
+
+describe("a normaliser that throws, further", () => {
+  const auth = { authorization: "s3cret" };
+  const throwing = () =>
+    deps({
+      normalise: () => {
+        throw new Error("boom");
+      },
+    });
+
+  it("names the event, read off the raw body, and leaves the email out", async () => {
+    // Without the identifiers a lost event on this path carries no client id at
+    // all. Still 200: a payload our own normaliser cannot parse will not parse on
+    // a retry either.
+    const d = throwing();
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req(auth, { ...VALID_BODY, unique_id: "FX-9001" }), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({ ok: true, stored: false, valid: false });
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain('client="88214"');
+    expect(line).toContain('stage="registered"');
+    expect(line).toContain('unique_id="FX-9001"');
+    expect(line).toContain("boom");
+    expect(line).not.toContain("ali.khan");
+  });
+
+  it("treats every identifier as possibly absent or not a string", async () => {
+    // Normalisation has just failed, so nothing about the body can be assumed.
+    const none = "client=null stage=null unique_id=null";
+    const cases = [
+      [undefined, none],
+      [null, none],
+      ["a string body", none],
+      [["an", "array"], none],
+      [{}, none],
+      [{ client_id: 88214, stage: ["registered"], unique_id: { id: 1 } }, 'client="88214" stage=null unique_id=null'],
+      [{ client_id: true, stage: null, unique_id: undefined }, 'client="true" stage=null unique_id=null'],
+    ];
+    for (const [body, expected] of cases) {
+      const d = throwing();
+      const res = fakeRes();
+      await expect(makeCrmEventsHandler(d)(req(auth, body), res)).resolves.toBeUndefined();
+      expect(res.statusCode, JSON.stringify(body)).toBe(200);
+      expect(d.logger.error, JSON.stringify(body)).toHaveBeenCalledTimes(1);
+      expect(d.logger.error.mock.calls[0][0], JSON.stringify(body)).toContain(expected);
+    }
+  });
+
+  it("cannot be made to forge a log line", async () => {
+    const d = throwing();
+    await makeCrmEventsHandler(d)(req(auth, { ...VALID_BODY, client_id: "88214\n[crm-events] forged" }), fakeRes());
+    expect(d.logger.error.mock.calls[0][0]).not.toContain("\n");
   });
 });

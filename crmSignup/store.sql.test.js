@@ -12,6 +12,7 @@ import {
   initCrmSignupStore,
   findExistingFbc,
   insertSignupEvent,
+  UNSTORABLE_KEY_CODE,
   claimDueEvents,
   updateMetaStatus,
   updateWhatsappStatus,
@@ -159,6 +160,26 @@ describe("insertSignupEvent", () => {
       /stage is 33 characters/
     );
     expect(db.state.calls).toHaveLength(0);
+  });
+
+  it("marks both refusals with a code, so a caller can tell them from a transient failure", async () => {
+    // A retry of one of these fails identically, which is not true of anything else
+    // this function throws. The handler answers 200 for this code and 503 for the rest.
+    expect(typeof UNSTORABLE_KEY_CODE).toBe("string");
+    expect(UNSTORABLE_KEY_CODE).not.toBe("");
+    for (const overWidth of [{ crmClientId: "9".repeat(256) }, { stage: "s".repeat(33) }]) {
+      await expect(insertSignupEvent({ ...FIELDS, ...overWidth }, {}, "{}")).rejects.toMatchObject({
+        code: UNSTORABLE_KEY_CODE,
+      });
+    }
+    expect(db.state.calls).toHaveLength(0);
+  });
+
+  it("leaves an ordinary database error with its own code, never the unstorable one", async () => {
+    db.state.respond = () => {
+      throw Object.assign(new Error("Lock wait timeout"), { code: "ER_LOCK_WAIT_TIMEOUT" });
+    };
+    await expect(insertSignupEvent(FIELDS, {}, "{}")).rejects.toMatchObject({ code: "ER_LOCK_WAIT_TIMEOUT" });
   });
 
   it("reports a missing insert id as null, not undefined", async () => {

@@ -257,12 +257,27 @@ const dedupeKey = (fields) => ({
   stage: String(fields?.stage ?? ""),
 });
 
+/**
+ * The `code` on the error thrown for a dedupe key that can never be stored, in the
+ * same shape as the `ER_DUP_ENTRY` the insert below tells apart by `error.code`.
+ *
+ * The distinction is the caller's to act on. Every other error this file throws is
+ * a failure of the moment (a lock timeout, a dropped connection, a pool that is not
+ * up yet), and a redelivery of the same payload can succeed. This one cannot: the
+ * same key is over the same width on every attempt, so asking FXBO to redeliver only
+ * spends its retries discovering that.
+ */
+export const UNSTORABLE_KEY_CODE = "CRM_EVENT_KEY_UNSTORABLE";
+
 function refuseOverWidthDedupeKey(fields) {
   for (const [column, value] of Object.entries(dedupeKey(fields))) {
     const over = Array.from(value).length;
     if (over > COLUMN_WIDTHS[column]) {
-      throw new Error(
-        `${column} is ${over} characters, over its ${COLUMN_WIDTHS[column]}-character column; the event is refused, not stored`
+      throw Object.assign(
+        new Error(
+          `${column} is ${over} characters, over its ${COLUMN_WIDTHS[column]}-character column; the event is refused, not stored`
+        ),
+        { code: UNSTORABLE_KEY_CODE }
       );
     }
   }

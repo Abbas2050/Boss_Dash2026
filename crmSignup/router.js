@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { normaliseEvent, maskEmail } from "./normalise.js";
 import { deriveFbc } from "./clickId.js";
+import { UNSTORABLE_KEY_CODE } from "./store.js";
 import {
   detectUnsubstitutedPlaceholder,
   describePlaceholderRejection,
@@ -20,6 +21,22 @@ const digest = (value) => createHash("sha256").update(String(value ?? ""), "utf8
 function secretMatches(supplied, expected) {
   if (!String(expected ?? "")) return false;
   return timingSafeEqual(digest(supplied), digest(expected));
+}
+
+/**
+ * Who a log line is about. Only a string, number or boolean can be an identifier;
+ * anything else (absent, an object, an array) is logged as null. Every value is
+ * JSON-quoted, so one cannot forge a second log line, and the email is never part
+ * of it. Takes the identifiers rather than a payload, because the caller may be
+ * holding a normalised event or a raw body that normalisation could not read.
+ */
+function describeEvent({ client, stage, uniqueId }) {
+  const scalar = (value) =>
+    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+  return (
+    `client=${JSON.stringify(scalar(client))} stage=${JSON.stringify(scalar(stage))} ` +
+    `unique_id=${JSON.stringify(scalar(uniqueId))}`
+  );
 }
 
 /**
@@ -45,7 +62,9 @@ export function readCrmWebhookSecret(env = process.env) {
  * because a non-2xx there would make FXBO redeliver an event we already hold.
  * The one exception is a failed insert: nothing is held, FXBO's retry is the
  * only recovery there is, and the unique (client, stage) key makes a redelivery
- * harmless, so that answers 503.
+ * harmless, so that answers 503. Except when the store says the key itself can
+ * never be stored (UNSTORABLE_KEY_CODE): a redelivery would fail identically, so
+ * that is answered 200 and logged as dropped.
  */
 export function makeCrmEventsHandler({
   secret,
@@ -80,7 +99,13 @@ export function makeCrmEventsHandler({
     try {
       verdict = normalise(req?.body);
     } catch (error) {
-      logger.error?.(`[crm-events] normalise failed: ${error?.message || String(error)}`);
+      // By definition normalisation failed, so read the identifiers straight off
+      // the raw body and trust none of it. Without them a lost event carries no
+      // client id at all. Still 200: a payload our own normaliser cannot parse
+      // will not parse on a retry either.
+      const raw = req?.body && typeof req.body === "object" ? req.body : {};
+      const event = describeEvent({ client: raw.client_id, stage: raw.stage, uniqueId: raw.unique_id });
+      logger.error?.(`[crm-events] normalise failed, event not held: ${event}: ${error?.message || String(error)}`);
       return reply(200, { ok: true, stored: false, valid: false });
     }
 
@@ -155,16 +180,29 @@ export function makeCrmEventsHandler({
 
       return reply(200, { ok: true, stored: true, duplicate: !inserted });
     } catch (error) {
-      // Nothing is stored, so this must not answer 2xx: a 200 here drops the
-      // event for good, where a 503 lets FXBO redeliver it. The ids are logged
-      // so that a lost event can at least be identified afterwards. They are
-      // JSON-quoted so a value cannot forge a second log line, and the email is
-      // left out on purpose.
-      logger.error?.(
-        `[crm-events] store failed, event not held: client=${JSON.stringify(fields?.crmClientId)} ` +
-          `stage=${JSON.stringify(fields?.stage)} unique_id=${JSON.stringify(fields?.fxboUniqueId)}: ` +
-          `${error?.message || String(error)}`
-      );
+      // Nothing is stored. The ids are logged so that a lost event can at least
+      // be identified afterwards.
+      const event = describeEvent({
+        client: fields?.crmClientId,
+        stage: fields?.stage,
+        uniqueId: fields?.fxboUniqueId,
+      });
+      const message = error?.message || String(error);
+
+      // A key that can never be stored is the one failure a retry cannot cure.
+      // 503 means "try again", and FXBO would try again up to twelve times, each
+      // failing identically. The event is lost either way; answering 200 only
+      // spares FXBO the discovery, and the log is the honest record of it.
+      if (error?.code === UNSTORABLE_KEY_CODE) {
+        logger.error?.(
+          `[crm-events] event DROPPED, its dedupe key cannot be stored and a redelivery would fail the same way: ${event}: ${message}`
+        );
+        return reply(200, { ok: false, stored: false, valid: invalidReason === null, error: "key_unstorable" });
+      }
+
+      // Anything else is a failure of the moment, so this must not answer 2xx: a
+      // 200 here drops the event for good, where a 503 lets FXBO redeliver it.
+      logger.error?.(`[crm-events] store failed, event not held: ${event}: ${message}`);
       return reply(503, { ok: false, stored: false, valid: invalidReason === null, error: "store_failed" });
     }
   };
