@@ -438,7 +438,7 @@ export function normaliseEvent(raw = {}) {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/normalise.test.js --reporter=verbose`
-Expected: PASS, 17 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -605,7 +605,7 @@ export function deriveFbc(fullLink, timestampMs) {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/clickId.test.js --reporter=verbose`
-Expected: PASS, 11 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -980,7 +980,7 @@ export async function sendMetaEvent({
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/meta.test.js --reporter=verbose`
-Expected: PASS, 17 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -1369,7 +1369,7 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/whatsapp.test.js --reporter=verbose`
-Expected: PASS, 15 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -1700,7 +1700,7 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/brevo.test.js --reporter=verbose`
-Expected: PASS, 12 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -2125,7 +2125,7 @@ export async function listEventsSince(since, cap = 2000) {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/store.test.js --reporter=verbose`
-Expected: PASS, 10 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -3252,7 +3252,7 @@ export function startCrmEventsWorker() {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npx vitest run crmSignup/worker.test.js --reporter=verbose`
-Expected: PASS, 15 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 - [ ] **Step 5: Commit**
 
@@ -4280,7 +4280,7 @@ even for an admin.
 - [ ] **Step 6: Run the tests and the type check**
 
 Run: `npx vitest run src/pages/settings/CrmEventsPage.test.tsx --reporter=verbose`
-Expected: PASS, 11 tests
+Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
 Run: `npm run typecheck`
 Expected: no errors.
