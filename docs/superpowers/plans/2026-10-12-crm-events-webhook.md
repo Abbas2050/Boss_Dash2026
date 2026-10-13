@@ -3323,6 +3323,18 @@ describe("storing", () => {
     expect(d.onStored).not.toHaveBeenCalled();
   });
 
+  it("does not mark a duplicate invalid, so a redelivery cannot cancel a queued send", async () => {
+    // markInvalid updates by (crm_client_id, stage) regardless of the row's
+    // state. If a later delivery of a stage arrives malformed, writing invalid
+    // over a row whose welcome is already queued or sent would cancel it.
+    const d = deps({ insert: vi.fn(async () => ({ inserted: false, id: null })) });
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }), res);
+    expect(res.statusCode).toBe(200);
+    expect(d.markInvalid).not.toHaveBeenCalled();
+    expect(res.body).toEqual({ ok: true, stored: true, duplicate: true, valid: false });
+  });
+
   it("stores an unknown stage as invalid and stops", async () => {
     const d = deps();
     const res = fakeRes();
@@ -3535,7 +3547,14 @@ export function makeCrmEventsHandler({
         logger.warn?.(
           `[crm-events] ${isTestPress ? "test press" : "invalid payload"} for ${maskEmail(fields.email) || "(no email)"}`
         );
-        await markInvalid(fields.crmClientId, fields.stage, reason.slice(0, 500));
+        // Only when WE stored this row. markInvalid updates by
+        // (crm_client_id, stage) and does not care what state the row is in, so
+        // on a duplicate it would overwrite the statuses an earlier, valid
+        // delivery had already set -- cancelling a welcome message that is
+        // queued or already sent.
+        if (inserted) {
+          await markInvalid(fields.crmClientId, fields.stage, reason.slice(0, 500));
+        }
         return res.status(200).json({ ok: true, stored: true, duplicate: !inserted, valid: false });
       }
 
@@ -5656,5 +5675,4 @@ writers take exactly that plus each step's `detail`. `deriveFbc` (Task 2) is
 called only in Task 8 and its result is passed verbatim through
 `insertSignupEvent` → the `fbc` column → `buildMetaPayload` (Task 3), never
 recomputed. `pickDeposit` (Task 7) returns `{ amount, currency }`, which is what
-`updateDepositAmount` (Task 6) and `buildMetaPayload`'s `value`/`currency` both
-expect.
+`buildMetaPayload` expects.
