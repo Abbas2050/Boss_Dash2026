@@ -202,11 +202,22 @@ describe("classifyMetaOutcome", () => {
     }
   });
 
-  it("does not call a 2xx with no events_received a success", () => {
-    // A proxy answering 200 with an HTML page has no count, and is not a conversion.
-    const result = classifyMetaOutcome({ httpStatus: 200, body: null });
-    expect(result.status).toBe("failed");
-    expect(result.retryable).toBe(false);
+  it("retries a 2xx with no usable count, since the outcome is unknown", () => {
+    // A proxy answering 200 with an HTML page is not Meta saying anything. The
+    // event_id makes a retry safe, so this is retryable.
+    expect(classifyMetaOutcome({ httpStatus: 200, body: null })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 200 no events_received",
+    });
+  });
+
+  it("keeps a 2xx that reports zero events permanent, since Meta said so", () => {
+    expect(classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } })).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "http 200 events_received=0",
+    });
   });
 
   it("retries a transient code whatever the HTTP status carrying it", () => {
@@ -315,4 +326,38 @@ describe("sendMetaEvent", () => {
     const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
     expect(result.detail).not.toContain(token);
   });
+
+  it("redacts a token whose apostrophe the URL class re-encodes", async () => {
+    // encodeURIComponent leaves an apostrophe alone, but the WHATWG URL class
+    // writes it as %27. Neither form is the literal we built, so only the
+    // structural pass can catch it.
+    const token = "a'b";
+    const fetchImpl = vi.fn(async (url) => {
+      throw new Error(`request to ${new URL(url).href} failed`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.retryable).toBe(true);
+    expect(result.detail).not.toContain("a'b");
+    expect(result.detail).not.toContain("a%27b");
+  });
+
+  it("leaves no residue when the token is a substring of its own encoded form", async () => {
+    // "%25" encodes to "%2525", which contains "%25". Replacing the raw form first
+    // would leave "[redacted]25" behind, so the encoded form has to go first.
+    const token = "%25";
+    const fetchImpl = vi.fn(async () => {
+      throw new Error(`rejected ${encodeURIComponent(token)} now`);
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: token, payload: {} });
+    expect(result.detail).toBe("transport: rejected [redacted] now");
+  });
+
+  it("redacts every occurrence of the token, not only the first", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("first a&b+c%, then a&b+c% again");
+    });
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "a&b+c%", payload: {} });
+    expect(result.detail).toBe("transport: first [redacted], then [redacted] again");
+  });
+
 });

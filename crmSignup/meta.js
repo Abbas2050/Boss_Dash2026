@@ -88,7 +88,7 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
   return payload;
 }
 
-export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
+export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -97,28 +97,30 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
     };
   }
 
-  const status = Number(httpStatus) || 0;
+  const httpStatus = Number(rawStatus) || 0;
   const reason = String(body?.error?.message ?? "").slice(0, 200);
-  const detail = reason ? `http ${status} ${reason}` : `http ${status}`;
+  const detail = reason ? `http ${httpStatus} ${reason}` : `http ${httpStatus}`;
 
   // The Graph code decides, whatever status carries it: Meta throttles with a 400.
   if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (status === 429 || status >= 500) {
+  if (httpStatus === 429 || httpStatus >= 500) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (status >= 200 && status < 300) {
-    // Meta's success body always carries the count. Anything short of one,
-    // including no count at all (a proxy's HTML page), is not a conversion.
+  if (httpStatus >= 200 && httpStatus < 300) {
+    // Meta's success body always carries the count. Without one, a proxy answered
+    // instead of Meta: the outcome is unknown, and event_id makes a retry safe.
+    // An explicit zero is Meta saying so, and a retry would hear the same thing.
     const received = Number(body?.events_received);
-    if (!(received >= 1)) {
-      const reported = body?.events_received == null ? "no events_received" : `events_received=${received}`;
-      return { status: "failed", retryable: false, detail: `http ${status} ${reported}` };
+    if (received >= 1) {
+      return { status: "sent", retryable: false, detail: `http ${httpStatus}` };
     }
-    return { status: "sent", retryable: false, detail: `http ${status}` };
+    const noCount = body?.events_received == null || Number.isNaN(received);
+    const reported = noCount ? "no events_received" : `events_received=${received}`;
+    return { status: "failed", retryable: noCount, detail: `http ${httpStatus} ${reported}` };
   }
 
   return { status: "failed", retryable: false, detail };
@@ -139,7 +141,9 @@ export async function sendMetaEvent({
   // A fetch error may echo the request URL, which carries the token in raw and
   // encoded form. Neither may reach the detail, because the detail is logged.
   const token = String(accessToken ?? "");
-  const secrets = [token, encodeURIComponent(token)].filter(Boolean);
+  // Encoded before raw: a token containing % has a raw form that sits inside its
+  // encoded form (%25 inside %2525), so the raw pass must never run first.
+  const secrets = [encodeURIComponent(token), token].filter(Boolean);
 
   let response;
   try {
@@ -150,6 +154,9 @@ export async function sendMetaEvent({
     });
   } catch (transportError) {
     let message = String(transportError?.message || transportError);
+    // Structural first: whatever follows access_token= is the token, in whatever
+    // form the URL class re-serialised it. The literals then catch a bare quoted value.
+    message = message.replace(/access_token=[^&\s]*/gi, "access_token=[redacted]");
     for (const secret of secrets) message = message.split(secret).join("[redacted]");
     return classifyMetaOutcome({ transportError: { message } });
   }
