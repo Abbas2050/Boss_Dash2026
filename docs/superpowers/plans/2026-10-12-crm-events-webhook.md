@@ -2393,10 +2393,10 @@ git commit -m "CRM events: Brevo upsert against the attributes that exist"
 - Consumes: the `Fields` shape from `crmSignup/normalise.js`.
 - Produces:
   - `SIGNUP_EVENTS_SCHEMA: string`
-  - `buildInsertParams(fields, fbc, rawPayload): unknown[]`
+  - `buildInsertParams(fields, derived, rawPayload): unknown[]` — `derived` is `{ fbc, whatsappRequestId }`
   - `initCrmSignupStore(): Promise<void>`
   - `findExistingFbc(crmClientId): Promise<string>`
-  - `insertSignupEvent(fields, fbc, rawPayload): Promise<{ inserted, id }>`
+  - `insertSignupEvent(fields, derived, rawPayload): Promise<{ inserted, id }>`
   - `markSignupInvalid(crmClientId, stage, detail): Promise<void>`
   - `claimDueEvents(limit, now): Promise<Row[]>`
   - `updateMetaStatus(id, { status, detail, attempts, nextAttemptAt }): Promise<void>`
@@ -2444,6 +2444,13 @@ describe("signup_events schema", () => {
     expect(SIGNUP_EVENTS_SCHEMA).toMatch(/\bfbc\b/);
   });
 
+  it("stores the WhatsApp request id, so a retry cannot send a second welcome", () => {
+    // A send times out after 10s, and a timeout does not mean the message was
+    // not delivered. A retry carrying a NEW messageId would be a second
+    // welcome to the client, so the id is frozen on the row like the fbc.
+    expect(SIGNUP_EVENTS_SCHEMA).toContain("whatsapp_request_id");
+  });
+
   it("stores the raw payload", () => {
     expect(SIGNUP_EVENTS_SCHEMA).toMatch(/raw_payload\s+LONGTEXT/i);
   });
@@ -2488,21 +2495,32 @@ describe("buildInsertParams", () => {
     expect(params).not.toContain(false);
   });
 
-  it("carries the frozen click id", () => {
-    expect(buildInsertParams(FIELDS, "fb.1.1673035686000.ABC", "{}")).toContain(
-      "fb.1.1673035686000.ABC"
+  it("carries both frozen ids", () => {
+    const params = buildInsertParams(
+      FIELDS,
+      { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
+      "{}"
     );
+    expect(params).toContain("fb.1.1673035686000.ABC");
+    expect(params).toContain("11111111-2222-4333-8444-555555555555");
+  });
+
+  it("writes null rather than an empty string when an id is absent", () => {
+    // An empty string would defeat findExistingFbc, which looks for a non-empty
+    // value, and would make an absent request id indistinguishable from a blank.
+    const params = buildInsertParams(FIELDS, {}, "{}");
+    expect(params).not.toContain("");
   });
 
   it("serialises the raw payload as a string", () => {
-    const params = buildInsertParams(FIELDS, "", { a: 1 });
+    const params = buildInsertParams(FIELDS, {}, { a: 1 });
     expect(params[params.length - 1]).toBe('{"a":1}');
   });
 
   it("does not throw on an unserialisable payload", () => {
     const circular = {};
     circular.self = circular;
-    expect(() => buildInsertParams(FIELDS, "", circular)).not.toThrow();
+    expect(() => buildInsertParams(FIELDS, {}, circular)).not.toThrow();
   });
 });
 ```
@@ -2558,6 +2576,7 @@ export const SIGNUP_EVENTS_SCHEMA = `
     referer VARCHAR(512) NULL,
     full_link VARCHAR(1024) NULL,
     fbc VARCHAR(255) NULL,
+    whatsapp_request_id VARCHAR(64) NULL,
     meta_status VARCHAR(16) NOT NULL DEFAULT 'pending',
     meta_detail TEXT NULL,
     meta_attempts INT NOT NULL DEFAULT 0,
@@ -2600,13 +2619,14 @@ const INSERT_COLUMNS = [
   "referer",
   "full_link",
   "fbc",
+  "whatsapp_request_id",
   "raw_payload",
 ];
 
 const bool = (v) => (v ? 1 : 0);
 const str = (v) => (v === undefined || v === null || v === "" ? null : String(v));
 
-export function buildInsertParams(fields = {}, fbc = "", rawPayload = null) {
+export function buildInsertParams(fields = {}, derived = {}, rawPayload = null) {
   let serialised;
   try {
     serialised = typeof rawPayload === "string" ? rawPayload : JSON.stringify(rawPayload ?? {});
@@ -2634,7 +2654,8 @@ export function buildInsertParams(fields = {}, fbc = "", rawPayload = null) {
     str(fields.utmCampaign),
     str(fields.referer),
     str(fields.fullLink),
-    str(fbc),
+    str(derived.fbc),
+    str(derived.whatsappRequestId),
     serialised,
   ];
 }
@@ -2697,13 +2718,13 @@ export async function findExistingFbc(crmClientId) {
   return rows.length ? String(rows[0].fbc) : "";
 }
 
-export async function insertSignupEvent(fields, fbc, rawPayload) {
+export async function insertSignupEvent(fields, derived, rawPayload) {
   const placeholders = INSERT_COLUMNS.map(() => "?").join(", ");
   const result = await run(
     `INSERT INTO signup_events (${INSERT_COLUMNS.join(", ")})
      VALUES (${placeholders})
      ON DUPLICATE KEY UPDATE id = id`,
-    buildInsertParams(fields, fbc, rawPayload)
+    buildInsertParams(fields, derived, rawPayload)
   );
   return { inserted: Number(result?.affectedRows) === 1, id: result?.insertId ?? null };
 }
@@ -2819,7 +2840,7 @@ git commit -m "CRM events: one row per client per stage, with a frozen click id"
 
 **Interfaces:**
 - Consumes: `normaliseEvent`, `maskEmail` from `crmSignup/normalise.js`; `deriveFbc` from `crmSignup/clickId.js`; `findExistingFbc`, `insertSignupEvent`, `markSignupInvalid` from `crmSignup/store.js`; `detectUnsubstitutedPlaceholder`, `PLACEHOLDER_NOT_SUBSTITUTED`, `describePlaceholderRejection` from `docusign/fxboPlaceholder.js`.
-- Produces: `makeCrmEventsHandler({ secret, findFbc, insert, markInvalid, onStored, normalise, now, logger }): (req, res) => Promise<void>`
+- Produces: `makeCrmEventsHandler({ secret, findFbc, insert, markInvalid, onStored, normalise, now, newRequestId, logger }): (req, res) => Promise<void>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2872,6 +2893,7 @@ function deps(overrides = {}) {
     markInvalid: vi.fn(async () => {}),
     onStored: vi.fn(() => {}),
     now: () => new Date("2026-10-12T12:00:00Z"),
+    newRequestId: () => "11111111-2222-4333-8444-555555555555",
     logger: { warn: vi.fn(), error: vi.fn() },
     ...overrides,
   };
@@ -2920,8 +2942,8 @@ describe("the click id", () => {
   it("derives it from the landing URL on a client's first event", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
-    const [, fbc] = d.insert.mock.calls[0];
-    expect(fbc).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    const [, derived] = d.insert.mock.calls[0];
+    expect(derived.fbc).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
   });
 
   it("reuses the stored one rather than recomputing it", async () => {
@@ -2932,8 +2954,8 @@ describe("the click id", () => {
       req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "verified" }),
       fakeRes()
     );
-    const [, fbc] = d.insert.mock.calls[0];
-    expect(fbc).toBe("fb.1.1673035686000.OLD");
+    const [, derived] = d.insert.mock.calls[0];
+    expect(derived.fbc).toBe("fb.1.1673035686000.OLD");
   });
 
   it("is empty for an organic signup, which is normal", async () => {
@@ -2942,7 +2964,7 @@ describe("the click id", () => {
       req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/" }),
       fakeRes()
     );
-    expect(d.insert.mock.calls[0][1]).toBe("");
+    expect(d.insert.mock.calls[0][1].fbc).toBe("");
   });
 
   it("stores the event even when the lookup throws", async () => {
@@ -2955,6 +2977,29 @@ describe("the click id", () => {
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
     expect(res.statusCode).toBe(200);
     expect(d.insert).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the WhatsApp request id", () => {
+  it("is generated once, when the row is stored", async () => {
+    const d = deps();
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
+    const [, derived] = d.insert.mock.calls[0];
+    expect(derived.whatsappRequestId).toBe("11111111-2222-4333-8444-555555555555");
+  });
+
+  it("is a fresh value per row, not a constant", async () => {
+    // Two different funnel events must not share one id, or DoubleTick could
+    // treat the second as a replay of the first.
+    const ids = [];
+    const d = deps({ newRequestId: () => `id-${ids.length}` });
+    const handler = makeCrmEventsHandler(d);
+    await handler(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    ids.push(d.insert.mock.calls[0][1].whatsappRequestId);
+    await handler(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "verified" }), fakeRes());
+    ids.push(d.insert.mock.calls[1][1].whatsappRequestId);
+    expect(ids[0]).not.toBe(ids[1]);
   });
 });
 
@@ -3094,7 +3139,7 @@ Expected: FAIL — `Failed to load url ./router.js`
 Create `crmSignup/router.js`:
 
 ```js
-import { timingSafeEqual } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { normaliseEvent, maskEmail } from "./normalise.js";
 import { deriveFbc } from "./clickId.js";
 import {
@@ -3130,6 +3175,7 @@ export function makeCrmEventsHandler({
   onStored = () => {},
   normalise = normaliseEvent,
   now = () => new Date(),
+  newRequestId = () => randomUUID(),
   logger = console,
 }) {
   return async function crmEventsHandler(req, res) {
@@ -3176,7 +3222,14 @@ export function makeCrmEventsHandler({
         fbc = deriveFbc(fields.fullLink, now().getTime());
       }
 
-      const { inserted } = await insert(fields, fbc, req?.body);
+      // Generated once, here, and reused on every send attempt. A send times
+      // out after 10 seconds and a timeout does not mean the message was not
+      // delivered, so a retry carrying a fresh id would be a second welcome.
+      const { inserted } = await insert(
+        fields,
+        { fbc, whatsappRequestId: newRequestId() },
+        req?.body
+      );
 
       if (isTestPress || !valid) {
         logger.warn?.(
@@ -3427,6 +3480,7 @@ function row(overrides = {}) {
     referer: "",
     full_link: "",
     fbc: "fb.1.1673035686000.ABC",
+    whatsapp_request_id: "req-7",
     received_at: new Date("2026-10-12T12:00:00Z"),
     meta_status: "pending",
     meta_attempts: 0,
@@ -3567,7 +3621,10 @@ describe("processSignupEvent", () => {
     expect(d.saveMeta).not.toHaveBeenCalled();
   });
 
-  it("generates a fresh WhatsApp message id for every attempt", async () => {
+  it("reuses the row's WhatsApp request id on a retry, so no second welcome is sent", async () => {
+    // The opposite of what the original brief asked for. A send times out after
+    // ten seconds, and a timeout does not mean the message was not delivered,
+    // so a retry carrying a fresh id would message the client twice.
     const ids = [];
     const d = deps({
       newMessageId: () => `uuid-${ids.length}`,
@@ -3578,7 +3635,13 @@ describe("processSignupEvent", () => {
     });
     await processSignupEvent(row(), d);
     await processSignupEvent(row({ whatsapp_status: "retrying", whatsapp_attempts: 1 }), d);
-    expect(ids).toEqual(["uuid-0", "uuid-1"]);
+    expect(ids).toEqual(["req-7", "req-7"]);
+  });
+
+  it("falls back to a generated id when the row carries none", async () => {
+    const d = deps({ newMessageId: () => "generated" });
+    await processSignupEvent(row({ whatsapp_request_id: null }), d);
+    expect(d.sendWhatsapp.mock.calls[0][0].payload.messages[0].messageId).toBe("generated");
   });
 
   it("stops retrying once the budget is spent", async () => {
@@ -3763,7 +3826,10 @@ async function runWhatsappStep(row, fields, deps) {
     buttonUrl: config.waTemplateButtonUrl,
     from: config.waFromNumber,
     to: fields.phone,
-    messageId: newMessageId(),
+    // Frozen on the row at insert, NOT regenerated per attempt: a send times
+    // out after 10 seconds, and a timeout does not mean the message was not
+    // delivered, so a fresh id on a retry would be a second welcome.
+    messageId: str(row.whatsapp_request_id) || newMessageId(),
   });
 
   const outcome = await sendWhatsapp({ apiKey: config.waApiKey, payload });
