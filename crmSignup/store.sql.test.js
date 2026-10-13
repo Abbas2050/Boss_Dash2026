@@ -18,6 +18,8 @@ import {
   updateWhatsappStatus,
   updateBrevoStatus,
   listEventsSince,
+  countEventsSince,
+  latestEventReceivedAt,
 } from "./store.js";
 
 // The env vars are read when store.js loads, so they are set before the import.
@@ -327,5 +329,36 @@ describe("listEventsSince", () => {
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(/WHERE received_at >= \?\s+ORDER BY received_at DESC\s+LIMIT \?/);
     expect(params).toEqual([since, 2000]);
+  });
+});
+
+describe("countEventsSince", () => {
+  it("groups by the stage and the three statuses, over the window, with no cap", async () => {
+    const groups = [{ stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", n: 3 }];
+    db.state.respond = () => [groups];
+    const since = new Date("2026-09-13T00:00:00Z");
+    const result = await countEventsSince(since);
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(/WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status\s*$/);
+    expect(sql).not.toMatch(/LIMIT/);
+    expect(params).toEqual([since]);
+    expect(result).toEqual(groups);
+  });
+});
+
+describe("latestEventReceivedAt", () => {
+  it("reads the newest received_at from the whole table, with no window", async () => {
+    const at = new Date("2026-10-12T06:00:00Z");
+    db.state.respond = () => [[{ latest: at }]];
+    const result = await latestEventReceivedAt();
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(/SELECT MAX\(received_at\) AS latest\s+FROM signup_events\s*$/);
+    expect(params).toEqual([]);
+    expect(result).toEqual(at);
+  });
+
+  it("returns null for an empty table", async () => {
+    db.state.respond = () => [[{ latest: null }]];
+    expect(await latestEventReceivedAt()).toBeNull();
   });
 });

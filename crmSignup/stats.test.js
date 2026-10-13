@@ -59,6 +59,15 @@ describe("health", () => {
     expect(summariseCrmEvents([justPast], { now: NOW }).health.stale).toBe(true);
   });
 
+  it("takes health from the latest timestamp it is given, not from the rows", () => {
+    // The route reads the newest event in the whole table, so a short window cannot hide it.
+    const latest = new Date("2026-10-12T06:00:00Z"); // 30 hours before NOW
+    const { health } = summariseCrmEvents([], { now: NOW, latestReceivedAt: latest });
+    expect(health.lastReceivedAt).toBe("2026-10-12T06:00:00.000Z");
+    expect(health.ageHours).toBeCloseTo(30, 3);
+    expect(health.stale).toBe(false);
+  });
+
   it("reports no events at all as stale, never as healthy", () => {
     // Silence is the symptom of a broken rule, so it must not read as calm.
     const { health } = summariseCrmEvents([], { now: NOW });
@@ -86,6 +95,17 @@ describe("funnel", () => {
       lead: 0,
       registered: 2,
       verified: 1,
+      live_account: 0,
+      first_deposit: 0,
+    });
+  });
+
+  it("ignores a stage named like an inherited property, rather than corrupting the funnel", () => {
+    const rows = [row({ stage: "constructor" }), row({ stage: "toString" }), row({ stage: "registered" })];
+    expect(summariseCrmEvents(rows, { now: NOW }).funnel).toEqual({
+      lead: 0,
+      registered: 1,
+      verified: 0,
       live_account: 0,
       first_deposit: 0,
     });
@@ -142,6 +162,24 @@ describe("destinations", () => {
     ]);
   });
 
+  it("ignores a status named like an inherited property", () => {
+    const { destinations } = summariseCrmEvents([row({ meta_status: "constructor", brevo_status: "toString" })], { now: NOW });
+    for (const name of ["meta", "whatsapp", "brevo"]) {
+      expect(Object.keys(destinations[name]).sort(), name).toEqual([
+        "failed",
+        "invalid",
+        "pending",
+        "rejected",
+        "retrying",
+        "sent",
+        "skipped",
+      ]);
+    }
+    expect(destinations.meta.sent).toBe(0);
+    expect(destinations.brevo.sent).toBe(0);
+    expect(destinations.whatsapp.sent).toBe(1);
+  });
+
   it("counts an unknown status under nothing rather than throwing", () => {
     const { destinations } = summariseCrmEvents([row({ meta_status: "weird" })], { now: NOW });
     expect(destinations.meta.sent).toBe(0);
@@ -170,5 +208,23 @@ describe("toTableRow", () => {
 describe("STALE_HOURS", () => {
   it("is 72, matching the DocuSign webhook health window", () => {
     expect(STALE_HOURS).toBe(72);
+  });
+});
+
+describe("grouped counts", () => {
+  it("folds a grouped row as n events, so counts are exact past any cap", () => {
+    // 3,201 events in three groups. No table cap applies to these counts, and each
+    // count must equal the sum of its group sizes, not the number of groups.
+    const groups = [
+      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", n: 1200 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", n: 2000 },
+      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1 },
+    ];
+    const { funnel, destinations } = summariseCrmEvents(groups, { now: NOW, latestReceivedAt: NOW });
+    expect(funnel).toEqual({ lead: 1200, registered: 2001, verified: 0, live_account: 0, first_deposit: 0 });
+    expect(destinations.meta.sent).toBe(1201);
+    expect(destinations.meta.failed).toBe(2000);
+    expect(destinations.whatsapp.skipped).toBe(1200);
+    expect(destinations.brevo.pending).toBe(2000);
   });
 });

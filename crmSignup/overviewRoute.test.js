@@ -220,6 +220,50 @@ describe("the payload", () => {
       spy.mockRestore();
     }
   });
+  it("takes health from the whole table, so a short window cannot read as no events", async () => {
+    // The newest event is 30 hours old: inside the 72-hour threshold, outside a one-day window.
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({
+      canManage,
+      listSince: async () => [],
+      countSince: async () => [],
+      latestReceivedAt: async () => new Date("2026-10-12T06:00:00Z"),
+      now,
+    })({ auth: ADMIN, query: { days: "1" } }, res);
+    expect(res.body.health.lastReceivedAt).toBe("2026-10-12T06:00:00.000Z");
+    expect(res.body.health.ageHours).toBeCloseTo(30, 3);
+    expect(res.body.health.stale).toBe(false);
+    expect(res.body.funnel.lead).toBe(0); // the counts still follow the window
+  });
+
+  it("counts from the grouped rows, so a window far past the table cap is counted in full", async () => {
+    const groups = [
+      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1000 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", n: 4000 },
+    ];
+    const threeRows = Array.from({ length: 3 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({
+      canManage,
+      listSince: async () => threeRows,
+      countSince: async () => groups,
+      latestReceivedAt: async () => new Date("2026-10-13T11:00:00Z"),
+      now,
+      tableLimit: 3,
+    })({ auth: ADMIN, query: {} }, res);
+    expect(res.body.events).toHaveLength(3);
+    expect(res.body.funnel.lead).toBe(1000);
+    expect(res.body.funnel.registered).toBe(4000);
+    expect(res.body.destinations.meta.sent).toBe(1000);
+    expect(res.body.destinations.meta.failed).toBe(4000);
+    expect(res.body.destinations.whatsapp.skipped).toBe(4000);
+  });
+
+  it("asks the store for no more rows than the table shows", async () => {
+    const listSince = vi.fn(async () => ROWS);
+    await makeCrmEventsOverviewHandler({ canManage, listSince, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, fakeRes());
+    expect(listSince.mock.calls[0][1]).toBe(3);
+  });
 });
 
 describe("wiring in server.js", () => {
@@ -227,15 +271,24 @@ describe("wiring in server.js", () => {
   // admin gate, or one added to the public allow-list, would pass every test.
   const SERVER = readFileSync(path.resolve("server.js"), "utf8");
 
-  it("imports the handler and the store reader", () => {
+  it("imports the handler and the three store reads", () => {
     expect(SERVER).toMatch(/import \{ makeCrmEventsOverviewHandler \} from "\.\/crmSignup\/overviewRoute\.js";/);
     expect(SERVER).toMatch(/import \{[^}]*\blistEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\bcountEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\blatestEventReceivedAt\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
   });
 
-  it("registers it behind the session check and the admin check, wired to the admin predicate and the store reader", () => {
-    expect(SERVER).toMatch(
-      /app\.get\('\/api\/crm-events\/overview',\s*authRequired,\s*adminOnly,\s*makeCrmEventsOverviewHandler\(\{\s*canManage:\s*canManageUsers,\s*listSince:\s*listEventsSince,?\s*\}\)\);/
-    );
+  it("registers it behind the session check and the admin check", () => {
+    expect(SERVER).toMatch(/app\.get\('\/api\/crm-events\/overview',\s*authRequired,\s*adminOnly,\s*makeCrmEventsOverviewHandler\(\{/);
+  });
+
+  it("wires the admin predicate, the table read, the grouped count and the whole-table latest timestamp", () => {
+    const block = SERVER.match(/app\.get\('\/api\/crm-events\/overview'[\s\S]*?\}\)\);/);
+    expect(block, "the registration was not found").not.toBeNull();
+    expect(block[0]).toMatch(/\bcanManage:\s*canManageUsers\s*,/);
+    expect(block[0]).toMatch(/\blistSince:\s*listEventsSince\s*,/);
+    expect(block[0]).toMatch(/\bcountSince:\s*countEventsSince\s*,/);
+    expect(block[0]).toMatch(/\blatestReceivedAt:\s*latestEventReceivedAt\s*,/);
   });
 
   it("is not on the public allow-list, because it reads the database for an admin", () => {

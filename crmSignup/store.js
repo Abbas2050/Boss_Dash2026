@@ -393,3 +393,30 @@ export async function listEventsSince(since, cap = 2000) {
     [since, Number(cap) || 2000]
   );
 }
+
+/**
+ * Event counts per (stage, status triple) since a date, over the whole window.
+ *
+ * Grouped in SQL and never capped: the result is bounded by the number of distinct
+ * status combinations, not by how many events the window holds. A count read from
+ * the capped list would undercount a busy month without saying so.
+ */
+export async function countEventsSince(since) {
+  return all(
+    `SELECT stage, meta_status, whatsapp_status, brevo_status, COUNT(*) AS n
+       FROM signup_events
+      WHERE received_at >= ?
+      GROUP BY stage, meta_status, whatsapp_status, brevo_status`,
+    [since]
+  );
+}
+
+/**
+ * The newest received_at in the whole table, ignoring any window. Null when the
+ * table is empty. Health reads this, not the window, so a short window cannot make
+ * an event that arrived inside the stale threshold look like silence.
+ */
+export async function latestEventReceivedAt() {
+  const rows = await all(`SELECT MAX(received_at) AS latest FROM signup_events`);
+  return rows[0]?.latest ?? null;
+}

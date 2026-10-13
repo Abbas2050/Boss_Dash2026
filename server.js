@@ -19,7 +19,7 @@ import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
-import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince } from "./crmSignup/store.js";
+import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
@@ -1321,6 +1321,8 @@ app.post('/api/crm-events', makeCrmEventsHandler({
 app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
   canManage: canManageUsers,
   listSince: listEventsSince,
+  countSince: countEventsSince,
+  latestReceivedAt: latestEventReceivedAt,
 }));
 
 app.use("/oauth", oauthRouter);
