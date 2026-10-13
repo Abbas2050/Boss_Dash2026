@@ -4427,7 +4427,10 @@ describe("a key that can never be stored", () => {
     expect(d.logger.error).toHaveBeenCalledTimes(1);
     const line = d.logger.error.mock.calls[0][0];
     expect(line).toContain("DROPPED");
-    expect(line).toContain(`client="${OVER_WIDTH}"`);
+    // The 256 characters are cut to 120 and marked; the store's own message in the
+    // same line says how long the id really was.
+    expect(line).toContain(`client="${"9".repeat(120)}..."`);
+    expect(line).not.toContain("9".repeat(121));
     expect(line).toContain('stage="registered"');
     expect(line).toContain('unique_id="FX-9001"');
     expect(line).toContain("crm_client_id is 256 characters");
@@ -4522,6 +4525,83 @@ describe("a normaliser that throws, further", () => {
     expect(d.logger.error.mock.calls[0][0]).not.toContain("\n");
   });
 });
+
+describe("a log line stays bounded, whatever the body carries", () => {
+  // Only an authenticated caller can do it, but one request carrying a million-
+  // character client_id used to produce a million-character log line. Each
+  // identifier is cut at 120 characters and marked with "...".
+  const auth = { authorization: "s3cret" };
+  const throwingNormaliser = () =>
+    deps({
+      normalise: () => {
+        throw new Error("boom");
+      },
+    });
+  const failingInsert = () =>
+    deps({
+      insert: vi.fn(async () => {
+        throw new Error("ER_LOCK_WAIT_TIMEOUT");
+      }),
+    });
+
+  it("leaves 120 characters whole and cuts 121 with a visible ellipsis", async () => {
+    // Head characters are H and the overflow is T, so keeping the tail instead of
+    // the head cannot look the same.
+    const value = (length) => "H".repeat(Math.min(length, 120)) + "T".repeat(Math.max(length - 120, 0));
+    for (const [length, expected] of [
+      [119, `client="${"H".repeat(119)}"`],
+      [120, `client="${"H".repeat(120)}"`],
+      [121, `client="${"H".repeat(120)}..."`],
+      [5000, `client="${"H".repeat(120)}..."`],
+    ]) {
+      const d = throwingNormaliser();
+      await makeCrmEventsHandler(d)(req(auth, { ...VALID_BODY, client_id: value(length) }), fakeRes());
+      const line = d.logger.error.mock.calls[0][0];
+      expect(line, `length ${length}`).toContain(expected);
+      expect(line, `length ${length}`).not.toContain("TT");
+    }
+  });
+
+  it("cuts every identifier on the normalise-throws path", async () => {
+    // client_id, stage and unique_id are each cut, not just the first: a cap
+    // applied to one of them survived the single-field case above.
+    const d = throwingNormaliser();
+    await makeCrmEventsHandler(d)(
+      req(auth, { client_id: "a".repeat(1_000_000), stage: "b".repeat(1_000_000), unique_id: "c".repeat(1_000_000) }),
+      fakeRes()
+    );
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain(`client="${"a".repeat(120)}..."`);
+    expect(line).toContain(`stage="${"b".repeat(120)}..."`);
+    expect(line).toContain(`unique_id="${"c".repeat(120)}..."`);
+    expect(line.length).toBeLessThan(700);
+  });
+
+  it("cuts them on the failed-store path too", async () => {
+    const d = failingInsert();
+    await makeCrmEventsHandler(d)(
+      req(auth, { ...VALID_BODY, client_id: "a".repeat(1_000_000), unique_id: "c".repeat(1_000_000) }),
+      fakeRes()
+    );
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain(`client="${"a".repeat(120)}..."`);
+    expect(line).toContain(`unique_id="${"c".repeat(120)}..."`);
+    expect(line.length).toBeLessThan(700);
+  });
+
+  it("cuts them on the key-unstorable path, where the value is the whole problem", async () => {
+    // The store's own message still says how long the id was.
+    const d = deps({ insert: insertSignupEvent });
+    await makeCrmEventsHandler(d)(
+      req(auth, { ...VALID_BODY, client_id: "a".repeat(1_000_000), unique_id: "c".repeat(1_000_000) }),
+      fakeRes()
+    );
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain(`client="${"a".repeat(120)}..."`);
+    expect(line).toContain("crm_client_id is 1000000 characters");
+    expect(line.length).toBeLessThan(700);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -4559,16 +4639,24 @@ function secretMatches(supplied, expected) {
   return timingSafeEqual(digest(supplied), digest(expected));
 }
 
+/** An identifier longer than this is cut, so one request cannot flood the log. */
+const MAX_LOGGED_ID = 120;
+
 /**
  * Who a log line is about. Only a string, number or boolean can be an identifier;
- * anything else (absent, an object, an array) is logged as null. Every value is
+ * anything else (absent, an object, an array) is logged as null. Each is cut at
+ * MAX_LOGGED_ID characters and marked with "...", because a 1 MB body can carry a
+ * million-character client_id and the line would be as long. Every value is
  * JSON-quoted, so one cannot forge a second log line, and the email is never part
  * of it. Takes the identifiers rather than a payload, because the caller may be
  * holding a normalised event or a raw body that normalisation could not read.
  */
 function describeEvent({ client, stage, uniqueId }) {
-  const scalar = (value) =>
-    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+  const scalar = (value) => {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return null;
+    const text = String(value);
+    return text.length > MAX_LOGGED_ID ? `${text.slice(0, MAX_LOGGED_ID)}...` : text;
+  };
   return (
     `client=${JSON.stringify(scalar(client))} stage=${JSON.stringify(scalar(stage))} ` +
     `unique_id=${JSON.stringify(scalar(uniqueId))}`
