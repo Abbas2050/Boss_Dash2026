@@ -133,4 +133,28 @@ describe("FXBO_PLACEHOLDER_LABELS", () => {
       "Current Time",
     ]);
   });
+
+  it("does not call an ordinary English word a label", () => {
+    // The array above can be bypassed: a member added to LABEL_SET outside it, or a
+    // hard-coded comparison inside isFxboPlaceholderLabel, would widen the set and
+    // still pass an equality check on the array. These are the four words that
+    // caused the flip, pinned by what the function answers.
+    for (const word of ["Entity", "Referer", "Form Name", "Unique ID"]) {
+      expect(isFxboPlaceholderLabel(word), word).toBe(false);
+    }
+  });
+
+  it("keeps a lone label a lone label when another field is such a word", () => {
+    // The regression itself. The key field is a label, and nothing real
+    // corroborates it: "Entity" is a role name here, an ordinary value. Were it
+    // counted as a label, DocuSign would report an FXBO test press where it should
+    // report an invalid application id.
+    const detection = detectUnsubstitutedPlaceholder(
+      { applicationId: "Client ID", email: "real@x.com", name: "Real Person", roleName: "Entity" },
+      "applicationId"
+    );
+    expect(detection.kind).toBe("label");
+    expect(detection.corroborating).toEqual([]);
+    expect(detection.placeholder).toBe(false);
+  });
 });

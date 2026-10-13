@@ -23,16 +23,24 @@ function secretMatches(supplied, expected) {
   return timingSafeEqual(digest(supplied), digest(expected));
 }
 
+/** An identifier longer than this is cut, so one request cannot flood the log. */
+const MAX_LOGGED_ID = 120;
+
 /**
  * Who a log line is about. Only a string, number or boolean can be an identifier;
- * anything else (absent, an object, an array) is logged as null. Every value is
+ * anything else (absent, an object, an array) is logged as null. Each is cut at
+ * MAX_LOGGED_ID characters and marked with "...", because a 1 MB body can carry a
+ * million-character client_id and the line would be as long. Every value is
  * JSON-quoted, so one cannot forge a second log line, and the email is never part
  * of it. Takes the identifiers rather than a payload, because the caller may be
  * holding a normalised event or a raw body that normalisation could not read.
  */
 function describeEvent({ client, stage, uniqueId }) {
-  const scalar = (value) =>
-    typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+  const scalar = (value) => {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return null;
+    const text = String(value);
+    return text.length > MAX_LOGGED_ID ? `${text.slice(0, MAX_LOGGED_ID)}...` : text;
+  };
   return (
     `client=${JSON.stringify(scalar(client))} stage=${JSON.stringify(scalar(stage))} ` +
     `unique_id=${JSON.stringify(scalar(uniqueId))}`
