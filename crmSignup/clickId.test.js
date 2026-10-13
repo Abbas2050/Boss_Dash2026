@@ -43,6 +43,9 @@ describe("extractFbclid", () => {
     // A fragment is never part of the query and is never sent to the server.
     // Keeping it would put "#frag" inside the click id, a value Meta never matches.
     expect(extractFbclid("https://x.com/p?fbclid=ABC#frag")).toBe("ABC");
+    // The fragment starts before the query, so the query is not in the part the
+    // server sees. The fragment must be cut before the query is searched for.
+    expect(extractFbclid("https://x.com/p#a?fbclid=ABC")).toBe("");
   });
 
   it("keeps a malformed escape as-is rather than throwing", () => {
@@ -79,6 +82,7 @@ describe("buildFbc", () => {
     expect(buildFbc("ABC", null)).toBe("");
     expect(buildFbc("ABC", 0)).toBe("");
     expect(buildFbc("ABC", 1673035686000.5)).toBe("");
+    expect(buildFbc("ABC", -5)).toBe("");
   });
 });
 
