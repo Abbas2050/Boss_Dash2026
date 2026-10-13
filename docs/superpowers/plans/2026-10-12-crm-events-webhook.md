@@ -2392,7 +2392,7 @@ git commit -m "CRM events: Brevo upsert against the attributes that exist"
 **Interfaces:**
 - Consumes: the `Fields` shape from `crmSignup/normalise.js`.
 - Produces:
-  - `SIGNUP_EVENTS_SCHEMA: string`
+  - `SIGNUP_EVENTS_SCHEMA: string`, `INSERT_COLUMNS: string[]`
   - `buildInsertParams(fields, derived, rawPayload): unknown[]` — `derived` is `{ fbc, whatsappRequestId }`
   - `initCrmSignupStore(): Promise<void>`
   - `findExistingFbc(crmClientId): Promise<string>`
@@ -2417,7 +2417,7 @@ Create `crmSignup/store.test.js`:
 // quietly undo: the composite key that makes a redelivery a no-op while still
 // allowing five rows per client, and the per-action retry columns.
 import { describe, it, expect } from "vitest";
-import { SIGNUP_EVENTS_SCHEMA, buildInsertParams } from "./store.js";
+import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, buildInsertParams } from "./store.js";
 
 describe("signup_events schema", () => {
   it("is unique on client AND stage, not client alone", () => {
@@ -2488,28 +2488,44 @@ describe("buildInsertParams", () => {
   };
 
   it("converts booleans to the 1/0 MySQL stores", () => {
-    const params = buildInsertParams(FIELDS, "fb.1.1.ABC", "{}");
+    const params = buildInsertParams(FIELDS, { fbc: "fb.1.1.ABC" }, "{}");
     expect(params).toContain(1); // marketingConsent
     expect(params).toContain(0); // isIb
     expect(params).not.toContain(true);
     expect(params).not.toContain(false);
   });
 
-  it("carries both frozen ids", () => {
+  // By column name, never by position: `fbc` and `whatsapp_request_id` are
+  // adjacent, so `toContain` would pass just as happily with the two swapped —
+  // and a UUID landing in `fbc` is the "quietly broken funnel" this module
+  // exists to avoid.
+  const at = (params, column) => params[INSERT_COLUMNS.indexOf(column)];
+
+  it("puts every parameter in its own column", () => {
+    const params = buildInsertParams(FIELDS, {}, "{}");
+    expect(params).toHaveLength(INSERT_COLUMNS.length);
+    expect(at(params, "crm_client_id")).toBe("88214");
+    expect(at(params, "stage")).toBe("registered");
+    expect(at(params, "email")).toBe("ali.khan@example.com");
+    expect(at(params, "source")).toBe("SVG");
+  });
+
+  it("carries each frozen id in its own column", () => {
     const params = buildInsertParams(
       FIELDS,
       { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
       "{}"
     );
-    expect(params).toContain("fb.1.1673035686000.ABC");
-    expect(params).toContain("11111111-2222-4333-8444-555555555555");
+    expect(at(params, "fbc")).toBe("fb.1.1673035686000.ABC");
+    expect(at(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
   });
 
-  it("writes null rather than an empty string when an id is absent", () => {
-    // An empty string would defeat findExistingFbc, which looks for a non-empty
-    // value, and would make an absent request id indistinguishable from a blank.
+  it("writes NULL, not a string, when an id is absent", () => {
+    // `String(undefined)` would write the literal text "undefined", which
+    // findExistingFbc would later hand back as a perfectly good click id.
     const params = buildInsertParams(FIELDS, {}, "{}");
-    expect(params).not.toContain("");
+    expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
   it("serialises the raw payload as a string", () => {
@@ -2598,7 +2614,10 @@ export const SIGNUP_EVENTS_SCHEMA = `
   )
 `;
 
-const INSERT_COLUMNS = [
+/** Exported so a test can pin each parameter to its column by name rather
+ *  than by position — a swap between two adjacent columns is otherwise
+ *  invisible, and `fbc` and `whatsapp_request_id` sit next to each other. */
+export const INSERT_COLUMNS = [
   "crm_client_id",
   "stage",
   "fxbo_unique_id",
@@ -3621,10 +3640,14 @@ describe("processSignupEvent", () => {
     expect(d.saveMeta).not.toHaveBeenCalled();
   });
 
-  it("reuses the row's WhatsApp request id on a retry, so no second welcome is sent", async () => {
+  it("reuses the row's WhatsApp request id on a retry rather than minting a new one", async () => {
     // The opposite of what the original brief asked for. A send times out after
     // ten seconds, and a timeout does not mean the message was not delivered,
     // so a retry carrying a fresh id would message the client twice.
+    //
+    // Reusing the id is NECESSARY but not demonstrably sufficient: DoubleTick
+    // documents messageId as optional and says nothing about how it treats a
+    // repeated one. The cutover settles that with one deliberate retry.
     const ids = [];
     const d = deps({
       newMessageId: () => `uuid-${ids.length}`,
@@ -5084,6 +5107,12 @@ BREVO_LIST_ID=19
 # Comma-separated %custom_formname% values never sent a WhatsApp message.
 # This does NOT gate Meta or Brevo.
 SKIP_SOURCES=
+# How long an outbound send may take before it is abandoned as a retryable
+# failure. Clamped to 1000-120000; anything outside that, or unparseable, is
+# clamped and warned about once at startup. Node's fetch has no default
+# timeout, and the sweeper runs rows serially, so one hung send would stall
+# every row behind it.
+CRM_SEND_TIMEOUT_MS=10000
 # The retry sweeper.
 CRM_EVENTS_WORKER_ENABLED=true
 CRM_EVENTS_WORKER_INTERVAL_SECONDS=60
