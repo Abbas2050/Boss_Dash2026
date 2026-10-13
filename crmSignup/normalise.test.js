@@ -62,6 +62,15 @@ describe("record type", () => {
     expect(deriveRecordType("maybe")).toBe("lead");
     expect(deriveRecordType("1")).toBe("lead");
   });
+
+  it("does not read null or undefined as a client", () => {
+    // Both are falsy for consent and IB flags, where absent means no. For the
+    // record type they mean unknown: a template variable that failed to render
+    // arrives as one of these strings, and unknown resolves to lead.
+    for (const v of ["null", "undefined"]) {
+      expect(deriveRecordType(v), v).toBe("lead");
+    }
+  });
 });
 
 describe("isFalsyLiteral", () => {
@@ -69,6 +78,11 @@ describe("isFalsyLiteral", () => {
     expect(isFalsyLiteral("")).toBe(true);
     expect(isFalsyLiteral(undefined)).toBe(true);
     expect(isFalsyLiteral("1")).toBe(false);
+  });
+
+  it("still treats null and undefined as falsy, unlike the record type", () => {
+    expect(isFalsyLiteral("null")).toBe(true);
+    expect(isFalsyLiteral("undefined")).toBe(true);
   });
 });
 

@@ -24,6 +24,16 @@ export const REQUIRED_FIELDS = ["stage", "crmClientId", "firstName", "email"];
 
 const FALSY = new Set(["", "0", "false", "no", "n", "off", "null", "undefined"]);
 
+/**
+ * The client-meaning literals for the record type, exactly as spec §2 names
+ * them. Deliberately narrower than FALSY: the asymmetry is intentional, because
+ * a lead who receives a login link for an account that does not exist is worse
+ * than a client who misses a welcome message. So "null" and "undefined" stay out
+ * here, even though they are falsy for consent and IB flags, where absent
+ * legitimately means no.
+ */
+const CLIENT_LITERALS = new Set(["0", "false", "no", "n", "off"]);
+
 const text = (v) => String(v ?? "").trim();
 
 export function isFalsyLiteral(value) {
@@ -33,14 +43,15 @@ export function isFalsyLiteral(value) {
 /**
  * Lead or client.
  *
- * Only a RECOGNISED falsy literal makes a client. Absent, empty and anything
- * unrecognised resolve to "lead", the side that cannot cause harm: the welcome
- * message links to a login page, and a lead has no account to log into.
+ * Only a recognised client literal (see CLIENT_LITERALS) makes a client. Absent,
+ * empty and anything unrecognised resolve to "lead", the side that cannot cause
+ * harm: the welcome message links to a login page, and a lead has no account to
+ * log into.
  */
 export function deriveRecordType(isLead) {
   const v = text(isLead).toLowerCase();
   if (v === "") return "lead";
-  return FALSY.has(v) ? "client" : "lead";
+  return CLIENT_LITERALS.has(v) ? "client" : "lead";
 }
 
 /**
