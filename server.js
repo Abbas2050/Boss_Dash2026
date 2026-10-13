@@ -18,7 +18,8 @@ import { runAppIdMigration } from "./docusign/migrateAppIds.js";
 import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
-import { initCrmSignupStore, findExistingFbc, insertSignupEvent } from "./crmSignup/store.js";
+import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
+import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
@@ -1314,6 +1315,12 @@ app.post('/api/crm-events', makeCrmEventsHandler({
   findFbc: findExistingFbc,
   insert: insertSignupEvent,
   onStored: kickCrmEventsWorker,
+}));
+
+// The settings tab's read side. Guarded, so it is NOT on PUBLIC_API_ROUTES.
+app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
+  canManage: canManageUsers,
+  listSince: listEventsSince,
 }));
 
 app.use("/oauth", oauthRouter);
