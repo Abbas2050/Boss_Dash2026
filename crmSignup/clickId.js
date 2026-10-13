@@ -19,8 +19,13 @@ export function extractFbclid(fullLink) {
   const raw = String(fullLink ?? "").trim();
   if (!raw) return "";
 
-  const q = raw.indexOf("?");
-  const query = q >= 0 ? raw.slice(q + 1) : raw;
+  // A fragment is never part of the query and is never sent to the server, so
+  // it is cut off before the query is looked at.
+  const hash = raw.indexOf("#");
+  const noFragment = hash >= 0 ? raw.slice(0, hash) : raw;
+
+  const q = noFragment.indexOf("?");
+  const query = q >= 0 ? noFragment.slice(q + 1) : noFragment;
 
   for (const pair of query.split("&")) {
     const eq = pair.indexOf("=");
@@ -42,7 +47,11 @@ export function extractFbclid(fullLink) {
 export function buildFbc(fbclid, timestampMs) {
   const id = String(fbclid ?? "").trim();
   if (!id) return "";
-  return `${FBC_PREFIX}.${FBC_SUBDOMAIN_INDEX}.${Number(timestampMs)}.${id}`;
+  const ts = Number(timestampMs);
+  // An absent or unusable time must not reach Meta as "NaN", "0" or a
+  // fractional value: those look well-formed and are never matched.
+  if (!Number.isInteger(ts) || ts <= 0) return "";
+  return `${FBC_PREFIX}.${FBC_SUBDOMAIN_INDEX}.${ts}.${id}`;
 }
 
 export function deriveFbc(fullLink, timestampMs) {

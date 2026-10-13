@@ -38,6 +38,19 @@ describe("extractFbclid", () => {
   it("decodes a percent-encoded value", () => {
     expect(extractFbclid("https://x.com/p?fbclid=A%2BB")).toBe("A+B");
   });
+
+  it("ignores a fragment after the query", () => {
+    // A fragment is never part of the query and is never sent to the server.
+    // Keeping it would put "#frag" inside the click id, a value Meta never matches.
+    expect(extractFbclid("https://x.com/p?fbclid=ABC#frag")).toBe("ABC");
+  });
+
+  it("keeps a malformed escape as-is rather than throwing", () => {
+    // The trailing %A is not a complete escape, so decodeURIComponent throws.
+    // The raw value is still the only attribution we have.
+    expect(() => extractFbclid("https://x.com/p?fbclid=%E0%A4%A")).not.toThrow();
+    expect(extractFbclid("https://x.com/p?fbclid=%E0%A4%A")).toBe("%E0%A4%A");
+  });
 });
 
 describe("buildFbc", () => {
@@ -56,6 +69,16 @@ describe("buildFbc", () => {
     const fbc = buildFbc("ABC", 1673035686000);
     expect(fbc.split(".")[2]).toBe("1673035686000");
     expect(fbc.split(".")[2]).not.toBe("1673035686");
+  });
+
+  it("returns empty when the timestamp is not a usable millisecond time", () => {
+    // Without this, a missing time becomes "fb.1.NaN.ABC": well-formed-looking
+    // and never matched. Losing the attribution is the honest outcome.
+    expect(buildFbc("ABC", undefined)).toBe("");
+    expect(buildFbc("ABC", NaN)).toBe("");
+    expect(buildFbc("ABC", null)).toBe("");
+    expect(buildFbc("ABC", 0)).toBe("");
+    expect(buildFbc("ABC", 1673035686000.5)).toBe("");
   });
 });
 
