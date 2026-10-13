@@ -123,6 +123,23 @@ describe("buildMetaPayload", () => {
     expect(buildMetaPayload({ ...base, testEventCode: "TEST1234" }).test_event_code).toBe("TEST1234");
     expect("test_event_code" in buildMetaPayload(base)).toBe(false);
   });
+
+  it("emits event_id with the value the caller gives", () => {
+    const event = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0];
+    expect(event.event_id).toBe("42:verified");
+  });
+
+  it("builds the same event_id from the same inputs, so a retry carries the same id", () => {
+    const a = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0].event_id;
+    const b = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0].event_id;
+    expect(a).toBeDefined();
+    expect(b).toBe(a);
+  });
+
+  it("omits event_id when none is given, rather than emitting undefined", () => {
+    const event = buildMetaPayload(base).data[0];
+    expect("event_id" in event).toBe(false);
+  });
 });
 
 describe("classifyMetaOutcome", () => {
@@ -152,6 +169,24 @@ describe("classifyMetaOutcome", () => {
     const result = classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } });
     expect(result.status).toBe("failed");
     expect(result.retryable).toBe(false);
+  });
+
+  it("retries a 400 carrying Meta's application rate-limit code, and keeps its message", () => {
+    // Meta throttles with a 400 and the Graph error code; the status is not to be trusted.
+    const result = classifyMetaOutcome({
+      httpStatus: 400,
+      body: { error: { message: "(#4) Application request limit reached", code: 4 } },
+    });
+    expect(result.retryable).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("Application request limit reached");
+  });
+
+  it("retries every Graph throttling code carried on a 400", () => {
+    for (const code of [1, 2, 4, 17, 32, 613]) {
+      const result = classifyMetaOutcome({ httpStatus: 400, body: { error: { message: "m", code } } });
+      expect(result.retryable, String(code)).toBe(true);
+    }
   });
 });
 

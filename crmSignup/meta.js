@@ -17,6 +17,16 @@ const ACTION_SOURCE = "system_generated";
 const EVENT_SOURCE = "crm";
 const LEAD_EVENT_SOURCE = "FXBackOffice";
 
+// Transient Graph API conditions. Meta returns these with an unreliable
+// HTTP status -- commonly 400 -- so the code is what decides, not the status.
+//   1   unknown/transient, Meta's guidance is to retry
+//   2   service temporarily unavailable
+//   4   application-level rate limit
+//   17  user-level rate limit
+//   32  page-level rate limit
+//   613 custom-level rate limit
+const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 613]);
+
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 /**
@@ -34,7 +44,7 @@ export function hashPhone(phone) {
   return digits ? sha256(digits) : "";
 }
 
-export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, testEventCode }) {
+export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode }) {
   const user_data = {};
 
   const em = hashEmail(email);
@@ -55,17 +65,20 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, t
     lead_event_source: LEAD_EVENT_SOURCE,
   };
 
-  const payload = {
-    data: [
-      {
-        action_source: ACTION_SOURCE,
-        custom_data,
-        event_name: META_EVENT_NAMES[stage],
-        event_time: Number(eventTimeSeconds),
-        user_data,
-      },
-    ],
+  const event = {
+    action_source: ACTION_SOURCE,
+    custom_data,
+    event_name: META_EVENT_NAMES[stage],
+    event_time: Number(eventTimeSeconds),
+    user_data,
   };
+
+  // Meta dedupes on event_id plus event_name. The caller derives it from the
+  // client and stage, so a retry of the same funnel event carries the same id.
+  const id = String(eventId ?? "").trim();
+  if (id) event.event_id = id;
+
+  const payload = { data: [event] };
 
   const code = String(testEventCode ?? "").trim();
   if (code) payload.test_event_code = code;
@@ -83,6 +96,13 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
   }
 
   const code = Number(httpStatus) || 0;
+  const reason = String(body?.error?.message ?? "").slice(0, 200);
+  const detail = reason ? `http ${code} ${reason}` : `http ${code}`;
+
+  // The Graph code decides, whatever status carries it: Meta throttles with a 400.
+  if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
+    return { status: "failed", retryable: true, detail };
+  }
 
   if (code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}` };
@@ -97,12 +117,7 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
     return { status: "sent", retryable: false, detail: `http ${code}` };
   }
 
-  const reason = String(body?.error?.message ?? "").slice(0, 200);
-  return {
-    status: "failed",
-    retryable: false,
-    detail: reason ? `http ${code} ${reason}` : `http ${code}`,
-  };
+  return { status: "failed", retryable: false, detail };
 }
 
 /** Never throws, and never puts the access token in its result. */
