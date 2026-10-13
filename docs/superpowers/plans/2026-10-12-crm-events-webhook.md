@@ -2679,7 +2679,6 @@ git commit -m "CRM events: Brevo upsert against the attributes that exist"
   - `initCrmSignupStore(): Promise<void>`
   - `findExistingFbc(crmClientId): Promise<string>`
   - `insertSignupEvent(fields, derived, rawPayload): Promise<{ inserted, id }>`
-  - `markSignupInvalid(crmClientId, stage, detail): Promise<void>`
   - `claimDueEvents(limit, now): Promise<Row[]>`
   - `updateMetaStatus(id, { status, detail, attempts, nextAttemptAt }): Promise<void>`
   - `updateWhatsappStatus(id, { status, messageId, detail, attempts, nextAttemptAt }): Promise<void>`
