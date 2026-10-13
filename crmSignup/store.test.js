@@ -5,7 +5,7 @@
 // redelivery a no-op while still allowing five rows per client, and the
 // per-action retry columns. The SQL statements themselves run against a fake
 // pool in store.sql.test.js; no real MySQL server is involved in either file.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, buildInsertParams } from "./store.js";
 
 // The DDL body split on top-level commas. A comma inside parentheses belongs to
@@ -259,6 +259,16 @@ describe("buildInsertParams", () => {
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
+  it("writes NULL, not an empty string, for an empty text field", () => {
+    // The empty-id test above covers the identifiers. Every other text field
+    // reaches the row through the same str() path, and an empty one is absent,
+    // not a stored "".
+    const params = buildInsertParams({ email: "", utmSource: "", fullLink: "" }, {}, "{}");
+    expect(at(params, "email")).toBeNull();
+    expect(at(params, "utm_source")).toBeNull();
+    expect(at(params, "full_link")).toBeNull();
+  });
+
   it("never writes the word undefined for an empty payload", () => {
     // Dropping any of these defaults would write the literal text "undefined"
     // into a row, the class of bug this module exists to stop.
@@ -270,15 +280,58 @@ describe("buildInsertParams", () => {
 
   it("cuts a value to its column width rather than letting MySQL reject the row", () => {
     // normalise.js does not bound these lengths. ER_DATA_TOO_LONG would surface as
-    // a 200 with the event lost, so FXBO would never retry it.
-    const params = buildInsertParams(
-      { fullLink: "x".repeat(2000), referer: "y".repeat(600) },
-      { fbc: "f".repeat(300) },
-      "{}"
-    );
+    // a 200 with the event lost, so FXBO would never retry it. These two are
+    // diagnostic, so a cut still says where the signup came from. Identifiers are
+    // not cut at all; see the boundary tests below.
+    const params = buildInsertParams({ fullLink: "x".repeat(2000), referer: "y".repeat(600) }, {}, "{}");
     expect(at(params, "full_link")).toHaveLength(1024);
     expect(at(params, "referer")).toHaveLength(512);
-    expect(at(params, "fbc")).toHaveLength(255);
+  });
+
+  // An identifier is never cut. A truncated click id is a wrong click id that still
+  // looks like attribution; a truncated request id is not the one a retry would
+  // replay. Over-width writes NULL and warns, and the event itself is still kept.
+  describe("identifiers at their width boundary", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps a click id of exactly its column width, with no warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fbc = "f".repeat(255);
+      const params = buildInsertParams(FIELDS, { fbc }, "{}");
+      expect(at(params, "fbc")).toBe(fbc);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("writes NULL, and warns with the column and length, for a click id one over", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const params = buildInsertParams(FIELDS, { fbc: "f".repeat(256) }, "{}");
+      expect(at(params, "fbc")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toMatch(/\bfbc\b/);
+      expect(message).toMatch(/\b256\b/);
+      // The event is kept: losing attribution is recoverable, losing the signup is not.
+      expect(at(params, "crm_client_id")).toBe("88214");
+    });
+
+    it("keeps a request id of exactly its column width, with no warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const id = "1".repeat(64);
+      const params = buildInsertParams(FIELDS, { whatsappRequestId: id }, "{}");
+      expect(at(params, "whatsapp_request_id")).toBe(id);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("writes NULL, and warns with the column and length, for a request id one over", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const params = buildInsertParams(FIELDS, { whatsappRequestId: "1".repeat(65) }, "{}");
+      expect(at(params, "whatsapp_request_id")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toMatch(/\bwhatsapp_request_id\b/);
+      expect(message).toMatch(/\b65\b/);
+      expect(at(params, "crm_client_id")).toBe("88214");
+    });
   });
 
   it("writes all three actions as invalid, with the reason, when given one", () => {

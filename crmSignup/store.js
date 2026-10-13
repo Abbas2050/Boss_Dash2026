@@ -106,6 +106,22 @@ const bool = (v) => (v ? 1 : 0);
 const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
 const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
 
+// An identifier is never cut. A truncated click id is a wrong click id that still
+// looks like attribution, and a truncated request id is not the one a retry would
+// replay. Over-width writes NULL and says so; the event itself is still stored.
+const identifier = (v, column) => {
+  if (v === undefined || v === null || v === "") return null;
+  const text = String(v);
+  const length = Array.from(text).length;
+  if (length > COLUMN_WIDTHS[column]) {
+    console.warn(
+      `[crm-events] ${column} is ${length} characters, over its ${COLUMN_WIDTHS[column]}-character column; storing NULL`
+    );
+    return null;
+  }
+  return text;
+};
+
 export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
   try {
@@ -140,8 +156,8 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     str(fields.utmCampaign, "utm_campaign"),
     str(fields.referer, "referer"),
     str(fields.fullLink, "full_link"),
-    str(derived.fbc, "fbc"),
-    str(derived.whatsappRequestId, "whatsapp_request_id"),
+    identifier(derived.fbc, "fbc"),
+    identifier(derived.whatsappRequestId, "whatsapp_request_id"),
     status,
     detail,
     status,
