@@ -4045,6 +4045,9 @@ Expected: PASS, including the pre-existing cases.
 
 - [ ] **Step 5: Add the allow-list entry**
 
+Two files, not one: `auth/requireSession.test.js` pins the list's size and
+contents, so it must be updated in the same change or the suite fails.
+
 In `auth/requireSession.js`, inside `PUBLIC_API_ROUTES`, after the two DocuSign
 entries:
 
@@ -4058,44 +4061,45 @@ entries:
 
 - [ ] **Step 6: Wire it into server.js**
 
+**Wire only what exists at this commit.** `crmSignup/worker.js` and
+`crmSignup/overviewRoute.js` are created in Tasks 8 and 9, and importing them
+now makes `server.js` fail to boot with `ERR_MODULE_NOT_FOUND`. Those two tasks
+each add their own lines here; this one adds the route and the store init.
+
 Add near the other `docusign` imports (around line 16-19):
 
 ```js
 import { makeCrmEventsHandler } from "./crmSignup/router.js";
-import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
-import {
-  initCrmSignupStore,
-  findExistingFbc,
-  insertSignupEvent,
-  listEventsSince,
-} from "./crmSignup/store.js";
-import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
+import { initCrmSignupStore, findExistingFbc, insertSignupEvent } from "./crmSignup/store.js";
 ```
 
 Register beside the other `app.use("/api/...")` registrations (around line
-1298-1302), using **single quotes**:
+1298-1302), using **single quotes** — `auth/routeCoverage.test.js` greps for the
+literal:
 
 ```js
 app.post('/api/crm-events', makeCrmEventsHandler({
   secret: process.env.CRM_WEBHOOK_SECRET,
   findFbc: findExistingFbc,
   insert: insertSignupEvent,
-  onStored: kickCrmEventsWorker,
-}));
-
-app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
-  canManage: canManageUsers,
-  listSince: listEventsSince,
 }));
 ```
 
 In the `server.listen` callback, beside `startDocusignReconcileScheduler()`:
 
 ```js
+  if (!process.env.CRM_WEBHOOK_SECRET) {
+    console.warn(
+      "[crm-events] CRM_WEBHOOK_SECRET is not set; every CRM webhook will be rejected with 401"
+    );
+  }
+
   initCrmSignupStore()
-    .then(() => startCrmEventsWorker())
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
 ```
+
+The secret warning matters because the endpoint fails closed: without it, FXBO
+would simply receive 401s after a deploy with nothing anywhere saying why.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -4733,10 +4737,45 @@ export function startCrmEventsWorker() {
 Run: `npx vitest run crmSignup/worker.test.js --reporter=verbose`
 Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Wire the worker into server.js**
+
+Task 7 deliberately left these out, because this file did not exist then.
+**Without them the worker never starts and nothing fails loudly** — rows would
+accumulate as `pending` for ever while the endpoint kept answering 200.
+
+Add the import beside the other `crmSignup` ones:
+
+```js
+import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
+```
+
+Add `onStored` to the existing registration:
+
+```js
+app.post('/api/crm-events', makeCrmEventsHandler({
+  secret: process.env.CRM_WEBHOOK_SECRET,
+  findFbc: findExistingFbc,
+  insert: insertSignupEvent,
+  onStored: kickCrmEventsWorker,
+}));
+```
+
+And start the sweeper once the store is ready:
+
+```js
+  initCrmSignupStore()
+    .then(() => startCrmEventsWorker())
+    .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
+```
+
+Verify with `node --check server.js`, then confirm `auth/routeCoverage.test.js`
+still passes — the registration literal must stay single-quoted and below the
+session gate.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add crmSignup/worker.js crmSignup/worker.test.js
+git add crmSignup/worker.js crmSignup/worker.test.js server.js
 git commit -m "CRM events: worker fanning out to three destinations, independently"
 ```
 
@@ -5228,10 +5267,34 @@ export function makeCrmEventsOverviewHandler({
 Run: `npx vitest run crmSignup/stats.test.js crmSignup/overviewRoute.test.js auth/routeCoverage.test.js --reporter=verbose`
 Expected: PASS. `/api/crm-events/overview` is guarded, so it must NOT appear in `PUBLIC_API_ROUTES`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Wire the endpoint into server.js**
+
+Task 7 left this out because this file did not exist then. Without it the
+settings tab in Task 10 has nothing to read.
+
+Add the two imports beside the other `crmSignup` ones — note `listEventsSince`
+joins the existing store import rather than starting a new one:
+
+```js
+import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
+```
+
+and register it after the webhook route, behind both guards:
+
+```js
+app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOverviewHandler({
+  canManage: canManageUsers,
+  listSince: listEventsSince,
+}));
+```
+
+This route is **guarded**, so it must NOT go on `PUBLIC_API_ROUTES`. Verify with
+`node --check server.js` and `npx vitest run auth/routeCoverage.test.js`.
+
+- [ ] **Step 8: Commit**
 
 ```bash
-git add crmSignup/stats.js crmSignup/stats.test.js crmSignup/overviewRoute.js crmSignup/overviewRoute.test.js
+git add crmSignup/stats.js crmSignup/stats.test.js crmSignup/overviewRoute.js crmSignup/overviewRoute.test.js server.js
 git commit -m "CRM events: overview endpoint with health, funnel and per-destination counts"
 ```
 
