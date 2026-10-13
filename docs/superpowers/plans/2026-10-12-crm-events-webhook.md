@@ -3208,8 +3208,8 @@ git commit -m "CRM events: one row per client per stage, with a frozen click id"
 - Modify: `server.js` (import, register, init, start)
 
 **Interfaces:**
-- Consumes: `normaliseEvent`, `maskEmail` from `crmSignup/normalise.js`; `deriveFbc` from `crmSignup/clickId.js`; `findExistingFbc`, `insertSignupEvent`, `markSignupInvalid` from `crmSignup/store.js`; `detectUnsubstitutedPlaceholder`, `PLACEHOLDER_NOT_SUBSTITUTED`, `describePlaceholderRejection` from `docusign/fxboPlaceholder.js`.
-- Produces: `makeCrmEventsHandler({ secret, findFbc, insert, markInvalid, onStored, normalise, now, newRequestId, logger }): (req, res) => Promise<void>`
+- Consumes: `normaliseEvent`, `maskEmail` from `crmSignup/normalise.js`; `deriveFbc` from `crmSignup/clickId.js`; `findExistingFbc`, `insertSignupEvent` from `crmSignup/store.js`; `detectUnsubstitutedPlaceholder`, `PLACEHOLDER_NOT_SUBSTITUTED`, `describePlaceholderRejection` from `docusign/fxboPlaceholder.js`.
+- Produces: `makeCrmEventsHandler({ secret, findFbc, insert, onStored, normalise, now, newRequestId, logger }): (req, res) => Promise<void>`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3259,7 +3259,6 @@ function deps(overrides = {}) {
     secret: "s3cret",
     findFbc: vi.fn(async () => ""),
     insert: vi.fn(async () => ({ inserted: true, id: 1 })),
-    markInvalid: vi.fn(async () => {}),
     onStored: vi.fn(() => {}),
     now: () => new Date("2026-10-12T12:00:00Z"),
     newRequestId: () => "11111111-2222-4333-8444-555555555555",
@@ -3392,26 +3391,35 @@ describe("storing", () => {
     expect(d.onStored).not.toHaveBeenCalled();
   });
 
-  it("does not mark a duplicate invalid, so a redelivery cannot cancel a queued send", async () => {
-    // markInvalid updates by (crm_client_id, stage) regardless of the row's
-    // state. If a later delivery of a stage arrives malformed, writing invalid
-    // over a row whose welcome is already queued or sent would cancel it.
-    const d = deps({ insert: vi.fn(async () => ({ inserted: false, id: null })) });
-    const res = fakeRes();
-    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }), res);
-    expect(res.statusCode).toBe(200);
-    expect(d.markInvalid).not.toHaveBeenCalled();
-    expect(res.body).toEqual({ ok: true, stored: true, duplicate: true, valid: false });
-  });
-
-  it("stores an unknown stage as invalid and stops", async () => {
+  it("stores an unknown stage as invalid in the insert itself, and stops", async () => {
+    // One statement, not two. A separate UPDATE would leave the row briefly
+    // readable with three pending statuses, and a sweep landing in that window
+    // would send an invalid payload.
     const d = deps();
     const res = fakeRes();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }), res);
     expect(res.statusCode).toBe(200);
-    expect(d.markInvalid).toHaveBeenCalledTimes(1);
+    expect(d.insert).toHaveBeenCalledTimes(1);
+    expect(d.insert.mock.calls[0][3]).toContain("missing required fields");
     expect(d.onStored).not.toHaveBeenCalled();
     expect(res.body.valid).toBe(false);
+  });
+
+  it("passes no reason at all for a valid payload", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][3]).toBeNull();
+  });
+
+  it("leaves an existing row untouched when a malformed redelivery arrives", async () => {
+    // The INSERT is a no-op once the row exists, so a later invalid delivery of
+    // a stage cannot overwrite the statuses an earlier valid one set -- it
+    // cannot cancel a welcome that is queued or already sent.
+    const d = deps({ insert: vi.fn(async () => ({ inserted: false, id: null })) });
+    const res = fakeRes();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }), res);
+    expect(res.body).toEqual({ ok: true, stored: true, duplicate: true, valid: false });
+    expect(d.onStored).not.toHaveBeenCalled();
   });
 
   it("answers 200 even when the database throws", async () => {
@@ -3462,14 +3470,14 @@ describe("an FXBO Test webhook press", () => {
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, TEST_PRESS), res);
     expect(res.statusCode).toBe(200);
     expect(d.onStored).not.toHaveBeenCalled();
-    expect(d.markInvalid).toHaveBeenCalledTimes(1);
-    expect(d.markInvalid.mock.calls[0][2]).toContain("placeholder_not_substituted");
+    expect(d.insert).toHaveBeenCalledTimes(1);
+    expect(d.insert.mock.calls[0][3]).toContain("placeholder_not_substituted");
   });
 
   it("leaves a real payload alone", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
-    expect(d.markInvalid).not.toHaveBeenCalled();
+    expect(d.insert.mock.calls[0][3]).toBeNull();
     expect(d.onStored).toHaveBeenCalledTimes(1);
   });
 
@@ -3481,7 +3489,7 @@ describe("an FXBO Test webhook press", () => {
       req({ authorization: "s3cret" }, { ...VALID_BODY, last_name: "Client Last Name" }),
       fakeRes()
     );
-    expect(d.markInvalid).not.toHaveBeenCalled();
+    expect(d.insert.mock.calls[0][3]).toBeNull();
   });
 });
 
@@ -3552,7 +3560,6 @@ export function makeCrmEventsHandler({
   secret,
   findFbc,
   insert,
-  markInvalid,
   onStored = () => {},
   normalise = normaliseEvent,
   now = () => new Date(),
@@ -3606,24 +3613,29 @@ export function makeCrmEventsHandler({
       // Generated once, here, and reused on every send attempt. A send times
       // out after 10 seconds and a timeout does not mean the message was not
       // delivered, so a retry carrying a fresh id would be a second welcome.
+      // The verdict travels INTO the insert rather than following it as a
+      // second UPDATE. Two statements left a window: between them the row sat
+      // with three `pending` statuses, so a sweep, a recycle or a throw on the
+      // second write would have sent an invalid payload -- including an FXBO
+      // test press, which would post a fabricated conversion to Meta and a
+      // contact named "Client First Name" into the live marketing list.
+      //
+      // It also removes any need to reason about duplicates here: the INSERT is
+      // a no-op when the row exists, so a malformed redelivery cannot overwrite
+      // the statuses an earlier valid delivery set.
+      const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
+
       const { inserted } = await insert(
         fields,
         { fbc, whatsappRequestId: newRequestId() },
-        req?.body
+        req?.body,
+        invalidReason
       );
 
-      if (isTestPress || !valid) {
+      if (invalidReason) {
         logger.warn?.(
           `[crm-events] ${isTestPress ? "test press" : "invalid payload"} for ${maskEmail(fields.email) || "(no email)"}`
         );
-        // Only when WE stored this row. markInvalid updates by
-        // (crm_client_id, stage) and does not care what state the row is in, so
-        // on a duplicate it would overwrite the statuses an earlier, valid
-        // delivery had already set -- cancelling a welcome message that is
-        // queued or already sent.
-        if (inserted) {
-          await markInvalid(fields.crmClientId, fields.stage, reason.slice(0, 500));
-        }
         return res.status(200).json({ ok: true, stored: true, duplicate: !inserted, valid: false });
       }
 
@@ -3731,7 +3743,6 @@ import {
   initCrmSignupStore,
   findExistingFbc,
   insertSignupEvent,
-  markSignupInvalid,
   listEventsSince,
 } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
@@ -3745,7 +3756,6 @@ app.post('/api/crm-events', makeCrmEventsHandler({
   secret: process.env.CRM_WEBHOOK_SECRET,
   findFbc: findExistingFbc,
   insert: insertSignupEvent,
-  markInvalid: markSignupInvalid,
   onStored: kickCrmEventsWorker,
 }));
 
