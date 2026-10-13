@@ -71,6 +71,8 @@ is no return-on-ad-spend measurement.
 |---|---|
 | `crmSignup/normalise.js` | Pure. Raw body → normalised fields, stage validation, validity verdict, masking. |
 | `crmSignup/clickId.js` | Pure. `full_link` → `fbclid` → the wrapped `fbc`. |
+| `crmSignup/sendTimeout.js` | The one send-timeout default and env var, shared by all three senders. |
+| `crmSignup/sendTimeout.contract.js` | The shared timeout test block the three sender suites each run. |
 | `crmSignup/meta.js` | Hashing, CAPI payload, outcome classifier, send. |
 | `crmSignup/whatsapp.js` | DoubleTick payload, skip decision, outcome classifier, send. |
 | `crmSignup/brevo.js` | Contact builder, outcome classifier, upsert. |
@@ -748,6 +750,7 @@ Create `crmSignup/meta.test.js`:
 // error at all -- Meta accepts the event and silently fails to match it -- so
 // the hashing and the fixed constants are pinned by test rather than by care.
 import { describe, it, expect, vi } from "vitest";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   META_EVENT_NAMES,
   hashEmail,
@@ -908,6 +911,23 @@ describe("classifyMetaOutcome", () => {
     expect(classifyMetaOutcome({ transportError: new Error("ETIMEDOUT") }).retryable).toBe(true);
     for (const httpStatus of [429, 500, 502, 503]) {
       expect(classifyMetaOutcome({ httpStatus, body: {} }).retryable, String(httpStatus)).toBe(true);
+    }
+  });
+
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    expect(classifyMetaOutcome({ httpStatus: 408, body: {} })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 408",
+    });
+  });
+
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const result = classifyMetaOutcome({ httpStatus, body: {} });
+      expect(result.retryable, String(httpStatus)).toBe(false);
+      expect(result.status, String(httpStatus)).toBe("failed");
     }
   });
 
@@ -1105,6 +1125,82 @@ describe("sendMetaEvent", () => {
   });
 
 });
+
+describeSendTimeout("sendMetaEvent", {
+  ok: () => vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ events_received: 1 }) })),
+  send: (fetchImpl) => sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} }),
+});
+
+describe("sendMetaEvent when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
+
+  it("retries a 2xx whose body timed out: no count is an unknown outcome, and event_id makes a retry safe", async () => {
+    const r = await send(vi.fn(async () => stalledBodyResponse(200)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 200 no events_received" });
+  });
+
+  it("retries a 400 whose body timed out, since a throttle and a rejection cannot be told apart", async () => {
+    // Meta carries its throttle codes in the body (a 400 with code 4), so a body
+    // that never arrives leaves a 400 that is either one. A readable throttle is
+    // retried and a readable rejection is not; the unreadable one is retried,
+    // because not retrying a throttle drops a conversion while retrying a
+    // rejection only wastes a call, and event_id makes the retry safe.
+    const readable = (error) =>
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error }) }));
+    expect((await send(readable({ message: "(#4) Application request limit reached", code: 4 }))).retryable).toBe(true);
+    expect((await send(readable({ message: "Invalid parameter", code: 100 }))).retryable).toBe(false);
+
+    const r = await send(vi.fn(async () => stalledBodyResponse(400)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 400 body timed out" });
+  });
+
+  it("retries every non-2xx whose body timed out, and says the body timed out", async () => {
+    for (const status of [400, 401, 403, 404, 422, 503]) {
+      const r = await send(vi.fn(async () => stalledBodyResponse(status)));
+      expect(r, String(status)).toEqual({ status: "failed", retryable: true, detail: `http ${status} body timed out` });
+    }
+  });
+
+  it("does not retry a non-2xx whose body failed for any other reason", async () => {
+    // Only a timeout is a body we never saw. A body that arrived and would not
+    // parse is a different case, and so is anything thrown that is not an error.
+    for (const thrown of [new SyntaxError("Unexpected token <"), new Error("socket hang up"), undefined, null, "oops"]) {
+      const fetchImpl = vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => {
+          throw thrown;
+        },
+      }));
+      expect(await send(fetchImpl), String(thrown)).toEqual({ status: "failed", retryable: false, detail: "http 400" });
+    }
+  });
+
+  it("leaves a 2xx whose body timed out as it was: an unknown outcome, retryable, no count", async () => {
+    // The new rule is for a non-2xx. A 2xx keeps its own wording and its own rule.
+    const r = await send(vi.fn(async () => stalledBodyResponse(201)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 201 no events_received" });
+  });
+});
+
+describe("classifyMetaOutcome and a body that timed out", () => {
+  it("retries a non-2xx only when told the body timed out, not for a missing body alone", () => {
+    expect(classifyMetaOutcome({ httpStatus: 400, body: null, bodyTimedOut: true })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 400 body timed out",
+    });
+    expect(classifyMetaOutcome({ httpStatus: 400, body: null })).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "http 400",
+    });
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1123,6 +1219,7 @@ Create `crmSignup/meta.js`:
 
 ```js
 import { createHash } from "crypto";
+import { sendTimeoutSignal } from "./sendTimeout.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
@@ -1212,7 +1309,7 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
   return payload;
 }
 
-export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body } = {}) {
+export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, body, bodyTimedOut } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -1223,18 +1320,35 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
 
   const httpStatus = Number(rawStatus) || 0;
   const reason = String(body?.error?.message ?? "").slice(0, 200);
-  const detail = reason ? `http ${httpStatus} ${reason}` : `http ${httpStatus}`;
+  // With no reason to give, say why: an operator reading a row that was retried
+  // and then failed should know we never saw Meta's reason, not that we ignored it.
+  const detail = reason
+    ? `http ${httpStatus} ${reason}`
+    : bodyTimedOut
+      ? `http ${httpStatus} body timed out`
+      : `http ${httpStatus}`;
 
   // The Graph code decides, whatever status carries it: Meta throttles with a 400.
   if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (httpStatus === 429 || httpStatus >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (httpStatus === 408 || httpStatus === 429 || httpStatus >= 500) {
     return { status: "failed", retryable: true, detail };
   }
 
-  if (httpStatus >= 200 && httpStatus < 300) {
+  // Meta puts its throttle codes in the body, so a non-2xx whose body timed out is
+  // a throttle (retryable) or a bad parameter (permanent) and nothing tells which.
+  // The costs are lopsided: retrying a real rejection wastes a few calls and fails
+  // the same way, while not retrying a throttle silently drops a conversion. And
+  // event_id means a retry cannot double-count.
+  const isSuccess = httpStatus >= 200 && httpStatus < 300;
+  if (bodyTimedOut && !isSuccess) {
+    return { status: "failed", retryable: true, detail };
+  }
+
+  if (isSuccess) {
     // Meta's success body always carries the count. Without one, a proxy answered
     // instead of Meta: the outcome is unknown, and event_id makes a retry safe.
     // An explicit zero is Meta saying so, and a retry would hear the same thing.
@@ -1275,6 +1389,8 @@ export async function sendMetaEvent({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     let message = String(transportError?.message || transportError);
@@ -1286,13 +1402,16 @@ export async function sendMetaEvent({
   }
 
   let body = null;
+  let bodyTimedOut = false;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
     body = null;
+    // The timeout signal covers reading the body as well as the headers.
+    bodyTimedOut = error?.name === "TimeoutError";
   }
 
-  return classifyMetaOutcome({ httpStatus: response?.status, body });
+  return classifyMetaOutcome({ httpStatus: response?.status, body, bodyTimedOut });
 }
 ```
 
@@ -1337,6 +1456,7 @@ Create `crmSignup/whatsapp.test.js`:
 // status says the request was accepted. messages[0].status says what happened
 // to the message. Only the second one is the outcome.
 import { describe, it, expect, vi } from "vitest";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   WHATSAPP_FAILURE_STATUSES,
   parseSkipSources,
@@ -1414,6 +1534,15 @@ describe("skip decisions", () => {
 
   it("counts a whitespace-only key as unset", () => {
     expect(decideWhatsappSkip({ ...base, apiKey: "   " })).toEqual({ reason: "whatsapp not configured" });
+  });
+
+  it("treats every blank or missing key as unconfigured", () => {
+    // The same four values decideBrevoSkip is held to, so the two cannot drift apart.
+    for (const apiKey of ["", "   ", undefined, null]) {
+      expect(decideWhatsappSkip({ ...base, apiKey }), String(apiKey)).toEqual({
+        reason: "whatsapp not configured",
+      });
+    }
   });
 
   it("accepts skipSources as the raw env string, not only a parsed Set", () => {
@@ -1597,6 +1726,15 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.retryable).toBe(true);
   });
 
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const r = classifyWhatsappOutcome({ httpStatus, body: {} });
+      expect(r.retryable, String(httpStatus)).toBe(false);
+      expect(r.status, String(httpStatus)).toBe("rejected");
+    }
+  });
+
   it("treats any 2xx as accepted, from 201 through 299, when it carries a healthy status", () => {
     expect(
       classifyWhatsappOutcome({ httpStatus: 201, body: { messages: [{ status: "SENT", messageId: "m-21" }] } })
@@ -1755,6 +1893,79 @@ describe("sendWhatsappTemplate", () => {
     }
   });
 });
+
+describeSendTimeout("sendWhatsappTemplate", {
+  ok: () =>
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "SENT", messageId: "m-30" }] }),
+    })),
+  send: (fetchImpl) => sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} }),
+});
+
+describe("sendWhatsappTemplate when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+
+  it("does not retry a 2xx whose body timed out, and says the body timed out", async () => {
+    // A 2xx means the request was accepted and the message may well have gone
+    // out. A retry would be a second welcome, so this stays terminal.
+    const r = await send(vi.fn(async () => stalledBodyResponse(200)));
+    expect(r).toEqual({
+      status: "failed",
+      retryable: false,
+      detail: "body timed out in a 2xx response",
+      messageId: null,
+    });
+  });
+
+  it("keeps the old detail when the body failed to read for any other reason", async () => {
+    for (const thrown of [new SyntaxError("Unexpected token <"), new Error("socket hang up"), undefined, null, "oops"]) {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw thrown;
+        },
+      }));
+      const r = await send(fetchImpl);
+      expect(r, String(thrown)).toEqual({
+        status: "failed",
+        retryable: false,
+        detail: "no message status in a 2xx response",
+        messageId: null,
+      });
+    }
+  });
+
+  it("still retries a 5xx and rejects a 4xx whose body timed out, since the status decides first", async () => {
+    expect(await send(vi.fn(async () => stalledBodyResponse(503)))).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 503",
+      messageId: null,
+    });
+    expect(await send(vi.fn(async () => stalledBodyResponse(400)))).toEqual({
+      status: "rejected",
+      retryable: false,
+      detail: "http 400",
+      messageId: null,
+    });
+  });
+
+  it("names a body timeout only when the sender reports one", () => {
+    expect(classifyWhatsappOutcome({ httpStatus: 200, body: null, bodyTimedOut: true }).detail).toBe(
+      "body timed out in a 2xx response"
+    );
+    expect(classifyWhatsappOutcome({ httpStatus: 200, body: null }).detail).toBe(
+      "no message status in a 2xx response"
+    );
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1768,6 +1979,7 @@ Create `crmSignup/whatsapp.js`:
 
 ```js
 import { PHONE_RE } from "./normalise.js";
+import { sendTimeoutSignal } from "./sendTimeout.js";
 
 export const DOUBLETICK_TEMPLATE_URL = "https://public.doubletick.io/whatsapp/message/template";
 
@@ -1849,7 +2061,7 @@ export function buildWhatsappPayload({
   };
 }
 
-export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {}) {
+export function classifyWhatsappOutcome({ transportError, httpStatus, body, bodyTimedOut } = {}) {
   if (transportError) {
     return {
       status: "failed",
@@ -1890,7 +2102,10 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
     return {
       status: "failed",
       retryable: false,
-      detail: "no message status in a 2xx response",
+      // Never retried either way: a 2xx means the message may have gone out. But
+      // the timeout signal bounds the body read too, and a row that fails here
+      // should say the body timed out rather than blame a field DoubleTick omitted.
+      detail: bodyTimedOut ? "body timed out in a 2xx response" : "no message status in a 2xx response",
       messageId: message?.messageId ?? null,
     };
   }
@@ -1928,6 +2143,8 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     // A thrown falsy value is still a transport failure, not something that falls through.
@@ -1935,13 +2152,16 @@ export async function sendWhatsappTemplate({ fetchImpl = fetch, apiKey, payload 
   }
 
   let body = null;
+  let bodyTimedOut = false;
   try {
     body = await response.json();
-  } catch {
+  } catch (error) {
     body = null;
+    // The timeout signal covers reading the body as well as the headers.
+    bodyTimedOut = error?.name === "TimeoutError";
   }
 
-  return classifyWhatsappOutcome({ httpStatus: response?.status, body });
+  return classifyWhatsappOutcome({ httpStatus: response?.status, body, bodyTimedOut });
 }
 ```
 
@@ -1986,6 +2206,7 @@ Create `crmSignup/brevo.test.js`:
 // attribute Brevo does not know returns 400, which this design treats as
 // permanent -- so a typo here means the contact silently never lands.
 import { describe, it, expect, vi } from "vitest";
+import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   decideBrevoSkip,
   buildBrevoContact,
@@ -2088,11 +2309,23 @@ describe("buildBrevoContact", () => {
     expect(attributes.IS_IB).toBe(false);
   });
 
+  it("carries both booleans as true together: a consenting introducing broker", () => {
+    // The fourth combination, and a realistic production state. Each boolean
+    // must stand on its own field rather than be derived from the other.
+    const { attributes } = buildBrevoContact(
+      { ...FIELDS, marketingConsent: true, isIb: true },
+      { listId: "19" }
+    );
+    expect(attributes.OPT_IN).toBe(true);
+    expect(attributes.IS_IB).toBe(true);
+  });
+
   it("never sends the phone, and never sends an attribute Brevo lacks", () => {
     const contact = buildBrevoContact(FIELDS, { listId: "19" });
     const { attributes } = contact;
     expect(JSON.stringify(contact)).not.toContain("971507192185");
-    expect(Object.keys(contact)).toEqual(["email", "updateEnabled", "attributes", "listIds"]);
+    // Insertion order means nothing to Brevo, so compare the keys as a set.
+    expect(Object.keys(contact).sort()).toEqual(["email", "updateEnabled", "attributes", "listIds"].sort());
     expect(attributes.PHONE).toBeUndefined();
     expect(attributes.SMS).toBeUndefined();
     expect(attributes.MARKETING_CONSENT).toBeUndefined(); // consent rides on OPT_IN
@@ -2141,6 +2374,23 @@ describe("classifyBrevoOutcome", () => {
     expect(classifyBrevoOutcome({ transportError: new Error("ETIMEDOUT") }).retryable).toBe(true);
     for (const httpStatus of [429, 500, 502, 503]) {
       expect(classifyBrevoOutcome({ httpStatus, body: {} }).retryable, String(httpStatus)).toBe(true);
+    }
+  });
+
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    expect(classifyBrevoOutcome({ httpStatus: 408, body: {} })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 408",
+    });
+  });
+
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const r = classifyBrevoOutcome({ httpStatus, body: {} });
+      expect(r.retryable, String(httpStatus)).toBe(false);
+      expect(r.status, String(httpStatus)).toBe("failed");
     }
   });
 
@@ -2237,6 +2487,31 @@ describe("upsertBrevoContact", () => {
     expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).status).toBe("sent");
   });
 });
+
+describeSendTimeout("upsertBrevoContact", {
+  ok: () => vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 1 }) })),
+  send: (fetchImpl) => upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} }),
+});
+
+describe("upsertBrevoContact when the response body times out", () => {
+  // The timeout signal bounds reading the body as well as the headers, so a stall
+  // after the status line ends in json() rejecting with a TimeoutError. The
+  // sender swallows that like any unreadable body, and the outcome falls out of
+  // the status alone. Pinned per sender because the three differ on purpose.
+  const send = (fetchImpl) => upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} });
+
+  it("counts a 2xx whose body timed out as sent: the status already says the upsert worked", async () => {
+    // The upsert is idempotent and nothing in the body is needed, so there is
+    // nothing to retry.
+    const r = await send(vi.fn(async () => stalledBodyResponse(201)));
+    expect(r).toEqual({ status: "sent", retryable: false, detail: "http 201" });
+  });
+
+  it("still retries a 5xx whose body timed out, since the status decides", async () => {
+    const r = await send(vi.fn(async () => stalledBodyResponse(503)));
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -2249,6 +2524,8 @@ Expected: FAIL — `Failed to load url ./brevo.js`
 Create `crmSignup/brevo.js`:
 
 ```js
+import { sendTimeoutSignal } from "./sendTimeout.js";
+
 export const BREVO_CONTACTS_URL = "https://api.brevo.com/v3/contacts";
 
 const text = (v) => String(v ?? "").trim();
@@ -2323,7 +2600,8 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
 
   const code = Number(httpStatus) || 0;
 
-  if (code === 429 || code >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (code === 408 || code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}` };
   }
 
@@ -2351,6 +2629,8 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
         Accept: "application/json",
       },
       body: JSON.stringify(contact),
+      // Bounded: a stall aborts with a TimeoutError, which lands in the catch below.
+      signal: sendTimeoutSignal(),
     });
   } catch (transportError) {
     // A thrown falsy value is still a transport failure, not something that falls through.
@@ -2361,7 +2641,8 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
   try {
     body = await response.json();
   } catch {
-    // 204 has no body, and that is a success, not a parse failure.
+    // 204 has no body, and that is a success, not a parse failure. A body cut off
+    // by the timeout lands here too, and the 2xx has already said the upsert worked.
     body = null;
   }
 
