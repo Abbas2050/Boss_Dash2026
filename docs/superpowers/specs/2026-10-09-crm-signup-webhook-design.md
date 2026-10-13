@@ -363,7 +363,22 @@ phone matches `/^\+[1-9]\d{7,14}$/`, `source` is not in `SKIP_SOURCES`, and
 `Authorization: <WA_API_KEY>` — **raw key, not `Bearer`**. Body as the brief
 gives it: a `messages` array of one, each entry holding `content`
 (`templateName`, `language`, `templateData.header/body/buttons`) and, as
-siblings of `content`, `from`, `to` and `messageId`. Fresh UUID v4 per attempt.
+siblings of `content`, `from`, `to` and `messageId`.
+
+**The `messageId` is frozen per row, not fresh per attempt (2026-10-13).** The
+brief said a fresh UUID v4 on every attempt. That is wrong once sends are
+bounded by a 10-second timeout: a timeout does not mean the message was not
+sent, so a retry carrying a *new* id is a second welcome message to the client —
+the duplicate the whole design exists to prevent. The id is generated once when
+the row is stored, kept in `whatsapp_request_id`, and reused on every attempt,
+exactly as `fbc` is.
+
+DoubleTick's documentation describes `messageId` as optional and auto-generated
+when omitted, and says nothing about how a repeated one is treated. So the
+residual risk runs the other way: if they reject a replayed id, a retry fails
+permanently rather than duplicating. That is the better failure — it is visible
+in the admin view, and the client is never messaged twice. Settle it at cutover
+with one deliberate retry.
 
 **An HTTP 2xx does not mean sent.** It means accepted. The verdict is
 `messages[0].status`, and these are failures, case-insensitively: `FAILED`,
