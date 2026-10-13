@@ -733,7 +733,7 @@ git commit -m "CRM events: derive the Meta click id from the landing URL"
 - Produces:
   - `META_EVENT_NAMES: Record<stage, string>`
   - `hashEmail(email): string`, `hashPhone(phone): string`
-  - `buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, value, currency, testEventCode }): object`
+  - `buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode }): object`
   - `classifyMetaOutcome({ transportError, httpStatus, body }): { status, retryable, detail }`
   - `sendMetaEvent({ fetchImpl, datasetId, apiVersion, accessToken, payload }): Promise<outcome>`
 
@@ -848,6 +848,12 @@ describe("buildMetaPayload", () => {
     expect(user_data.em).toBeDefined();
   });
 
+  it("omits em too when there is no email, not only fbc and ph", () => {
+    // hashEmail returns "" for no email; that must not reach Meta as a matcher.
+    const { user_data } = buildMetaPayload({ ...base, email: "" }).data[0];
+    expect("em" in user_data).toBe(false);
+  });
+
   it("never carries a value or a currency, at any stage", () => {
     // Decided 2026-10-13: Meta learns that a deposit happened, not what it was
     // worth. custom_data holds the two CRM constants and nothing else.
@@ -860,6 +866,23 @@ describe("buildMetaPayload", () => {
   it("includes a test event code only when one is configured", () => {
     expect(buildMetaPayload({ ...base, testEventCode: "TEST1234" }).test_event_code).toBe("TEST1234");
     expect("test_event_code" in buildMetaPayload(base)).toBe(false);
+  });
+
+  it("emits event_id with the value the caller gives", () => {
+    const event = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0];
+    expect(event.event_id).toBe("42:verified");
+  });
+
+  it("builds the same event_id from the same inputs, so a retry carries the same id", () => {
+    const a = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0].event_id;
+    const b = buildMetaPayload({ ...base, eventId: "42:verified" }).data[0].event_id;
+    expect(a).toBeDefined();
+    expect(b).toBe(a);
+  });
+
+  it("omits event_id when none is given, rather than emitting undefined", () => {
+    const event = buildMetaPayload(base).data[0];
+    expect("event_id" in event).toBe(false);
   });
 });
 
@@ -890,6 +913,24 @@ describe("classifyMetaOutcome", () => {
     const result = classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } });
     expect(result.status).toBe("failed");
     expect(result.retryable).toBe(false);
+  });
+
+  it("retries a 400 carrying Meta's application rate-limit code, and keeps its message", () => {
+    // Meta throttles with a 400 and the Graph error code; the status is not to be trusted.
+    const result = classifyMetaOutcome({
+      httpStatus: 400,
+      body: { error: { message: "(#4) Application request limit reached", code: 4 } },
+    });
+    expect(result.retryable).toBe(true);
+    expect(result.status).toBe("failed");
+    expect(result.detail).toContain("Application request limit reached");
+  });
+
+  it("retries every Graph throttling code carried on a 400", () => {
+    for (const code of [1, 2, 4, 17, 32, 613]) {
+      const result = classifyMetaOutcome({ httpStatus: 400, body: { error: { message: "m", code } } });
+      expect(result.retryable, String(code)).toBe(true);
+    }
   });
 });
 
@@ -923,6 +964,20 @@ describe("sendMetaEvent", () => {
     const fetchImpl = vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad" } }) }));
     const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "s3cret-token", payload: {} });
     expect(result.detail).not.toContain("s3cret-token");
+  });
+
+  it("does not throw on a failed response whose body is not JSON", async () => {
+    // A load balancer answering 503 with an HTML page is ordinary. The body
+    // cannot be read, but the status still says retry.
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    }));
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
+    expect(result.retryable).toBe(true);
   });
 });
 ```
@@ -961,6 +1016,16 @@ const ACTION_SOURCE = "system_generated";
 const EVENT_SOURCE = "crm";
 const LEAD_EVENT_SOURCE = "FXBackOffice";
 
+// Transient Graph API conditions. Meta returns these with an unreliable
+// HTTP status -- commonly 400 -- so the code is what decides, not the status.
+//   1   unknown/transient, Meta's guidance is to retry
+//   2   service temporarily unavailable
+//   4   application-level rate limit
+//   17  user-level rate limit
+//   32  page-level rate limit
+//   613 custom-level rate limit
+const TRANSIENT_GRAPH_CODES = new Set([1, 2, 4, 17, 32, 613]);
+
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
 /**
@@ -978,7 +1043,7 @@ export function hashPhone(phone) {
   return digits ? sha256(digits) : "";
 }
 
-export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, testEventCode }) {
+export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode }) {
   const user_data = {};
 
   const em = hashEmail(email);
@@ -999,17 +1064,20 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, t
     lead_event_source: LEAD_EVENT_SOURCE,
   };
 
-  const payload = {
-    data: [
-      {
-        action_source: ACTION_SOURCE,
-        custom_data,
-        event_name: META_EVENT_NAMES[stage],
-        event_time: Number(eventTimeSeconds),
-        user_data,
-      },
-    ],
+  const event = {
+    action_source: ACTION_SOURCE,
+    custom_data,
+    event_name: META_EVENT_NAMES[stage],
+    event_time: Number(eventTimeSeconds),
+    user_data,
   };
+
+  // Meta dedupes on event_id plus event_name. The caller derives it from the
+  // client and stage, so a retry of the same funnel event carries the same id.
+  const id = String(eventId ?? "").trim();
+  if (id) event.event_id = id;
+
+  const payload = { data: [event] };
 
   const code = String(testEventCode ?? "").trim();
   if (code) payload.test_event_code = code;
@@ -1027,6 +1095,13 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
   }
 
   const code = Number(httpStatus) || 0;
+  const reason = String(body?.error?.message ?? "").slice(0, 200);
+  const detail = reason ? `http ${code} ${reason}` : `http ${code}`;
+
+  // The Graph code decides, whatever status carries it: Meta throttles with a 400.
+  if (TRANSIENT_GRAPH_CODES.has(Number(body?.error?.code))) {
+    return { status: "failed", retryable: true, detail };
+  }
 
   if (code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}` };
@@ -1041,12 +1116,7 @@ export function classifyMetaOutcome({ transportError, httpStatus, body } = {}) {
     return { status: "sent", retryable: false, detail: `http ${code}` };
   }
 
-  const reason = String(body?.error?.message ?? "").slice(0, 200);
-  return {
-    status: "failed",
-    retryable: false,
-    detail: reason ? `http ${code} ${reason}` : `http ${code}`,
-  };
+  return { status: "failed", retryable: false, detail };
 }
 
 /** Never throws, and never puts the access token in its result. */
@@ -2944,6 +3014,17 @@ describe("processSignupEvent", () => {
     expect(d.saveBrevo).toHaveBeenCalledWith(7, expect.objectContaining({ status: "sent" }));
   });
 
+  it("gives Meta a stable event id, so a retry cannot double-count", async () => {
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified" }), d);
+    const first = d.sendMeta.mock.calls[0][0].payload.data[0].event_id;
+    expect(first).toBe("88214:verified");
+
+    // The same funnel event, retried, must carry the identical id.
+    await processSignupEvent(row({ stage: "verified", meta_status: "retrying", meta_attempts: 1 }), d);
+    expect(d.sendMeta.mock.calls[1][0].payload.data[0].event_id).toBe(first);
+  });
+
   it("passes the stored fbc to Meta untouched", async () => {
     const d = deps();
     await processSignupEvent(row(), d);
@@ -3127,6 +3208,10 @@ async function runMetaStep(row, fields, deps) {
     // Verbatim from the row: frozen at this client's first event.
     fbc: str(row.fbc),
     eventTimeSeconds: eventTimeSeconds(row),
+    // One id per real funnel event, identical on every retry of it. Meta
+    // deduplicates server events sharing an event_id and event_name, which is
+    // what stops a lost response booking the conversion twice.
+    eventId: `${fields.crmClientId}:${fields.stage}`,
     testEventCode: config.metaTestEventCode,
   });
 
