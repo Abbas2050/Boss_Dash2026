@@ -265,9 +265,9 @@ const DISTINCT = {
   },
   funnel: { lead: 21, registered: 22, verified: 23, live_account: 24, first_deposit: 25 },
   destinations: {
-    meta: { sent: 31, failed: 32, rejected: 33, retrying: 34, skipped: 35 },
-    whatsapp: { sent: 41, failed: 42, rejected: 43, retrying: 44, skipped: 45 },
-    brevo: { sent: 51, failed: 52, rejected: 53, retrying: 54, skipped: 55 },
+    meta: { sent: 31, failed: 32, rejected: 33, retrying: 34, skipped: 35, pending: 36, invalid: 37 },
+    whatsapp: { sent: 41, failed: 42, rejected: 43, retrying: 44, skipped: 45, pending: 46, invalid: 47 },
+    brevo: { sent: 51, failed: 52, rejected: 53, retrying: 54, skipped: 55, pending: 56, invalid: 57 },
   },
   events: [] as unknown[],
 };
@@ -536,23 +536,34 @@ describe("counts land in the right cell", () => {
     expect(screen.getByTestId("funnel-first_deposit").textContent).toBe("0First deposit");
   });
 
-  it("shows each destination's own five counts, in a fixed order, under its own name", async () => {
+  it("shows each destination's own seven counts, in the backend's order, under its own name", async () => {
+    // The backend's seven, in crmSignup/stats.js order. `pending` is how a dead
+    // dispatch worker shows up and `invalid` is a problem the table flags, so a
+    // card without them looks clean while the pipeline is not.
     installFetch(DISTINCT);
     render(<CrmEventsPage />);
     await screen.findByTestId("dest-meta");
-    expect(screen.getByTestId("dest-meta").textContent).toBe("Metasent31failed32rejected33retrying34skipped35");
-    expect(screen.getByTestId("dest-whatsapp").textContent).toBe(
-      "WhatsAppsent41failed42rejected43retrying44skipped45",
+    expect(screen.getByTestId("dest-meta").textContent).toBe(
+      "Metapending36sent31skipped35retrying34failed32rejected33invalid37",
     );
-    expect(screen.getByTestId("dest-brevo").textContent).toBe("Brevosent51failed52rejected53retrying54skipped55");
+    expect(screen.getByTestId("dest-whatsapp").textContent).toBe(
+      "WhatsApppending46sent41skipped45retrying44failed42rejected43invalid47",
+    );
+    expect(screen.getByTestId("dest-brevo").textContent).toBe(
+      "Brevopending56sent51skipped55retrying54failed52rejected53invalid57",
+    );
   });
 
   it("shows zeroes for a destination or a status the response leaves out", async () => {
     installFetch({ ...DISTINCT, destinations: { meta: { sent: 31 } } });
     render(<CrmEventsPage />);
     await screen.findByTestId("dest-meta");
-    expect(screen.getByTestId("dest-meta").textContent).toBe("Metasent31failed0rejected0retrying0skipped0");
-    expect(screen.getByTestId("dest-brevo").textContent).toBe("Brevosent0failed0rejected0retrying0skipped0");
+    expect(screen.getByTestId("dest-meta").textContent).toBe(
+      "Metapending0sent31skipped0retrying0failed0rejected0invalid0",
+    );
+    expect(screen.getByTestId("dest-brevo").textContent).toBe(
+      "Brevopending0sent0skipped0retrying0failed0rejected0invalid0",
+    );
   });
 
   it("colours sent as healthy, failed as a problem and skipped as neither", async () => {
@@ -564,6 +575,8 @@ describe("counts land in the right cell", () => {
     expect(label("failed")).toMatch(/red/);
     expect(label("retrying")).toMatch(/red/);
     expect(label("skipped")).toMatch(/muted/);
+    expect(label("invalid")).toMatch(/red/);
+    expect(label("pending")).toMatch(/muted/);
   });
 });
 
@@ -645,6 +658,37 @@ describe("the events table in detail", () => {
     expect(within(within(first).getAllByRole("cell")[7]).getByText("sent").className).toMatch(/emerald/);
     expect(within(within(first).getAllByRole("cell")[8]).getByText("retrying").className).toMatch(/red/);
     expect(within(within(second).getAllByRole("cell")[7]).getByText("skipped").className).toMatch(/muted/);
+  });
+
+  // The destination objects are typed as always present, but a row from a
+  // half-migrated or hand-edited table might lack one. That must cost one cell,
+  // not the page: there is no error boundary, so a throw here is a blank app.
+  it("still renders a row whose destination object is missing, and shows a dash in its place", async () => {
+    const { whatsapp: _gone, ...noWhatsapp } = FULL;
+    installFetch({ ...DISTINCT, events: [noWhatsapp, { ...FULL, id: 9, crmClientId: "90003" }] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90001");
+    const [first, second] = screen.getAllByRole("row").slice(1);
+    const cells = within(first).getAllByRole("cell");
+    expect(cells[2].textContent).toBe("90001");
+    expect(cells[7].textContent).toBe("senthttp 200");
+    expect(cells[8].textContent).toBe("—");
+    expect(cells[9].textContent).toBe("invalidno email address");
+    expect(within(second).getAllByRole("cell")[8].textContent).toBe("retryinghttp 503 upstream");
+  });
+
+  it("still filters to problems when a row is missing a destination object", async () => {
+    // Filtering runs in a useMemo, outside the fetch's try, so it has to cope
+    // on its own. The first destination is the one that is missing.
+    const { meta: _gone, ...noMeta } = FULL;
+    const clean = { ...FULL, id: 10, crmClientId: "90004", whatsapp: FULL.meta, brevo: FULL.meta };
+    const { meta: _gone2, ...cleanNoMeta } = clean;
+    installFetch({ ...DISTINCT, events: [noMeta, cleanNoMeta] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90001");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    // 90001 still has a retrying WhatsApp and an invalid Brevo; 90004 has nothing wrong.
+    await waitFor(() => expect(shownIds()).toEqual(["90001"]));
   });
 });
 

@@ -25,6 +25,12 @@ const DESTINATIONS = [
  *  simply not applicable at this stage. */
 const PROBLEM = new Set(["failed", "rejected", "invalid", "retrying"]);
 
+/** Every status the backend can record, in the backend's own order
+ *  (crmSignup/stats.js STATUSES). All seven are shown on purpose: a counter set
+ *  that leaves out `pending` cannot show a dead dispatch worker, and one that
+ *  leaves out `invalid` shows a clean card for rows the table flags. */
+const DESTINATION_STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected", "invalid"];
+
 type Counts = Record<string, number>;
 
 type DestinationStatus = { status: string; detail: string | null; attempts: number };
@@ -158,7 +164,7 @@ export function CrmEventsPage() {
     return all.filter((row) => {
       if (stage !== "all" && row.stage !== stage) return false;
       if (!problemsOnly) return true;
-      return [row.meta, row.whatsapp, row.brevo].some((d) => PROBLEM.has(d.status));
+      return [row.meta, row.whatsapp, row.brevo].some((d) => PROBLEM.has(d?.status));
     });
   }, [data, stage, problemsOnly]);
 
@@ -279,14 +285,14 @@ export function CrmEventsPage() {
 
             <section>
               <h2 className={SECTION_TITLE}>Destinations</h2>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
                 {DESTINATIONS.map(([key, label]) => {
                   const counts = data.destinations[key] ?? {};
                   return (
                     <div key={key} data-testid={`dest-${key}`} className={CARD}>
                       <div className="mb-1 text-sm font-medium text-foreground">{label}</div>
                       <dl className="grid grid-cols-2 gap-x-3 text-sm">
-                        {["sent", "failed", "rejected", "retrying", "skipped"].map((status) => (
+                        {DESTINATION_STATUSES.map((status) => (
                           <div key={status} className="flex justify-between">
                             <dt className={toneFor(status)}>{status}</dt>
                             <dd className="tabular-nums">{counts[status] ?? 0}</dd>
@@ -362,10 +368,11 @@ export function CrmEventsPage() {
                           <td className="p-2">{row.source}</td>
                           {DESTINATIONS.map(([key]) => {
                             const d = row[key];
+                            const status = d?.status ?? "—";
                             return (
                               <td key={key} className="p-2">
-                                <span className={`font-medium ${toneFor(d.status)}`}>{d.status}</span>
-                                {d.detail ? <div className="text-[11px] text-muted-foreground">{d.detail}</div> : null}
+                                <span className={`font-medium ${toneFor(status)}`}>{status}</span>
+                                {d?.detail ? <div className="text-[11px] text-muted-foreground">{d.detail}</div> : null}
                               </td>
                             );
                           })}

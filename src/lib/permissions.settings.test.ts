@@ -22,8 +22,9 @@ const item = (key: string) => {
 };
 
 const CORE = ["coverage", "google-sheet-mapping", "lp-manager", "lp-info", "internal-accounts",
-  "symbol-mapping", "alerts", "client-account-monitor", "crm-events", "ws-test"];
-const ADMIN = ["api-clients", "api-vendor-urls", "finalto-accounts", "finalto-admin", "lp-equity-history"];
+  "symbol-mapping", "alerts", "client-account-monitor", "ws-test"];
+const ADMIN = ["api-clients", "api-vendor-urls", "finalto-accounts", "finalto-admin", "lp-equity-history",
+  "crm-events"];
 
 describe("settings page chips", () => {
   it("offers one chip per settings page, every page except User Management", () => {
@@ -70,6 +71,14 @@ describe("what existing users keep", () => {
 
   it("Super Admin sees everything", () => {
     expect(visible([], "Super Admin")).toHaveLength(SETTINGS_MENU_ITEMS.length);
+  });
+
+  // The group is what the sidebar files a page under, so it has to agree with
+  // the permissions: a page that needs Manage Users must not sit among the
+  // standard pages. (The permission tests above cannot see `group`.)
+  it("files each page under the group its permissions put it in", () => {
+    for (const key of CORE) expect(item(key).group, key).toBe("core");
+    for (const key of ADMIN) expect(item(key).group, key).toBe("admin");
   });
 });
 

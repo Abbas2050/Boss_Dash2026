@@ -176,8 +176,18 @@ export const SETTINGS_MENU_ITEMS = [
   // watch and this is the client-side counterpart of it.
   { key: "client-account-monitor", name: "Client Account Monitor", path: "/settings/client-account-monitor", icon: "Bell", group: "core", requiredPermissions: ["Settings"] },
   // Sits under the alert pages: like them, its job is to make a silent
-  // failure visible -- here, an FXBO rule that has stopped firing.
-  { key: "crm-events", name: "CRM Events", path: "/settings/crm-events", icon: "Share2", group: "core", requiredPermissions: ["Settings"] },
+  // failure visible -- here, an FXBO rule that has stopped firing. Admin group
+  // and the API Clients pair because GET /api/crm-events/overview is mounted
+  // behind authRequired + adminOnly (canManageUsers): a Settings-only user
+  // would be shown the tab and could only ever read "Could not load".
+  {
+    key: "crm-events",
+    name: "CRM Events",
+    path: "/settings/crm-events",
+    icon: "Share2",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   // LP Statements is for the back office as well as for an admin, and the menu
   // model has no OR: getVisibleSettingsMenuItems -> canAccessAll uses .every(),
   // so requiredPermissions is a conjunction and cannot say "either of two
