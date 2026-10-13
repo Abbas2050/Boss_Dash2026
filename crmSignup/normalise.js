@@ -22,6 +22,11 @@ export const PHONE_RE = /^\+[1-9]\d{7,14}$/;
  *  create in Brevo. A missing phone is NOT fatal -- it is a WhatsApp skip. */
 export const REQUIRED_FIELDS = ["stage", "crmClientId", "firstName", "email"];
 
+/** A template variable that failed to render arrives as one of these strings.
+ *  For the required fields it counts as missing, so a "null" client id cannot
+ *  act as a shared key. The values themselves stay in `fields`. */
+const UNRENDERED = new Set(["null", "undefined"]);
+
 const FALSY = new Set(["", "0", "false", "no", "n", "off", "null", "undefined"]);
 
 /**
@@ -49,28 +54,32 @@ export function isFalsyLiteral(value) {
  * log into.
  */
 export function deriveRecordType(isLead) {
-  const v = text(isLead).toLowerCase();
-  if (v === "") return "lead";
-  return CLIENT_LITERALS.has(v) ? "client" : "lead";
+  return CLIENT_LITERALS.has(text(isLead).toLowerCase()) ? "client" : "lead";
 }
 
 /**
  * FXBO has no middle-name placeholder, so it comes out of the full name.
  * Conservative: the full name must begin with the first name and end with the
- * last, or we cannot say which part is the middle and return nothing.
+ * last, or we cannot say which part is the middle and return nothing. Matching
+ * is on the whole first and last name, so a multi-word surname works.
  */
 export function deriveMiddleName(fullName, firstName, lastName) {
-  const parts = text(fullName).split(/\s+/).filter(Boolean);
-  if (parts.length < 3) return "";
-  if (parts[0].toLowerCase() !== text(firstName).toLowerCase()) return "";
-  if (parts[parts.length - 1].toLowerCase() !== text(lastName).toLowerCase()) return "";
-  return parts.slice(1, -1).join(" ");
+  const collapse = (v) => text(v).replace(/\s+/g, " ");
+  const full = collapse(fullName);
+  const fullLower = full.toLowerCase();
+  const first = collapse(firstName).toLowerCase();
+  const last = collapse(lastName).toLowerCase();
+  if (!full || !first || !last) return "";
+  if (!fullLower.startsWith(`${first} `) || !fullLower.endsWith(` ${last}`)) return "";
+  return full.slice(first.length, full.length - last.length).trim();
 }
 
 export function maskEmail(email) {
   const v = text(email);
   if (!v) return "";
-  const at = v.indexOf("@");
+  // The last '@' is the one that begins the domain. Splitting on the first
+  // would leave a second address in a multi-address value whole.
+  const at = v.lastIndexOf("@");
   if (at < 1) return "***";
   return `${v.slice(0, 1)}***${v.slice(at)}`;
 }
@@ -78,7 +87,8 @@ export function maskEmail(email) {
 export function maskPhone(phone) {
   const v = text(phone);
   if (!v) return "";
-  if (v.length < 8) return "***";
+  // Four leading and two trailing characters must not cover most of a short number.
+  if (v.length < 12) return "***";
   return `${v.slice(0, 4)}***${v.slice(-2)}`;
 }
 
@@ -110,6 +120,8 @@ export function normaliseEvent(raw = {}) {
     fxboUniqueId: text(body.unique_id),
   };
 
-  const missing = REQUIRED_FIELDS.filter((key) => !fields[key]);
+  const missing = REQUIRED_FIELDS.filter(
+    (key) => !fields[key] || UNRENDERED.has(fields[key].toLowerCase()),
+  );
   return { valid: missing.length === 0, missing, fields };
 }

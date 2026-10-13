@@ -102,6 +102,10 @@ describe("middle name derivation", () => {
     expect(deriveMiddleName("John Smith Jones", "John", "Brown")).toBe("");
   });
 
+  it("keeps a multi-word surname as the end it matches", () => {
+    expect(deriveMiddleName("Ahmed Mohammed Al Mansoori", "Ahmed", "Al Mansoori")).toBe("Mohammed");
+  });
+
   it("is not confused by case or extra spacing", () => {
     expect(deriveMiddleName("  ali   hassan   khan ", "Ali", "KHAN")).toBe("hassan");
   });
@@ -116,6 +120,17 @@ describe("masking", () => {
   it("keeps enough to identify a record by eye", () => {
     expect(maskEmail("abbas@skylinkscapital.com")).toBe("a***@skylinkscapital.com");
     expect(maskPhone("+971507192185")).toBe("+971***85");
+  });
+
+  it("does not leak a second address when a field holds two", () => {
+    // Splitting on the first '@' would show the second address whole.
+    expect(maskEmail("a@x.com, bob.smith@y.com")).toBe("a***@y.com");
+  });
+
+  it("masks a short number entirely rather than barely", () => {
+    // Four leading and two trailing characters is most of an 8-digit number.
+    expect(maskPhone("12345678")).toBe("***");
+    expect(maskPhone("+12345678")).toBe("***");
   });
 
   it("handles empty and malformed input without throwing", () => {
@@ -139,7 +154,7 @@ describe("normaliseEvent", () => {
     marketing_consent: "1",
     source: "SVG",
     entity: "SVG Ltd",
-    is_ib: "0",
+    is_ib: "1",
     language: "en",
     utm_source: "meta",
     utm_medium: "cpc",
@@ -165,7 +180,7 @@ describe("normaliseEvent", () => {
       marketingConsent: true,
       source: "SVG",
       entity: "SVG Ltd",
-      isIb: false,
+      isIb: true,
       language: "en",
       utmSource: "meta",
       utmMedium: "cpc",
@@ -192,6 +207,25 @@ describe("normaliseEvent", () => {
     const { valid, fields } = normaliseEvent({ ...RAW, phone: "" });
     expect(valid).toBe(true);
     expect(fields.phone).toBe("");
+  });
+
+  it("reads is_lead as the record type", () => {
+    expect(normaliseEvent({ ...RAW, is_lead: "1" }).fields.recordType).toBe("lead");
+  });
+
+  it("treats unrendered template literals as missing, but keeps them in fields", () => {
+    // A template variable that failed to render arrives as "null" or "undefined".
+    // Left as a key, every such event would collide on one row.
+    const { valid, missing, fields } = normaliseEvent({
+      stage: "registered",
+      client_id: "null",
+      first_name: "undefined",
+      email: "null",
+    });
+    expect(valid).toBe(false);
+    expect(missing).toEqual(["crmClientId", "firstName", "email"]);
+    expect(fields.crmClientId).toBe("null");
+    expect(normaliseEvent({ ...RAW, client_id: "NULL" }).missing).toEqual(["crmClientId"]);
   });
 
   it("defaults absent flags to false and never throws on an empty body", () => {
