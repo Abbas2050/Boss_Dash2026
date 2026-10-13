@@ -106,7 +106,8 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
     return { status: "failed", retryable: true, detail };
   }
 
-  if (httpStatus === 429 || httpStatus >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (httpStatus === 408 || httpStatus === 429 || httpStatus >= 500) {
     return { status: "failed", retryable: true, detail };
   }
 

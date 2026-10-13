@@ -167,6 +167,23 @@ describe("classifyMetaOutcome", () => {
     }
   });
 
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    expect(classifyMetaOutcome({ httpStatus: 408, body: {} })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 408",
+    });
+  });
+
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const result = classifyMetaOutcome({ httpStatus, body: {} });
+      expect(result.retryable, String(httpStatus)).toBe(false);
+      expect(result.status, String(httpStatus)).toBe("failed");
+    }
+  });
+
   it("treats other 4xx as permanent and keeps Meta's own message", () => {
     const result = classifyMetaOutcome({
       httpStatus: 400,

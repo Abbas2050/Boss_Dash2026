@@ -163,6 +163,23 @@ describe("classifyBrevoOutcome", () => {
     }
   });
 
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    expect(classifyBrevoOutcome({ httpStatus: 408, body: {} })).toEqual({
+      status: "failed",
+      retryable: true,
+      detail: "http 408",
+    });
+  });
+
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const r = classifyBrevoOutcome({ httpStatus, body: {} });
+      expect(r.retryable, String(httpStatus)).toBe(false);
+      expect(r.status, String(httpStatus)).toBe("failed");
+    }
+  });
+
   it("treats every other 4xx as permanent and keeps Brevo's own code", () => {
     const r = classifyBrevoOutcome({
       httpStatus: 400,

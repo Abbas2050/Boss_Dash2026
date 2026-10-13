@@ -264,6 +264,15 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.retryable).toBe(true);
   });
 
+  it("retries 408 alone among the 4xx, so its neighbours stay permanent", () => {
+    // Guards the rule from widening into a range such as >= 408.
+    for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
+      const r = classifyWhatsappOutcome({ httpStatus, body: {} });
+      expect(r.retryable, String(httpStatus)).toBe(false);
+      expect(r.status, String(httpStatus)).toBe("rejected");
+    }
+  });
+
   it("treats any 2xx as accepted, from 201 through 299, when it carries a healthy status", () => {
     expect(
       classifyWhatsappOutcome({ httpStatus: 201, body: { messages: [{ status: "SENT", messageId: "m-21" }] } })

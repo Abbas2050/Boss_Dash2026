@@ -72,7 +72,8 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
 
   const code = Number(httpStatus) || 0;
 
-  if (code === 429 || code >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (code === 408 || code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}` };
   }
 
