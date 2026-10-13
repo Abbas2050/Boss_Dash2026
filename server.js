@@ -17,7 +17,7 @@ import docusignRouter from "./docusign/router.js";
 import { runAppIdMigration } from "./docusign/migrateAppIds.js";
 import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
-import { makeCrmEventsHandler } from "./crmSignup/router.js";
+import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { initCrmSignupStore, findExistingFbc, insertSignupEvent } from "./crmSignup/store.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
@@ -1307,8 +1307,9 @@ app.use("/api/docusign", docusignRouter);
 // auth/requireSession.js) but not unauthenticated: the handler checks
 // CRM_WEBHOOK_SECRET itself and rejects everything when it is unset.
 // Single-quoted path on purpose -- auth/routeCoverage.test.js greps for it.
+const CRM_WEBHOOK_SECRET = readCrmWebhookSecret(process.env);
 app.post('/api/crm-events', makeCrmEventsHandler({
-  secret: process.env.CRM_WEBHOOK_SECRET,
+  secret: CRM_WEBHOOK_SECRET,
   findFbc: findExistingFbc,
   insert: insertSignupEvent,
 }));
@@ -1391,9 +1392,9 @@ server.listen(PORT, () => {
   startDocusignReconcileScheduler();
   // Failing closed is silent from FXBO's side: it only sees 401s. Say why, once,
   // where configuration problems surface (the iisnode log).
-  if (!process.env.CRM_WEBHOOK_SECRET) {
+  if (!CRM_WEBHOOK_SECRET) {
     console.error(
-      '[crm-events] CRM_WEBHOOK_SECRET is not set. Every CRM webhook to POST /api/crm-events ' +
+      '[crm-events] CRM_WEBHOOK_SECRET is not set or is blank. Every CRM webhook to POST /api/crm-events ' +
         'will be rejected with 401 until it is set. Set CRM_WEBHOOK_SECRET in .env and restart.',
     );
   }

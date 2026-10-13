@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { normaliseEvent, maskEmail } from "./normalise.js";
 import { deriveFbc } from "./clickId.js";
 import {
@@ -7,12 +7,30 @@ import {
   PLACEHOLDER_NOT_SUBSTITUTED,
 } from "../docusign/fxboPlaceholder.js";
 
-/** Compare without leaking length or position through timing. */
+const digest = (value) => createHash("sha256").update(String(value ?? ""), "utf8").digest();
+
+/**
+ * Compare digests, not the secrets themselves.
+ *
+ * timingSafeEqual needs equal-length inputs, and returning early when the
+ * lengths differ would tell a caller how long the secret is. Both digests are 32
+ * bytes whatever went in, so neither the comparison nor a branch depends on
+ * either length. An empty secret never matches, not even an empty header.
+ */
 function secretMatches(supplied, expected) {
-  const a = Buffer.from(String(supplied ?? ""), "utf8");
-  const b = Buffer.from(String(expected ?? ""), "utf8");
-  if (a.length !== b.length || a.length === 0) return false;
-  return timingSafeEqual(a, b);
+  if (!String(expected ?? "")) return false;
+  return timingSafeEqual(digest(supplied), digest(expected));
+}
+
+/**
+ * The configured webhook secret, or "" when there is none worth having.
+ *
+ * Trimmed, so a blank value (a quoted blank in .env, a stray carriage return)
+ * counts as unset and gets the boot warning, instead of passing for configured
+ * and then matching nothing. Only the ends are trimmed.
+ */
+export function readCrmWebhookSecret(env = process.env) {
+  return String(env?.CRM_WEBHOOK_SECRET ?? "").trim();
 }
 
 /**
@@ -22,9 +40,12 @@ function secretMatches(supplied, expected) {
  * typed into each FXBO rule. A ":stage" path segment would never match the
  * public-route allow-list, which compares actual request paths.
  *
- * Authenticate, reject a test press, validate, store, answer 200. The handler
- * answers 200 even when the database throws, because a 5xx would make FXBO
- * redeliver on its own schedule.
+ * Authenticate, reject a test press, validate, store, answer. The answer is 200
+ * the moment the row is stored, a duplicate and an invalid payload included,
+ * because a non-2xx there would make FXBO redeliver an event we already hold.
+ * The one exception is a failed insert: nothing is held, FXBO's retry is the
+ * only recovery there is, and the unique (client, stage) key makes a redelivery
+ * harmless, so that answers 503.
  */
 export function makeCrmEventsHandler({
   secret,
@@ -48,8 +69,9 @@ export function makeCrmEventsHandler({
 
     // Fail closed: an unconfigured secret rejects everything.
     if (!expected || !secretMatches(supplied, expected)) {
+      // The timestamp is here because iisnode does not supply one.
       logger.warn?.(
-        `[crm-events] rejected: method=${req?.method} path=${req?.path} ip=${req?.ip} hasHeader=${Boolean(supplied)}`
+        `[crm-events] rejected at=${now().toISOString()} method=${req?.method} path=${req?.path} ip=${req?.ip} hasHeader=${Boolean(supplied)}`
       );
       return reply(401, { error: "unauthorized" });
     }
@@ -74,6 +96,18 @@ export function makeCrmEventsHandler({
       ? `${PLACEHOLDER_NOT_SUBSTITUTED}: ${describePlaceholderRejection(detection)}`
       : `missing required fields: ${missing.join(", ")}`;
 
+    // The verdict travels INTO the insert rather than following it as a second
+    // UPDATE. Two statements left a window: between them the row sat with three
+    // `pending` statuses, so a sweep, a recycle or a throw on the second write
+    // would have sent an invalid payload -- including an FXBO test press, which
+    // would post a fabricated conversion to Meta and a contact named "Client
+    // First Name" into the live marketing list.
+    //
+    // It also removes any need to reason about duplicates here: the INSERT is a
+    // no-op when the row exists, so a malformed redelivery cannot overwrite the
+    // statuses an earlier valid delivery set.
+    const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
+
     try {
       // Frozen: assembled once, at whichever stage arrives first, then reused
       // verbatim. Recomputing per stage gives Meta a different click identity
@@ -95,18 +129,6 @@ export function makeCrmEventsHandler({
       // Generated once, here, and reused on every send attempt. A send times
       // out after 10 seconds and a timeout does not mean the message was not
       // delivered, so a retry carrying a fresh id would be a second welcome.
-      // The verdict travels INTO the insert rather than following it as a
-      // second UPDATE. Two statements left a window: between them the row sat
-      // with three `pending` statuses, so a sweep, a recycle or a throw on the
-      // second write would have sent an invalid payload -- including an FXBO
-      // test press, which would post a fabricated conversion to Meta and a
-      // contact named "Client First Name" into the live marketing list.
-      //
-      // It also removes any need to reason about duplicates here: the INSERT is
-      // a no-op when the row exists, so a malformed redelivery cannot overwrite
-      // the statuses an earlier valid delivery set.
-      const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
-
       const { inserted } = await insert(
         fields,
         { fbc, whatsappRequestId: newRequestId() },
@@ -133,8 +155,17 @@ export function makeCrmEventsHandler({
 
       return reply(200, { ok: true, stored: true, duplicate: !inserted });
     } catch (error) {
-      logger.error?.(`[crm-events] store failed: ${error?.message || String(error)}`);
-      return reply(200, { ok: true, stored: false, valid });
+      // Nothing is stored, so this must not answer 2xx: a 200 here drops the
+      // event for good, where a 503 lets FXBO redeliver it. The ids are logged
+      // so that a lost event can at least be identified afterwards. They are
+      // JSON-quoted so a value cannot forge a second log line, and the email is
+      // left out on purpose.
+      logger.error?.(
+        `[crm-events] store failed, event not held: client=${JSON.stringify(fields?.crmClientId)} ` +
+          `stage=${JSON.stringify(fields?.stage)} unique_id=${JSON.stringify(fields?.fxboUniqueId)}: ` +
+          `${error?.message || String(error)}`
+      );
+      return reply(503, { ok: false, stored: false, valid: invalidReason === null, error: "store_failed" });
     }
   };
 }

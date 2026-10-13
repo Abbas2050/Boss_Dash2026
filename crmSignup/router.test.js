@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
-import { makeCrmEventsHandler } from "./router.js";
+import { makeCrmEventsHandler, readCrmWebhookSecret } from "./router.js";
 import { buildInsertParams, INSERT_COLUMNS } from "./store.js";
 import { PUBLIC_API_ROUTES } from "../auth/requireSession.js";
 
@@ -205,7 +205,12 @@ describe("storing", () => {
     expect(d.onStored).not.toHaveBeenCalled();
   });
 
-  it("answers 200 even when the database throws", async () => {
+  it("answers 503, not 200, when the database throws", async () => {
+    // Changed from the original "answers 200". The 200 rule protects against FXBO
+    // redelivering an event we already HOLD, so it applies once the row exists.
+    // When the insert throws we hold nothing: FXBO's retry is the only recovery
+    // there is, and the unique (client, stage) key makes a redelivery harmless. A
+    // 200 here dropped the event for good.
     const d = deps({
       insert: vi.fn(async () => {
         throw new Error("ER_LOCK_WAIT_TIMEOUT");
@@ -213,8 +218,10 @@ describe("storing", () => {
     });
     const res = fakeRes();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(503);
     expect(res.body.stored).toBe(false);
+    expect(res.body.ok).toBe(false);
+    expect(d.onStored).not.toHaveBeenCalled();
     expect(d.logger.error).toHaveBeenCalled();
   });
 
@@ -334,6 +341,8 @@ describe("authentication, further", () => {
 
     expect(wrong.logger.warn).toHaveBeenCalledTimes(1);
     const line = wrong.logger.warn.mock.calls[0][0];
+    // iisnode does not timestamp its log, and the spec asks for one.
+    expect(line).toContain("at=2026-10-12T12:00:00.000Z");
     expect(line).toContain("POST");
     expect(line).toContain("/api/crm-events");
     expect(line).toContain("1.2.3.4");
@@ -491,22 +500,34 @@ describe("what the handler hands the store", () => {
 
 describe("storing, further", () => {
   it("still says whether the payload was valid when the database throws", async () => {
-    // Only `stored` was asserted, so reporting a constant valid survived.
+    // Only `stored` was asserted, so reporting a constant valid survived. A test
+    // press is the sharp case: it validates (its labels are non-empty strings), so
+    // the verdict from normalise alone says valid:true, and that is the response
+    // the FXBO Test button displays.
     const failing = () =>
       deps({
         insert: vi.fn(async () => {
           throw new Error("ER_LOCK_WAIT_TIMEOUT");
         }),
       });
-    const bad = fakeRes();
-    await makeCrmEventsHandler(failing())(
-      req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo" }),
-      bad
-    );
-    expect(bad.body).toEqual({ ok: true, stored: false, valid: false });
-    const good = fakeRes();
-    await makeCrmEventsHandler(failing())(req({ authorization: "s3cret" }, VALID_BODY), good);
-    expect(good.body).toEqual({ ok: true, stored: false, valid: true });
+    const answer = async (body) => {
+      const res = fakeRes();
+      await makeCrmEventsHandler(failing())(req({ authorization: "s3cret" }, body), res);
+      return res.body;
+    };
+    const failed = { ok: false, stored: false, error: "store_failed" };
+    expect(await answer({ ...VALID_BODY, stage: "typo" })).toEqual({ ...failed, valid: false });
+    expect(await answer(VALID_BODY)).toEqual({ ...failed, valid: true });
+    expect(
+      await answer({
+        stage: "registered",
+        client_id: "Client ID",
+        first_name: "Client First Name",
+        last_name: "Client Last Name",
+        email: "Client Email",
+        phone: "Client Phone",
+      })
+    ).toEqual({ ...failed, valid: false });
   });
 
   it("reports a failed worker kick as a failed kick, not a failed store", async () => {
@@ -547,9 +568,12 @@ describe("wiring in server.js, further", () => {
     const registration = SERVER.match(/app\.post\('\/api\/crm-events',\s*makeCrmEventsHandler\(\{([\s\S]*?)\}\)\);/);
     expect(registration, "the registration block was not found").not.toBeNull();
     const wired = registration[1];
-    expect(wired).toMatch(/\bsecret:\s*process\.env\.CRM_WEBHOOK_SECRET\s*,/);
+    expect(wired).toMatch(/\bsecret:\s*CRM_WEBHOOK_SECRET\s*,/);
     expect(wired).toMatch(/\bfindFbc:\s*findExistingFbc\s*,/);
     expect(wired).toMatch(/\binsert:\s*insertSignupEvent\s*,/);
+    // ...and that constant is read from the environment through the trimming
+    // reader, not from some other variable or a hand-rolled read.
+    expect(SERVER).toMatch(/const CRM_WEBHOOK_SECRET = readCrmWebhookSecret\(process\.env\);/);
   });
 
   it("initialises the store at boot, and a failure there cannot take the process down", () => {
@@ -566,10 +590,255 @@ describe("wiring in server.js, further", () => {
     // inverting its condition, and dropping the variable's name all pass every
     // other test.
     const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
-    const warning = listen.match(/if \(!process\.env\.CRM_WEBHOOK_SECRET\)\s*\{([^}]*)\}/);
+    const warning = listen.match(/if \(!CRM_WEBHOOK_SECRET\)\s*\{([^}]*)\}/);
     expect(warning, "no boot-time check of CRM_WEBHOOK_SECRET in the listen callback").not.toBeNull();
     expect(warning[1]).toContain("console.error(");
     expect(warning[1]).toContain("CRM_WEBHOOK_SECRET is not set");
     expect(warning[1]).toContain("rejected");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Added after review. Same rule as the section above: each of these pins
+// something a surviving mutant showed to be open.
+// ---------------------------------------------------------------------------
+
+describe("the secret comparison, beyond length", () => {
+  it("rejects every near miss, not just a wrong length", async () => {
+    // Every wrong secret in the cases above differs in length from "s3cret", so
+    // the comparison itself was pinned by nothing but a length check. Replacing
+    // timingSafeEqual with `true`, comparing the first byte only, accepting a
+    // prefix, ignoring case and stripping a "Bearer " prefix all survived.
+    const nearMisses = [
+      "s3cres", //          same length, last byte differs
+      "x3cret", //          same length, first byte differs
+      "S3CRET", //          case
+      "s3cre", //           a prefix of the secret
+      "s3cretx", //         the secret as a prefix
+      "s3cret ", //         trailing space
+      " s3cret", //         leading space
+      "Bearer s3cret", //   the secret behind a scheme
+    ];
+    for (const authorization of nearMisses) {
+      const d = deps();
+      const res = fakeRes();
+      await makeCrmEventsHandler(d)(req({ authorization }, VALID_BODY), res);
+      expect(res.statusCode, JSON.stringify(authorization)).toBe(401);
+      expect(d.insert, JSON.stringify(authorization)).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not let the text 'undefined' or 'null' stand in for a missing value", async () => {
+    // An unset secret and a header that merely SAYS "undefined" or "null" must not
+    // meet. The reverse also holds: a secret that happens to read "undefined" must
+    // not be matched by a request with no header at all.
+    const cases = [
+      { secret: undefined, headers: { authorization: "undefined" } },
+      { secret: null, headers: { authorization: "null" } },
+      { secret: "undefined", headers: {} },
+      { secret: "null", headers: {} },
+    ];
+    for (const { secret, headers } of cases) {
+      const d = deps({ secret });
+      const res = fakeRes();
+      await makeCrmEventsHandler(d)(req(headers, VALID_BODY), res);
+      expect(res.statusCode, `secret=${String(secret)} headers=${JSON.stringify(headers)}`).toBe(401);
+      expect(d.insert).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("the configured secret", () => {
+  it("is read from CRM_WEBHOOK_SECRET with its ends trimmed", () => {
+    expect(readCrmWebhookSecret({ CRM_WEBHOOK_SECRET: "s3cret" })).toBe("s3cret");
+    expect(readCrmWebhookSecret({ CRM_WEBHOOK_SECRET: "  s3cret \r\n" })).toBe("s3cret");
+    // Only the ends: a secret with a space inside it is a different secret.
+    expect(readCrmWebhookSecret({ CRM_WEBHOOK_SECRET: "two words" })).toBe("two words");
+    expect(readCrmWebhookSecret({ CRM_WEBHOOK_SECRET: "a", CRM_WEBHOOK_SECRET_OLD: "b" })).toBe("a");
+  });
+
+  it("counts a blank, absent or null value as unset", () => {
+    // Trimming is what makes a whitespace-only value warn at boot instead of
+    // passing for configured and then matching nothing.
+    for (const env of [
+      { CRM_WEBHOOK_SECRET: "   " },
+      { CRM_WEBHOOK_SECRET: "\r\n" },
+      { CRM_WEBHOOK_SECRET: "" },
+      { CRM_WEBHOOK_SECRET: undefined },
+      { CRM_WEBHOOK_SECRET: null },
+      { CRM_WEBHOOK_SECRET_OLD: "s3cret" },
+      {},
+      null,
+    ]) {
+      expect(readCrmWebhookSecret(env), JSON.stringify(env)).toBe("");
+    }
+  });
+});
+
+describe("the production defaults", () => {
+  // server.js passes only { secret, findFbc, insert }, so production runs the
+  // default now, newRequestId, logger and onStored. Every case above overrides
+  // them, so a constant request id, a frozen clock and a logger that logs nothing
+  // all survived.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const auth = { authorization: "s3cret" };
+
+  it("mints a fresh UUID per row and stamps the click id with the current time", async () => {
+    const insert = vi.fn(async () => ({ inserted: true, id: 1 }));
+    const handler = makeCrmEventsHandler({ secret: "s3cret", findFbc: async () => "", insert });
+    const before = Date.now();
+    await handler(req(auth, VALID_BODY), fakeRes());
+    await handler(req(auth, { ...VALID_BODY, stage: "verified" }), fakeRes());
+    const after = Date.now();
+
+    const derived = insert.mock.calls.map((call) => call[1]);
+    expect(derived).toHaveLength(2);
+    for (const { whatsappRequestId, fbc } of derived) {
+      expect(whatsappRequestId).toMatch(UUID);
+      const stamp = Number(fbc.split(".")[2]);
+      expect(stamp).toBeGreaterThanOrEqual(before);
+      expect(stamp).toBeLessThanOrEqual(after);
+    }
+    expect(derived[0].whatsappRequestId).not.toBe(derived[1].whatsappRequestId);
+  });
+
+  it("logs through the console, with a timestamp on a rejection", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const handler = makeCrmEventsHandler({
+        secret: "s3cret",
+        findFbc: async () => "",
+        insert: async () => {
+          throw new Error("ER_LOCK_WAIT_TIMEOUT");
+        },
+      });
+      await handler(req({ authorization: "wrong" }, VALID_BODY), fakeRes());
+      await handler(req(auth, VALID_BODY), fakeRes());
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toMatch(/rejected at=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z /);
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][0]).toContain("ER_LOCK_WAIT_TIMEOUT");
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+});
+
+describe("the corroboration seam, further", () => {
+  it("treats a lone label in client_id as a lone label, not a test press", async () => {
+    // The 'one odd-looking field' case puts its label in last_name beside a real
+    // client_id, so detection returns kind:null before corroboration is ever
+    // reached; it cannot fail for the regression it names. Here the key field IS
+    // a label and nothing corroborates it. Testing `detection.kind !== null`
+    // instead of `detection.placeholder` survived.
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, client_id: "Client ID" }), fakeRes());
+    expect(d.insert.mock.calls[0][3]).toBeNull();
+    expect(d.onStored).toHaveBeenCalledTimes(1);
+  });
+
+  it("needs no corroboration for an unrendered token in client_id", async () => {
+    // The other half of the same seam: a raw %token% is proof on its own, because
+    // nothing real looks like one. Deciding on corroboration alone survived, and
+    // would have stored a row keyed on the literal "%client_id%".
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, { ...VALID_BODY, client_id: "%client_id%" }), fakeRes());
+    expect(d.insert.mock.calls[0][3]).toContain("placeholder_not_substituted");
+    expect(d.onStored).not.toHaveBeenCalled();
+  });
+});
+
+describe("the reason an operator reads", () => {
+  // It lands in meta_detail, whatsapp_detail and brevo_detail, and it is the only
+  // thing that says why a row was never sent. The cases above only check it
+  // contains a fragment, so reporting the COUNT of missing fields, or dropping
+  // the test-press explanation, survived.
+  it("lists each missing field by name, in order", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "typo", first_name: "", email: "" }),
+      fakeRes()
+    );
+    expect(d.insert.mock.calls[0][3]).toBe("missing required fields: stage, firstName, email");
+  });
+
+  it("explains a test press by the field and the evidence", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, {
+        stage: "registered",
+        client_id: "Client ID",
+        first_name: "Client First Name",
+        last_name: "Client Last Name",
+        email: "Client Email",
+      }),
+      fakeRes()
+    );
+    const reason = d.insert.mock.calls[0][3];
+    expect(reason.startsWith("placeholder_not_substituted: ")).toBe(true);
+    expect(reason).toContain('client_id arrived as "Client ID"');
+    expect(reason).toContain("first_name, last_name, email");
+    expect(reason).not.toContain("missing required fields");
+  });
+});
+
+describe("a failed store, further", () => {
+  it("names the event it could not store, quoted, and leaves the email out", async () => {
+    // Today a lost event cannot be identified afterwards, let alone replayed. The
+    // values are JSON-quoted so a client id cannot forge a second log line.
+    const d = deps({
+      insert: vi.fn(async () => {
+        throw new Error("ER_LOCK_WAIT_TIMEOUT");
+      }),
+    });
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, unique_id: "FX-9001" }),
+      fakeRes()
+    );
+    expect(d.logger.error).toHaveBeenCalledTimes(1);
+    const line = d.logger.error.mock.calls[0][0];
+    expect(line).toContain('client="88214"');
+    expect(line).toContain('stage="registered"');
+    expect(line).toContain('unique_id="FX-9001"');
+    expect(line).toContain("ER_LOCK_WAIT_TIMEOUT");
+    expect(line).not.toContain("ali.khan");
+
+    const forged = deps({
+      insert: vi.fn(async () => {
+        throw new Error("down");
+      }),
+    });
+    await makeCrmEventsHandler(forged)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, client_id: "88214\n[crm-events] forged" }),
+      fakeRes()
+    );
+    expect(forged.logger.error.mock.calls[0][0]).not.toContain("\n");
+  });
+
+  it("answers 200, not 503, for every other outcome", async () => {
+    // The 503 is for the one case where nothing is held. A duplicate, an invalid
+    // payload, a test press and a throwing normaliser are all answered 200 so that
+    // FXBO does not redeliver something we already hold or can never accept.
+    const answered = async (overrides, body) => {
+      const res = fakeRes();
+      await makeCrmEventsHandler(deps(overrides))(req({ authorization: "s3cret" }, body), res);
+      return res.statusCode;
+    };
+    expect(await answered({ insert: vi.fn(async () => ({ inserted: false, id: null })) }, VALID_BODY)).toBe(200);
+    expect(await answered({}, { ...VALID_BODY, stage: "typo" })).toBe(200);
+    expect(await answered({}, { ...VALID_BODY, client_id: "%client_id%" })).toBe(200);
+    expect(
+      await answered(
+        {
+          normalise: () => {
+            throw new Error("boom");
+          },
+        },
+        VALID_BODY
+      )
+    ).toBe(200);
   });
 });

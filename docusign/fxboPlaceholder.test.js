@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   describePlaceholderRejection,
   detectUnsubstitutedPlaceholder,
+  FXBO_PLACEHOLDER_LABELS,
   isFxboPlaceholderLabel,
   isPlaceholderToken,
 } from "./fxboPlaceholder.js";
@@ -106,31 +107,30 @@ describe("detectUnsubstitutedPlaceholder", () => {
   });
 });
 
-describe("labels used by the CRM events rules", () => {
-  it("recognises every label those rules send", () => {
-    for (const label of [
-      "Client Phone",
-      "Client Language",
-      "Client is Lead",
-      "Client Is IB",
-      "Entity",
-      "Form Name",
-      "UTM Source",
-      "UTM Medium",
-      "UTM Campaign",
-      "Referer",
-      "Unique ID",
-      "Visited registration page full link",
-    ]) {
-      expect(isFxboPlaceholderLabel(label), label).toBe(true);
-    }
-  });
-
-  it("still refuses to call an ordinary value a label", () => {
-    // The list is a closed set, not a pattern. A real entity or form name
-    // must not match.
-    expect(isFxboPlaceholderLabel("SVG")).toBe(false);
-    expect(isFxboPlaceholderLabel("UAE")).toBe(false);
-    expect(isFxboPlaceholderLabel("meta")).toBe(false);
+describe("FXBO_PLACEHOLDER_LABELS", () => {
+  it("is a closed set, so widening it is a deliberate change", () => {
+    // Appending a label is NOT harmless. More labels means more fields classify
+    // as labels, which means more payloads reach the corroboration threshold: a
+    // DocuSign payload with roleName "Entity" and otherwise real values would flip
+    // from placeholder:false to placeholder:true, and DocuSign would report an
+    // FXBO test press where it should report an invalid application id. That is
+    // the distinction this module exists to keep. "Entity", "Referer", "Form Name"
+    // and "Unique ID" are ordinary English words, so they are not here.
+    //
+    // A real Test press substitutes every parameter at once, so these are enough:
+    // client_id arrives as "Client ID" and is corroborated by the name and email.
+    expect(FXBO_PLACEHOLDER_LABELS).toEqual([
+      "Application ID + Link",
+      "Application Type",
+      "Client ID",
+      "Client ID + Link",
+      "Client Full Name",
+      "Client First Name",
+      "Client Last Name",
+      "Client Email",
+      "Client Country",
+      "Client Title (Mr/Mrs/Ms)",
+      "Current Time",
+    ]);
   });
 });

@@ -50,18 +50,6 @@ export const FXBO_PLACEHOLDER_LABELS = [
   "Client Email",
   "Client Country",
   "Client Title (Mr/Mrs/Ms)",
-  "Client Phone",
-  "Client Language",
-  "Client is Lead",
-  "Client Is IB",
-  "Entity",
-  "Form Name",
-  "UTM Source",
-  "UTM Medium",
-  "UTM Campaign",
-  "Referer",
-  "Unique ID",
-  "Visited registration page full link",
   "Current Time",
 ];
 
