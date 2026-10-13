@@ -104,6 +104,12 @@ describe("buildMetaPayload", () => {
     expect(user_data.em).toBeDefined();
   });
 
+  it("omits em too when there is no email, not only fbc and ph", () => {
+    // hashEmail returns "" for no email; that must not reach Meta as a matcher.
+    const { user_data } = buildMetaPayload({ ...base, email: "" }).data[0];
+    expect("em" in user_data).toBe(false);
+  });
+
   it("never carries a value or a currency, at any stage", () => {
     // Decided 2026-10-13: Meta learns that a deposit happened, not what it was
     // worth. custom_data holds the two CRM constants and nothing else.
@@ -179,5 +185,19 @@ describe("sendMetaEvent", () => {
     const fetchImpl = vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: { message: "bad" } }) }));
     const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "s3cret-token", payload: {} });
     expect(result.detail).not.toContain("s3cret-token");
+  });
+
+  it("does not throw on a failed response whose body is not JSON", async () => {
+    // A load balancer answering 503 with an HTML page is ordinary. The body
+    // cannot be read, but the status still says retry.
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<'");
+      },
+    }));
+    const result = await sendMetaEvent({ fetchImpl, datasetId: "1", accessToken: "t", payload: {} });
+    expect(result.retryable).toBe(true);
   });
 });
