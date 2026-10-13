@@ -174,6 +174,14 @@ describe("record type", () => {
     expect(deriveRecordType("maybe")).toBe("lead");
     expect(deriveRecordType("1")).toBe("lead");
   });
+
+  it("does not let a serialised null or undefined pass as a client", () => {
+    // These ARE in the general falsy set, because for an ordinary flag they
+    // mean false. For the record type they mean unknown, so the two sets are
+    // deliberately separate.
+    expect(deriveRecordType("null")).toBe("lead");
+    expect(deriveRecordType("undefined")).toBe("lead");
+  });
 });
 
 describe("isFalsyLiteral", () => {
@@ -339,6 +347,16 @@ export const REQUIRED_FIELDS = ["stage", "crmClientId", "firstName", "email"];
 
 const FALSY = new Set(["", "0", "false", "no", "n", "off", "null", "undefined"]);
 
+/**
+ * Deliberately NARROWER than FALSY, and not shared with it.
+ *
+ * For an ordinary flag, a value of "null" or "undefined" sensibly means false.
+ * For the record type it means we do not know, and unknown must resolve to
+ * lead: a client who misses a welcome message is a support ticket, a lead who
+ * receives a login link for an account that does not exist is a complaint.
+ */
+const CLIENT_LITERALS = new Set(["0", "false", "no", "n", "off"]);
+
 const text = (v) => String(v ?? "").trim();
 
 export function isFalsyLiteral(value) {
@@ -348,14 +366,12 @@ export function isFalsyLiteral(value) {
 /**
  * Lead or client.
  *
- * Only a RECOGNISED falsy literal makes a client. Absent, empty and anything
+ * Only a RECOGNISED client literal makes a client. Absent, empty and anything
  * unrecognised resolve to "lead", the side that cannot cause harm: the welcome
  * message links to a login page, and a lead has no account to log into.
  */
 export function deriveRecordType(isLead) {
-  const v = text(isLead).toLowerCase();
-  if (v === "") return "lead";
-  return FALSY.has(v) ? "client" : "lead";
+  return CLIENT_LITERALS.has(text(isLead).toLowerCase()) ? "client" : "lead";
 }
 
 /**
