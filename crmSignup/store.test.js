@@ -33,6 +33,27 @@ function ddlSegments() {
 }
 
 const definitionOf = (column) => ddlSegments().find((segment) => segment.startsWith(`${column} `));
+const widthOf = (column) => Number(definitionOf(column).match(/VARCHAR\((\d+)\)/)[1]);
+
+// The text columns buildInsertParams cuts, with the field that feeds each one.
+const CUT_COLUMNS = [
+  ["stage", "stage"],
+  ["record_type", "recordType"],
+  ["fxbo_unique_id", "fxboUniqueId"],
+  ["first_name", "firstName"],
+  ["middle_name", "middleName"],
+  ["last_name", "lastName"],
+  ["email", "email"],
+  ["phone", "phone"],
+  ["entity", "entity"],
+  ["source", "source"],
+  ["language", "language"],
+  ["utm_source", "utmSource"],
+  ["utm_medium", "utmMedium"],
+  ["utm_campaign", "utmCampaign"],
+  ["referer", "referer"],
+  ["full_link", "fullLink"],
+];
 
 // A column is a name, a type, then only the modifiers this table uses. Anything
 // else after the type (two definitions run together by a missing comma) fails.
@@ -263,35 +284,61 @@ describe("buildInsertParams", () => {
     // The empty-id test above covers the identifiers. Every other text field
     // reaches the row through the same str() path, and an empty one is absent,
     // not a stored "".
-    const params = buildInsertParams({ email: "", utmSource: "", fullLink: "" }, {}, "{}");
+    const params = buildInsertParams({ email: "", utmSource: null, fullLink: "" }, {}, "{}");
     expect(at(params, "email")).toBeNull();
     expect(at(params, "utm_source")).toBeNull();
     expect(at(params, "full_link")).toBeNull();
   });
 
-  it("never writes the word undefined for an empty payload", () => {
+  it("never writes the word undefined, or null as text, for an empty payload", () => {
     // Dropping any of these defaults would write the literal text "undefined"
-    // into a row, the class of bug this module exists to stop.
+    // into a row, the class of bug this module exists to stop. Checking the whole
+    // row catches a default dropped from any text field, not just three of them.
     const params = buildInsertParams({}, {}, null);
+    expect(params).not.toContain("undefined");
+    expect(params).not.toContain("null");
     expect(at(params, "crm_client_id")).toBe("");
     expect(at(params, "stage")).toBe("");
     expect(at(params, "record_type")).toBe("lead");
   });
 
-  it("cuts a value to its column width rather than letting MySQL reject the row", () => {
+  it("cuts every text column to its own schema width, not a neighbour's", () => {
     // normalise.js does not bound these lengths. ER_DATA_TOO_LONG would surface as
-    // a 200 with the event lost, so FXBO would never retry it. These two are
-    // diagnostic, so a cut still says where the signup came from. Identifiers are
-    // not cut at all; see the boundary tests below.
-    const params = buildInsertParams({ fullLink: "x".repeat(2000), referer: "y".repeat(600) }, {}, "{}");
-    expect(at(params, "full_link")).toHaveLength(1024);
-    expect(at(params, "referer")).toHaveLength(512);
+    // a 200 with the event lost, so FXBO would never retry it. Each column is fed
+    // one character over its own width and must come out exactly at it.
+    for (const [column, key] of CUT_COLUMNS) {
+      const params = buildInsertParams({ [key]: "x".repeat(widthOf(column) + 1) }, {}, "{}");
+      expect(at(params, column), column).toHaveLength(widthOf(column));
+    }
   });
 
-  // An identifier is never cut. A truncated click id is a wrong click id that still
-  // looks like attribution; a truncated request id is not the one a retry would
-  // replay. Over-width writes NULL and warns, and the event itself is still kept.
-  describe("identifiers at their width boundary", () => {
+  it("cuts by code point, so a surrogate pair is never split", () => {
+    // Every other value in this file is ASCII, where a UTF-16 unit and a character
+    // are the same thing. A cut that counts units would leave half a pair at the end.
+    const params = buildInsertParams({ phone: "😀".repeat(33) }, {}, "{}");
+    const phone = at(params, "phone");
+    expect(Array.from(phone)).toHaveLength(32);
+    expect(Array.from(phone).every((c) => c === "😀")).toBe(true);
+  });
+
+  it("never cuts crm_client_id, so an over-width id fails the insert instead", () => {
+    // It is the dedupe key. Two ids that share a 255-character prefix would cut to one
+    // value and collide into one row, and findExistingFbc looks the id up uncut, so it
+    // would never find the truncated row. It is NOT NULL, so NULL is not available
+    // either. A lost event that is logged beats two different clients sharing a row.
+    const params = buildInsertParams({ crmClientId: "9".repeat(256) }, {}, "{}");
+    expect(at(params, "crm_client_id")).toHaveLength(256);
+  });
+
+  it("writes NULL for a null click id or request id, not the word null", () => {
+    const params = buildInsertParams(FIELDS, { fbc: null, whatsappRequestId: null }, "{}");
+    expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "whatsapp_request_id")).toBeNull();
+  });
+
+  // fbc is never cut: a truncated click id is attribution that silently never matches.
+  // Over-width writes NULL and warns, and the event itself is still kept.
+  describe("fbc at its width boundary", () => {
     afterEach(() => vi.restoreAllMocks());
 
     it("keeps a click id of exactly its column width, with no warning", () => {
@@ -314,6 +361,14 @@ describe("buildInsertParams", () => {
       expect(at(params, "crm_client_id")).toBe("88214");
     });
 
+  });
+
+  // whatsapp_request_id is cut, not NULLed. The worker reads it back from the row on
+  // every attempt, so a NULL would mint a fresh id per attempt: the second welcome the
+  // column exists to prevent. A cut value is replayed verbatim, so the freeze holds.
+  describe("whatsapp_request_id at its width boundary", () => {
+    afterEach(() => vi.restoreAllMocks());
+
     it("keeps a request id of exactly its column width, with no warning", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const id = "1".repeat(64);
@@ -322,14 +377,11 @@ describe("buildInsertParams", () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it("writes NULL, and warns with the column and length, for a request id one over", () => {
+    it("cuts a request id one over to its width, and never writes NULL for it", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const params = buildInsertParams(FIELDS, { whatsappRequestId: "1".repeat(65) }, "{}");
-      expect(at(params, "whatsapp_request_id")).toBeNull();
-      expect(warn).toHaveBeenCalledTimes(1);
-      const message = String(warn.mock.calls[0][0]);
-      expect(message).toMatch(/\bwhatsapp_request_id\b/);
-      expect(message).toMatch(/\b65\b/);
+      expect(at(params, "whatsapp_request_id")).toBe("1".repeat(64));
+      expect(warn).not.toHaveBeenCalled();
       expect(at(params, "crm_client_id")).toBe("88214");
     });
   });

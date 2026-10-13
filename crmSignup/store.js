@@ -106,11 +106,12 @@ const bool = (v) => (v ? 1 : 0);
 const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
 const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
 
-// An identifier is never cut. A truncated click id is a wrong click id that still
-// looks like attribution, and a truncated request id is not the one a retry would
-// replay. The provider's message id is written after a send has already happened,
-// and a failed write there would leave the row due for a second welcome. Over-width
-// writes NULL and says so; the event, and the status it records, are still stored.
+// fbc and the provider's message id are never cut. A cut click id is attribution that
+// silently never matches. A cut message id would fail the UPDATE that records a send
+// already made, which leaves the row due for a second welcome. Over-width writes NULL
+// and warns; the event, and the status it records, are still stored.
+// whatsapp_request_id is the one identifier that is cut rather than NULLed: the worker
+// reads it back from the row on every attempt, and a NULL would mint a fresh id each time.
 const identifier = (v, column) => {
   if (v === undefined || v === null || v === "") return null;
   const text = String(v);
@@ -127,10 +128,9 @@ const identifier = (v, column) => {
 /**
  * The parameters for the INSERT, in INSERT_COLUMNS order.
  *
- * Pure except in one place: an over-width identifier (fbc, whatsapp_request_id)
- * is written as NULL and `console.warn` is called with the column name and the
- * length seen. The warning appears without the caller having to arrange for it,
- * which is the point of it.
+ * Pure except in one place: an over-width fbc is written as NULL and `console.warn`
+ * is called with the column name and the length seen. The warning appears without
+ * the caller having to arrange for it, which is the point of it.
  */
 export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
@@ -147,7 +147,9 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
   const detail = invalid ? String(invalidReason).slice(0, 500) : null;
 
   return [
-    fit(fields.crmClientId ?? "", "crm_client_id"),
+    // Never cut: this is the dedupe key. An over-width id fails the INSERT rather than
+    // colliding with another client's id. It is NOT NULL, so NULL is not an option.
+    String(fields.crmClientId ?? ""),
     fit(fields.stage ?? "", "stage"),
     str(fields.fxboUniqueId, "fxbo_unique_id"),
     str(fields.firstName, "first_name"),
@@ -167,7 +169,7 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     str(fields.referer, "referer"),
     str(fields.fullLink, "full_link"),
     identifier(derived.fbc, "fbc"),
-    identifier(derived.whatsappRequestId, "whatsapp_request_id"),
+    str(derived.whatsappRequestId, "whatsapp_request_id"),
     status,
     detail,
     status,
@@ -262,23 +264,6 @@ export async function insertSignupEvent(fields, derived, rawPayload, invalidReas
     if (error?.code === "ER_DUP_ENTRY") return { inserted: false, id: null };
     throw error;
   }
-}
-
-/**
- * A payload that failed validation. All three action statuses carry `invalid`,
- * because there is no event-level status column and inventing one would mean
- * two places to look.
- */
-export async function markSignupInvalid(crmClientId, stage, detail) {
-  const text = String(detail ?? "").slice(0, 500);
-  await run(
-    `UPDATE signup_events
-        SET meta_status = 'invalid', meta_detail = ?,
-            whatsapp_status = 'invalid', whatsapp_detail = ?,
-            brevo_status = 'invalid', brevo_detail = ?
-      WHERE crm_client_id = ? AND stage = ?`,
-    [text, text, text, String(crmClientId ?? ""), String(stage ?? "")]
-  );
 }
 
 /**

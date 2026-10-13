@@ -12,7 +12,6 @@ import {
   initCrmSignupStore,
   findExistingFbc,
   insertSignupEvent,
-  markSignupInvalid,
   claimDueEvents,
   updateMetaStatus,
   updateWhatsappStatus,
@@ -124,6 +123,25 @@ describe("insertSignupEvent", () => {
     }
     expect(at(params, "brevo_detail")).toBe("missing required fields: email");
   });
+
+  it("names the columns in INSERT_COLUMNS order, with one placeholder and one parameter for each", async () => {
+    // Columns and values are matched by position. A sorted column list would store
+    // every value in the wrong column with no error at all.
+    await insertSignupEvent(FIELDS, {}, "{}");
+    const { sql, params } = db.state.calls[0];
+    const match = sql.match(/INSERT INTO signup_events \(([^)]*)\)\s*VALUES \(([^)]*)\)/);
+    expect(match, sql).not.toBeNull();
+    const [, columns, placeholders] = match;
+    expect(columns.split(",").map((c) => c.trim())).toEqual(INSERT_COLUMNS);
+    expect(placeholders.split(",").map((p) => p.trim())).toEqual(INSERT_COLUMNS.map(() => "?"));
+    expect(params).toHaveLength(INSERT_COLUMNS.length);
+  });
+
+  it("reports a missing insert id as null, not undefined", async () => {
+    db.state.respond = () => [{ affectedRows: 1 }];
+    const result = await insertSignupEvent(FIELDS, {}, "{}");
+    expect(result.id).toBeNull();
+  });
 });
 
 describe("findExistingFbc", () => {
@@ -167,24 +185,6 @@ describe("claimDueEvents", () => {
   });
 });
 
-describe("markSignupInvalid", () => {
-  it("updates only the one client and stage, marking all three actions invalid with the same detail", async () => {
-    await markSignupInvalid("88214", "registered", "missing required fields: email");
-    const { sql, params } = db.state.calls[0];
-    expect(sql).toMatch(/meta_status = 'invalid'/);
-    expect(sql).toMatch(/whatsapp_status = 'invalid'/);
-    expect(sql).toMatch(/brevo_status = 'invalid'/);
-    expect(sql).toMatch(/WHERE crm_client_id = \? AND stage = \?/);
-    const detail = "missing required fields: email";
-    expect(params).toEqual([detail, detail, detail, "88214", "registered"]);
-  });
-
-  it("truncates a long detail to 500 characters", async () => {
-    await markSignupInvalid("88214", "registered", "x".repeat(900));
-    expect(db.state.calls[0].params[0]).toHaveLength(500);
-  });
-});
-
 describe("the three action writers", () => {
   const next = new Date("2026-10-13T11:00:00Z");
 
@@ -216,6 +216,35 @@ describe("the three action writers", () => {
     );
     expect(sql).not.toMatch(/meta_|whatsapp/);
     expect(params).toEqual(["sent", null, 0, null, 7]);
+  });
+
+  it("updateMetaStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
+    await updateMetaStatus(7, { status: "retrying" });
+    expect(db.state.calls[0].params).toEqual(["retrying", null, 0, null, 7]);
+    await updateMetaStatus(7, { status: "retrying", detail: "", attempts: 1, nextAttemptAt: undefined });
+    expect(db.state.calls[1].params).toEqual(["retrying", null, 1, null, 7]);
+  });
+
+  it("updateWhatsappStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
+    await updateWhatsappStatus(7, { status: "failed" });
+    expect(db.state.calls[0].params).toEqual(["failed", null, null, 0, null, 7]);
+    await updateWhatsappStatus(7, { status: "failed", detail: "", attempts: 2 });
+    expect(db.state.calls[1].params).toEqual(["failed", null, null, 2, null, 7]);
+  });
+
+  it("updateBrevoStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
+    await updateBrevoStatus(7, { status: "failed" });
+    expect(db.state.calls[0].params).toEqual(["failed", null, 0, null, 7]);
+  });
+
+  it("records a failed send with no message id as NULL, not the word undefined", async () => {
+    // A send that timed out has no provider id. The row must still record the failure.
+    for (const messageId of [undefined, null]) {
+      await updateWhatsappStatus(7, { status: "failed", messageId, detail: "timeout", attempts: 1, nextAttemptAt: next });
+      const { params } = db.state.calls.at(-1);
+      expect(params[0]).toBe("failed");
+      expect(params[1]).toBeNull();
+    }
   });
 });
 
