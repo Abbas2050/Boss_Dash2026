@@ -102,7 +102,8 @@ export async function upsertBrevoContact({ fetchImpl = fetch, apiKey, contact })
       body: JSON.stringify(contact),
     });
   } catch (transportError) {
-    return classifyBrevoOutcome({ transportError });
+    // A thrown falsy value is still a transport failure, not something that falls through.
+    return classifyBrevoOutcome({ transportError: transportError || new Error("unknown") });
   }
 
   let body = null;

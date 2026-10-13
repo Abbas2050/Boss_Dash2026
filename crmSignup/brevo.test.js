@@ -135,6 +135,28 @@ describe("classifyBrevoOutcome", () => {
     expect(r.status).toBe("failed");
     expect(r.detail).toContain("invalid_parameter");
   });
+
+  it("reports transport errors, 429 and 5xx as failed, never as sent", () => {
+    expect(classifyBrevoOutcome({ transportError: new Error("ETIMEDOUT") }).status).toBe("failed");
+    for (const httpStatus of [429, 500, 502, 503]) {
+      expect(classifyBrevoOutcome({ httpStatus, body: {} }).status, String(httpStatus)).toBe("failed");
+    }
+  });
+
+  it("never counts a response that is not 2xx as sent", () => {
+    // Anything the classifier does not recognise must fail closed.
+    for (const httpStatus of [302, 304, 0, undefined]) {
+      expect(classifyBrevoOutcome({ httpStatus, body: {} }).status, String(httpStatus)).toBe("failed");
+    }
+  });
+
+  it("treats every other 4xx as permanent, not only 400", () => {
+    for (const httpStatus of [401, 403, 404, 409, 422]) {
+      const r = classifyBrevoOutcome({ httpStatus, body: {} });
+      expect(r.retryable, String(httpStatus)).toBe(false);
+      expect(r.status, String(httpStatus)).toBe("failed");
+    }
+  });
 });
 
 describe("upsertBrevoContact", () => {
@@ -162,5 +184,26 @@ describe("upsertBrevoContact", () => {
       },
     }));
     expect((await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} })).status).toBe("sent");
+  });
+
+  it("posts the contact as JSON to the contacts endpoint", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 1 }) }));
+    const contact = { email: "ali.khan@example.com", updateEnabled: true, attributes: { EXT_ID: "88214" } };
+    await upsertBrevoContact({ fetchImpl, apiKey: "k", contact });
+    const [, init] = fetchImpl.mock.calls[0];
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body)).toEqual(contact);
+  });
+
+  it("treats a thrown falsy value as a retryable transport failure", async () => {
+    for (const thrown of [undefined, null, 0, "", false]) {
+      const fetchImpl = vi.fn(async () => {
+        throw thrown;
+      });
+      const r = await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: {} });
+      expect(r.status, String(thrown)).toBe("failed");
+      expect(r.retryable, String(thrown)).toBe(true);
+    }
   });
 });
