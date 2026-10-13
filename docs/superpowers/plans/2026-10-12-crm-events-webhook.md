@@ -3505,6 +3505,33 @@ export async function listEventsSince(since, cap = 2000) {
     [since, Number(cap) || 2000]
   );
 }
+
+/**
+ * Event counts per (stage, status triple) since a date, over the whole window.
+ *
+ * Grouped in SQL and never capped: the result is bounded by the number of distinct
+ * status combinations, not by how many events the window holds. A count read from
+ * the capped list would undercount a busy month without saying so.
+ */
+export async function countEventsSince(since) {
+  return all(
+    `SELECT stage, meta_status, whatsapp_status, brevo_status, COUNT(*) AS n
+       FROM signup_events
+      WHERE received_at >= ?
+      GROUP BY stage, meta_status, whatsapp_status, brevo_status`,
+    [since]
+  );
+}
+
+/**
+ * The newest received_at in the whole table, ignoring any window. Null when the
+ * table is empty. Health reads this, not the window, so a short window cannot make
+ * an event that arrived inside the stale threshold look like silence.
+ */
+export async function latestEventReceivedAt() {
+  const rows = await all(`SELECT MAX(received_at) AS latest FROM signup_events`);
+  return rows[0]?.latest ?? null;
+}
 ```
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -6731,6 +6758,23 @@ describe("health", () => {
     expect(health.stale).toBe(true);
   });
 
+  it("is stale only past the threshold, not at it", () => {
+    // Exactly 72 hours is the threshold; "past" means strictly after it.
+    const atThreshold = row({ received_at: "2026-10-10T12:00:00Z" });
+    const justPast = row({ received_at: "2026-10-10T11:59:00Z" });
+    expect(summariseCrmEvents([atThreshold], { now: NOW }).health.stale).toBe(false);
+    expect(summariseCrmEvents([justPast], { now: NOW }).health.stale).toBe(true);
+  });
+
+  it("takes health from the latest timestamp it is given, not from the rows", () => {
+    // The route reads the newest event in the whole table, so a short window cannot hide it.
+    const latest = new Date("2026-10-12T06:00:00Z"); // 30 hours before NOW
+    const { health } = summariseCrmEvents([], { now: NOW, latestReceivedAt: latest });
+    expect(health.lastReceivedAt).toBe("2026-10-12T06:00:00.000Z");
+    expect(health.ageHours).toBeCloseTo(30, 3);
+    expect(health.stale).toBe(false);
+  });
+
   it("reports no events at all as stale, never as healthy", () => {
     // Silence is the symptom of a broken rule, so it must not read as calm.
     const { health } = summariseCrmEvents([], { now: NOW });
@@ -6758,6 +6802,17 @@ describe("funnel", () => {
       lead: 0,
       registered: 2,
       verified: 1,
+      live_account: 0,
+      first_deposit: 0,
+    });
+  });
+
+  it("ignores a stage named like an inherited property, rather than corrupting the funnel", () => {
+    const rows = [row({ stage: "constructor" }), row({ stage: "toString" }), row({ stage: "registered" })];
+    expect(summariseCrmEvents(rows, { now: NOW }).funnel).toEqual({
+      lead: 0,
+      registered: 1,
+      verified: 0,
       live_account: 0,
       first_deposit: 0,
     });
@@ -6801,6 +6856,37 @@ describe("destinations", () => {
     }
   });
 
+  it("does not invent a key for an unknown status", () => {
+    const { destinations } = summariseCrmEvents([row({ meta_status: "weird" })], { now: NOW });
+    expect(Object.keys(destinations.meta).sort()).toEqual([
+      "failed",
+      "invalid",
+      "pending",
+      "rejected",
+      "retrying",
+      "sent",
+      "skipped",
+    ]);
+  });
+
+  it("ignores a status named like an inherited property", () => {
+    const { destinations } = summariseCrmEvents([row({ meta_status: "constructor", brevo_status: "toString" })], { now: NOW });
+    for (const name of ["meta", "whatsapp", "brevo"]) {
+      expect(Object.keys(destinations[name]).sort(), name).toEqual([
+        "failed",
+        "invalid",
+        "pending",
+        "rejected",
+        "retrying",
+        "sent",
+        "skipped",
+      ]);
+    }
+    expect(destinations.meta.sent).toBe(0);
+    expect(destinations.brevo.sent).toBe(0);
+    expect(destinations.whatsapp.sent).toBe(1);
+  });
+
   it("counts an unknown status under nothing rather than throwing", () => {
     const { destinations } = summariseCrmEvents([row({ meta_status: "weird" })], { now: NOW });
     expect(destinations.meta.sent).toBe(0);
@@ -6829,6 +6915,24 @@ describe("toTableRow", () => {
 describe("STALE_HOURS", () => {
   it("is 72, matching the DocuSign webhook health window", () => {
     expect(STALE_HOURS).toBe(72);
+  });
+});
+
+describe("grouped counts", () => {
+  it("folds a grouped row as n events, so counts are exact past any cap", () => {
+    // 3,201 events in three groups. No table cap applies to these counts, and each
+    // count must equal the sum of its group sizes, not the number of groups.
+    const groups = [
+      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", n: 1200 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", n: 2000 },
+      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1 },
+    ];
+    const { funnel, destinations } = summariseCrmEvents(groups, { now: NOW, latestReceivedAt: NOW });
+    expect(funnel).toEqual({ lead: 1200, registered: 2001, verified: 0, live_account: 0, first_deposit: 0 });
+    expect(destinations.meta.sent).toBe(1201);
+    expect(destinations.meta.failed).toBe(2000);
+    expect(destinations.whatsapp.skipped).toBe(1200);
+    expect(destinations.brevo.pending).toBe(2000);
   });
 });
 ```
@@ -6860,34 +6964,61 @@ function zeroCounts() {
   return Object.fromEntries(STATUSES.map((k) => [k, 0]));
 }
 
+/** A timestamp as epoch milliseconds, or null when it will not parse. */
+function toMillis(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const t = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(t) ? t : null;
+}
+
+/** The newest received_at among the rows, as a Date, or null when there is none. */
+export function newestReceivedAt(rows) {
+  let newest = null;
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const t = toMillis(r?.received_at);
+    if (t !== null && (newest === null || t > newest)) newest = t;
+  }
+  return newest === null ? null : new Date(newest);
+}
+
 /**
- * Health, funnel and per-destination counters from a window of rows.
+ * How many events a row stands for: one for a row of the table, n for a row of
+ * the grouped count. Anything that is not a positive number counts as nothing.
+ */
+function weightOf(row) {
+  const n = Number(row?.n ?? 1);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * Health, funnel and per-destination counters.
+ *
+ * `rows` is either table rows (one event each) or grouped counts carrying `n`.
+ * Health comes from `latestReceivedAt` when the caller passes one -- the newest
+ * event in the whole table, read independently of the window -- and otherwise
+ * from the newest row given.
  *
  * Health is the one that earns its place: a broken FXBO rule raises no error
- * anywhere, it simply stops calling. An empty window therefore reports STALE,
+ * anywhere, it simply stops calling. An empty table therefore reports STALE,
  * never healthy -- silence must not read as calm.
  */
-export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_HOURS } = {}) {
+export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_HOURS, latestReceivedAt } = {}) {
   const list = Array.isArray(rows) ? rows : [];
 
-  const times = list
-    .map((r) => Date.parse(String(r?.received_at ?? "")))
-    .filter((t) => Number.isFinite(t));
-
-  const newest = times.length ? Math.max(...times) : null;
+  const newest = toMillis(latestReceivedAt === undefined ? newestReceivedAt(list) : latestReceivedAt);
   const ageHours = newest === null ? null : (now.getTime() - newest) / 3_600_000;
 
   const funnel = Object.fromEntries(STAGES.map((stage) => [stage, 0]));
   for (const r of list) {
     const stage = String(r?.stage ?? "");
-    if (stage in funnel) funnel[stage] += 1;
+    if (Object.hasOwn(funnel, stage)) funnel[stage] += weightOf(r);
   }
 
   const destinations = Object.fromEntries(DESTINATIONS.map(([name]) => [name, zeroCounts()]));
   for (const r of list) {
     for (const [name, statusColumn] of DESTINATIONS) {
       const status = String(r?.[statusColumn] ?? "");
-      if (status in destinations[name]) destinations[name][status] += 1;
+      if (Object.hasOwn(destinations[name], status)) destinations[name][status] += weightOf(r);
     }
   }
 
@@ -6936,6 +7067,9 @@ Create `crmSignup/overviewRoute.test.js`:
 // @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
 import { makeCrmEventsOverviewHandler } from "./overviewRoute.js";
+import { readFileSync } from "fs";
+import path from "path";
+import { PUBLIC_API_ROUTES } from "../auth/requireSession.js";
 
 function fakeRes() {
   return {
@@ -7074,6 +7208,158 @@ describe("the payload", () => {
     expect(res.statusCode).toBe(500);
     expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
   });
+
+  it("reports health from its own clock and the 72-hour threshold", async () => {
+    const ninetySixHoursAgo = [{ ...ROWS[0], received_at: "2026-10-09T12:00:00Z" }];
+    const old = fakeRes();
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ninetySixHoursAgo, now })(
+      { auth: ADMIN, query: {} },
+      old
+    );
+    expect(old.body.health.stale).toBe(true);
+    expect(old.body.health.ageHours).toBeCloseTo(96, 3);
+
+    const recent = fakeRes();
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now })(
+      { auth: ADMIN, query: {} },
+      recent
+    );
+    expect(recent.body.health.stale).toBe(false);
+    expect(recent.body.health.ageHours).toBeCloseTo(1, 3);
+  });
+
+  it("reports the window it actually used, after clamping", async () => {
+    const handler = makeCrmEventsOverviewHandler({ canManage, listSince: async () => ROWS, now });
+    const seven = fakeRes();
+    await handler({ auth: ADMIN, query: { days: "7" } }, seven);
+    expect(seven.body.windowDays).toBe(7);
+
+    const clamped = fakeRes();
+    await handler({ auth: ADMIN, query: { days: "99999" } }, clamped);
+    expect(clamped.body.windowDays).toBe(90);
+  });
+
+  it("keeps the newest rows in the table, in the order the store gave them", async () => {
+    // listEventsSince returns newest first, so the table is the head of the list.
+    const many = Array.from({ length: 10 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now, tableLimit: 3 })(
+      { auth: ADMIN, query: {} },
+      res
+    );
+    expect(res.body.events.map((e) => e.id)).toEqual([1, 2, 3]);
+  });
+
+  it("caps the table at 200 rows by default, and still counts all of them", async () => {
+    const many = Array.from({ length: 201 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => many, now })(
+      { auth: ADMIN, query: {} },
+      res
+    );
+    expect(res.body.events).toHaveLength(200);
+    expect(res.body.funnel.registered).toBe(201);
+  });
+
+  it("reads the real clock when none is injected", async () => {
+    const anHourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({ canManage, listSince: async () => [{ ...ROWS[0], received_at: anHourAgo }] })(
+      { auth: ADMIN, query: {} },
+      res
+    );
+    expect(res.body.health.stale).toBe(false);
+    expect(res.body.health.ageHours).toBeCloseTo(1, 1);
+  });
+
+  it("logs the database message to the console, and does not return it", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const res = fakeRes();
+      const listSince = async () => {
+        throw new Error("ER_NO_SUCH_TABLE: signup_events");
+      };
+      await makeCrmEventsOverviewHandler({ canManage, listSince })({ auth: ADMIN, query: {} }, res);
+      expect(spy.mock.calls.flat().join(" ")).toContain("ER_NO_SUCH_TABLE");
+      expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+  it("takes health from the whole table, so a short window cannot read as no events", async () => {
+    // The newest event is 30 hours old: inside the 72-hour threshold, outside a one-day window.
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({
+      canManage,
+      listSince: async () => [],
+      countSince: async () => [],
+      latestReceivedAt: async () => new Date("2026-10-12T06:00:00Z"),
+      now,
+    })({ auth: ADMIN, query: { days: "1" } }, res);
+    expect(res.body.health.lastReceivedAt).toBe("2026-10-12T06:00:00.000Z");
+    expect(res.body.health.ageHours).toBeCloseTo(30, 3);
+    expect(res.body.health.stale).toBe(false);
+    expect(res.body.funnel.lead).toBe(0); // the counts still follow the window
+  });
+
+  it("counts from the grouped rows, so a window far past the table cap is counted in full", async () => {
+    const groups = [
+      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1000 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", n: 4000 },
+    ];
+    const threeRows = Array.from({ length: 3 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
+    const res = fakeRes();
+    await makeCrmEventsOverviewHandler({
+      canManage,
+      listSince: async () => threeRows,
+      countSince: async () => groups,
+      latestReceivedAt: async () => new Date("2026-10-13T11:00:00Z"),
+      now,
+      tableLimit: 3,
+    })({ auth: ADMIN, query: {} }, res);
+    expect(res.body.events).toHaveLength(3);
+    expect(res.body.funnel.lead).toBe(1000);
+    expect(res.body.funnel.registered).toBe(4000);
+    expect(res.body.destinations.meta.sent).toBe(1000);
+    expect(res.body.destinations.meta.failed).toBe(4000);
+    expect(res.body.destinations.whatsapp.skipped).toBe(4000);
+  });
+
+  it("asks the store for no more rows than the table shows", async () => {
+    const listSince = vi.fn(async () => ROWS);
+    await makeCrmEventsOverviewHandler({ canManage, listSince, now, tableLimit: 3 })({ auth: ADMIN, query: {} }, fakeRes());
+    expect(listSince.mock.calls[0][1]).toBe(3);
+  });
+});
+
+describe("wiring in server.js", () => {
+  // Nothing above reads server.js. Without these, a registration that lost the
+  // admin gate, or one added to the public allow-list, would pass every test.
+  const SERVER = readFileSync(path.resolve("server.js"), "utf8");
+
+  it("imports the handler and the three store reads", () => {
+    expect(SERVER).toMatch(/import \{ makeCrmEventsOverviewHandler \} from "\.\/crmSignup\/overviewRoute\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\blistEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\bcountEventsSince\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+    expect(SERVER).toMatch(/import \{[^}]*\blatestEventReceivedAt\b[^}]*\} from "\.\/crmSignup\/store\.js";/);
+  });
+
+  it("registers it behind the session check and the admin check", () => {
+    expect(SERVER).toMatch(/app\.get\('\/api\/crm-events\/overview',\s*authRequired,\s*adminOnly,\s*makeCrmEventsOverviewHandler\(\{/);
+  });
+
+  it("wires the admin predicate, the table read, the grouped count and the whole-table latest timestamp", () => {
+    const block = SERVER.match(/app\.get\('\/api\/crm-events\/overview'[\s\S]*?\}\)\);/);
+    expect(block, "the registration was not found").not.toBeNull();
+    expect(block[0]).toMatch(/\bcanManage:\s*canManageUsers\s*,/);
+    expect(block[0]).toMatch(/\blistSince:\s*listEventsSince\s*,/);
+    expect(block[0]).toMatch(/\bcountSince:\s*countEventsSince\s*,/);
+    expect(block[0]).toMatch(/\blatestReceivedAt:\s*latestEventReceivedAt\s*,/);
+  });
+
+  it("is not on the public allow-list, because it reads the database for an admin", () => {
+    expect(PUBLIC_API_ROUTES.has("GET /api/crm-events/overview")).toBe(false);
+  });
 });
 ```
 
@@ -7082,7 +7368,7 @@ describe("the payload", () => {
 Create `crmSignup/overviewRoute.js`:
 
 ```js
-import { summariseCrmEvents, toTableRow } from "./stats.js";
+import { newestReceivedAt, summariseCrmEvents, toTableRow } from "./stats.js";
 
 const DEFAULT_DAYS = 30;
 const MIN_DAYS = 1;
@@ -7097,13 +7383,19 @@ function windowDays(raw) {
 /**
  * GET /api/crm-events/overview?days=30
  *
- * Everything the settings tab needs in one call. The counts cover the whole
- * window; only the table is capped, so a busy month still reports an accurate
- * funnel.
+ * Everything the settings tab needs in one call, from three reads:
+ *   listSince(since, tableLimit)  the newest rows in the window, capped in SQL. Table only.
+ *   countSince(since)             grouped counts over the whole window, never capped.
+ *   latestReceivedAt()            the newest event in the whole table, ignoring the window.
+ *
+ * Counts and the table follow the window. Health does not: a one-day window must
+ * not make an event from thirty hours ago look like silence.
  */
 export function makeCrmEventsOverviewHandler({
   canManage,
   listSince,
+  countSince,
+  latestReceivedAt,
   tableLimit = 200,
   now = () => new Date(),
   logger = console,
@@ -7116,15 +7408,20 @@ export function makeCrmEventsOverviewHandler({
     const since = new Date(at.getTime() - days * 24 * 3_600_000);
 
     let rows;
+    let counted;
+    let latest;
     try {
-      rows = await listSince(since);
+      rows = await listSince(since, tableLimit);
+      // Without a grouped count the rows are counted, which is only as complete as the rows.
+      counted = countSince ? await countSince(since) : rows;
+      latest = latestReceivedAt ? await latestReceivedAt() : newestReceivedAt(rows);
     } catch (error) {
       // The message can name internal schema, so it is logged, not returned.
       logger.error?.(`[crm-events] overview failed: ${error?.message || String(error)}`);
       return res.status(500).json({ error: "overview_failed" });
     }
 
-    const { health, funnel, destinations } = summariseCrmEvents(rows, { now: at });
+    const { health, funnel, destinations } = summariseCrmEvents(counted, { now: at, latestReceivedAt: latest });
 
     return res.status(200).json({
       windowDays: days,
