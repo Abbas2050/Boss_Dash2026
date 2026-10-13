@@ -1392,11 +1392,35 @@ describe("skip decisions", () => {
     expect(decideWhatsappSkip({ ...base, source: "SVG", skipSources })).toBeNull();
   });
 
+  it("matches the webhook's source case-insensitively, not only the configured list", () => {
+    const skipSources = parseSkipSources("manual");
+    expect(decideWhatsappSkip({ ...base, source: "MANUAL", skipSources })).toEqual({
+      reason: "source excluded",
+    });
+  });
+
   it("reports an unconfigured key before anything about the client", () => {
     // An unconfigured environment is our problem, not a fact about the lead.
     expect(decideWhatsappSkip({ ...base, apiKey: "", recordType: "lead" })).toEqual({
       reason: "whatsapp not configured",
     });
+  });
+
+  it("reports an unconfigured key ahead of the funnel stage as well", () => {
+    expect(decideWhatsappSkip({ ...base, apiKey: "", stage: "lead" })).toEqual({
+      reason: "whatsapp not configured",
+    });
+  });
+
+  it("counts a whitespace-only key as unset", () => {
+    expect(decideWhatsappSkip({ ...base, apiKey: "   " })).toEqual({ reason: "whatsapp not configured" });
+  });
+
+  it("accepts skipSources as the raw env string, not only a parsed Set", () => {
+    expect(decideWhatsappSkip({ ...base, source: "manual", skipSources: "CSV_UPLOAD, manual" })).toEqual({
+      reason: "source excluded",
+    });
+    expect(decideWhatsappSkip({ ...base, source: "SVG", skipSources: "CSV_UPLOAD, manual" })).toBeNull();
   });
 });
 
@@ -1451,6 +1475,22 @@ describe("buildWhatsappPayload", () => {
     expect(payload.messages[0].messageId).toBeTruthy();
     expect(payload.from).toBeUndefined();
   });
+
+  it("keeps the body placeholder and the button URL as two separate values", () => {
+    // The shared fixture above uses one URL for both, so swapping them passes.
+    const data = buildWhatsappPayload({
+      templateName: "t",
+      language: "en",
+      firstName: "Ali",
+      bodyParam: "BODY-PARAM",
+      buttonUrl: "BUTTON-URL",
+      from: "+971507192185",
+      to: "+971500000000",
+      messageId: "uuid-2",
+    }).messages[0].content.templateData;
+    expect(data.body.placeholders).toEqual(["BODY-PARAM"]);
+    expect(data.buttons[0].parameter).toBe("BUTTON-URL");
+  });
 });
 
 describe("classifyWhatsappOutcome", () => {
@@ -1494,6 +1534,68 @@ describe("classifyWhatsappOutcome", () => {
     expect(r.retryable).toBe(false);
     expect(r.detail).toMatch(/no message status/i);
   });
+
+  it("names each of the six documented failure statuses, not just whatever the list holds", () => {
+    for (const status of ["FAILED", "ERROR", "REJECTED", "UNDELIVERED", "UNDELIVERABLE", "INVALID"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
+      // The detail is the status itself, not the unrecognised fallback, so a dropped entry shows.
+      expect(r, status).toEqual({ status: "rejected", retryable: false, detail: status, messageId: null });
+    }
+  });
+
+  it("names a known failure in its detail, whatever the case DoubleTick used", () => {
+    const upper = classifyWhatsappOutcome({
+      httpStatus: 200,
+      body: { messages: [{ status: "UNDELIVERABLE", messageId: "m-11" }] },
+    });
+    expect(upper).toEqual({ status: "rejected", retryable: false, detail: "UNDELIVERABLE", messageId: "m-11" });
+
+    const mixed = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status: "uNdElIvErAbLe" }] } });
+    expect(mixed.detail).toBe("uNdElIvErAbLe");
+  });
+
+  it("does not send an unrecognised status, and does not retry it either", () => {
+    const r = classifyWhatsappOutcome({
+      httpStatus: 200,
+      body: { messages: [{ status: "ACCEPTED_PENDING_REVIEW", messageId: "m-12" }] },
+    });
+    expect(r).toEqual({
+      status: "rejected",
+      retryable: false,
+      detail: "unrecognised status: ACCEPTED_PENDING_REVIEW",
+      messageId: "m-12",
+    });
+  });
+
+  it("matches a healthy status regardless of case, as it does the failures", () => {
+    const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status: "sent", messageId: "m-13" }] } });
+    expect(r.status).toBe("sent");
+  });
+
+  it("treats ENQUEUED as sent, the current value DoubleTick returns, whatever its case", () => {
+    for (const status of ["ENQUEUED", "enqueued"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status, messageId: "m-20" }] } });
+      expect(r, status).toEqual({ status: "sent", retryable: false, detail: status, messageId: "m-20" });
+    }
+  });
+
+  it("rejects the statuses DoubleTick does not document, so a new one is a deliberate change", () => {
+    for (const status of ["QUEUED", "SUBMITTED", "ACCEPTED"]) {
+      const r = classifyWhatsappOutcome({ httpStatus: 200, body: { messages: [{ status }] } });
+      expect(r, status).toEqual({
+        status: "rejected",
+        retryable: false,
+        detail: `unrecognised status: ${status}`,
+        messageId: null,
+      });
+    }
+  });
+
+  it("retries a 408 Request Timeout, which is transient by definition", () => {
+    const r = classifyWhatsappOutcome({ httpStatus: 408, body: {} });
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
+  });
 });
 
 describe("sendWhatsappTemplate", () => {
@@ -1531,6 +1633,47 @@ describe("sendWhatsappTemplate", () => {
     expect(r.status).toBe("failed");
     expect(r.retryable).toBe(false);
   });
+
+  it("posts the payload as JSON to the template endpoint", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "SENT", messageId: "m-10" }] }),
+    }));
+    const payload = { messages: [{ to: "+971500000000" }] };
+
+    await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload });
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("https://public.doubletick.io/whatsapp/message/template");
+    expect(init.method).toBe("POST");
+    expect(init.headers["Content-Type"]).toBe("application/json");
+    expect(JSON.parse(init.body)).toEqual(payload);
+  });
+
+  it("reads the provider's HTTP status, so a 503 is retried rather than treated as a rejection", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }));
+    const r = await sendWhatsappTemplate({ fetchImpl, apiKey: "k", payload: {} });
+    expect(r.status).toBe("failed");
+    expect(r.retryable).toBe(true);
+  });
+
+  it("reads messages[0].status from a 2xx body, so a FAILED message is rejected and a SENT one is sent", async () => {
+    const undeliverable = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "UNDELIVERABLE", messageId: "m-7" }] }),
+    }));
+    const sent = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ messages: [{ status: "SENT", messageId: "m-8" }] }),
+    }));
+    expect((await sendWhatsappTemplate({ fetchImpl: undeliverable, apiKey: "k", payload: {} })).status).toBe(
+      "rejected"
+    );
+    expect((await sendWhatsappTemplate({ fetchImpl: sent, apiKey: "k", payload: {} })).status).toBe("sent");
+  });
 });
 ```
 
@@ -1560,6 +1703,16 @@ export const WHATSAPP_FAILURE_STATUSES = [
 ];
 
 const FAILURE_SET = new Set(WHATSAPP_FAILURE_STATUSES);
+
+/** The messages[0].status values that mean the MESSAGE was accepted for sending.
+ *  Two, because DoubleTick changed the value and the API reference never recorded
+ *  it: SENT is the historical value, which the reference still documents, and
+ *  ENQUEUED is the current one, per DoubleTick's help article on the template-send
+ *  response. We do not know which this account's plan returns, so both are kept.
+ *  Nothing else is: an unlisted status is rejected loudly, with its value in the
+ *  detail, rather than assumed to be a send. */
+const SENT_STATUSES = ["SENT", "ENQUEUED"];
+const SENT_SET = new Set(SENT_STATUSES);
 
 export function parseSkipSources(raw) {
   return new Set(
@@ -1628,7 +1781,8 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
 
   const code = Number(httpStatus) || 0;
 
-  if (code === 429 || code >= 500) {
+  // A Request Timeout is transient by definition, as are 429 and every 5xx.
+  if (code === 408 || code === 429 || code >= 500) {
     return { status: "failed", retryable: true, detail: `http ${code}`, messageId: null };
   }
 
@@ -1649,11 +1803,24 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body } = {
     };
   }
 
+  const messageId = message?.messageId ?? null;
+  const upper = status.toUpperCase();
+
+  if (SENT_SET.has(upper)) {
+    return { status: "sent", retryable: false, detail: status, messageId };
+  }
+
+  if (FAILURE_SET.has(upper)) {
+    return { status: "rejected", retryable: false, detail: status, messageId };
+  }
+
+  // A status we do not recognise is not a send. It is not retried either: it may
+  // well mean the message was delivered, and a retry would send a second welcome.
   return {
-    status: FAILURE_SET.has(status.toUpperCase()) ? "rejected" : "sent",
+    status: "rejected",
     retryable: false,
-    detail: status,
-    messageId: message?.messageId ?? null,
+    detail: `unrecognised status: ${status}`,
+    messageId,
   };
 }
 
