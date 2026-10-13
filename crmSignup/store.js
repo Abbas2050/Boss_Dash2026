@@ -1,4 +1,5 @@
 import mysql from "mysql2/promise";
+import { maskEmail, maskPhone } from "./normalise.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -381,6 +382,31 @@ function claimClause(action, claimAt) {
 const matchedRows = (result) => (typeof result?.affectedRows === "number" ? result.affectedRows : null);
 
 /**
+ * What a `*_detail` column is allowed to hold.
+ *
+ * Masked first, then cut. The text is usually the provider's own message, and a
+ * provider quotes back what we sent it -- Brevo's 400 names the email address
+ * from the request body -- so spec section 13's masking has to hold here and
+ * not only in the log line: this column is read straight into the admin table.
+ * Cutting first could leave half an address whole. One function for all three
+ * writers, so a fourth destination cannot forget.
+ */
+export function redactDetail(detail) {
+  return (
+    String(detail ?? "")
+      // Any run without whitespace that carries an @ is an address, whatever
+      // punctuation surrounds it; the module's own masking decides what is left.
+      .replace(/\S*@\S*/g, (token) => maskEmail(token))
+      // Eight digits is already an account or phone number. Shorter runs are
+      // HTTP statuses, attempt counts and provider error codes, which are the
+      // whole diagnostic value of the column.
+      .replace(/\d{8,}/g, (digits) => maskPhone(digits))
+  );
+}
+
+const detailFor = (detail) => redactDetail(detail).slice(0, 500) || null;
+
+/**
  * The three action writers. Each writes only its own action's columns, and each
  * returns how many rows it matched.
  *
@@ -396,7 +422,7 @@ export async function updateMetaStatus(id, { status, detail, attempts, nextAttem
       WHERE id = ?${claim.sql}`,
     [
       String(status),
-      String(detail ?? "").slice(0, 500) || null,
+      detailFor(detail),
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,
@@ -416,7 +442,7 @@ export async function updateWhatsappStatus(id, { status, messageId, detail, atte
     [
       String(status),
       identifier(messageId, "whatsapp_message_id"),
-      String(detail ?? "").slice(0, 500) || null,
+      detailFor(detail),
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,
@@ -434,7 +460,7 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
       WHERE id = ?${claim.sql}`,
     [
       String(status),
-      String(detail ?? "").slice(0, 500) || null,
+      detailFor(detail),
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,

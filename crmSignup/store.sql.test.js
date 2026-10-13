@@ -22,6 +22,9 @@ import {
   latestEventReceivedAt,
   latestReceivedAtByStage,
 } from "./store.js";
+// Imported for the one case that walks the whole leak path: Brevo's own 400,
+// through its own classifier, into the column.
+import { classifyBrevoOutcome } from "./brevo.js";
 
 // The env vars are read when store.js loads, so they are set before the import.
 // The values are throwaway: nothing here connects to anything.
@@ -302,6 +305,72 @@ describe("the three action writers", () => {
       expect(params[0]).toBe("failed");
       expect(params[1]).toBeNull();
     }
+  });
+});
+
+describe("a detail is masked on the way into its column", () => {
+  // Spec section 13 covers the stored *_detail columns as well as the logs, and
+  // this column is read straight into the admin table by stats.js toTableRow.
+  // The text is the provider's own message, and a provider quotes back what we
+  // sent it: Brevo is the one whose request body carries the raw email at top
+  // level, and the one that writes its message into a detail.
+  const WRITERS = [
+    ["meta", updateMetaStatus, 1],
+    ["whatsapp", updateWhatsappStatus, 2],
+    ["brevo", updateBrevoStatus, 1],
+  ];
+
+  for (const [action, write, detailAt] of WRITERS) {
+    it(`${action} masks an address and a phone number in the detail it stores`, async () => {
+      await write(7, { status: "rejected", detail: "http 400 for ali.khan@example.com / +971507192185" });
+      const stored = String(db.state.calls[0].params[detailAt]);
+      expect(stored).not.toContain("ali.khan@example.com");
+      expect(stored).not.toContain("971507192185");
+      expect(stored).toContain("a***@example.com");
+      // The reason itself still has to be readable, or the column is worthless.
+      expect(stored).toContain("http 400");
+    });
+  }
+
+  it("masks Brevo's own 400, which echoes the address we submitted", async () => {
+    // The end of the leak path: brevo.js joins body.message into the detail
+    // verbatim, and the existing no-leak test cannot see it because its fixtures
+    // are safe strings ("INVALID", "http 400").
+    const outcome = classifyBrevoOutcome({
+      httpStatus: 400,
+      body: { code: "duplicate_parameter", message: "Contact already exist with email ali.khan@example.com" },
+    });
+    expect(outcome.detail, "the classifier is not the place this is masked").toContain("ali.khan@example.com");
+
+    await updateBrevoStatus(7, { status: outcome.status, detail: outcome.detail, attempts: 1, nextAttemptAt: null });
+    expect(String(db.state.calls[0].params[1])).not.toContain("ali.khan@example.com");
+  });
+
+  it("masks a run of eight digits or more, and leaves a shorter one alone", async () => {
+    // Shorter runs are HTTP statuses, attempt counts, Brevo codes and Graph error
+    // subcodes -- the diagnostic value of the column. Eight is already an account
+    // number, and a local number with no country code.
+    await updateMetaStatus(7, { status: "failed", detail: "subcode 2804003 id 12345678" });
+    const stored = String(db.state.calls[0].params[1]);
+    expect(stored).toContain("2804003");
+    expect(stored).not.toContain("12345678");
+  });
+
+  it("masks before cutting to 500, so a cut cannot leave half an address whole", async () => {
+    const detail = `${"x".repeat(480)} ali.khan@example.com`;
+    expect(detail.length).toBeGreaterThan(500);
+    await updateBrevoStatus(7, { status: "rejected", detail });
+    const stored = String(db.state.calls[0].params[1]);
+    expect(stored.length).toBeLessThanOrEqual(500);
+    expect(stored).not.toContain("ali.khan");
+    // Masking shortens the text, so the whole masked address fits where the raw
+    // one would have been cut through its local part.
+    expect(stored.endsWith("a***@example.com")).toBe(true);
+  });
+
+  it("stores a detail that is empty once masked as NULL, not as an empty string", async () => {
+    await updateMetaStatus(7, { status: "sent", detail: "" });
+    expect(db.state.calls[0].params[1]).toBeNull();
   });
 });
 
