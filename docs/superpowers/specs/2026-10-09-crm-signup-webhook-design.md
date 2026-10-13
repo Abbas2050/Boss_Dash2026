@@ -279,6 +279,15 @@ Two engines, deliberately kept apart:
 | FXBO → us | Did the event reach us at all | Return **200** the moment the row is stored. Never 5xx because a provider failed — that makes FXBO redeliver an event we already hold |
 | Us → providers | Did the message send | Our own `*_next_attempt_at` sweeper: 3 attempts, 5 minutes apart |
 
+**A failed store is the one case that should 5xx.** The 200 rule protects
+against FXBO redelivering an event we already hold — so it applies the moment
+the row exists, and not before. If the insert throws we hold nothing, FXBO's
+retry engine is the only recovery available, and the composite unique key makes
+a redelivery harmless. Answering 200 there drops the event permanently and
+silently. That path returns **503** and logs the client id, stage and FXBO
+unique id, so a lost event can at least be identified. Every other path,
+including a duplicate, stays 200.
+
 **Retries must not use `setTimeout` or any in-memory queue.** node-cron dies with
 the IIS worker on this host, and a Plesk idle timeout has already killed
 scheduled sends here before. A five-minute timer held in process memory is
