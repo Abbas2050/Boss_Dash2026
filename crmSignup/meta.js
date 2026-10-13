@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
 import { sendTimeoutSignal } from "./sendTimeout.js";
+import { isTransientHttpStatus } from "./transientHttp.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
@@ -113,8 +114,8 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
     return { status: "failed", retryable: true, detail };
   }
 
-  // A Request Timeout is transient by definition, as are 429 and every 5xx.
-  if (httpStatus === 408 || httpStatus === 429 || httpStatus >= 500) {
+  // The rule all three senders share, written once in transientHttp.js.
+  if (isTransientHttpStatus(httpStatus)) {
     return { status: "failed", retryable: true, detail };
   }
 
@@ -138,10 +139,21 @@ export function classifyMetaOutcome({ transportError, httpStatus: rawStatus, bod
     }
     const noCount = body?.events_received == null || Number.isNaN(received);
     const reported = noCount ? "no events_received" : `events_received=${received}`;
-    return { status: "failed", retryable: noCount, detail: `http ${httpStatus} ${reported}` };
+    // No count at all is a proxy answering for Meta: an unknown outcome, so
+    // retryable, and `failed` is the word planRetry writes once the budget is
+    // spent anyway. An explicit zero is Meta itself refusing the event, which is
+    // `rejected` -- the same word WhatsApp uses, so a destination card can tell
+    // "the provider refused this" from "we gave up after three tries".
+    return {
+      status: noCount ? "failed" : "rejected",
+      retryable: noCount,
+      detail: `http ${httpStatus} ${reported}`,
+    };
   }
 
-  return { status: "failed", retryable: false, detail };
+  // A bad parameter, a dead token, a dataset that refuses the event: identical
+  // on a retry, and Meta's refusal rather than our giving up.
+  return { status: "rejected", retryable: false, detail };
 }
 
 /** Never throws, and never puts the access token in its result. */

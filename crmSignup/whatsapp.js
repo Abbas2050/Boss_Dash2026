@@ -1,5 +1,6 @@
 import { PHONE_RE } from "./normalise.js";
 import { sendTimeoutSignal } from "./sendTimeout.js";
+import { isTransientHttpStatus } from "./transientHttp.js";
 
 export const DOUBLETICK_TEMPLATE_URL = "https://public.doubletick.io/whatsapp/message/template";
 
@@ -93,8 +94,8 @@ export function classifyWhatsappOutcome({ transportError, httpStatus, body, body
 
   const code = Number(httpStatus) || 0;
 
-  // A Request Timeout is transient by definition, as are 429 and every 5xx.
-  if (code === 408 || code === 429 || code >= 500) {
+  // The rule all three senders share, written once in transientHttp.js.
+  if (isTransientHttpStatus(code)) {
     return { status: "failed", retryable: true, detail: `http ${code}`, messageId: null };
   }
 

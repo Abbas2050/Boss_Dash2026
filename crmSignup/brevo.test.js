@@ -189,8 +189,22 @@ describe("classifyBrevoOutcome", () => {
     for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
       const r = classifyBrevoOutcome({ httpStatus, body: {} });
       expect(r.retryable, String(httpStatus)).toBe(false);
-      expect(r.status, String(httpStatus)).toBe("failed");
+      expect(r.status, String(httpStatus)).toBe("rejected");
     }
+  });
+
+  it("tells Brevo refusing the contact from us giving up on it", () => {
+    // The 400 for an attribute Brevo does not know is the failure that makes a
+    // contact silently never land (spec section 8). planRetry writes `failed`
+    // for a retryable outcome whose budget is spent, so sharing that word would
+    // put a dead attribute and a transport outage in the same counter.
+    const refused = classifyBrevoOutcome({
+      httpStatus: 400,
+      body: { code: "invalid_parameter", message: "Attribute ENTITY does not exist" },
+    });
+    expect(refused.status).toBe("rejected");
+    expect(refused.retryable).toBe(false);
+    expect(classifyBrevoOutcome({ transportError: new Error("ETIMEDOUT") }).status).toBe("failed");
   });
 
   it("treats every other 4xx as permanent and keeps Brevo's own code", () => {
@@ -199,7 +213,7 @@ describe("classifyBrevoOutcome", () => {
       body: { code: "invalid_parameter", message: "Attribute ENTITY does not exist" },
     });
     expect(r.retryable).toBe(false);
-    expect(r.status).toBe("failed");
+    expect(r.status).toBe("rejected");
     expect(r.detail).toContain("invalid_parameter");
   });
 
@@ -213,7 +227,9 @@ describe("classifyBrevoOutcome", () => {
   it("never counts a response that is not 2xx as sent", () => {
     // Anything the classifier does not recognise must fail closed.
     for (const httpStatus of [302, 304, 0, undefined]) {
-      expect(classifyBrevoOutcome({ httpStatus, body: {} }).status, String(httpStatus)).toBe("failed");
+      const r = classifyBrevoOutcome({ httpStatus, body: {} });
+      expect(r.status, String(httpStatus)).toBe("rejected");
+      expect(r.retryable, String(httpStatus)).toBe(false);
     }
   });
 
@@ -221,7 +237,7 @@ describe("classifyBrevoOutcome", () => {
     for (const httpStatus of [401, 403, 404, 409, 422]) {
       const r = classifyBrevoOutcome({ httpStatus, body: {} });
       expect(r.retryable, String(httpStatus)).toBe(false);
-      expect(r.status, String(httpStatus)).toBe("failed");
+      expect(r.status, String(httpStatus)).toBe("rejected");
     }
   });
 });

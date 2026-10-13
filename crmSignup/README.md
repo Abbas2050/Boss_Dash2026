@@ -103,5 +103,7 @@ nothing to create for it.
 
 An attribute with no value is left out, except the two booleans, `OPT_IN` and
 `IS_IB`, which are always sent, `false` included. Posting an attribute Brevo
-does not know returns 400, classified permanent — so a new field needs the
-attribute created in Brevo first.
+does not know returns 400, classified permanent and stored as `rejected` — so a
+new field needs the attribute created in Brevo first. All three destinations use
+the same two words: `rejected` is the provider refusing this event, `failed` is a
+transport failure or a spent attempt budget.

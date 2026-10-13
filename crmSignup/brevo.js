@@ -1,4 +1,5 @@
 import { sendTimeoutSignal } from "./sendTimeout.js";
+import { isTransientHttpStatus } from "./transientHttp.js";
 
 export const BREVO_CONTACTS_URL = "https://api.brevo.com/v3/contacts";
 
@@ -74,8 +75,8 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
 
   const code = Number(httpStatus) || 0;
 
-  // A Request Timeout is transient by definition, as are 429 and every 5xx.
-  if (code === 408 || code === 429 || code >= 500) {
+  // The rule all three senders share, written once in transientHttp.js.
+  if (isTransientHttpStatus(code)) {
     return { status: "failed", retryable: true, detail: `http ${code}` };
   }
 
@@ -84,8 +85,13 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
   }
 
   const reason = [body?.code, body?.message].filter(Boolean).join(": ").slice(0, 200);
+  // `rejected`, not `failed`: this is Brevo refusing the contact -- an attribute
+  // it does not know returns 400, the failure that makes a contact silently
+  // never land (spec section 8). planRetry writes `failed` when a retryable
+  // outcome runs out of attempts, so one word for both would read a dead
+  // attribute and a transport outage as the same thing on the destination card.
   return {
-    status: "failed",
+    status: "rejected",
     retryable: false,
     detail: reason ? `http ${code} ${reason}` : `http ${code}`,
   };

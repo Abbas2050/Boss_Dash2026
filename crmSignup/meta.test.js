@@ -181,8 +181,22 @@ describe("classifyMetaOutcome", () => {
     for (const httpStatus of [400, 401, 403, 404, 405, 407, 409, 410, 422]) {
       const result = classifyMetaOutcome({ httpStatus, body: {} });
       expect(result.retryable, String(httpStatus)).toBe(false);
-      expect(result.status, String(httpStatus)).toBe("failed");
+      expect(result.status, String(httpStatus)).toBe("rejected");
     }
+  });
+
+  it("tells Meta refusing the event from us giving up on it", () => {
+    // planRetry writes `failed` the moment a retryable outcome runs out of
+    // attempts, so `failed` has to mean exactly that. Spec section 12 lists
+    // `rejected` as a counter for all three destinations, and with one word for
+    // both, a dead access token reads as `failed 40` beside a transport outage.
+    const refused = classifyMetaOutcome({
+      httpStatus: 400,
+      body: { error: { message: "Invalid OAuth access token", code: 190 } },
+    });
+    expect(refused.status).toBe("rejected");
+    expect(refused.retryable).toBe(false);
+    expect(classifyMetaOutcome({ transportError: new Error("ETIMEDOUT") }).status).toBe("failed");
   });
 
   it("treats other 4xx as permanent and keeps Meta's own message", () => {
@@ -191,14 +205,14 @@ describe("classifyMetaOutcome", () => {
       body: { error: { message: "Invalid parameter", code: 100, error_subcode: 2804003 } },
     });
     expect(result.retryable).toBe(false);
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("rejected");
     expect(result.detail).toContain("Invalid parameter");
   });
 
   it("does not call a 2xx that received zero events a success", () => {
     // Meta answers 200 while reporting it took nothing.
     const result = classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } });
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("rejected");
     expect(result.retryable).toBe(false);
   });
 
@@ -232,7 +246,7 @@ describe("classifyMetaOutcome", () => {
 
   it("keeps a 2xx that reports zero events permanent, since Meta said so", () => {
     expect(classifyMetaOutcome({ httpStatus: 200, body: { events_received: 0 } })).toEqual({
-      status: "failed",
+      status: "rejected",
       retryable: false,
       detail: "http 200 events_received=0",
     });
@@ -430,7 +444,7 @@ describe("sendMetaEvent when the response body times out", () => {
           throw thrown;
         },
       }));
-      expect(await send(fetchImpl), String(thrown)).toEqual({ status: "failed", retryable: false, detail: "http 400" });
+      expect(await send(fetchImpl), String(thrown)).toEqual({ status: "rejected", retryable: false, detail: "http 400" });
     }
   });
 
@@ -449,7 +463,7 @@ describe("classifyMetaOutcome and a body that timed out", () => {
       detail: "http 400 body timed out",
     });
     expect(classifyMetaOutcome({ httpStatus: 400, body: null })).toEqual({
-      status: "failed",
+      status: "rejected",
       retryable: false,
       detail: "http 400",
     });
