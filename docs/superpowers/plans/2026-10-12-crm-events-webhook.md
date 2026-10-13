@@ -77,6 +77,7 @@ is no return-on-ad-spend measurement.
 | `crmSignup/whatsapp.js` | DoubleTick payload, skip decision, outcome classifier, send. |
 | `crmSignup/brevo.js` | Contact builder, outcome classifier, upsert. |
 | `crmSignup/store.js` | MySQL: schema, insert-if-absent, `fbc` reuse, status updates, claim-due, list-recent. |
+| `crmSignup/store.sql.test.js` | Fake-pool tests: statement text and parameter order for every writer and reader. |
 | `crmSignup/router.js` | `makeCrmEventsHandler` — auth, test-press guard, validate, store, 200. |
 | `crmSignup/worker.js` | `planRetry`, `processSignupEvent`, the sweeper. |
 | `crmSignup/stats.js` | Pure. Rows → health, funnel counts, per-destination counters, masked table rows. |
@@ -2692,13 +2693,45 @@ Create `crmSignup/store.test.js`:
 ```js
 // @vitest-environment node
 //
-// The MySQL wrapper itself is not unit-tested -- docusign/store.js sets that
-// precedent, and a pool needs a database. What IS tested is the schema text and
-// the parameter builder, because both encode decisions a later edit could
-// quietly undo: the composite key that makes a redelivery a no-op while still
-// allowing five rows per client, and the per-action retry columns.
-import { describe, it, expect } from "vitest";
+// The schema text and the parameter builder are tested here, because both encode
+// decisions a later edit could quietly undo: the composite key that makes a
+// redelivery a no-op while still allowing five rows per client, and the
+// per-action retry columns. The SQL statements themselves run against a fake
+// pool in store.sql.test.js; no real MySQL server is involved in either file.
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, buildInsertParams } from "./store.js";
+
+// The DDL body split on top-level commas. A comma inside parentheses belongs to
+// a type or a key, not to the list, so depth is tracked.
+function ddlSegments() {
+  const body = SIGNUP_EVENTS_SCHEMA.slice(
+    SIGNUP_EVENTS_SCHEMA.indexOf("(") + 1,
+    SIGNUP_EVENTS_SCHEMA.lastIndexOf(")")
+  );
+  const segments = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of body) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth -= 1;
+    if (ch === "," && depth === 0) {
+      segments.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim()) segments.push(current.trim());
+  return segments;
+}
+
+const definitionOf = (column) => ddlSegments().find((segment) => segment.startsWith(`${column} `));
+
+// A column is a name, a type, then only the modifiers this table uses. Anything
+// else after the type (two definitions run together by a missing comma) fails.
+const COLUMN_DEFINITION =
+  /^[a-z_]+ (BIGINT UNSIGNED|BIGINT|INT|TINYINT\(1\)|VARCHAR\(\d+\)|TEXT|LONGTEXT|DATETIME)( NOT NULL| NULL| DEFAULT ('[^']*'|\d+|CURRENT_TIMESTAMP)| AUTO_INCREMENT| ON UPDATE CURRENT_TIMESTAMP)*$/;
+const KEY_DEFINITION = /^(PRIMARY KEY \(\w+\)|UNIQUE KEY \w+ \(\w+(, \w+)*\))$/;
 
 describe("signup_events schema", () => {
   it("is unique on client AND stage, not client alone", () => {
@@ -2751,6 +2784,42 @@ describe("signup_events schema", () => {
     for (const column of INSERT_COLUMNS) {
       expect(SIGNUP_EVENTS_SCHEMA, column).toMatch(new RegExp(`^\\s+${column}\\s`, "m"));
     }
+  });
+
+  it("never lets an empty payload write NULL into a NOT NULL column", () => {
+    // A NOT NULL column that an organic lead leaves null (no Meta click, so no
+    // fbc) would reject every such signup. The route turns that into a 200, so
+    // FXBO never retries it and the event is lost.
+    const params = buildInsertParams({}, {}, null);
+    expect(params).toContain(null);
+    INSERT_COLUMNS.forEach((column, i) => {
+      if (params[i] === null) expect(definitionOf(column), column).not.toMatch(/NOT NULL/);
+    });
+  });
+
+  it("requires every NOT NULL column without a default to be an insert column", () => {
+    const required = ddlSegments()
+      .filter((s) => /NOT NULL/.test(s) && !/DEFAULT/.test(s) && !s.startsWith("id "))
+      .map((s) => s.split(" ")[0]);
+    expect(required.length).toBeGreaterThan(0);
+    for (const column of required) {
+      expect(INSERT_COLUMNS, column).toContain(column);
+    }
+  });
+
+  it("splits into well-formed column and key definitions, so a missing comma fails here", () => {
+    const segments = ddlSegments();
+    expect(segments.length).toBeGreaterThan(20);
+    for (const segment of segments) {
+      expect(COLUMN_DEFINITION.test(segment) || KEY_DEFINITION.test(segment), segment).toBe(true);
+    }
+    expect(segments).toContain("PRIMARY KEY (id)");
+  });
+
+  it("pins the two frozen id columns to the widths their values need", () => {
+    // fbc is a Meta click id and needs room; the WhatsApp request id is a UUID.
+    expect(definitionOf("fbc")).toBe("fbc VARCHAR(255) NULL");
+    expect(definitionOf("whatsapp_request_id")).toBe("whatsapp_request_id VARCHAR(64) NULL");
   });
 });
 
@@ -2860,6 +2929,12 @@ describe("buildInsertParams", () => {
       full_link: "https://skylinkscapital.com/en/?fbclid=ABC",
       fbc: "fb.1.1673035686000.ABC",
       whatsapp_request_id: "11111111-2222-4333-8444-555555555555",
+      meta_status: "pending",
+      meta_detail: null,
+      whatsapp_status: "pending",
+      whatsapp_detail: null,
+      brevo_status: "pending",
+      brevo_detail: null,
       raw_payload: "{}",
     };
     // The table must cover every column, so a new column cannot slip in unpinned.
@@ -2875,6 +2950,89 @@ describe("buildInsertParams", () => {
     const params = buildInsertParams(FIELDS, { fbc: "", whatsappRequestId: "" }, "{}");
     expect(at(params, "fbc")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
+  });
+
+  it("writes NULL, not an empty string, for an empty text field", () => {
+    // The empty-id test above covers the identifiers. Every other text field
+    // reaches the row through the same str() path, and an empty one is absent,
+    // not a stored "".
+    const params = buildInsertParams({ email: "", utmSource: "", fullLink: "" }, {}, "{}");
+    expect(at(params, "email")).toBeNull();
+    expect(at(params, "utm_source")).toBeNull();
+    expect(at(params, "full_link")).toBeNull();
+  });
+
+  it("never writes the word undefined for an empty payload", () => {
+    // Dropping any of these defaults would write the literal text "undefined"
+    // into a row, the class of bug this module exists to stop.
+    const params = buildInsertParams({}, {}, null);
+    expect(at(params, "crm_client_id")).toBe("");
+    expect(at(params, "stage")).toBe("");
+    expect(at(params, "record_type")).toBe("lead");
+  });
+
+  it("cuts a value to its column width rather than letting MySQL reject the row", () => {
+    // normalise.js does not bound these lengths. ER_DATA_TOO_LONG would surface as
+    // a 200 with the event lost, so FXBO would never retry it. These two are
+    // diagnostic, so a cut still says where the signup came from. Identifiers are
+    // not cut at all; see the boundary tests below.
+    const params = buildInsertParams({ fullLink: "x".repeat(2000), referer: "y".repeat(600) }, {}, "{}");
+    expect(at(params, "full_link")).toHaveLength(1024);
+    expect(at(params, "referer")).toHaveLength(512);
+  });
+
+  // An identifier is never cut. A truncated click id is a wrong click id that still
+  // looks like attribution; a truncated request id is not the one a retry would
+  // replay. Over-width writes NULL and warns, and the event itself is still kept.
+  describe("identifiers at their width boundary", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps a click id of exactly its column width, with no warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const fbc = "f".repeat(255);
+      const params = buildInsertParams(FIELDS, { fbc }, "{}");
+      expect(at(params, "fbc")).toBe(fbc);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("writes NULL, and warns with the column and length, for a click id one over", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const params = buildInsertParams(FIELDS, { fbc: "f".repeat(256) }, "{}");
+      expect(at(params, "fbc")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toMatch(/\bfbc\b/);
+      expect(message).toMatch(/\b256\b/);
+      // The event is kept: losing attribution is recoverable, losing the signup is not.
+      expect(at(params, "crm_client_id")).toBe("88214");
+    });
+
+    it("keeps a request id of exactly its column width, with no warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const id = "1".repeat(64);
+      const params = buildInsertParams(FIELDS, { whatsappRequestId: id }, "{}");
+      expect(at(params, "whatsapp_request_id")).toBe(id);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("writes NULL, and warns with the column and length, for a request id one over", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const params = buildInsertParams(FIELDS, { whatsappRequestId: "1".repeat(65) }, "{}");
+      expect(at(params, "whatsapp_request_id")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toMatch(/\bwhatsapp_request_id\b/);
+      expect(message).toMatch(/\b65\b/);
+      expect(at(params, "crm_client_id")).toBe("88214");
+    });
+  });
+
+  it("writes all three actions as invalid, with the reason, when given one", () => {
+    const params = buildInsertParams(FIELDS, {}, "{}", "missing required fields: email");
+    for (const action of ["meta", "whatsapp", "brevo"]) {
+      expect(at(params, `${action}_status`), action).toBe("invalid");
+      expect(at(params, `${action}_detail`), action).toBe("missing required fields: email");
+    }
   });
 });
 ```
@@ -2977,13 +3135,53 @@ export const INSERT_COLUMNS = [
   "full_link",
   "fbc",
   "whatsapp_request_id",
+  "meta_status",
+  "meta_detail",
+  "whatsapp_status",
+  "whatsapp_detail",
+  "brevo_status",
+  "brevo_detail",
   "raw_payload",
 ];
 
-const bool = (v) => (v ? 1 : 0);
-const str = (v) => (v === undefined || v === null || v === "" ? null : String(v));
+// The width of each VARCHAR column, read from the schema text so the two cannot
+// drift. A value longer than its column would make MySQL reject the whole row.
+const COLUMN_WIDTHS = Object.fromEntries(
+  [...SIGNUP_EVENTS_SCHEMA.matchAll(/^\s+(\w+) VARCHAR\((\d+)\)/gm)].map((m) => [m[1], Number(m[2])])
+);
 
-export function buildInsertParams(fields = {}, derived = {}, rawPayload = null) {
+const bool = (v) => (v ? 1 : 0);
+// Cut by code point, which is how MySQL counts VARCHAR length in utf8mb4.
+const fit = (v, column) => Array.from(String(v)).slice(0, COLUMN_WIDTHS[column]).join("");
+const str = (v, column) => (v === undefined || v === null || v === "" ? null : fit(v, column));
+
+// An identifier is never cut. A truncated click id is a wrong click id that still
+// looks like attribution, and a truncated request id is not the one a retry would
+// replay. The provider's message id is written after a send has already happened,
+// and a failed write there would leave the row due for a second welcome. Over-width
+// writes NULL and says so; the event, and the status it records, are still stored.
+const identifier = (v, column) => {
+  if (v === undefined || v === null || v === "") return null;
+  const text = String(v);
+  const length = Array.from(text).length;
+  if (length > COLUMN_WIDTHS[column]) {
+    console.warn(
+      `[crm-events] ${column} is ${length} characters, over its ${COLUMN_WIDTHS[column]}-character column; storing NULL`
+    );
+    return null;
+  }
+  return text;
+};
+
+/**
+ * The parameters for the INSERT, in INSERT_COLUMNS order.
+ *
+ * Pure except in one place: an over-width identifier (fbc, whatsapp_request_id)
+ * is written as NULL and `console.warn` is called with the column name and the
+ * length seen. The warning appears without the caller having to arrange for it,
+ * which is the point of it.
+ */
+export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, invalidReason = null) {
   let serialised;
   try {
     serialised = typeof rawPayload === "string" ? rawPayload : JSON.stringify(rawPayload ?? {});
@@ -2991,28 +3189,40 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null) 
     serialised = '{"unserialisable":true}';
   }
 
+  // An invalid payload is stored as invalid in the same statement that stores it,
+  // so no sweeper can send it in between. A valid payload is written as pending.
+  const invalid = invalidReason !== null && invalidReason !== undefined;
+  const status = invalid ? "invalid" : "pending";
+  const detail = invalid ? String(invalidReason).slice(0, 500) : null;
+
   return [
-    String(fields.crmClientId ?? ""),
-    String(fields.stage ?? ""),
-    str(fields.fxboUniqueId),
-    str(fields.firstName),
-    str(fields.middleName),
-    str(fields.lastName),
-    str(fields.email),
-    str(fields.phone),
-    String(fields.recordType ?? "lead"),
+    fit(fields.crmClientId ?? "", "crm_client_id"),
+    fit(fields.stage ?? "", "stage"),
+    str(fields.fxboUniqueId, "fxbo_unique_id"),
+    str(fields.firstName, "first_name"),
+    str(fields.middleName, "middle_name"),
+    str(fields.lastName, "last_name"),
+    str(fields.email, "email"),
+    str(fields.phone, "phone"),
+    fit(fields.recordType ?? "lead", "record_type"),
     bool(fields.marketingConsent),
     bool(fields.isIb),
-    str(fields.entity),
-    str(fields.source),
-    str(fields.language),
-    str(fields.utmSource),
-    str(fields.utmMedium),
-    str(fields.utmCampaign),
-    str(fields.referer),
-    str(fields.fullLink),
-    str(derived.fbc),
-    str(derived.whatsappRequestId),
+    str(fields.entity, "entity"),
+    str(fields.source, "source"),
+    str(fields.language, "language"),
+    str(fields.utmSource, "utm_source"),
+    str(fields.utmMedium, "utm_medium"),
+    str(fields.utmCampaign, "utm_campaign"),
+    str(fields.referer, "referer"),
+    str(fields.fullLink, "full_link"),
+    identifier(derived.fbc, "fbc"),
+    identifier(derived.whatsappRequestId, "whatsapp_request_id"),
+    status,
+    detail,
+    status,
+    detail,
+    status,
+    detail,
     serialised,
   ];
 }
@@ -3068,22 +3278,39 @@ export async function findExistingFbc(crmClientId) {
   const rows = await all(
     `SELECT fbc FROM signup_events
       WHERE crm_client_id = ? AND fbc IS NOT NULL AND fbc <> ''
-      ORDER BY received_at ASC
+      ORDER BY received_at ASC, id ASC
       LIMIT 1`,
     [String(crmClientId ?? "")]
   );
   return rows.length ? String(rows[0].fbc) : "";
 }
 
-export async function insertSignupEvent(fields, derived, rawPayload) {
+/**
+ * Stores one event. A redelivery of a stored client and stage is a duplicate-key
+ * error from MySQL, which is returned as `inserted: false` rather than thrown.
+ *
+ * This is a plain INSERT on purpose. `ON DUPLICATE KEY UPDATE` reports an
+ * affected-row count that depends on the connection's CLIENT_FOUND_ROWS flag, so
+ * `affectedRows === 1` would be true for a duplicate too. The error code does not
+ * depend on any connection setting.
+ *
+ * Pass `invalidReason` and all three actions are stored as `invalid` in this same
+ * statement. There is no window in which a sweeper could send the payload, which
+ * matters for an FXBO test press.
+ */
+export async function insertSignupEvent(fields, derived, rawPayload, invalidReason = null) {
   const placeholders = INSERT_COLUMNS.map(() => "?").join(", ");
-  const result = await run(
-    `INSERT INTO signup_events (${INSERT_COLUMNS.join(", ")})
-     VALUES (${placeholders})
-     ON DUPLICATE KEY UPDATE id = id`,
-    buildInsertParams(fields, derived, rawPayload)
-  );
-  return { inserted: Number(result?.affectedRows) === 1, id: result?.insertId ?? null };
+  try {
+    const result = await run(
+      `INSERT INTO signup_events (${INSERT_COLUMNS.join(", ")})
+       VALUES (${placeholders})`,
+      buildInsertParams(fields, derived, rawPayload, invalidReason)
+    );
+    return { inserted: true, id: result?.insertId ?? null };
+  } catch (error) {
+    if (error?.code === "ER_DUP_ENTRY") return { inserted: false, id: null };
+    throw error;
+  }
 }
 
 /**
@@ -3109,11 +3336,13 @@ export async function markSignupInvalid(crmClientId, stage, detail) {
  * send -- duplicate WhatsApp welcomes to real clients.
  *
  * The only thing preventing that today is single-process execution, guarded by
- * the in-process `sweeping` flag in the worker. Anyone adding a second worker
- * process, or a second app pool that runs the sweeper, must first add a real
- * claim here (e.g. SELECT ... FOR UPDATE SKIP LOCKED inside a transaction, or
- * an atomic status flip). The name is kept deliberately so this constraint is
- * met where the function is defined.
+ * the in-process `sweeping` flag in the worker. That is not a hypothetical
+ * boundary on this host: IIS overlapped app-pool recycling can briefly run two
+ * Node workers, each with its own `sweeping` flag, so two sweepers can overlap.
+ * Anyone adding a second worker process, or a second app pool that runs the
+ * sweeper, must first add a real claim here (e.g. SELECT ... FOR UPDATE SKIP
+ * LOCKED inside a transaction, or an atomic status flip). The name is kept
+ * deliberately so this constraint is met where the function is defined.
  */
 export async function claimDueEvents(limit = 25, now = new Date()) {
   return all(
@@ -3144,7 +3373,7 @@ export async function updateWhatsappStatus(id, { status, messageId, detail, atte
       WHERE id = ?`,
     [
       String(status),
-      str(messageId),
+      identifier(messageId, "whatsapp_message_id"),
       String(detail ?? "").slice(0, 500) || null,
       Number(attempts) || 0,
       nextAttemptAt ?? null,
@@ -3189,10 +3418,26 @@ export async function listEventsSince(since, cap = 2000) {
 Run: `npx vitest run crmSignup/store.test.js --reporter=verbose`
 Expected: PASS — every `it` block written in the test step above, none added and none removed. There is deliberately no count here: this plan's prose counts have been wrong before, and the test file is the authority.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Test the SQL layer against a fake pool**
+
+"A pool needs a database" covers MySQL's *behaviour*, not the SQL text and
+parameter order — and those carry requirements. A writer touching another
+action's columns would cross-wire the three retry schedules this design insists
+are independent; `findExistingFbc` ordering `DESC` instead of `ASC` would return
+the newest click id rather than the first, defeating the freeze.
+
+Create `crmSignup/store.sql.test.js`: inject a fake pool, then assert the
+statement and parameters for each `update*Status` writer, `findExistingFbc`'s
+ordering and its `id ASC` tie-break, `claimDueEvents`' three independent
+clauses, `markSignupInvalid`'s WHERE, `listEventsSince`, and the `ER_DUP_ENTRY`
+branch of `insertSignupEvent`.
+
+Run: `npx vitest run crmSignup/store.sql.test.js --reporter=verbose`
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add crmSignup/store.js crmSignup/store.test.js
+git add crmSignup/store.js crmSignup/store.test.js crmSignup/store.sql.test.js
 git commit -m "CRM events: one row per client per stage, with a frozen click id"
 ```
 
