@@ -13,6 +13,12 @@ import {
   buildBrevoContact,
   upsertBrevoContact,
 } from "./brevo.js";
+import {
+  decideOpenaiSkip,
+  buildOpenaiPayload,
+  sendOpenaiEvent,
+  OPENAI_EVENTS_URL,
+} from "./openai.js";
 // Two sets, two questions, and reading one for the other is silent in opposite
 // directions (settled.js spells both out). SETTLED is "do not attempt this
 // action again"; SCRUBBABLE is "this row is safe to forget".
@@ -22,6 +28,7 @@ import {
   updateMetaStatus,
   updateWhatsappStatus,
   updateBrevoStatus,
+  updateOpenaiStatus,
   scrubSignupEvent,
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
@@ -39,8 +46,8 @@ const INVALID_RETENTION_DAYS = 7;
 
 // How long a row that never settles may keep its client data. The settle path
 // scrubs about a minute after signup; this catches what it never reaches -- a
-// worker left off by CRM_EVENTS_WORKER_ENABLED, or a row whose three claims
-// split between two overlapped workers so neither saw all three settle. Thirty
+// worker left off by CRM_EVENTS_WORKER_ENABLED, or a row whose four claims
+// split between two overlapped workers so neither saw all four settle. Thirty
 // days is the user's number, and for the same reason not an env var.
 const UNSCRUBBED_BACKSTOP_DAYS = 30;
 
@@ -53,11 +60,40 @@ const UNSCRUBBED_BACKSTOP_DAYS = 30;
 const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
 let lastRetentionAt = 0;
 
-// Each action's attempt budget. WhatsApp's is configurable (WA_MAX_ATTEMPTS) and
-// travels in config. Each is read in two places -- before the request and after
-// it -- so Meta's and Brevo's live here rather than as a literal in both.
+// Each action's attempt budget. WhatsApp's and OpenAI's are configurable
+// (WA_MAX_ATTEMPTS, OPENAI_MAX_ATTEMPTS) and therefore travel in config, beside
+// every other value an operator sets; a constant here would be a second opinion
+// the environment could not overrule. Each is read in two places -- before the
+// request and after it -- so Meta's and Brevo's live here rather than as a
+// literal in both.
 const META_MAX_ATTEMPTS = 3;
 const BREVO_MAX_ATTEMPTS = 3;
+
+/**
+ * What the row says when the request was a validation rather than a send.
+ *
+ * `validate_only: true` returns a 2xx and records NOTHING on OpenAI's side --
+ * the documentation is explicit that such a request does not appear in event
+ * monitoring. So the outcome is a genuine `sent` (the exchange did succeed) for
+ * a conversion that provably does not exist, and without this the destination
+ * card and the overview would report it as real.
+ *
+ * It goes in the DETAIL and not in the status, deliberately. The status is the
+ * one word four destinations share: SETTLED, SCRUBBABLE and REQUEUEABLE are all
+ * built from that vocabulary, settled.js refuses a list that drifts, and the
+ * claim, the scrub precondition, the backstop and the resend each name those
+ * words in SQL. A fifth word for one destination would have to be added to every
+ * one of them, and a status missing from SETTLED is re-sent for ever while one
+ * missing from SCRUBBABLE never scrubs. The detail is already the column the tab
+ * prints under the status, and already carries exactly this kind of distinction
+ * -- the backstop's "not attempted" tells a scrub apart from a refusal the same
+ * way.
+ *
+ * It is written at the step because that is where the flag is known: the sender
+ * is handed a payload that already carries `validate_only`, and the classifier
+ * sees only an HTTP exchange.
+ */
+export const OPENAI_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded by OpenAI";
 
 // What the row says while a request is in the air. The outcome replaces it the
 // moment it is known, so a person reads this only if the process died first.
@@ -287,10 +323,89 @@ async function runBrevoStep(row, fields, deps, begin) {
   return { ...plan, detail: outcome.detail };
 }
 
+async function runOpenaiStep(row, fields, deps, begin) {
+  const { config, sendOpenai, now, logger } = deps;
+  const attempts = Number(row.openai_attempts) || 0;
+
+  // **`receivedAt` and `now`, never eventTimeSeconds(row).** That helper divides
+  // by 1000 for Meta, whose `event_time` is in seconds; OpenAI's `timestamp_ms`
+  // is in milliseconds, so feeding it here would stamp every event in 1970 --
+  // and the symptom would not be an error anywhere, it would be OpenAI refusing
+  // the event for falling outside its own 7-day window, with nothing in the row
+  // to say why. openaiTimestampMs is the one parse, and both of these calls read
+  // it, so the row judged inside the window is the row stamped with that instant.
+  const receivedAt = row.received_at;
+  const skip = decideOpenaiSkip({
+    stage: fields.stage,
+    apiKey: config.openaiApiKey,
+    pixelId: config.openaiPixelId,
+    receivedAt,
+    // The sweeper's clock, so a test and the worker agree about what "now" is.
+    now: now(),
+  });
+  if (skip) {
+    return { status: "skipped", detail: skip.reason, attempts, nextAttemptAt: null };
+  }
+
+  const payload = buildOpenaiPayload({
+    stage: fields.stage,
+    crmClientId: fields.crmClientId,
+    email: fields.email,
+    phone: fields.phone,
+    // Verbatim from the row: frozen at this client's first event, and the only
+    // copy there is once full_link has been scrubbed.
+    oppref: str(row.oppref),
+    receivedAt,
+    validateOnly: config.openaiValidateOnly,
+  });
+
+  // **A null payload is not posted.** `JSON.stringify(null)` is the string
+  // "null", which is a perfectly well-formed request body carrying no event at
+  // all, and OpenAI's answer to it is not documented. Unreachable today -- a
+  // client id is required at intake and every other reason is already a skip
+  // above -- so this is a backstop, and it records `invalid`: the same word the
+  // insert itself writes for a payload that could never be sent, and the one
+  // status no resend will pick up, because nothing an operator fixes would make
+  // the payload constructible.
+  if (!payload) {
+    logger.warn?.(`[crm-events] openai payload could not be built for row ${row.id}; nothing is sent`);
+    return { status: "invalid", detail: "no sendable payload could be built", attempts, nextAttemptAt: null };
+  }
+
+  await begin();
+  const outcome = await sendOpenai({
+    eventsUrl: config.openaiEventsUrl,
+    pixelId: config.openaiPixelId,
+    apiKey: config.openaiApiKey,
+    payload,
+  });
+
+  const plan = planRetry({
+    attempts,
+    maxAttempts: config.openaiMaxAttempts,
+    retryable: outcome.retryable,
+    finalStatus: outcome.status,
+    now: now(),
+  });
+
+  // On every outcome, not only on a success: a validation that was refused was
+  // still only a validation, and reading `rejected` without it would send
+  // somebody looking for an event OpenAI never had.
+  const detail = config.openaiValidateOnly
+    ? `${OPENAI_VALIDATE_ONLY_DETAIL}; ${outcome.detail}`
+    : outcome.detail;
+
+  if (plan.status !== "sent") {
+    logger.warn?.(`[crm-events] openai ${plan.status} for ${maskEmail(fields.email)}: ${detail}`);
+  }
+
+  return { ...plan, detail };
+}
+
 /**
  * Whether an action's own retry clock is still in the future.
  *
- * claimDueEvents selects a row when ANY of its three actions is due, so without
+ * claimDueEvents selects a row when ANY of its four actions is due, so without
  * this a waiting action is run early whenever a sibling comes due -- and one whose
  * request is still in the air (see `begin`) is sent a second time. "Due" is
  * `<= now`, the same test the sweeper applies in SQL.
@@ -326,7 +441,7 @@ async function saveOutcome(save, id, outcome, logger) {
 }
 
 /**
- * One row, three actions, independently.
+ * One row, four actions, independently.
  *
  * Each action has its own status, attempt count and clock in the row, and its own
  * budget. A settled one is never touched again, and one still waiting on its
@@ -343,7 +458,7 @@ async function saveOutcome(save, id, outcome, logger) {
  */
 export async function processSignupEvent(row, deps) {
   const fields = rowToFields(row);
-  const result = { meta: null, whatsapp: null, brevo: null };
+  const result = { meta: null, whatsapp: null, brevo: null, openai: null };
   // The actions another worker took off us during this pass. Not an outcome and
   // never written anywhere: it is only read by the scrub decision below, which
   // must not read our stale column for an action somebody else is settling.
@@ -353,7 +468,7 @@ export async function processSignupEvent(row, deps) {
   // from it would hand Brevo a contact with no address and DoubleTick a welcome
   // template with no name in it, and both would be accepted -- that is the point:
   // nothing downstream would complain. claimDueEvents selects only
-  // `pending`/`retrying` and the scrub only runs once all three are `sent` or
+  // `pending`/`retrying` and the scrub only runs once every destination is `sent` or
   // `skipped`, so no row should ever arrive here scrubbed. That is the reason this is a guard
   // and not an assumption: whatever later makes a scrubbed row claimable, it
   // sends nothing and writes nothing.
@@ -366,6 +481,7 @@ export async function processSignupEvent(row, deps) {
     ["meta", "meta_status", "meta_attempts", "meta_next_attempt_at", runMetaStep, deps.saveMeta, META_MAX_ATTEMPTS],
     ["whatsapp", "whatsapp_status", "whatsapp_attempts", "whatsapp_next_attempt_at", runWhatsappStep, deps.saveWhatsapp, deps.config.waMaxAttempts],
     ["brevo", "brevo_status", "brevo_attempts", "brevo_next_attempt_at", runBrevoStep, deps.saveBrevo, BREVO_MAX_ATTEMPTS],
+    ["openai", "openai_status", "openai_attempts", "openai_next_attempt_at", runOpenaiStep, deps.saveOpenai, deps.config.openaiMaxAttempts],
   ];
 
   for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of steps) {
@@ -446,7 +562,7 @@ export async function processSignupEvent(row, deps) {
   //
   // This decides only WHETHER TO TRY, which is why the common case still issues
   // exactly one statement; what makes trying safe is the statement's own
-  // precondition (see scrubbableClause in store.js), which reads the three
+  // precondition (see scrubbableClause in store.js), which reads all four
   // statuses off the row as the table holds it.
   //
   // An action's status is read from its own place: the step's own outcome when it
@@ -461,8 +577,8 @@ export async function processSignupEvent(row, deps) {
   // An action another worker claimed is the exception, and the reason this is no
   // longer decided by our copy alone: our column for it is stale by definition,
   // and its owner is settling it. During an overlapped IIS recycle two workers
-  // split the three claims, and while each read its own stale copy NEITHER ever
-  // saw all three settled -- so neither scrubbed, and the row waited the full
+  // split the claims between them, and while each read its own stale copy NEITHER
+  // ever saw all four settled -- so neither scrubbed, and the row waited the full
   // thirty days for the backstop in exactly the case the policy asks to reduce to
   // a minute. Both attempt it now: the earlier attempt finds the other's actions
   // still `retrying` in the table and matches nothing, and whichever worker
@@ -525,6 +641,19 @@ function liveConfig() {
     waMaxAttempts: Math.max(1, Number(process.env.WA_MAX_ATTEMPTS || 3) || 3),
     brevoApiKey: process.env.BREVO_API_KEY || "",
     brevoListId: process.env.BREVO_LIST_ID || "",
+    // OPENAI_CONVERSIONS_API_KEY, and never OPENAI_API_KEY: that one belongs to
+    // the LLM agent in agent/llmAgent.js and has nothing to do with ChatGPT Ads.
+    // Reading it here would send the wrong secret to a different company's
+    // endpoint on every event.
+    openaiApiKey: process.env.OPENAI_CONVERSIONS_API_KEY || "",
+    openaiPixelId: process.env.OPENAI_PIXEL_ID || "",
+    openaiEventsUrl: process.env.OPENAI_EVENTS_URL || OPENAI_EVENTS_URL,
+    // Only the literal "true", any case, turns validation on -- the inverse of
+    // CRM_EVENTS_WORKER_ENABLED's "only the literal false", and for the matching
+    // reason: this flag silently stops every conversion being recorded, so a
+    // stray `1`, `yes` or `on` left in .env must not be what does that.
+    openaiValidateOnly: String(process.env.OPENAI_VALIDATE_ONLY || "").toLowerCase() === "true",
+    openaiMaxAttempts: Math.max(1, Number(process.env.OPENAI_MAX_ATTEMPTS || 3) || 3),
     skipSources: parseSkipSources(process.env.SKIP_SOURCES),
   };
 }
@@ -535,9 +664,12 @@ function liveDeps() {
     sendMeta: (args) => sendMetaEvent(args),
     sendWhatsapp: ({ apiKey, payload }) => sendWhatsappTemplate({ apiKey, payload }),
     upsertBrevo: ({ apiKey, contact }) => upsertBrevoContact({ apiKey, contact }),
+    sendOpenai: ({ eventsUrl, pixelId, apiKey, payload }) =>
+      sendOpenaiEvent({ eventsUrl, pixelId, apiKey, payload }),
     saveMeta: updateMetaStatus,
     saveWhatsapp: updateWhatsappStatus,
     saveBrevo: updateBrevoStatus,
+    saveOpenai: updateOpenaiStatus,
     scrub: scrubSignupEvent,
     deleteInvalid: deleteInvalidSignupEvents,
     scrubStale: scrubStaleSignupEvents,

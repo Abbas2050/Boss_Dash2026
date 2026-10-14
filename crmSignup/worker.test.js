@@ -1,15 +1,28 @@
 // @vitest-environment node
 //
 // Two rules this file exists to hold: the retry clock lives in a column, and
-// the three actions never interfere -- a Brevo retry must not move anyone
+// the four actions never interfere -- a Brevo retry must not move anyone
 // else's clock, and a failure in one must not stop the others being reached.
 //
-// Since 2026-10-14 no single event sends to all three: `registered` sends
-// WhatsApp and Brevo while the website pixel owns its Meta conversion, and
-// every other stage sends Meta alone. So a test that needs a real send runs at
-// the stage that makes it, and several run at both.
+// Since 2026-10-14 no single event sends to every destination: `registered`
+// sends WhatsApp and Brevo while the website pixel owns its conversion on Meta
+// and on ChatGPT Ads, and every other stage sends Meta and OpenAI alone. So a
+// test that needs a real send runs at the stage that makes it, and several run
+// at both.
 import { describe, it, expect, vi } from "vitest";
-import { planRetry, rowToFields, processSignupEvent } from "./worker.js";
+import { planRetry, rowToFields, processSignupEvent, OPENAI_VALIDATE_ONLY_DETAIL } from "./worker.js";
+// The fourth destination's own module, imported for the two constants the wiring
+// has to agree with and the window the resend is judged against.
+// OpenAI's own hashes are imported under their own names, and deliberately not
+// Meta's: the email rule is the same rule today and the phone rule is NOT, so a
+// case that hashed with Meta's helper would pass today and go quietly wrong the
+// day PHONE_RE is loosened.
+import {
+  OPENAI_EVENTS_URL,
+  OPENAI_MAX_EVENT_AGE_MS,
+  hashEmail as openaiHashEmail,
+  hashPhone as openaiHashPhone,
+} from "./openai.js";
 // The two vocabularies the worker reads, so the fake store below applies the
 // same precondition the real statement does rather than a copy of it. SETTLED is
 // "do not attempt this action again"; SCRUBBABLE is "this row is safe to
@@ -91,6 +104,10 @@ function row(overrides = {}) {
     referer: "",
     full_link: "",
     fbc: "fb.1.1673035686000.ABC",
+    // OpenAI's click id, frozen in its own column at this client's first event:
+    // full_link above is empty, exactly as it is on a real row a minute after
+    // signup, so this column is the only place the ad click still exists.
+    oppref: "oppref-9f2b",
     whatsapp_request_id: "req-7",
     received_at: new Date("2026-10-12T12:00:00Z"),
     meta_status: "pending",
@@ -99,6 +116,8 @@ function row(overrides = {}) {
     whatsapp_attempts: 0,
     brevo_status: "pending",
     brevo_attempts: 0,
+    openai_status: "pending",
+    openai_attempts: 0,
     ...overrides,
   };
 }
@@ -119,15 +138,25 @@ function deps(overrides = {}) {
       waMaxAttempts: 3,
       brevoApiKey: "brevo-key",
       brevoListId: "19",
+      openaiApiKey: "openai-key",
+      openaiPixelId: "pixel-1",
+      openaiEventsUrl: OPENAI_EVENTS_URL,
+      // Off, as it is in production: a validated request records nothing on
+      // OpenAI's side, so the cases that assert a conversion was sent must not
+      // be running against one. The two cases that are about the flag turn it on.
+      openaiValidateOnly: false,
+      openaiMaxAttempts: 3,
       skipSources: new Set(),
     },
     sendMeta: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
     sendWhatsapp: vi.fn(async () => ({ status: "sent", retryable: false, detail: "SENT", messageId: "m-1" })),
     upsertBrevo: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 201" })),
+    sendOpenai: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
     saveMeta: vi.fn(async () => {}),
     saveWhatsapp: vi.fn(async () => {}),
     saveBrevo: vi.fn(async () => {}),
-    // The scrub, which runs once all three are sent or skipped. Injected like the three
+    saveOpenai: vi.fn(async () => {}),
+    // The scrub, which runs once every destination is sent or skipped. Injected like the
     // writers rather than defaulted in the worker, so a case that must prove the
     // row was NOT scrubbed can see the absence.
     scrub: vi.fn(async () => 1),
@@ -190,7 +219,7 @@ describe("processSignupEvent", () => {
 
   it("still reaches WhatsApp and Brevo when Meta, the first step, throws outright", async () => {
     // A throw that got out of Meta's step would stop the other two being reached
-    // at all. No event sends all three any more, so at a Meta stage "reached"
+    // at all. No event sends to every destination any more, so at a Meta stage "reached"
     // means each records its skip; a throw with a live send behind it is the
     // per-action loop under "separate counters, budgets and failures".
     const d = deps({
@@ -296,6 +325,7 @@ describe("processSignupEvent", () => {
     );
     expect(d.sendMeta).not.toHaveBeenCalled();
     expect(d.sendWhatsapp).not.toHaveBeenCalled();
+    expect(d.sendOpenai).not.toHaveBeenCalled();
     expect(d.upsertBrevo).not.toHaveBeenCalled();
     expect(d.saveMeta).not.toHaveBeenCalled();
   });
@@ -390,6 +420,7 @@ vi.mock("./store.js", () => ({
   updateMetaStatus: vi.fn(async () => {}),
   updateWhatsappStatus: vi.fn(async () => {}),
   updateBrevoStatus: vi.fn(async () => {}),
+  updateOpenaiStatus: vi.fn(async () => {}),
   scrubSignupEvent: vi.fn(async () => 1),
   deleteInvalidSignupEvents: vi.fn(async () => 0),
   scrubStaleSignupEvents: vi.fn(async () => 0),
@@ -406,11 +437,19 @@ const ACTIONS = [
   { name: "meta", stage: "verified", status: "meta_status", attempts: "meta_attempts", clock: "meta_next_attempt_at", send: "sendMeta", save: "saveMeta" },
   { name: "whatsapp", stage: "registered", status: "whatsapp_status", attempts: "whatsapp_attempts", clock: "whatsapp_next_attempt_at", send: "sendWhatsapp", save: "saveWhatsapp" },
   { name: "brevo", stage: "registered", status: "brevo_status", attempts: "brevo_attempts", clock: "brevo_next_attempt_at", send: "upsertBrevo", save: "saveBrevo" },
+  // OpenAI sends at `verified` like Meta, and for the same reason: the website
+  // pixel owns the registration conversion on both platforms, so `registered`
+  // is the one stage at which neither sends.
+  { name: "openai", stage: "verified", status: "openai_status", attempts: "openai_attempts", clock: "openai_next_attempt_at", send: "sendOpenai", save: "saveOpenai" },
 ];
 
-// All eight subsets of the three actions, so that a step reading another step's
-// column is caught whichever way round the columns are crossed.
-const SUBSETS = Array.from({ length: 8 }, (_, mask) => ACTIONS.filter((_a, i) => mask & (1 << i)));
+// Every subset of the actions, so that a step reading another step's column is
+// caught whichever way round the columns are crossed. Counted from the list, not
+// written as a literal: a destination added without widening this would leave
+// half the crossings untested.
+const SUBSETS = Array.from({ length: 2 ** ACTIONS.length }, (_, mask) =>
+  ACTIONS.filter((_a, i) => mask & (1 << i))
+);
 const names = (list) => `[${list.map((a) => a.name).join(", ")}]`;
 
 const lastSaved = (save) => save.mock.calls.at(-1)[1];
@@ -431,7 +470,7 @@ function expectOthersReached(d, a, label = a.name) {
   }
 }
 
-// No stage sends to all three, so a case that compares what each action did with
+// No stage sends to every destination, so a case that compares what each action did with
 // one row runs that row at each of the two stages that between them send every
 // action, and takes each action's saves from the run in which it really sent.
 // Returns the part of deps() those cases read.
@@ -676,7 +715,7 @@ describe("each action keeps its own clock", () => {
   };
 
   it("runs exactly the actions that are due, whichever of the others are waiting", async () => {
-    // At each stage, because no stage sends all three. An action that is due but
+    // At each stage, because no stage sends to every destination. An action that is due but
     // does not apply still runs, which shows as its one recorded skip.
     for (const stage of SENDING_STAGES) {
       for (const waiting of SUBSETS) {
@@ -725,7 +764,10 @@ describe("nothing settled is touched again", () => {
     it(`never re-sends or re-saves an action that is ${status}`, async () => {
       // The brief tests "sent" alone, and checks only saveMeta.
       const d = deps();
-      await processSignupEvent(row({ meta_status: status, whatsapp_status: status, brevo_status: status }), d);
+      await processSignupEvent(
+        row({ meta_status: status, whatsapp_status: status, brevo_status: status, openai_status: status }),
+        d
+      );
       for (const a of ACTIONS) {
         expect(d[a.send], a.name).not.toHaveBeenCalled();
         expect(d[a.save], a.name).not.toHaveBeenCalled();
@@ -757,9 +799,9 @@ describe("nothing settled is touched again", () => {
   });
 
   it("runs exactly the unsettled actions, reading each from its own status column", async () => {
-    const settledAs = { meta: "sent", whatsapp: "rejected", brevo: "invalid" };
-    const openAs = { meta: "pending", whatsapp: "retrying", brevo: "pending" };
-    // At each stage, because no stage sends all three: an open action that does
+    const settledAs = { meta: "sent", whatsapp: "rejected", brevo: "invalid", openai: "skipped" };
+    const openAs = { meta: "pending", whatsapp: "retrying", brevo: "pending", openai: "retrying" };
+    // At each stage, because no stage sends to every destination: an open action that does
     // not apply there is run too, and records a skip instead of sending.
     for (const stage of SENDING_STAGES) {
       for (const settled of SUBSETS) {
@@ -777,11 +819,11 @@ describe("nothing settled is touched again", () => {
 });
 
 // This table stores statistics, not client records. The client's name, email and
-// phone are here only so they survive from receipt until all three destinations
-// settle -- the endpoint answers FXBO immediately and sends afterwards, and a
-// retry is five minutes away. The moment all three are settled, nothing needs
+// phone are here only so they survive from receipt until every destination
+// settles -- the endpoint answers FXBO immediately and sends afterwards, and a
+// retry is five minutes away. The moment all of them are settled, nothing needs
 // them again.
-describe("the row is scrubbed once all three have succeeded or been skipped", () => {
+describe("the row is scrubbed once every destination has succeeded or been skipped", () => {
   // The two sets, written out rather than imported, so an edit to settled.js that
   // moved a status from one to the other has to come past these cases.
   const SCRUBBABLE = ["sent", "skipped"];
@@ -796,7 +838,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     }
   });
 
-  it("scrubs after the three writes, never before one of them", async () => {
+  it("scrubs after every write, never before one of them", async () => {
     // Order is the whole safety of this. A scrub between the claim and the send
     // would null the phone number the send is about to read.
     const order = [];
@@ -805,6 +847,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
       saveMeta: note("saveMeta"),
       saveWhatsapp: note("saveWhatsapp"),
       saveBrevo: note("saveBrevo"),
+      saveOpenai: note("saveOpenai"),
       scrub: note("scrub"),
     });
     await processSignupEvent(row(), d);
@@ -819,7 +862,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     for (const status of SCRUBBABLE) {
       const d = deps();
       await processSignupEvent(
-        row({ meta_status: status, whatsapp_status: status, brevo_status: status }),
+        row({ meta_status: status, whatsapp_status: status, brevo_status: status, openai_status: status }),
         d
       );
       expect(d.scrub, status).toHaveBeenCalledTimes(1);
@@ -849,7 +892,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
   it("keeps a row whose Brevo send failed, and scrubs the same row once Brevo succeeds", async () => {
     // The concrete case the decision was taken for, end to end. BREVO_LIST_ID is
     // unusable, so Brevo fails terminally while Meta skips the stage the website
-    // pixel owns and WhatsApp sends: all three destinations settled, one of them
+    // pixel owns on both platforms and WhatsApp sends: every destination settled, one of them
     // failed, and the row keeps its name, email and phone -- the scrub, which is
     // the only thing that nulls them, is not even attempted.
     const failing = deps({ config: { ...deps().config, brevoListId: "" } });
@@ -864,7 +907,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     // task and is deliberately not built here, so the row is handed in that way.
     const fixed = deps();
     await processSignupEvent(
-      row({ meta_status: "skipped", whatsapp_status: "sent", brevo_status: "pending" }),
+      row({ meta_status: "skipped", whatsapp_status: "sent", brevo_status: "pending", openai_status: "sent" }),
       fixed
     );
     expect(fixed.upsertBrevo).toHaveBeenCalledTimes(1);
@@ -934,7 +977,7 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     // The case the predicate exists for. Two workers share the recycle window on
     // one row: each took a copy before the other had written anything, worker A
     // wins the WhatsApp claim and worker B the Brevo one. Neither copy ever shows
-    // all three settled, so while the scrub was decided from the copy alone
+    // all of them settled, so while the scrub was decided from the copy alone
     // NEITHER scrubbed and the row kept its name, email and phone for thirty
     // days -- in exactly the case the policy asks to reduce to a minute.
     //
@@ -1015,13 +1058,14 @@ describe("the resend a kept row was kept for", () => {
   const NOW = new Date("2026-10-12T12:00:00Z");
   const CLAIMABLE = ["pending", "retrying"];
 
-  /** The row as the table holds it after an unusable BREVO_LIST_ID: Meta skipped
-   *  the stage the website pixel owns, WhatsApp sent, Brevo failed terminally
-   *  without spending an attempt -- and the row still has its name, email and
-   *  phone, because `failed` is not scrubbable. */
+  /** The row as the table holds it after an unusable BREVO_LIST_ID: Meta and
+   *  OpenAI skipped the stage the website pixel owns on both platforms, WhatsApp
+   *  sent, Brevo failed terminally without spending an attempt -- and the row
+   *  still has its name, email and phone, because `failed` is not scrubbable. */
   const stored = (over = {}) => ({
     meta_status: "skipped",
     whatsapp_status: "sent",
+    openai_status: "skipped",
     brevo_status: "failed",
     brevo_detail: "brevo not sent: BREVO_LIST_ID is unset, blank or not a positive number",
     brevo_attempts: 0,
@@ -1054,13 +1098,14 @@ describe("the resend a kept row was kept for", () => {
     });
 
   /** The worker, writing into that table. The scrub carries its own predicate,
-   *  as scrubSignupEvent does: all three scrubbable in the TABLE, and not
+   *  as scrubSignupEvent does: every destination scrubbable in the TABLE, and not
    *  scrubbed yet. */
   const against = (table, overrides = {}) =>
     deps({
       saveMeta: save(table, "meta"),
       saveWhatsapp: save(table, "whatsapp"),
       saveBrevo: save(table, "brevo"),
+      saveOpenai: save(table, "openai"),
       scrub: vi.fn(async (_id, at) => {
         const scrubbable = ACTIONS.every((a) => SCRUBBABLE_SET.has(String(table[a.status])));
         if (!scrubbable || table.scrubbed_at !== null) return 0;
@@ -1165,7 +1210,7 @@ describe("the resend a kept row was kept for", () => {
 
 describe("a scrubbed row sends nothing", () => {
   // claimDueEvents selects only pending/retrying, and the scrub only runs once
-  // all three have settled, so nothing should reach the worker scrubbed. This is
+  // every destination has settled, so nothing should reach the worker scrubbed. This is
   // the guard for whatever later changes that -- a hand-run requeue, a new
   // selection clause -- because the failure is silent: Brevo accepts a contact
   // with no address and DoubleTick accepts a template with no name.
@@ -1181,7 +1226,7 @@ describe("a scrubbed row sends nothing", () => {
         expect(d[a.save], `${stage}/${a.name}`).not.toHaveBeenCalled();
       }
       expect(d.scrub, stage).not.toHaveBeenCalled();
-      expect(result, stage).toEqual({ meta: null, whatsapp: null, brevo: null });
+      expect(result, stage).toEqual({ meta: null, whatsapp: null, brevo: null, openai: null });
     }
   });
 
@@ -1217,7 +1262,7 @@ describe("a scrubbed row sends nothing", () => {
   });
 });
 
-describe("the three actions keep separate counters, budgets and failures", () => {
+describe("the four actions keep separate counters, budgets and failures", () => {
   it("counts each action's attempts from its own column, against its own budget", async () => {
     // Three different counts and three different outcomes. WhatsApp's budget is
     // 5 where the other two are fixed at 3, which is the only way to tell a step
@@ -1265,13 +1310,20 @@ describe("the three actions keep separate counters, budgets and failures", () =>
     expect(result.brevo).toBeNull();
     expect(result.whatsapp).toBe(d.saveWhatsapp.mock.calls.at(-1)[1]);
     expect(result.whatsapp).toMatchObject({ status: "sent", messageId: "m-1" });
-    // Registration and a Meta stage, since no one event sends all three.
+    // Registration and a Meta stage, since no one event sends to every destination.
     const registration = await processSignupEvent(row(), deps());
-    expect(Object.keys(registration)).toEqual(["meta", "whatsapp", "brevo"]);
+    expect(Object.keys(registration)).toEqual(["meta", "whatsapp", "brevo", "openai"]);
     expect(registration.meta).toMatchObject({ status: "skipped", detail: "registered is owned by the website pixel" });
     expect(registration.brevo).toMatchObject({ status: "sent", detail: "http 201" });
+    // The same stage, and the same reason, on the other platform that merges a
+    // browser event with ours only when the ids match.
+    expect(registration.openai).toMatchObject({
+      status: "skipped",
+      detail: "registered is owned by the website pixel",
+    });
     const verified = await processSignupEvent(row({ stage: "verified" }), deps());
     expect(verified.meta).toMatchObject({ status: "sent", detail: "http 200" });
+    expect(verified.openai).toMatchObject({ status: "sent", detail: "http 200" });
   });
 
   it("saves each action's own status, reason and attempt count, and WhatsApp's message id", async () => {
@@ -1351,6 +1403,29 @@ describe("an action that does not apply records why, spends no attempt and sends
     },
     { action: ACTIONS[2], why: "brevo not configured", config: { brevoApiKey: "" } },
     { action: ACTIONS[2], why: "stage not applicable", row: { stage: "verified" } },
+    // The key and the pixel id are named apart because they live on different
+    // lines of .env, and "not configured" alone would not say which to look at.
+    { action: ACTIONS[3], why: "openai not configured", config: { openaiApiKey: "   " }, row: { stage: "verified" } },
+    {
+      action: ACTIONS[3],
+      why: "openai pixel id not configured",
+      config: { openaiPixelId: "" },
+      row: { stage: "verified" },
+    },
+    // The registration stage, whose conversion the website pixel owns on this
+    // platform too -- and the one reason a resend can produce on a row that was
+    // otherwise perfectly sendable.
+    { action: ACTIONS[3], why: "registered is owned by the website pixel", row: { stage: "registered" } },
+    {
+      action: ACTIONS[3],
+      why: "received_at is outside OpenAI's window: older than 7 days",
+      row: { stage: "verified", received_at: new Date("2026-10-01T12:00:00Z") },
+    },
+    {
+      action: ACTIONS[3],
+      why: "received_at is not a usable timestamp",
+      row: { stage: "verified", received_at: "not a date" },
+    },
   ];
 
   for (const { action, why, config = {}, row: rowOverrides = {} } of cases) {
@@ -1365,6 +1440,42 @@ describe("an action that does not apply records why, spends no attempt and sends
       expect(lastSaved(d[action.save])).toEqual(action.name === "whatsapp" ? { ...expected, messageId: null } : expected);
     });
   }
+});
+
+describe("the payload that cannot be built is never posted", () => {
+  // buildOpenaiPayload returns null rather than a payload that is invalid by
+  // construction. `JSON.stringify(null)` is the string "null", which is a
+  // perfectly well-formed request body carrying no event at all, and OpenAI's
+  // answer to one is not documented anywhere -- so a step that posted it would
+  // be spending a retry budget to find out.
+  //
+  // Unreachable today: a client id is required at intake, and every other reason
+  // a payload cannot be built is already a skip with its own reason. It is a
+  // backstop, and what it must not do is send.
+  it("records invalid and sends nothing when there is no payload to send", async () => {
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified", crm_client_id: "" }), d);
+    expect(d.sendOpenai).not.toHaveBeenCalled();
+    // `invalid` is the same word the insert itself writes for a payload that
+    // could never be sent, and the one status no resend picks up -- nothing an
+    // operator fixes would make this payload constructible. No pre-send write
+    // either, so no attempt is spent and no clock is left behind.
+    expect(d.saveOpenai.mock.calls).toEqual([
+      [7, { status: "invalid", detail: "no sendable payload could be built", attempts: 0, nextAttemptAt: null }],
+    ]);
+    // And it says so, naming the row rather than the client.
+    expect(d.logger.warn).toHaveBeenCalledWith(expect.stringContaining("row 7"));
+  });
+
+  it("is the empty id that is refused, not merely a falsy payload", async () => {
+    // The id would otherwise be ":verified" -- the SAME id for every client with
+    // no id, which does not lose the deduplication but merges different people's
+    // conversions into one. Omitting the event is the smaller harm by far.
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified" }), d);
+    expect(d.sendOpenai).toHaveBeenCalledTimes(1);
+    expect(d.sendOpenai.mock.calls[0][0].payload.events[0].id).toBe("88214:verified");
+  });
 });
 
 describe("the website pixel owns registration, so Meta is skipped there", () => {
@@ -1496,6 +1607,72 @@ describe("what each provider is handed", () => {
       });
     }
   });
+
+  it("gives OpenAI the key, the pixel id and the endpoint each in its own place, and the row's own event", async () => {
+    const d = deps({
+      config: {
+        ...deps().config,
+        openaiApiKey: "openai-secret",
+        openaiPixelId: "pixel-77",
+        openaiEventsUrl: "https://bzr.example.test/v1/events",
+      },
+    });
+    await processSignupEvent(
+      row({ stage: "verified", email: "Ali@Example.com", phone: "+971501112233", oppref: "oppref-frozen" }),
+      d
+    );
+
+    const arg = d.sendOpenai.mock.calls[0][0];
+    // Three separate values on three separate lines of .env, and the sender puts
+    // each in a different part of the request: the key in a header, the pixel id
+    // on the query string, the URL as the URL. Crossing any two of them would
+    // compile.
+    expect(arg.apiKey).toBe("openai-secret");
+    expect(arg.pixelId).toBe("pixel-77");
+    expect(arg.eventsUrl).toBe("https://bzr.example.test/v1/events");
+
+    const [event] = arg.payload.events;
+    // The event name goes in `type`; `data.type` is the data FAMILY, which is a
+    // different field that happens to share a name. `verified` has no event in
+    // the taxonomy at all, so it travels as a custom event with its own name.
+    expect(event.type).toBe("custom");
+    expect(event.custom_event_name).toBe("client_verified");
+    expect(event.data).toEqual({ type: "custom" });
+    // `offline`, not `web`: these stages happen inside the CRM, with no browser
+    // and no page, which is also why no source_url is invented for them.
+    expect(event.action_source).toBe("offline");
+    expect(event.source_url).toBeUndefined();
+    // Identical on every retry, so a lost response cannot book a second
+    // conversion.
+    expect(event.id).toBe("88214:verified");
+    // Milliseconds, from this row's own column.
+    expect(event.timestamp_ms).toBe(new Date("2026-10-12T12:00:00Z").getTime());
+    expect(event.oppref).toBe("oppref-frozen");
+    expect(event.user).toEqual({
+      emails_sha256: [openaiHashEmail("ali@example.com")],
+      phone_numbers_sha256: [openaiHashPhone("+971501112233")],
+    });
+    // Nothing identifying in readable form, and nothing beyond the two
+    // identifiers Meta already receives.
+    expect(JSON.stringify(arg.payload)).not.toContain("Ali@Example.com");
+    expect(JSON.stringify(arg.payload)).not.toContain("971501112233");
+    expect(Object.keys(event.user)).toEqual(["emails_sha256", "phone_numbers_sha256"]);
+    // Off unless the flag says otherwise, and omitted rather than sent as false.
+    expect(arg.payload.validate_only).toBeUndefined();
+  });
+
+  it("asks OpenAI for the deposit as an order, with no amount and no currency", async () => {
+    const d = deps();
+    await processSignupEvent(row({ stage: "first_deposit" }), d);
+    const [event] = d.sendOpenai.mock.calls[0][0].payload.events;
+    expect(event.type).toBe("order_created");
+    expect(event.data).toEqual({ type: "contents" });
+    expect(event.custom_event_name).toBeUndefined();
+    // Mirrors the 13 October decision for Meta's Purchase: both platforms learn
+    // that a deposit happened, not what it was worth. Sending an amount needs an
+    // FXBO REST call that is its own piece of work.
+    expect(JSON.stringify(event)).not.toMatch(/amount|currency/i);
+  });
 });
 
 describe("rowToFields, field by field", () => {
@@ -1573,10 +1750,16 @@ describe("what is logged", () => {
     // maskEmail / maskPhone must actually hide something for the check below to mean anything.
     expect(maskEmail("ali@example.com")).not.toBe("ali@example.com");
     expect(maskPhone("+971507192185")).not.toBe("+971507192185");
-    // At each stage, since no one event runs all three: Meta's line at a Meta
-    // stage, WhatsApp's and Brevo's at registration.
+    // At each stage, since no one event runs every action: Meta's and OpenAI's
+    // lines at a Meta stage, WhatsApp's and Brevo's at registration.
     for (const [stage, expected] of [
-      ["verified", [`[crm-events] meta failed for ${maskEmail("ali@example.com")}: meta-reason`]],
+      [
+        "verified",
+        [
+          `[crm-events] meta failed for ${maskEmail("ali@example.com")}: meta-reason`,
+          `[crm-events] openai rejected for ${maskEmail("ali@example.com")}: openai-reason`,
+        ],
+      ],
       [
         "registered",
         [
@@ -1589,6 +1772,7 @@ describe("what is logged", () => {
         sendMeta: failing("failed", "meta-reason"),
         sendWhatsapp: failing("rejected", "wa-reason", { messageId: null }),
         upsertBrevo: failing("failed", "brevo-reason"),
+        sendOpenai: failing("rejected", "openai-reason"),
       });
       await processSignupEvent(row({ stage }), d);
       expect(d.logger.warn.mock.calls.map(([line]) => line), stage).toEqual(expected);
@@ -1645,6 +1829,17 @@ describe("the production wiring", () => {
     "WA_MAX_ATTEMPTS",
     "BREVO_API_KEY",
     "BREVO_LIST_ID",
+    "OPENAI_CONVERSIONS_API_KEY",
+    "OPENAI_PIXEL_ID",
+    "OPENAI_EVENTS_URL",
+    "OPENAI_VALIDATE_ONLY",
+    "OPENAI_MAX_ATTEMPTS",
+    // Not a setting of this module at all, and cleared here precisely so: it
+    // belongs to the LLM agent in agent/llmAgent.js, a developer running these
+    // tests may well have it set, and a worker that read it would post a
+    // different company's secret to OpenAI's conversions endpoint on every
+    // event. The case below leaves it set on purpose.
+    "OPENAI_API_KEY",
     "SKIP_SOURCES",
     "CRM_EVENTS_WORKER_ENABLED",
     "CRM_EVENTS_WORKER_INTERVAL_SECONDS",
@@ -1667,7 +1862,12 @@ describe("the production wiring", () => {
 
     for (const fn of Object.values(store)) fn.mockReset();
     store.claimDueEvents.mockResolvedValue([]);
-    for (const fn of [store.updateMetaStatus, store.updateWhatsappStatus, store.updateBrevoStatus]) {
+    for (const fn of [
+      store.updateMetaStatus,
+      store.updateWhatsappStatus,
+      store.updateBrevoStatus,
+      store.updateOpenaiStatus,
+    ]) {
       fn.mockResolvedValue(undefined);
     }
 
@@ -1678,6 +1878,9 @@ describe("the production wiring", () => {
         return { status: 200, json: async () => ({ messages: [{ status: "SENT", messageId: "wamid-live" }] }) };
       }
       if (u === BREVO_CONTACTS_URL) return { status: 201, json: async () => ({ id: 1 }) };
+      // OpenAI documents no response shape at all, so a 200 with an empty object
+      // is the most honest fake there is.
+      if (u.startsWith(OPENAI_EVENTS_URL)) return { status: 200, json: async () => ({}) };
       throw new Error(`unexpected fetch: ${u}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -1788,7 +1991,7 @@ describe("the production wiring", () => {
       }
     });
 
-    it("skips all three, and sends nothing, when nothing is configured", async () => {
+    it("skips every destination, and sends nothing, when nothing is configured", async () => {
       store.claimDueEvents.mockResolvedValue([liveRow()]);
       await sweepOnce();
       expect(fetchMock).not.toHaveBeenCalled();
@@ -1796,6 +1999,12 @@ describe("the production wiring", () => {
       expect(settled(store.updateMetaStatus)).toMatchObject({ status: "skipped", detail: "meta not configured" });
       expect(settled(store.updateWhatsappStatus)).toMatchObject({ status: "skipped", detail: "whatsapp not configured" });
       expect(settled(store.updateBrevoStatus)).toMatchObject({ status: "skipped", detail: "brevo not configured" });
+      // A missing key reads as "not configured" and not as the pixel's stage or
+      // an expired row, because that is the one an operator can act on.
+      expect(settled(store.updateOpenaiStatus)).toMatchObject({
+        status: "skipped",
+        detail: "openai not configured",
+      });
     });
 
     it("runs on the real clock and logs through the console, masked", async () => {
@@ -1868,7 +2077,7 @@ describe("the production wiring", () => {
             },
           ],
         ]);
-        // WhatsApp still sends: the three destinations are independent.
+        // WhatsApp still sends: the destinations are independent.
         expect(fetched(DOUBLETICK_TEMPLATE_URL)).toHaveLength(1);
         // And the row keeps its client data, which is what makes the resend
         // possible once the variable is fixed.
@@ -1887,6 +2096,217 @@ describe("the production wiring", () => {
       expect(said).not.toContain("brevo-secret");
       expect(said).not.toContain("ali@example.com");
       expect(said).not.toContain("+971501112233");
+    });
+  });
+
+  // The fourth destination's own wiring, through the real sender with a stubbed
+  // fetch. Three of the things that can go wrong here are invisible from the row
+  // -- the timestamp's unit, the frozen click id, and whether the request
+  // recorded anything at all -- so each is read off the request itself.
+  describe("with the ChatGPT Ads key and pixel id set", () => {
+    const OPENAI = { OPENAI_CONVERSIONS_API_KEY: "openai-secret", OPENAI_PIXEL_ID: "pixel-77" };
+    // OpenAI sends at the stages the pixel does not own, which is every stage
+    // except `registered`.
+    const openaiRow = (over = {}) => liveRow({ stage: "verified", ...over });
+    const openaiCall = () => fetched(OPENAI_EVENTS_URL)[0];
+    const sentEvent = () => bodyOf(openaiCall()).events[0];
+
+    it("posts one event to the pixel, with the key in a header and nowhere in the URL", async () => {
+      setEnv(OPENAI);
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+
+      const [url, init] = openaiCall();
+      expect(url).toBe(`${OPENAI_EVENTS_URL}?pid=pixel-77`);
+      // The pixel id is not a secret -- it is in the website's own pixel -- and
+      // it is the only thing on the query string. A key in a request line ends
+      // up in every proxy and access log there is.
+      expect(url).not.toContain("openai-secret");
+      expect(init.headers.Authorization).toBe("Bearer openai-secret");
+      // One event per request, although 1,000 are allowed: "if one event in the
+      // batch fails, the full batch fails", with no per-event error reporting.
+      expect(bodyOf(openaiCall()).events).toHaveLength(1);
+      expect(store.updateOpenaiStatus.mock.calls.at(-1)[1]).toMatchObject({
+        status: "sent",
+        attempts: 1,
+        detail: "http 200",
+      });
+    });
+
+    it("stamps timestamp_ms in milliseconds from the row's received_at, 13 digits of it", async () => {
+      // **The defect this test exists for leaves no trace.** `eventTimeSeconds`
+      // divides by 1000 for Meta, whose event_time is in seconds; passed here it
+      // would stamp every event in 1970, and the only symptom would be OpenAI
+      // refusing each one for falling outside their 7-day window -- no error, no
+      // log line, nothing in the row. Thirteen digits is what a millisecond
+      // timestamp of this era has and a second one does not.
+      setEnv(OPENAI);
+      const received = new Date("2026-10-12T12:00:00Z");
+      store.claimDueEvents.mockResolvedValue([openaiRow({ received_at: received })]);
+      await sweepOnce();
+
+      const { timestamp_ms: stamped } = sentEvent();
+      expect(String(stamped)).toMatch(/^\d{13}$/);
+      expect(stamped).toBe(received.getTime());
+      expect(Number.isInteger(stamped)).toBe(true);
+    });
+
+    it("carries the frozen oppref verbatim, from the column and not from full_link", async () => {
+      // full_link is empty on this row, exactly as it is on a real one a minute
+      // after signup, and on the first-deposit row weeks later it never carried
+      // anything at all. The column is the only copy of the ad click.
+      setEnv(OPENAI);
+      store.claimDueEvents.mockResolvedValue([
+        openaiRow({ full_link: "", oppref: "oppref-frozen" }),
+        openaiRow({ id: 8, stage: "first_deposit", full_link: "", oppref: null }),
+      ]);
+      await sweepOnce();
+
+      const [first, deposit] = fetched(OPENAI_EVENTS_URL).map((call) => bodyOf(call).events[0]);
+      expect(first.oppref).toBe("oppref-frozen");
+      // Absent is normal and is not an error: the event is still sent, simply
+      // unattributed. What must never appear is the word "null" in its place.
+      expect(deposit.oppref).toBeUndefined();
+      expect(JSON.stringify(deposit)).not.toContain("oppref");
+    });
+
+    it("reads OPENAI_CONVERSIONS_API_KEY, and never OPENAI_API_KEY", async () => {
+      // Two OpenAI keys live in this project and only one of them belongs to
+      // ChatGPT Ads. Reading the LLM agent's would send its secret to the
+      // conversions endpoint on every event -- and, with no conversions key set,
+      // would make a dead integration look configured.
+      setEnv({ OPENAI_API_KEY: "llm-agent-secret", OPENAI_PIXEL_ID: "pixel-77" });
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+
+      expect(fetched(OPENAI_EVENTS_URL)).toHaveLength(0);
+      expect(store.updateOpenaiStatus.mock.calls.at(-1)[1]).toMatchObject({
+        status: "skipped",
+        detail: "openai not configured",
+      });
+      expect(JSON.stringify(spies.warn.mock.calls)).not.toContain("llm-agent-secret");
+    });
+
+    it("says in the detail that a validated request recorded nothing", async () => {
+      // `validate_only` returns a 2xx and records NOTHING: such a request does
+      // not appear in event monitoring at all. Without this the row reads `sent`
+      // for a conversion that provably does not exist, and the overview counts
+      // it as real.
+      setEnv({ ...OPENAI, OPENAI_VALIDATE_ONLY: "true" });
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+
+      expect(bodyOf(openaiCall()).validate_only).toBe(true);
+      const saved = store.updateOpenaiStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("sent");
+      expect(saved.detail).toContain(OPENAI_VALIDATE_ONLY_DETAIL);
+      // The provider's own word is still there to read beside it.
+      expect(saved.detail).toContain("http 200");
+    });
+
+    it("marks a refused validation too, because that was not a conversion either", async () => {
+      setEnv({ ...OPENAI, OPENAI_VALIDATE_ONLY: "true" });
+      fetchMock.mockImplementation(async () => ({ status: 400, json: async () => ({ error: "bad family" }) }));
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+
+      const saved = store.updateOpenaiStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("rejected");
+      expect(saved.detail).toContain(OPENAI_VALIDATE_ONLY_DETAIL);
+      expect(saved.detail).toContain("bad family");
+    });
+
+    it("sends for real unless the flag is the literal true, so a stray value cannot silence it", async () => {
+      // The inverse of CRM_EVENTS_WORKER_ENABLED's rule, and for the matching
+      // reason: this flag stops every conversion being recorded while the rows
+      // all read `sent`, so `1`, `yes` and `on` must not be what does that.
+      for (const value of ["1", "yes", "on", "TRUE", "false", ""]) {
+        store.updateOpenaiStatus.mockClear();
+        fetchMock.mockClear();
+        setEnv({ ...OPENAI, OPENAI_VALIDATE_ONLY: value });
+        store.claimDueEvents.mockResolvedValue([openaiRow()]);
+        await sweepOnce();
+
+        const validating = String(value).toLowerCase() === "true";
+        expect(bodyOf(openaiCall()).validate_only, value).toBe(validating ? true : undefined);
+        const saved = store.updateOpenaiStatus.mock.calls.at(-1)[1];
+        expect(String(saved.detail).includes(OPENAI_VALIDATE_ONLY_DETAIL), value).toBe(validating);
+      }
+    });
+
+    it("reads OPENAI_EVENTS_URL, so the endpoint can be moved without a deploy", async () => {
+      const moved = "https://bzr.example.test/v1/events";
+      setEnv({ ...OPENAI, OPENAI_EVENTS_URL: moved });
+      fetchMock.mockImplementation(async () => ({ status: 200, json: async () => ({}) }));
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+      expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(`${moved}?pid=pixel-77`);
+    });
+
+    it("reads OPENAI_MAX_ATTEMPTS, falling back to three for anything unusable", async () => {
+      // Configurable, so it travels in config beside every other value an
+      // operator sets rather than as a constant beside Meta's and Brevo's.
+      fetchMock.mockImplementation(async (url) =>
+        String(url).startsWith(OPENAI_EVENTS_URL)
+          ? { status: 503, json: async () => ({}) }
+          : { status: 200, json: async () => ({ events_received: 1 }) }
+      );
+      // [setting, attempts already made, status expected after this one].
+      for (const [setting, made, expected] of [
+        [undefined, 1, "retrying"],
+        [undefined, 2, "failed"],
+        ["5", 3, "retrying"],
+        ["5", 4, "failed"],
+        ["2", 1, "failed"],
+        ["0", 1, "retrying"],
+        ["abc", 2, "failed"],
+      ]) {
+        store.updateOpenaiStatus.mockClear();
+        if (setting === undefined) delete process.env.OPENAI_MAX_ATTEMPTS;
+        else process.env.OPENAI_MAX_ATTEMPTS = setting;
+        setEnv(OPENAI);
+        store.claimDueEvents.mockResolvedValue([openaiRow({ openai_attempts: made })]);
+        await sweepOnce();
+        expect(
+          store.updateOpenaiStatus.mock.calls.at(-1)[1].status,
+          `OPENAI_MAX_ATTEMPTS=${setting}, ${made} made`
+        ).toBe(expected);
+      }
+    });
+
+    it("never logs the key, the address or the phone number, on a failure", async () => {
+      setEnv(OPENAI);
+      fetchMock.mockImplementation(async () => {
+        // The shape that leaks: a transport error quoting the request's own
+        // headers back at us, which is both logged and stored.
+        throw new Error("connect failed sending Authorization: Bearer openai-secret");
+      });
+      store.claimDueEvents.mockResolvedValue([openaiRow()]);
+      await sweepOnce();
+
+      const said = JSON.stringify(spies.warn.mock.calls) + JSON.stringify(store.updateOpenaiStatus.mock.calls);
+      expect(said).not.toContain("openai-secret");
+      expect(said).not.toContain("ali@example.com");
+      expect(said).not.toContain("+971501112233");
+      expect(said).toContain("[redacted]");
+    });
+
+    it("skips a row OpenAI would refuse for its age, naming the window, and sends nothing", async () => {
+      // `timestamp_ms` comes from `received_at`, and re-stamping it with today's
+      // time is not available: the row's whole purpose is to say when the
+      // conversion happened. So a request would be certain to be rejected, and a
+      // skip with a reason an operator can read is worth more than a spent retry
+      // budget.
+      setEnv(OPENAI);
+      const tooOld = new Date(Date.now() - OPENAI_MAX_EVENT_AGE_MS - 60_000);
+      store.claimDueEvents.mockResolvedValue([openaiRow({ received_at: tooOld })]);
+      await sweepOnce();
+
+      expect(fetched(OPENAI_EVENTS_URL)).toHaveLength(0);
+      const saved = store.updateOpenaiStatus.mock.calls.at(-1)[1];
+      expect(saved).toMatchObject({ status: "skipped", attempts: 0, nextAttemptAt: null });
+      expect(saved.detail).toMatch(/outside OpenAI's window/);
+      expect(saved.detail).toMatch(/7 days/);
     });
   });
 
@@ -1924,9 +2344,9 @@ describe("the production wiring", () => {
 
   it("reads SKIP_SOURCES, so an excluded source gets no WhatsApp but still gets the rest", async () => {
     setEnv({ ...CONFIGURED, SKIP_SOURCES: "Other-Form, svg" });
-    // Two events from the excluded source, since no one stage reaches all three
-    // destinations: registration is where WhatsApp and Brevo send, and a Meta
-    // stage is where Meta does.
+    // Two events from the excluded source, since no one stage reaches every
+    // destination: registration is where WhatsApp and Brevo send, and a Meta
+    // stage is where Meta and OpenAI do.
     const excluded = { source: "SVG", entity: "Other" };
     store.claimDueEvents.mockResolvedValue([liveRow(excluded), liveRow({ ...excluded, id: 8, stage: "verified" })]);
     await sweepOnce();
