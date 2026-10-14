@@ -111,6 +111,20 @@ const signCls = (v: number | null | undefined) =>
 
 const MEDAL: Record<number, string> = { 1: "🥇", 2: "🥈", 3: "🥉" };
 
+// Both calls below used to turn any failure into `HTTP ${res.status}`, which
+// is the wrong half of the story: "HTTP 502" does not tell the reader that the
+// backend refused this server's credential, and for a while it did not even
+// get that far -- clientProfileRouter.js answered 200 with empty arrays, so a
+// dead backend arrived looking exactly like a week with no trading. The router
+// now answers a non-2xx with an `error` sentence naming what to check; prefer
+// it, and keep the bare status for a failure that never reached our handler
+// (a proxy 504, an HTML error page) and so has no sentence to offer.
+async function failureMessage(res: Response): Promise<string> {
+  const body = await res.json().catch(() => null);
+  const reason = (body as { error?: unknown } | null)?.error;
+  return typeof reason === "string" && reason.trim() ? reason : `HTTP ${res.status}`;
+}
+
 // ─── Category config ─────────────────────────────────────────────────────────
 
 type Category = "equity" | "volume" | "activity" | "realized";
@@ -305,7 +319,7 @@ export function ClientProfilingTab({
       if (fromDate) params.set("from", fromDate);
       if (toDate) params.set("to", toDate);
       const res = await fetch(`/api/ClientProfile/top-clients?${params.toString()}`, { headers: { ...authHeaders() } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await failureMessage(res));
       const contentType = res.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         throw new Error("Client profiling endpoint returned non-JSON content");
@@ -328,7 +342,7 @@ export function ClientProfilingTab({
       setDetail(null);
       try {
         const res = await fetch(`/api/ClientProfile/${client.login}/detail?days=${period}`, { headers: { ...authHeaders() } });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) throw new Error(await failureMessage(res));
         const contentType = res.headers.get("content-type") || "";
         if (!contentType.includes("application/json")) {
           throw new Error("Client detail endpoint returned non-JSON content");
@@ -443,7 +457,10 @@ export function ClientProfilingTab({
 
         {/* Leaderboard */}
         <div className="space-y-2">
-          {!data && !loading && (
+          {/* Not shown while `error` is set: a load that failed already says so
+              in the box above, and telling the reader to click Load for a range
+              they just loaded sends them round the same failure again. */}
+          {!data && !loading && !error && (
             <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 py-12 text-center text-sm text-slate-400 dark:border-slate-700 dark:bg-slate-900/30 dark:text-slate-500">
               Set date range and click <span className="font-semibold">Load</span> to see rankings
             </div>
