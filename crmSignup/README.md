@@ -38,11 +38,15 @@ one change rather than two.
 |---|---|
 | `POST /api/crm-events` | `CRM_WEBHOOK_SECRET` in the `Authorization` header, as the whole header value: `Bearer <secret>` is rejected, and an unset secret rejects everything. On the `PUBLIC_API_ROUTES` allow-list because FXBO cannot carry a session. |
 | `GET /api/crm-events/overview` | `authRequired` + `adminOnly` (`canManageUsers`, otherwise 403). Takes `?days=` (1 to 90, default 30). Feeds the settings tab, whose menu entry (`/settings/crm-events`, `admin` group) requires `Settings` + `Auth:ManageUsers`. A per-page `Settings:crm-events` access chip also opens the tab, but does not satisfy the endpoint's gate. |
+| `POST /api/crm-events/requeue` | `authRequired` + `adminOnly`, the same pair. Body `{"destination": "meta" \| "whatsapp" \| "brevo"}`; an unknown one is a 400 and is never defaulted. Puts that destination's `failed` and `rejected` rows back to `pending`, logs who asked, kicks the worker, and answers `{destination, requeued, alreadyScrubbed}`. See "Resending a failure" below. |
 
 The stage is a **body parameter**, not a path segment, and all five rules post
 to the one path. `auth/requireSession.js` matches its allow-list against actual
 request paths, so a `:stage` pattern would never match; and the list is capped
-at six entries by `auth/routeCoverage.test.js`.
+at six entries by `auth/routeCoverage.test.js`. The requeue route's destination
+is a body parameter for the same reason, even though that route is session-gated
+and deliberately **not** on the allow-list: the allow-list is for FXBO, which
+cannot carry a session.
 
 ## Five things that are easy to get wrong
 
@@ -166,13 +170,19 @@ until the send is retried or the 30-day backstop takes it. The backstop is what
 bounds that: a destination nobody ever fixes still does not make this table a
 permanent store of client data.
 
-That makes two sets, and conflating them is the mistake to avoid — both live in
-`settled.js`, named for the question each answers:
+That makes more than one set of statuses, and conflating them is the mistake to
+avoid — all three live in `settled.js`, named for the question each answers:
 
 | Set | Question | Members |
 |---|---|---|
 | `SETTLED` | do not attempt this action again | `sent`, `skipped`, `rejected`, `failed`, `invalid` |
 | `SCRUBBABLE` | this row is safe to forget | `sent`, `skipped` |
+| `REQUEUEABLE` | may an operator ask for this one again | `failed`, `rejected` |
+
+The three partition `SETTLED` exactly — `SCRUBBABLE`, `REQUEUEABLE`, and
+`invalid` on its own — which a test pins, so a sixth status added later lands in
+one of them deliberately rather than defaulting into whichever list was edited
+first.
 
 They fail in opposite directions and only one of them is recoverable. The wide
 set where the narrow one belongs **destroys data**: the scrub nulls a row a
@@ -212,6 +222,66 @@ email or phone, because neither is retained. `is_lead_raw` holds the raw
 `%client_is_lead%` literal so that CUTOVER step 5 still works without
 `raw_payload`; `scrubbed_at` is what lets the settings tab tell a scrubbed row
 apart from one that never carried the value.
+
+## Resending a failure
+
+Keeping a failed row's client data only made the resend possible. **Nothing in
+the worker can retry it**: the step skip reads `SETTLED`, so a `failed` or
+`rejected` destination is never claimed again however due its clock is. The
+resend is an operator action, on the settings tab, through
+`POST /api/crm-events/requeue`.
+
+**Bulk, per destination (2026-10-14, user's call).** That is the shape of the
+problem: a wrong list id or a missing key breaks a window of signups, and the
+operator fixes the setting and then clears the backlog in one action. There is no
+per-row resend. The count is shown on the control before it is pressed.
+
+`requeueFailedSends` sets one destination's status to `pending`, its attempt
+count to `0` and its clock to `NULL`. Three preconditions, all in the statement:
+
+- **`scrubbed_at IS NULL`.** A scrubbed row has no client data left. Requeued, it
+  is claimed on every sweep, refused by the send guard, and never settles —
+  `pending` for the rest of the table's life, which poisons the one counter that
+  means "the dispatch worker is dead".
+- **`failed` and `rejected` only** (`REQUEUEABLE` in `settled.js`). A `sent` row
+  must be untouchable by this path: it would deliver a second welcome.
+- **The attempt count back to 0.** `planRetry` reads the stored count, so a row
+  left at 3 of 3 is written `failed` by the pre-send claim *before* its request
+  leaves — the tab shows a terminal failure while the request is in the air, and
+  one transient 503 ends the resend instead of retrying it.
+
+**`rejected` is in scope on purpose.** It sounds like the one thing not worth
+repeating, but Brevo's 400 for an attribute that does not exist yet is a
+`rejected` that succeeds the moment the attribute is created. The operator is
+clicking because they fixed something, and the system does not try to guess
+which.
+
+**`whatsapp_request_id` is not regenerated, and that is the point.** It is frozen
+per row at insert. If DoubleTick honours a repeated `messageId`, reusing it means
+a resend of a message that genuinely never arrived still goes out — DoubleTick
+never saw that id — while a resend of one that *did* arrive is deduplicated. Both
+are what we want. Minting a fresh id would guarantee the duplicate instead. (Same
+reasoning as an over-width id being cut rather than nulled, in `store.js`.)
+
+**WhatsApp has its own control, and its own warning.** Meta deduplicates on
+`event_id` and the Brevo upsert is idempotent, so those two share one control and
+resending them is safe. WhatsApp has neither property, and a `failed` WhatsApp
+row **may already have reached the handset** — CUTOVER step 7's case, where
+DoubleTick answers 2xx with a status outside our allowlist and we record
+`rejected` on purpose so the value gets found. So its control says in visible
+text that resending may send a second welcome message, and it takes an explicit
+confirmation.
+
+**The 30-day backstop is absolute**, measured from signup, whatever a resend
+does. There is no window extension: a row scrubbed mid-resend is refused by the
+in-worker send guard, which sends nothing and records why. That is also why the
+answer carries `alreadyScrubbed` — the operator can see 40 failures on the
+destination card (those counters count scrubbed rows) and get 12 resends, and the
+other 28 are rows no requeue will ever reach.
+
+The route logs the action: who asked (the session user id, with their address
+masked), which destination, and how many rows. It triggers outbound messages to
+clients, so it needs an audit trail; there is no client data in the line.
 
 ## Attributes
 

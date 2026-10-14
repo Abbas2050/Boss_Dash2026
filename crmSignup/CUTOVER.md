@@ -32,14 +32,20 @@ exposed inside FXBO.
 
 Three of these will cost you an afternoon if you get them wrong:
 
-- **`BREVO_LIST_ID` has no default.** Unset, blank or non-numeric and the
-  contact is still created but joins **no list**, with no warning anywhere. Set
-  it to `19` (All Clients).
+- **`BREVO_LIST_ID` has no default.** Unset, blank or not a positive number and
+  Brevo is not called at all: the row records `failed` with a detail naming the
+  variable, and step 2's log carries a warning at boot. Set it to `19` (All
+  Clients). Those rows keep their client data, so once the variable is right the
+  Brevo control on the settings tab resends them — but every signup in between
+  waits for someone to press it.
 - **Set `META_TEST_EVENT_CODE` now.** The first real traffic then lands under
   Events Manager → Test events and touches no production data. Step 8 removes it.
 - **Set every provider key before you point FXBO at the endpoint.** A missing
   key stores that row as `skipped`, and `skipped` is **final** — setting the key
-  later does not resend those rows. There is no backfill.
+  later does not resend those rows. There is no backfill, and the resend control
+  on the settings tab is not one: it takes `failed` and `rejected` rows only,
+  because a skip is a deliberate decision not to send and re-deciding it in bulk
+  is not its job.
 
 Then recycle the app.
 
@@ -241,6 +247,12 @@ an outage rather than as a permission problem.
    detail column names it and it needs adding. This is the designed way to
    discover a third value: loudly and at once, rather than counted as a success
    for ever.
+   **Do not reach for the WhatsApp resend on that row.** It is exactly the case
+   where the message already reached the handset, so a resend sends a second
+   welcome — which is why that control is separate from Meta's and Brevo's and
+   says so before it will run. The real fix is adding the missing status value to
+   the allowlist in `whatsapp.js`; the row then reads `sent` for the next client,
+   and this one needs nothing sent to it at all.
 3. **Brevo:** the contact appears in list 19 with `EXT_ID` and `OPT_IN`
    populated.
 4. **Idempotency:** re-posting the identical webhook sends no second message and
