@@ -21,6 +21,11 @@ import {
   countEventsSince,
   latestEventReceivedAt,
   latestReceivedAtByStage,
+  SCRUB_COLUMNS,
+  SIGNUP_EVENTS_ADDED_COLUMNS,
+  scrubSignupEvent,
+  deleteInvalidSignupEvents,
+  scrubStaleSignupEvents,
 } from "./store.js";
 // Imported for the one case that walks the whole leak path: Brevo's own 400,
 // through its own classifier, into the column.
@@ -100,8 +105,50 @@ beforeEach(() => {
 
 describe("initCrmSignupStore", () => {
   it("creates the table from the schema text", () => {
-    expect(ddlCalls).toHaveLength(1);
     expect(ddlCalls[0].sql).toBe(SIGNUP_EVENTS_SCHEMA);
+  });
+
+  it("adds each later column, and the retention index, behind its own information_schema check", () => {
+    // The table has never been deployed, so a new install gets all three from the
+    // CREATE above and the guards find them present. A table someone created
+    // while testing predates them: a missing scrubbed_at leaves the scrub nowhere
+    // to record itself, and a missing is_lead_raw leaves CUTOVER step 5 nothing
+    // to read. The fake pool reports no count, so every guard opens here.
+    //
+    // Each ALTER must sit immediately behind its own check, with the thing it
+    // looks for as the parameter -- a check that asked about a different column
+    // would pass a bare "an ALTER ran" assertion.
+    let i = 1;
+    for (const [column, statement] of SIGNUP_EVENTS_ADDED_COLUMNS) {
+      expect(ddlCalls[i].sql, column).toMatch(/information_schema\.COLUMNS/i);
+      expect(ddlCalls[i].sql, column).toMatch(/COLUMN_NAME = \?/);
+      expect(ddlCalls[i].params, column).toEqual([column]);
+      expect(ddlCalls[i + 1].sql, column).toBe(statement);
+      i += 2;
+    }
+    expect(ddlCalls[i].sql).toMatch(/information_schema\.STATISTICS/i);
+    expect(ddlCalls[i].params).toEqual(["idx_signup_events_retention"]);
+    expect(ddlCalls[i + 1].sql).toBe(
+      "ALTER TABLE signup_events ADD KEY idx_signup_events_retention (scrubbed_at, received_at)"
+    );
+    expect(ddlCalls).toHaveLength(i + 2);
+  });
+
+  it("adds nothing when information_schema says all three are already there", async () => {
+    // The other half of the guard. `ALTER TABLE ... ADD COLUMN` on a column that
+    // exists is an error, and an error at startup takes the store, the sweeper and
+    // every webhook with it. A fresh module instance, because the real one has
+    // already initialised.
+    vi.resetModules();
+    db.state.calls.length = 0;
+    db.state.respond = (sql) =>
+      /information_schema/i.test(sql) ? [[{ cnt: 1 }]] : [{ affectedRows: 1, insertId: 1 }];
+    const fresh = await import("./store.js");
+    await fresh.initCrmSignupStore();
+    const sql = db.state.calls.map((c) => c.sql);
+    expect(sql.filter((s) => /ALTER TABLE/i.test(s))).toEqual([]);
+    // Still asked, once per column plus once for the index.
+    expect(sql.filter((s) => /information_schema/i.test(s))).toHaveLength(SIGNUP_EVENTS_ADDED_COLUMNS.length + 1);
   });
 });
 
@@ -474,6 +521,120 @@ describe("listEventsSince", () => {
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(/WHERE received_at >= \?\s+ORDER BY received_at DESC\s+LIMIT \?/);
     expect(params).toEqual([since, 2000]);
+  });
+
+  it("reads scrubbed_at, so the tab can tell a scrubbed row from one that never had the value", async () => {
+    // Almost every row the tab shows is scrubbed, and a masked empty email looks
+    // exactly like a scrubbed one. Without this column the page shows three blank
+    // columns and an operator concludes the feed is broken.
+    await listEventsSince(new Date("2026-09-13T00:00:00Z"));
+    expect(db.state.calls[0].sql).toMatch(/\bscrubbed_at\b/);
+  });
+});
+
+describe("scrubSignupEvent", () => {
+  const SCRUBBED = new Date("2026-10-14T12:01:00Z");
+
+  it("nulls every column on the scrub list and nothing else, and stamps the moment", async () => {
+    await scrubSignupEvent(7, SCRUBBED);
+    const { sql, params } = db.state.calls[0];
+    expect(db.state.calls).toHaveLength(1);
+    for (const column of SCRUB_COLUMNS) {
+      expect(sql, column).toMatch(new RegExp(`\\b${column} = NULL\\b`));
+    }
+    // Everything the row is kept for. Read off the statement rather than off the
+    // list, so a column scrubbed by a hand-written SET that forgot the list fails.
+    for (const column of [
+      "crm_client_id",
+      "fbc",
+      "entity",
+      "source",
+      "language",
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "record_type",
+      "is_lead_raw",
+      "marketing_consent",
+      "is_ib",
+      "fxbo_unique_id",
+      "whatsapp_request_id",
+      "received_at",
+    ]) {
+      expect(sql, column).not.toMatch(new RegExp(`\\b${column} = NULL\\b`));
+    }
+    expect(sql).toMatch(/SET .*scrubbed_at = \?/s);
+    expect(params).toEqual([SCRUBBED, 7]);
+  });
+
+  it("is a no-op on a row already scrubbed, rather than moving its timestamp", async () => {
+    // scrubbed_at is the audit trail: overwriting it would move the moment the
+    // data actually went. It is also what keeps the settle path and the thirty-day
+    // backstop from undoing each other's record.
+    await scrubSignupEvent(7, SCRUBBED);
+    expect(db.state.calls[0].sql).toMatch(/WHERE id = \? AND scrubbed_at IS NULL/);
+
+    db.state.respond = () => [{ affectedRows: 0 }];
+    expect(await scrubSignupEvent(7, SCRUBBED)).toBe(0);
+  });
+
+  it("reports how many rows it matched, so a caller can tell scrubbed-now from scrubbed-already", async () => {
+    db.state.respond = () => [{ affectedRows: 1 }];
+    expect(await scrubSignupEvent(7, SCRUBBED)).toBe(1);
+    db.state.respond = () => [{}];
+    expect(await scrubSignupEvent(7, SCRUBBED)).toBeNull();
+  });
+});
+
+describe("deleteInvalidSignupEvents", () => {
+  it("deletes only rows where all three statuses are invalid, past the cutoff", async () => {
+    const before = new Date("2026-10-07T12:00:00Z");
+    const removed = await deleteInvalidSignupEvents(before);
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND received_at < \?\s*$/
+    );
+    expect(params).toEqual([before]);
+    expect(removed).toBe(1);
+  });
+
+  it("requires all three statuses, so a row that sent anything is never deleted", async () => {
+    // `invalid` is written to all three in the insert itself, so all three is what
+    // identifies these rows. One `invalid` status beside two real ones is a
+    // different animal, and deleting it would destroy a record of a real send.
+    const { sql } = (await deleteInvalidSignupEvents(new Date()), db.state.calls[0]);
+    expect(sql).not.toMatch(/\bOR\b/);
+    for (const column of ["meta_status", "whatsapp_status", "brevo_status"]) {
+      expect(sql, column).toMatch(new RegExp(`${column} = 'invalid'`));
+    }
+  });
+});
+
+describe("scrubStaleSignupEvents", () => {
+  it("scrubs every unscrubbed row past the cutoff, whatever its statuses say", async () => {
+    const before = new Date("2026-09-14T12:00:00Z");
+    const at = new Date("2026-10-14T12:00:00Z");
+    const scrubbed = await scrubStaleSignupEvents(before, at);
+    const { sql, params } = db.state.calls[0];
+    for (const column of SCRUB_COLUMNS) {
+      expect(sql, column).toMatch(new RegExp(`\\b${column} = NULL\\b`));
+    }
+    // No status clause at all: the rows this is for are precisely the ones whose
+    // statuses never settled.
+    expect(sql).toMatch(/WHERE scrubbed_at IS NULL AND received_at < \?/);
+    expect(sql).not.toMatch(/_status/);
+    expect(params).toEqual([at, before]);
+    expect(scrubbed).toBe(1);
+  });
+
+  it("sets the same columns as the single-row scrub, because both are built from one list", async () => {
+    await scrubStaleSignupEvents(new Date(), new Date());
+    const bulk = db.state.calls[0].sql;
+    db.state.calls.length = 0;
+    await scrubSignupEvent(7, new Date());
+    const one = db.state.calls[0].sql;
+    const setList = (sql) => sql.slice(sql.indexOf("SET"), sql.indexOf("WHERE")).trim();
+    expect(setList(bulk)).toBe(setList(one));
   });
 });
 

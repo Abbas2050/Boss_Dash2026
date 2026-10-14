@@ -107,6 +107,13 @@ export function normaliseEvent(raw = {}) {
     email: text(body.email).toLowerCase(),
     phone: text(body.phone),
     recordType: deriveRecordType(body.is_lead),
+    // The literal, kept beside the verdict derived from it. deriveRecordType
+    // resolves everything it does not recognise to "lead", so the row cannot be
+    // read backwards to find out what FXBO actually sent -- and that is the one
+    // thing CUTOVER step 5 has to discover, because a literal missing from
+    // CLIENT_LITERALS means nobody gets a WhatsApp message. Not lowercased:
+    // "False" and "false" are the same verdict but not the same evidence.
+    isLeadRaw: text(body.is_lead),
     marketingConsent: !isFalsyLiteral(body.marketing_consent),
     source: text(body.source),
     entity: text(body.entity),

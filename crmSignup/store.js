@@ -29,6 +29,7 @@ export const SIGNUP_EVENTS_SCHEMA = `
     email VARCHAR(255) NULL,
     phone VARCHAR(32) NULL,
     record_type VARCHAR(16) NOT NULL DEFAULT 'lead',
+    is_lead_raw VARCHAR(32) NULL,
     marketing_consent TINYINT(1) NOT NULL DEFAULT 0,
     is_ib TINYINT(1) NOT NULL DEFAULT 0,
     entity VARCHAR(255) NULL,
@@ -57,10 +58,39 @@ export const SIGNUP_EVENTS_SCHEMA = `
     raw_payload LONGTEXT NULL,
     received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    scrubbed_at DATETIME NULL,
     PRIMARY KEY (id),
-    UNIQUE KEY uq_signup_events_client_stage (crm_client_id, stage)
+    UNIQUE KEY uq_signup_events_client_stage (crm_client_id, stage),
+    KEY idx_signup_events_retention (scrubbed_at, received_at)
   )
 `;
+
+/**
+ * The retention index, named here because the guarded ALTER below adds the same
+ * one to a table that predates it.
+ *
+ * `scrubbed_at` leads because it is the selective half: a row is scrubbed within
+ * about a minute of arriving, so the unscrubbed set stays a handful however large
+ * the table grows, while "older than thirty days" grows to cover nearly all of
+ * it. MySQL reaches the NULLs through the leading column and finishes the
+ * received_at range inside the index, so the backstop never reads a scrubbed row.
+ */
+const RETENTION_INDEX = "idx_signup_events_retention";
+
+/**
+ * What was added after the table's first version.
+ *
+ * `signup_events` has never been deployed, so a new install gets both columns and
+ * the index from SIGNUP_EVENTS_SCHEMA and runs none of this. A table someone
+ * created while testing predates them, and silently lacking one is not a loud
+ * failure: a missing `scrubbed_at` leaves the scrub nowhere to record itself, and
+ * a missing `is_lead_raw` leaves CUTOVER step 5 nothing to read. Guarded on
+ * information_schema, following docusign/store.js.
+ */
+export const SIGNUP_EVENTS_ADDED_COLUMNS = [
+  ["is_lead_raw", `ALTER TABLE signup_events ADD COLUMN is_lead_raw VARCHAR(32) NULL`],
+  ["scrubbed_at", `ALTER TABLE signup_events ADD COLUMN scrubbed_at DATETIME NULL`],
+];
 
 /** Exported so a test can pin each parameter to its column by name rather
  *  than by position — a swap between two adjacent columns is otherwise
@@ -75,6 +105,7 @@ export const INSERT_COLUMNS = [
   "email",
   "phone",
   "record_type",
+  "is_lead_raw",
   "marketing_consent",
   "is_ib",
   "entity",
@@ -166,6 +197,15 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     str(fields.email, "email"),
     str(fields.phone, "phone"),
     fit(fields.recordType ?? "lead", "record_type"),
+    // The literal FXBO put in %client_is_lead%, verbatim, because the derived
+    // record_type beside it cannot be read backwards: everything unrecognised
+    // derives to "lead". It is the one thing raw_payload was kept for -- CUTOVER
+    // step 5 reads it to learn what the placeholder really contains -- and it is
+    // a flag, not client data, so the scrub leaves it alone. Cut rather than
+    // refused: a literal longer than the column is already not a literal we
+    // would add to CLIENT_LITERALS, and seeing its first 32 characters beats
+    // storing nothing.
+    str(fields.isLeadRaw, "is_lead_raw"),
     bool(fields.marketingConsent),
     bool(fields.isIb),
     str(fields.entity, "entity"),
@@ -225,7 +265,33 @@ export async function initCrmSignupStore() {
     });
   }
   await run(SIGNUP_EVENTS_SCHEMA);
+  await addWhatIsMissing();
   initialized = true;
+}
+
+/** How many rows information_schema reported, treating anything unreadable as none:
+ *  adding a column that is already there fails loudly, which is the safe direction. */
+const counted = (rows) => Number(rows?.[0]?.cnt || 0);
+
+async function addWhatIsMissing() {
+  for (const [column, statement] of SIGNUP_EVENTS_ADDED_COLUMNS) {
+    const rows = await all(
+      `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'signup_events' AND COLUMN_NAME = ?`,
+      [column]
+    );
+    if (counted(rows) === 0) await run(statement);
+  }
+  // Guarded the same way rather than with `CREATE INDEX IF NOT EXISTS`, which
+  // MySQL 8 does not accept -- it is MariaDB syntax, and this host is MySQL.
+  const rows = await all(
+    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'signup_events' AND INDEX_NAME = ?`,
+    [RETENTION_INDEX]
+  );
+  if (counted(rows) === 0) {
+    await run(`ALTER TABLE signup_events ADD KEY ${RETENTION_INDEX} (scrubbed_at, received_at)`);
+  }
 }
 
 /**
@@ -472,6 +538,110 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
 }
 
 /**
+ * The columns that are the client, as opposed to the statistics the table exists
+ * for. Exported so a test can pin the list: both scrubs below are built from it,
+ * so a column cannot be in one and missing from the other.
+ *
+ * The reason any of this is stored at all is that the endpoint answers FXBO
+ * immediately and sends afterwards, so the phone and the email must survive from
+ * receipt until all three destinations settle, retries included. After that
+ * nothing needs them -- FXBO is the system of record for who a client is, and
+ * this table only has to say whether client 48217 got their welcome and to
+ * recognise FXBO's redeliveries.
+ *
+ * Two absences are deliberate, and both are load-bearing:
+ *
+ *   `fbc` stays. It is captured at signup and reused weeks later for the
+ *   first-deposit conversion, so scrubbing it would send every later conversion
+ *   to Meta with no ad attached.
+ *
+ *   `crm_client_id` stays. It is the dedupe key; without it FXBO's redeliveries
+ *   insert again and send a second welcome.
+ *
+ * `entity`, `source` and the three `utm_*` columns stay too: they are segmentation,
+ * not identity, and they are the statistics worth keeping. `full_link` and
+ * `referer` go, because `full_link` carries the `fbclid` and the whole query
+ * string verbatim and both are redundant once `fbc` and the `utm_*` columns have
+ * been extracted from them.
+ */
+export const SCRUB_COLUMNS = [
+  "first_name",
+  "middle_name",
+  "last_name",
+  "email",
+  "phone",
+  "full_link",
+  "referer",
+  "raw_payload",
+];
+
+const SCRUB_SET = SCRUB_COLUMNS.map((column) => `${column} = NULL`).join(", ");
+
+/**
+ * One row's client data, removed.
+ *
+ * `scrubbed_at IS NULL` is what makes a second scrub a no-op rather than a second
+ * timestamp: the column is the audit trail, and overwriting it would move the
+ * moment the data actually went. It also means the two scrubs cannot fight -- the
+ * backstop below skips what this has already done, and the other way round.
+ *
+ * Returns how many rows it matched, so a caller can tell "scrubbed now" from
+ * "scrubbed already".
+ */
+export async function scrubSignupEvent(id, at = new Date()) {
+  const result = await run(
+    `UPDATE signup_events
+        SET ${SCRUB_SET}, scrubbed_at = ?
+      WHERE id = ? AND scrubbed_at IS NULL`,
+    [at, id]
+  );
+  return matchedRows(result);
+}
+
+/**
+ * The rows that never sent anything and never will, removed whole.
+ *
+ * An invalid row is an unparseable payload or an FXBO "Test webhook" press. All
+ * three statuses are written `invalid` in the insert itself, so this is the shape
+ * that identifies them; a row where only some are invalid is not one of these and
+ * is deliberately left alone.
+ *
+ * They are the only rows that keep their `raw_payload` for a while, because they
+ * are the rows CUTOVER step 5 reads.
+ */
+export async function deleteInvalidSignupEvents(receivedBefore) {
+  const result = await run(
+    `DELETE FROM signup_events
+      WHERE meta_status = 'invalid'
+        AND whatsapp_status = 'invalid'
+        AND brevo_status = 'invalid'
+        AND received_at < ?`,
+    [receivedBefore]
+  );
+  return matchedRows(result);
+}
+
+/**
+ * The backstop: every row still unscrubbed past its window, scrubbed regardless
+ * of what its statuses say.
+ *
+ * The settle path scrubs a row about a minute after signup. This catches the ones
+ * that never settle -- a worker left off by CRM_EVENTS_WORKER_ENABLED, or a row
+ * whose three claims split between two overlapped workers so neither of them ever
+ * saw all three settle. Those rows are never claimed again, so without this they
+ * would keep a name, an email and a phone for ever.
+ */
+export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
+  const result = await run(
+    `UPDATE signup_events
+        SET ${SCRUB_SET}, scrubbed_at = ?
+      WHERE scrubbed_at IS NULL AND received_at < ?`,
+    [at, receivedBefore]
+  );
+  return matchedRows(result);
+}
+
+/**
  * Every event since a date, newest first, capped.
  *
  * This feeds the events TABLE and nothing else. The counts beside it come from
@@ -484,7 +654,7 @@ export async function listEventsSince(since, cap = 2000) {
     `SELECT id, crm_client_id, stage, first_name, last_name, email, phone, record_type, source,
             meta_status, meta_detail, meta_attempts,
             whatsapp_status, whatsapp_detail, whatsapp_attempts,
-            brevo_status, brevo_detail, brevo_attempts, received_at
+            brevo_status, brevo_detail, brevo_attempts, received_at, scrubbed_at
        FROM signup_events
       WHERE received_at >= ?
       ORDER BY received_at DESC

@@ -182,6 +182,7 @@ describe("normaliseEvent", () => {
       email: "ali.khan@example.com",
       phone: "+971507192185",
       recordType: "client",
+      isLeadRaw: "0",
       marketingConsent: true,
       source: "SVG",
       entity: "SVG Ltd",
@@ -218,6 +219,41 @@ describe("normaliseEvent", () => {
     const { fields } = normaliseEvent({ ...RAW, is_lead: "1", is_ib: "0" });
     expect(fields.recordType).toBe("lead");
     expect(fields.isIb).toBe(false);
+  });
+
+  it("keeps the is_lead literal beside the verdict, so the row can be read backwards", () => {
+    // The verdict cannot: deriveRecordType resolves everything it does not
+    // recognise to "lead", so "lead" says nothing about what FXBO actually sent.
+    // CUTOVER step 5 has to learn that literal, because one missing from
+    // CLIENT_LITERALS means every client is read as a lead and nobody gets a
+    // WhatsApp message -- and raw_payload, which used to carry it, is scrubbed.
+    for (const [sent, expected] of [
+      ["0", "client"],
+      ["false", "client"],
+      ["1", "lead"],
+      ["true", "lead"],
+      ["Yes", "lead"],
+      ["  No  ", "client"],
+    ]) {
+      const { fields } = normaliseEvent({ ...RAW, is_lead: sent });
+      expect(fields.isLeadRaw, sent).toBe(sent.trim());
+      expect(fields.recordType, sent).toBe(expected);
+    }
+  });
+
+  it("keeps the is_lead literal's own case, because the evidence is the casing too", () => {
+    // deriveRecordType lowercases before deciding; what goes in the column must
+    // not, or an operator comparing it with CLIENT_LITERALS is reading our
+    // transformation rather than FXBO's output.
+    expect(normaliseEvent({ ...RAW, is_lead: "False" }).fields.isLeadRaw).toBe("False");
+  });
+
+  it("reports an absent is_lead as nothing at all, not as a literal", () => {
+    // Which the store writes as NULL. "Never arrived" and "arrived empty" are
+    // the same thing from FXBO and both mean the placeholder is not rendering.
+    const { is_lead: _unused, ...withoutIsLead } = RAW;
+    expect(normaliseEvent(withoutIsLead).fields.isLeadRaw).toBe("");
+    expect(normaliseEvent({ ...RAW, is_lead: "   " }).fields.isLeadRaw).toBe("");
   });
 
   it("reads marketing_consent and is_ib into their own fields", () => {

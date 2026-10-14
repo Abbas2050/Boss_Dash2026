@@ -6,7 +6,7 @@
 // per-action retry columns. The SQL statements themselves run against a fake
 // pool in store.sql.test.js; no real MySQL server is involved in either file.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, buildInsertParams } from "./store.js";
+import { SIGNUP_EVENTS_SCHEMA, INSERT_COLUMNS, SCRUB_COLUMNS, buildInsertParams } from "./store.js";
 
 // The DDL body split on top-level commas. A comma inside parentheses belongs to
 // a type or a key, not to the list, so depth is tracked.
@@ -38,6 +38,7 @@ const widthOf = (column) => Number(definitionOf(column).match(/VARCHAR\((\d+)\)/
 // The text columns buildInsertParams cuts, with the field that feeds each one.
 const CUT_COLUMNS = [
   ["record_type", "recordType"],
+  ["is_lead_raw", "isLeadRaw"],
   ["fxbo_unique_id", "fxboUniqueId"],
   ["first_name", "firstName"],
   ["middle_name", "middleName"],
@@ -58,7 +59,7 @@ const CUT_COLUMNS = [
 // else after the type (two definitions run together by a missing comma) fails.
 const COLUMN_DEFINITION =
   /^[a-z_]+ (BIGINT UNSIGNED|BIGINT|INT|TINYINT\(1\)|VARCHAR\(\d+\)|TEXT|LONGTEXT|DATETIME)( NOT NULL| NULL| DEFAULT ('[^']*'|\d+|CURRENT_TIMESTAMP)| AUTO_INCREMENT| ON UPDATE CURRENT_TIMESTAMP)*$/;
-const KEY_DEFINITION = /^(PRIMARY KEY \(\w+\)|UNIQUE KEY \w+ \(\w+(, \w+)*\))$/;
+const KEY_DEFINITION = /^(PRIMARY KEY \(\w+\)|(UNIQUE )?KEY \w+ \(\w+(, \w+)*\))$/;
 
 describe("signup_events schema", () => {
   it("is unique on client AND stage, not client alone", () => {
@@ -94,6 +95,29 @@ describe("signup_events schema", () => {
 
   it("stores the raw payload", () => {
     expect(SIGNUP_EVENTS_SCHEMA).toMatch(/raw_payload\s+LONGTEXT/i);
+  });
+
+  it("stores the is_lead literal, which is the one thing raw_payload was kept for", () => {
+    // raw_payload is scrubbed with the rest of the client data, so the literal
+    // FXBO renders into %client_is_lead% needs a column of its own. Without it
+    // CUTOVER step 5 has nothing to read, and a literal missing from
+    // CLIENT_LITERALS means every client is read as a lead and nobody gets a
+    // WhatsApp message.
+    expect(definitionOf("is_lead_raw")).toBe("is_lead_raw VARCHAR(32) NULL");
+  });
+
+  it("records when a row was scrubbed, so the scrub is auditable and the backstop has an index", () => {
+    // Nullable on purpose: NULL is "never scrubbed", which is what the backstop
+    // selects on and what the settings tab reads to tell a scrubbed row apart
+    // from one that never carried the value.
+    expect(definitionOf("scrubbed_at")).toBe("scrubbed_at DATETIME NULL");
+  });
+
+  it("indexes the two columns the retention passes filter on, scrubbed_at first", () => {
+    // scrubbed_at leads because it is the selective half: rows scrub within a
+    // minute, so the unscrubbed set stays a handful while "older than thirty
+    // days" grows to cover nearly the whole table.
+    expect(ddlSegments()).toContain("KEY idx_signup_events_retention (scrubbed_at, received_at)");
   });
 
   it("defaults all three action statuses to pending", () => {
@@ -150,6 +174,98 @@ describe("signup_events schema", () => {
   });
 });
 
+// This table stores statistics, not client records. FXBO is the system of record
+// for who a client is; this one only has to say whether client 48217 got their
+// welcome and to recognise FXBO's redeliveries. The client data is here only
+// because the endpoint answers FXBO immediately and sends afterwards, so the
+// phone and the email have to survive from receipt until all three destinations
+// settle, retries included -- and after that nothing needs them.
+describe("the scrub list", () => {
+  it("is exactly the client's own fields", () => {
+    // Pinned as a whole list rather than checked member by member, so neither a
+    // column dropped from it nor one added to it can pass. Both directions
+    // matter: a dropped one keeps client data for ever, and an added one deletes
+    // a statistic the table exists for.
+    expect(SCRUB_COLUMNS).toEqual([
+      "first_name",
+      "middle_name",
+      "last_name",
+      "email",
+      "phone",
+      "full_link",
+      "referer",
+      "raw_payload",
+    ]);
+  });
+
+  it("never scrubs the frozen click id", () => {
+    // fbc is captured at signup and reused weeks later for the first-deposit
+    // conversion. Scrubbing it would send every later conversion to Meta with no
+    // ad attached -- and Meta would accept all of them without complaint.
+    expect(SCRUB_COLUMNS).not.toContain("fbc");
+  });
+
+  it("never scrubs the dedupe key", () => {
+    // Without crm_client_id, FXBO's redelivery of a stage no longer collides on
+    // (crm_client_id, stage): it inserts a second row and sends a second welcome.
+    expect(SCRUB_COLUMNS).not.toContain("crm_client_id");
+    expect(SCRUB_COLUMNS).not.toContain("stage");
+  });
+
+  it("never scrubs the statistics the table exists for", () => {
+    // Segmentation, not identity. These are the figures the settings tab counts
+    // and the only record of where a client came from; FXBO cannot be asked for
+    // them per funnel stage after the fact.
+    for (const column of [
+      "entity",
+      "source",
+      "language",
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "record_type",
+      "is_lead_raw",
+      "marketing_consent",
+      "is_ib",
+      "fxbo_unique_id",
+      "whatsapp_request_id",
+      "received_at",
+      "scrubbed_at",
+    ]) {
+      expect(SCRUB_COLUMNS, column).not.toContain(column);
+    }
+  });
+
+  it("names only columns of the table, every one of them nullable", () => {
+    // A scrub of a NOT NULL column would fail the UPDATE and leave the row
+    // holding everything, which is the failure that looks like nothing happening.
+    for (const column of SCRUB_COLUMNS) {
+      expect(definitionOf(column), column).toBeDefined();
+      expect(definitionOf(column), column).not.toMatch(/NOT NULL/);
+    }
+  });
+
+  it("covers every column of the table that holds the client's own data", () => {
+    // The other direction of the first test, read off the schema rather than a
+    // literal list: a new client-data column added to the table and not to the
+    // scrub list would keep that data for ever, and nothing else here would say so.
+    const CLIENT_DATA = [
+      "first_name",
+      "middle_name",
+      "last_name",
+      "email",
+      "phone",
+      "full_link",
+      "referer",
+      "raw_payload",
+    ];
+    for (const column of CLIENT_DATA) {
+      expect(SIGNUP_EVENTS_SCHEMA, column).toMatch(new RegExp(`^\\s+${column}\\s`, "m"));
+      expect(SCRUB_COLUMNS, column).toContain(column);
+    }
+  });
+});
+
 describe("buildInsertParams", () => {
   const FIELDS = {
     stage: "registered",
@@ -171,6 +287,7 @@ describe("buildInsertParams", () => {
     referer: "https://skylinkscapital.com/en/",
     fullLink: "https://skylinkscapital.com/en/?fbclid=ABC",
     fxboUniqueId: "d3f1-aa",
+    isLeadRaw: "0",
   };
 
   it("converts booleans to the 1/0 MySQL stores", () => {
@@ -247,6 +364,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       email: "ali.khan@example.com",
       phone: "+971507192185",
       record_type: "client",
+      is_lead_raw: "0",
       marketing_consent: 1,
       is_ib: 0,
       entity: "SVG Ltd",
