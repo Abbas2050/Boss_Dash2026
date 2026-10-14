@@ -8,20 +8,29 @@ import { formatDubaiInstant } from "@/lib/dubaiTime";
 const OVERVIEW_URL = "/api/crm-events/overview";
 const REQUEUE_URL = "/api/crm-events/requeue";
 
-/** The two destinations one control resends together.
+/** The three destinations one control resends together.
  *
  *  Safe to repeat, each for its own reason: Meta deduplicates server events that
- *  share an event id and an event name, and the Brevo call is an upsert. So a row
- *  that did in fact go through is not counted twice or contacted twice, and there
- *  is nothing to be gained by making an operator press two buttons.
+ *  share an event id and an event name, the Brevo call is an upsert, and OpenAI
+ *  deduplicates on the event `id` -- which this service derives from
+ *  `<crm_client_id>:<stage>` and therefore reuses unchanged on every retry and
+ *  every resend. So a row that did in fact go through is not counted twice or
+ *  contacted twice, and there is nothing to be gained by making an operator
+ *  press three buttons.
  *
- *  WhatsApp is deliberately not in here (2026-10-14, user's call). It has neither
- *  property, and a `failed` or `rejected` WhatsApp row may already have reached
- *  the handset -- DoubleTick can answer 2xx carrying a status outside our
- *  allowlist, which we record as `rejected` on purpose so that the value gets
- *  found. Resending one of those sends a second welcome. It gets its own control,
- *  its own warning in plain sight, and its own confirmation. */
-const SAFE_TO_REPEAT = ["meta", "brevo"] as const;
+ *  WhatsApp is deliberately not in here (2026-10-14, user's call). It has none
+ *  of those properties, and a `failed` or `rejected` WhatsApp row may already
+ *  have reached the handset -- DoubleTick can answer 2xx carrying a status
+ *  outside our allowlist, which we record as `rejected` on purpose so that the
+ *  value gets found. Resending one of those sends a second welcome. It gets its
+ *  own control, its own warning in plain sight, and its own confirmation.
+ *
+ *  **The test for this list is "would a repeat reach a person twice", not "is a
+ *  repeat wasted".** An OpenAI resend of a row older than seven days reaches
+ *  nobody and sends nothing -- the worker skips it and the count below never
+ *  offered it -- so the window is a reason the number is smaller, never a reason
+ *  for a warning. */
+const SAFE_TO_REPEAT = ["meta", "brevo", "openai"] as const;
 
 const STAGE_LABELS: Record<string, string> = {
   lead: "Lead",
@@ -31,10 +40,16 @@ const STAGE_LABELS: Record<string, string> = {
   first_deposit: "First deposit",
 };
 
+/** The four destinations, in the backend's own order (crmSignup/store.js
+ *  DESTINATIONS), with the name an operator knows each by. OpenAI's column is
+ *  `openai_*` and its requeue key is `openai`, but the thing it feeds is the
+ *  ChatGPT Ads conversion setup screen, which is where anybody reading this tab
+ *  would go to check it. */
 const DESTINATIONS = [
   ["meta", "Meta"],
   ["whatsapp", "WhatsApp"],
   ["brevo", "Brevo"],
+  ["openai", "ChatGPT Ads"],
 ] as const;
 
 /** A status that means something needs attention, as opposed to one that is
@@ -66,6 +81,7 @@ type EventRow = {
   meta: DestinationStatus;
   whatsapp: DestinationStatus;
   brevo: DestinationStatus;
+  openai: DestinationStatus;
 };
 
 /** One FXBO rule's health. `everSeen` is what separates a rule that fired and
@@ -77,15 +93,21 @@ type StageHealth = {
   everSeen: boolean;
 };
 
-/** Per destination, how many failures the resend would pick up and how many it
- *  can no longer reach.
+/** Per destination, how many failures the resend would pick up and the two
+ *  reasons it can no longer reach the rest.
  *
  *  Not the same numbers as `destinations`, and it has to be its own field for
  *  two reasons: those counters follow the selected period, and they count rows
  *  whose client data has been scrubbed, which cannot be resent at all. A button
- *  promising 40 and delivering 12 is worse than no button -- `scrubbed` is what
- *  accounts for the difference. */
-type Resendable = { resendable: number; scrubbed: number };
+ *  promising 40 and delivering 12 is worse than no button.
+ *
+ *  **The three account for every failure a destination has**, which is the only
+ *  reason they are all here: `scrubbed` is the thirty-day backstop, and
+ *  `expired` is OpenAI's 7-day window -- rows that still hold their client data
+ *  and that OpenAI refuses on their age alone. It is zero for the other three,
+ *  which have no deadline. Show one of the two and the subtraction looks
+ *  complete when it is not, which is worse than showing neither. */
+type Resendable = { resendable: number; scrubbed: number; expired: number };
 
 type Overview = {
   windowDays: number;
@@ -220,12 +242,12 @@ export function CrmEventsPage() {
   }, [load]);
 
   /**
-   * One destination's failures, or two, put back in the queue.
+   * One destination's failures, or three, put back in the queue.
    *
    * One request per destination, because the endpoint is per destination and the
    * statement behind it writes one destination's columns -- which is the point:
-   * fixing BREVO_LIST_ID must not re-send anybody's WhatsApp welcome. The Meta
-   * and Brevo control simply asks for both.
+   * fixing BREVO_LIST_ID must not re-send anybody's WhatsApp welcome. The safe
+   * control simply asks for each of its own.
    *
    * What happened is always reported, success or not, and the failure says how
    * many went out BEFORE it failed rather than claiming nothing did: the first
@@ -239,6 +261,7 @@ export function CrmEventsPage() {
       setResendNote(null);
       let requeued = 0;
       let scrubbed = 0;
+      let expired = 0;
       try {
         for (const destination of destinations) {
           const resp = await fetch(REQUEUE_URL, {
@@ -251,6 +274,10 @@ export function CrmEventsPage() {
           const answer = isRecord(body) ? body : {};
           requeued += Number(answer.requeued) || 0;
           scrubbed += Number(answer.alreadyScrubbed) || 0;
+          // The other half of the same shortfall, and the half nothing else on
+          // the page can explain after the action: the counts it was pressed
+          // against have already been replaced by the reload below.
+          expired += Number(answer.expired) || 0;
         }
         setResendNote(
           requeued === 0
@@ -258,6 +285,10 @@ export function CrmEventsPage() {
             : `${plural(requeued, "send")} queued; they go out within a minute.` +
                 (scrubbed > 0
                   ? ` ${plural(scrubbed, "earlier failure")} had already been scrubbed and can never be resent.`
+                  : "") +
+                (expired > 0
+                  ? ` ${plural(expired, "ChatGPT Ads failure")} ${expired === 1 ? "is" : "are"} older than OpenAI's` +
+                    " 7-day window, which no resend can reach."
                   : ""),
         );
       } catch {
@@ -279,13 +310,19 @@ export function CrmEventsPage() {
   const resendable = (key: string) => data?.requeue?.[key]?.resendable ?? 0;
   const safeCount = SAFE_TO_REPEAT.reduce((n, key) => n + resendable(key), 0);
   const whatsappCount = resendable("whatsapp");
+  // Read from `openai` by name rather than summed over the group, because it is
+  // the only destination with a deadline and the line below names it. A sum
+  // would read the same today -- the other three report a literal zero -- and
+  // would quietly attribute somebody else's expired rows to ChatGPT Ads the day
+  // that stopped being true.
+  const expiredCount = data?.requeue?.openai?.expired ?? 0;
 
   const rows = useMemo(() => {
     const all = data?.events ?? [];
     return all.filter((row) => {
       if (stage !== "all" && row.stage !== stage) return false;
       if (!problemsOnly) return true;
-      return [row.meta, row.whatsapp, row.brevo].some((d) => PROBLEM.has(d?.status));
+      return [row.meta, row.whatsapp, row.brevo, row.openai].some((d) => PROBLEM.has(d?.status));
     });
   }, [data, stage, problemsOnly]);
 
@@ -299,7 +336,7 @@ export function CrmEventsPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground">CRM Events</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Every FXBO funnel webhook, and what we sent to Meta, WhatsApp and Brevo.
+              Every FXBO funnel webhook, and what we sent to Meta, WhatsApp, Brevo and ChatGPT Ads.
             </p>
           </div>
           <label className="text-sm">
@@ -406,7 +443,23 @@ export function CrmEventsPage() {
 
             <section>
               <h2 className={SECTION_TITLE}>Destinations</h2>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+              {/* The one thing a reader of these four cards can misread, said
+                  once rather than in a tooltip on one of them. ChatGPT Ads is
+                  the first destination whose skip depends on the clock, and
+                  `skipped` is the counter where that lands -- so the word means
+                  two unrelated things on this card and only the row's own detail
+                  tells them apart. A second counter was the alternative and was
+                  not taken: the backend has one vocabulary of seven statuses,
+                  and a status invented on the page would be a number no query
+                  could reproduce. */}
+              <p className="mb-2 text-xs text-muted-foreground">
+                ChatGPT Ads counts every registration as <span className="font-medium">skipped</span> — the website
+                pixel owns that conversion, so we deliberately never send it. It is also the only destination whose
+                skip can mean the clock instead of the stage: OpenAI accepts no conversion more than 7 days old, so a
+                row left unsent through an outage is skipped for its age once the worker reaches it. Both reasons are
+                in each row’s detail in the table below.
+              </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
                 {DESTINATIONS.map(([key, label]) => {
                   const counts = data.destinations[key] ?? {};
                   return (
@@ -431,13 +484,16 @@ export function CrmEventsPage() {
               <p className="mb-2 text-xs text-muted-foreground">
                 A destination whose send failed or was rejected keeps the client’s details so the cause can be fixed
                 and the send retried. These counts cover the whole table rather than the selected period, and they
-                leave out rows the 30-day scrub has already taken — those can never be resent.
+                leave out rows the 30-day scrub has already taken — those can never be resent. ChatGPT Ads leaves
+                out one more kind: a conversion older than OpenAI’s 7-day window, which they would refuse whatever
+                we fixed.
               </p>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className={CARD}>
-                  <div className="mb-1 text-sm font-medium text-foreground">Meta and Brevo</div>
+                  <div className="mb-1 text-sm font-medium text-foreground">Meta, Brevo and ChatGPT Ads</div>
                   <p className="mb-2 text-xs text-muted-foreground">
-                    Safe to repeat: Meta deduplicates on the event id, and the Brevo contact call is an upsert. A row
+                    Safe to repeat: Meta deduplicates on the event id, the Brevo contact call is an upsert, and
+                    ChatGPT Ads deduplicates on the event id too — which we reuse unchanged on every retry. A row
                     that did go through is not counted or contacted twice.
                   </p>
                   <button
@@ -451,8 +507,24 @@ export function CrmEventsPage() {
                       ? "Resending…"
                       : safeCount === 0
                         ? "Nothing to resend"
-                        : `Resend ${plural(safeCount, "failed Meta and Brevo send")}`}
+                        : `Resend ${plural(safeCount, "failed Meta, Brevo and ChatGPT Ads send")}`}
                   </button>
+                  {/* Stated as the fact it is, in the muted tone the rest of
+                      this card uses and not the amber the WhatsApp warning uses.
+                      An operator reading "12 resendable, 28 expired" has to
+                      finish the sentence with "because OpenAI will not take
+                      them", not with "because something here is broken" -- so
+                      the rule is named, and whose rule it is. Hidden at zero:
+                      the commonest state is no expired rows at all, and a
+                      permanent nil line is a line people stop reading. */}
+                  {expiredCount > 0 ? (
+                    <p data-testid="resend-expired" className="mt-2 text-xs text-muted-foreground">
+                      {plural(expiredCount, "ChatGPT Ads failure")} {expiredCount === 1 ? "is" : "are"} older than 7
+                      days and {expiredCount === 1 ? "is" : "are"} not in that count. OpenAI accepts no conversion
+                      more than 7 days old, and the event has to say when the conversion actually happened, so no
+                      resend can reach {expiredCount === 1 ? "it" : "them"}. That is OpenAI’s rule, not a fault here.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className={CARD}>
@@ -540,7 +612,8 @@ export function CrmEventsPage() {
               </div>
 
               <p className="mb-2 text-xs text-muted-foreground">
-                Name, email and phone are removed once Meta, WhatsApp and Brevo have all succeeded or been skipped —
+                Name, email and phone are removed once Meta, WhatsApp, Brevo and ChatGPT Ads have all succeeded or
+                been skipped —
                 about a minute after signup — so most rows read “scrubbed”. FXBO holds the client record; this table
                 holds the statistics. A row with a failed or rejected destination keeps its name, email and phone so
                 the send can be fixed and retried; it is scrubbed anyway after 30 days, and whatever it had not sent
@@ -566,6 +639,7 @@ export function CrmEventsPage() {
                         <th className="p-2 text-left">Meta</th>
                         <th className="p-2 text-left">WhatsApp</th>
                         <th className="p-2 text-left">Brevo</th>
+                        <th className="p-2 text-left">ChatGPT Ads</th>
                       </tr>
                     </thead>
                     <tbody>

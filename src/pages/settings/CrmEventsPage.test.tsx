@@ -28,6 +28,10 @@ const OVERVIEW = {
     meta: { pending: 0, sent: 20, skipped: 0, retrying: 1, failed: 1, rejected: 0, invalid: 0 },
     whatsapp: { pending: 0, sent: 10, skipped: 12, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
     brevo: { pending: 0, sent: 12, skipped: 10, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
+    // `skipped` is the big number here and that is the ordinary case: every
+    // registration is the website pixel's, so ChatGPT Ads deliberately sends
+    // nothing for that stage.
+    openai: { pending: 0, sent: 10, skipped: 12, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
   },
   events: [
     {
@@ -43,6 +47,7 @@ const OVERVIEW = {
       meta: { status: "sent", detail: "http 200", attempts: 1 },
       whatsapp: { status: "sent", detail: "SENT", attempts: 1 },
       brevo: { status: "sent", detail: "http 201", attempts: 1 },
+      openai: { status: "skipped", detail: "registered is owned by the website pixel", attempts: 0 },
     },
     {
       id: 2,
@@ -57,6 +62,7 @@ const OVERVIEW = {
       meta: { status: "failed", detail: "http 400 Invalid parameter", attempts: 3 },
       whatsapp: { status: "skipped", detail: "stage not applicable", attempts: 0 },
       brevo: { status: "skipped", detail: "stage not applicable", attempts: 0 },
+      openai: { status: "sent", detail: "http 200", attempts: 1 },
     },
   ],
 };
@@ -268,6 +274,7 @@ const DISTINCT = {
     meta: { sent: 31, failed: 32, rejected: 33, retrying: 34, skipped: 35, pending: 36, invalid: 37 },
     whatsapp: { sent: 41, failed: 42, rejected: 43, retrying: 44, skipped: 45, pending: 46, invalid: 47 },
     brevo: { sent: 51, failed: 52, rejected: 53, retrying: 54, skipped: 55, pending: 56, invalid: 57 },
+    openai: { sent: 61, failed: 62, rejected: 63, retrying: 64, skipped: 65, pending: 66, invalid: 67 },
   },
   events: [] as unknown[],
 };
@@ -276,8 +283,8 @@ const withHealth = (health: Record<string, unknown>) => ({ ...DISTINCT, health }
 
 const FRESH = { lastReceivedAt: "2026-10-13T11:00:00.000Z", ageHours: 1, stale: false };
 
-function event(id: number, crmClientId: string, stage: string, statuses: [string, string, string]) {
-  const [meta, whatsapp, brevo] = statuses;
+function event(id: number, crmClientId: string, stage: string, statuses: [string, string, string, string]) {
+  const [meta, whatsapp, brevo, openai] = statuses;
   return {
     id,
     receivedAt: "2026-10-13T11:00:00.000Z",
@@ -291,6 +298,7 @@ function event(id: number, crmClientId: string, stage: string, statuses: [string
     meta: { status: meta, detail: null, attempts: 0 },
     whatsapp: { status: whatsapp, detail: null, attempts: 0 },
     brevo: { status: brevo, detail: null, attempts: 0 },
+    openai: { status: openai, detail: null, attempts: 0 },
   };
 }
 
@@ -552,6 +560,13 @@ describe("counts land in the right cell", () => {
     expect(screen.getByTestId("dest-brevo").textContent).toBe(
       "Brevopending56sent51skipped55retrying54failed52rejected53invalid57",
     );
+    // The fourth card, under the name the ChatGPT Ads conversion setup screen
+    // uses rather than the column prefix. Without it a destination that sends,
+    // retries and scrubs perfectly has no card at all, and this page reports a
+    // healthy three-destination system.
+    expect(screen.getByTestId("dest-openai").textContent).toBe(
+      "ChatGPT Adspending66sent61skipped65retrying64failed62rejected63invalid67",
+    );
   });
 
   it("shows zeroes for a destination or a status the response leaves out", async () => {
@@ -563,6 +578,9 @@ describe("counts land in the right cell", () => {
     );
     expect(screen.getByTestId("dest-brevo").textContent).toBe(
       "Brevopending0sent0skipped0retrying0failed0rejected0invalid0",
+    );
+    expect(screen.getByTestId("dest-openai").textContent).toBe(
+      "ChatGPT Adspending0sent0skipped0retrying0failed0rejected0invalid0",
     );
   });
 
@@ -594,6 +612,7 @@ describe("the events table in detail", () => {
     meta: { status: "sent", detail: "http 200", attempts: 1 },
     whatsapp: { status: "retrying", detail: "http 503 upstream", attempts: 2 },
     brevo: { status: "invalid", detail: "no email address", attempts: 1 },
+    openai: { status: "rejected", detail: "http 400 unknown field", attempts: 1 },
   };
 
   it("puts every field in its own column, with the three destinations in a fixed order", async () => {
@@ -613,6 +632,7 @@ describe("the events table in detail", () => {
       "senthttp 200",
       "retryinghttp 503 upstream",
       "invalidno email address",
+      "rejectedhttp 400 unknown field",
     ]);
   });
 
@@ -631,6 +651,7 @@ describe("the events table in detail", () => {
       "Meta",
       "WhatsApp",
       "Brevo",
+      "ChatGPT Ads",
     ]);
   });
 
@@ -681,7 +702,7 @@ describe("the events table in detail", () => {
     // Filtering runs in a useMemo, outside the fetch's try, so it has to cope
     // on its own. The first destination is the one that is missing.
     const { meta: _gone, ...noMeta } = FULL;
-    const clean = { ...FULL, id: 10, crmClientId: "90004", whatsapp: FULL.meta, brevo: FULL.meta };
+    const clean = { ...FULL, id: 10, crmClientId: "90004", whatsapp: FULL.meta, brevo: FULL.meta, openai: FULL.meta };
     const { meta: _gone2, ...cleanNoMeta } = clean;
     installFetch({ ...DISTINCT, events: [noMeta, cleanNoMeta] });
     render(<CrmEventsPage />);
@@ -813,15 +834,15 @@ describe("a scrubbed row", () => {
 
 describe("filtering the table", () => {
   const MIXED = [
-    event(1, "wa-rejected", "registered", ["sent", "rejected", "sent"]),
-    event(2, "brevo-invalid", "verified", ["sent", "skipped", "invalid"]),
-    event(3, "meta-retrying", "verified", ["retrying", "skipped", "skipped"]),
-    event(4, "clean", "verified", ["sent", "skipped", "skipped"]),
-    event(5, "meta-failed", "registered", ["failed", "skipped", "skipped"]),
-    event(6, "pending-only", "verified", ["pending", "pending", "pending"]),
-    event(7, "lead-clean", "lead", ["skipped", "skipped", "skipped"]),
-    event(8, "live-clean", "live_account", ["sent", "sent", "sent"]),
-    event(9, "deposit-clean", "first_deposit", ["sent", "sent", "sent"]),
+    event(1, "wa-rejected", "registered", ["sent", "rejected", "sent", "skipped"]),
+    event(2, "brevo-invalid", "verified", ["sent", "skipped", "invalid", "sent"]),
+    event(3, "meta-retrying", "verified", ["retrying", "skipped", "skipped", "sent"]),
+    event(4, "clean", "verified", ["sent", "skipped", "skipped", "sent"]),
+    event(5, "meta-failed", "registered", ["failed", "skipped", "skipped", "skipped"]),
+    event(6, "pending-only", "verified", ["pending", "pending", "pending", "pending"]),
+    event(7, "lead-clean", "lead", ["skipped", "skipped", "skipped", "skipped"]),
+    event(8, "live-clean", "live_account", ["sent", "sent", "sent", "sent"]),
+    event(9, "deposit-clean", "first_deposit", ["sent", "sent", "sent", "sent"]),
   ];
 
   it("shows every row to begin with", async () => {
@@ -831,7 +852,7 @@ describe("filtering the table", () => {
     expect(shownIds()).toEqual(MIXED.map((e) => e.crmClientId));
   });
 
-  it("counts failed, rejected, invalid and retrying, in any of the three destinations, as problems", async () => {
+  it("counts failed, rejected, invalid and retrying, in any of the four destinations, as problems", async () => {
     installFetch({ ...DISTINCT, events: MIXED });
     render(<CrmEventsPage />);
     await screen.findByText("clean");
@@ -891,7 +912,7 @@ describe("filtering the table", () => {
   });
 
   it("says the filters excluded everything, not that the period was empty, when events exist", async () => {
-    installFetch({ ...DISTINCT, events: [event(1, "only-one", "registered", ["sent", "sent", "sent"])] });
+    installFetch({ ...DISTINCT, events: [event(1, "only-one", "registered", ["sent", "sent", "sent", "skipped"])] });
     render(<CrmEventsPage />);
     await screen.findByText("only-one");
     fireEvent.click(screen.getByLabelText(/problems only/i));
@@ -1102,16 +1123,21 @@ const REQUEUE_URL = "/api/crm-events/requeue";
 const RESENDABLE = {
   ...DISTINCT,
   requeue: {
-    meta: { resendable: 2, scrubbed: 9 },
-    whatsapp: { resendable: 4, scrubbed: 11 },
-    brevo: { resendable: 10, scrubbed: 28 },
+    meta: { resendable: 2, scrubbed: 9, expired: 0 },
+    whatsapp: { resendable: 4, scrubbed: 11, expired: 0 },
+    brevo: { resendable: 10, scrubbed: 28, expired: 0 },
+    // 3 + 7 + 19 = 29 ChatGPT Ads failures, of which only 3 can be sent again:
+    // 7 were scrubbed by the thirty-day backstop and 19 are outside OpenAI's
+    // 7-day window. `expired` is the only one of the three numbers that is not
+    // zero for every other destination.
+    openai: { resendable: 3, scrubbed: 7, expired: 19 },
   },
-  events: [event(1, "row-a", "registered", ["failed", "rejected", "failed"])],
+  events: [event(1, "row-a", "registered", ["failed", "rejected", "failed", "failed"])],
 };
 
 /** A fetch that answers the overview with `overview` and every requeue POST
  *  with the next answer in `answers`, round-robin on the last one. */
-function installResendFetch(overview: unknown = RESENDABLE, answers: unknown[] = [{ requeued: 10, alreadyScrubbed: 28 }]) {
+function installResendFetch(overview: unknown = RESENDABLE, answers: unknown[] = [{ requeued: 10, alreadyScrubbed: 28, expired: 0 }]) {
   let i = 0;
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input) === REQUEUE_URL) {
@@ -1134,24 +1160,25 @@ const requeued = (fn: ReturnType<typeof installResendFetch>) =>
     .map(([, init]) => JSON.parse(String((init as RequestInit)?.body ?? "{}")).destination);
 
 describe("the resend controls", () => {
-  it("offers Meta and Brevo together, with the count it is about to resend", async () => {
-    // One control for the two, because both are safe to repeat: Meta
-    // deduplicates on the event id and the Brevo call is an upsert. 2 + 10.
+  it("offers Meta, Brevo and ChatGPT Ads together, with the count it is about to resend", async () => {
+    // One control for the three, because all three are safe to repeat: Meta
+    // deduplicates on the event id, the Brevo call is an upsert, and OpenAI
+    // deduplicates on the event id we reuse on every retry. 2 + 10 + 3.
     installResendFetch();
     render(<CrmEventsPage />);
     const button = await screen.findByTestId("resend-safe");
-    expect(button).toHaveTextContent("Resend 12 failed Meta and Brevo sends");
+    expect(button).toHaveTextContent("Resend 15 failed Meta, Brevo and ChatGPT Ads sends");
     expect(button).toBeEnabled();
   });
 
-  it("requeues Meta and Brevo, one request each, and nothing else", async () => {
+  it("requeues Meta, Brevo and ChatGPT Ads, one request each, and nothing else", async () => {
     // One request per destination, because the statement behind the endpoint
     // writes one destination's columns -- which is the point: fixing
     // BREVO_LIST_ID must not re-send anybody's WhatsApp welcome.
     const fn = installResendFetch();
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
-    await waitFor(() => expect(requeued(fn)).toEqual(["meta", "brevo"]));
+    await waitFor(() => expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]));
     expect(requeued(fn)).not.toContain("whatsapp");
     const [, init] = fn.mock.calls.find(([url]) => String(url) === REQUEUE_URL)!;
     expect((init as RequestInit).method).toBe("POST");
@@ -1166,20 +1193,33 @@ describe("the resend controls", () => {
     // count scrubbed rows -- and gets 10 resends. Saying so is what stops the
     // shortfall being a guess.
     installResendFetch(RESENDABLE, [
-      { requeued: 2, alreadyScrubbed: 9 },
-      { requeued: 10, alreadyScrubbed: 28 },
+      { requeued: 2, alreadyScrubbed: 9, expired: 0 },
+      { requeued: 10, alreadyScrubbed: 28, expired: 0 },
+      { requeued: 3, alreadyScrubbed: 7, expired: 19 },
     ]);
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
     const note = await screen.findByTestId("resend-note");
-    expect(note).toHaveTextContent("12 sends queued");
-    expect(note).toHaveTextContent(/37 earlier failures had already been scrubbed/);
+    expect(note).toHaveTextContent("15 sends queued");
+    expect(note).toHaveTextContent(/44 earlier failures had already been scrubbed/);
+    // The other reason the three answers add up to fewer rows than the cards
+    // showed, and the one nothing else on the page can say after the reload has
+    // replaced the counts the button was pressed against.
+    expect(note).toHaveTextContent("19 ChatGPT Ads failures are older than OpenAI's 7-day window");
   });
 
   it("says so rather than going quiet when there is nothing to resend", async () => {
     // A control that promises nothing must say so. Mysteriously inert is the one
     // thing it may not be.
-    installResendFetch({ ...DISTINCT, requeue: { meta: { resendable: 0, scrubbed: 4 }, whatsapp: { resendable: 0, scrubbed: 0 }, brevo: { resendable: 0, scrubbed: 0 } } });
+    installResendFetch({
+      ...DISTINCT,
+      requeue: {
+        meta: { resendable: 0, scrubbed: 4, expired: 0 },
+        whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
+        brevo: { resendable: 0, scrubbed: 0, expired: 0 },
+        openai: { resendable: 0, scrubbed: 0, expired: 0 },
+      },
+    });
     render(<CrmEventsPage />);
     const safe = await screen.findByTestId("resend-safe");
     expect(safe).toHaveTextContent("Nothing to resend");
@@ -1219,9 +1259,11 @@ describe("the resend controls", () => {
     expect(screen.getByTestId("resend-safe")).toBeDisabled();
     expect(screen.getByTestId("resend-whatsapp")).toBeDisabled();
 
-    release(json({ requeued: 12, alreadyScrubbed: 0 }));
+    release(json({ requeued: 12, alreadyScrubbed: 0, expired: 0 }));
     await settle();
-    release(json({ requeued: 0, alreadyScrubbed: 0 }));
+    release(json({ requeued: 0, alreadyScrubbed: 0, expired: 0 }));
+    await settle();
+    release(json({ requeued: 0, alreadyScrubbed: 0, expired: 0 }));
     await settle();
     expect(screen.getByTestId("resend-note")).toHaveTextContent("12 sends queued");
   });
@@ -1251,7 +1293,7 @@ describe("the resend controls", () => {
   it("does not claim nothing was queued when the first of the two succeeded", async () => {
     // Meta's rows ARE pending now. "Nothing was queued" would have the operator
     // press it again, and the sends are already on their way.
-    installResendFetch(RESENDABLE, [{ requeued: 2, alreadyScrubbed: 0 }, 500]);
+    installResendFetch(RESENDABLE, [{ requeued: 2, alreadyScrubbed: 0, expired: 0 }, 500]);
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
     const note = await screen.findByTestId("resend-note");
@@ -1295,7 +1337,7 @@ describe("the WhatsApp control is a separate, warned, confirmed action", () => {
   });
 
   it("requeues WhatsApp, and only WhatsApp, once it is confirmed", async () => {
-    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 11 }]);
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 11, expired: 0 }]);
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-whatsapp"));
     fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
@@ -1315,7 +1357,7 @@ describe("the WhatsApp control is a separate, warned, confirmed action", () => {
 
   it("asks again the next time, rather than staying confirmed", async () => {
     // A confirmation that sticks is not a confirmation.
-    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 0 }]);
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 0, expired: 0 }]);
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-whatsapp"));
     fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
@@ -1330,14 +1372,126 @@ describe("the WhatsApp control is a separate, warned, confirmed action", () => {
     const fn = installResendFetch();
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
-    await waitFor(() => expect(requeued(fn)).toHaveLength(2));
-    expect(requeued(fn)).toEqual(["meta", "brevo"]);
+    await waitFor(() => expect(requeued(fn)).toHaveLength(3));
+    expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The fourth destination. Everything it shares with the other three is pinned
+// above, beside theirs; what is here is only what is true of ChatGPT Ads alone:
+// it is safe to repeat although it is the newest, its shortfall has a second
+// cause nothing else on this page has, and it is the first destination whose
+// skip depends on the clock.
+// ---------------------------------------------------------------------------
+
+describe("ChatGPT Ads", () => {
+  it("is resent by the safe control, not from behind the WhatsApp warning", async () => {
+    // OpenAI deduplicates on the event `id`, and this service derives that id
+    // from `<crm_client_id>:<stage>` and so reuses it unchanged on every retry
+    // and every resend -- the same property Meta has. A repeat reaches nobody
+    // twice, so there is nothing to warn about and nothing to confirm.
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    await waitFor(() => expect(requeued(fn)).toContain("openai"));
+    expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]);
+    // And not the other way round: it must not be reachable from the control
+    // whose press means "some of these may arrive twice".
+    expect(screen.queryByTestId("resend-whatsapp-confirm")).toBeNull();
+  });
+
+  it("is not resent by the WhatsApp control, even once that one is confirmed", async () => {
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 11, expired: 0 }]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
+    await waitFor(() => expect(requeued(fn)).toEqual(["whatsapp"]));
+    expect(requeued(fn)).not.toContain("openai");
+  });
+
+  it("accounts for the rows OpenAI itself will not take, so the card reconciles", async () => {
+    // 3 + 7 + 19 = 29 failures, 3 resendable. Without this line the operator
+    // sees 29 on the card, gets 3, and the 19 are unexplained -- which reads as
+    // something broken here rather than as OpenAI's own rule.
+    installResendFetch();
+    render(<CrmEventsPage />);
+    const note = await screen.findByTestId("resend-expired");
+    expect(note).toHaveTextContent("19 ChatGPT Ads failures are older than 7 days");
+    expect(note).toHaveTextContent(/OpenAI accepts no conversion more than 7 days old/);
+    expect(note).toHaveTextContent(/no resend can reach them/);
+  });
+
+  it("reads the expired rows as a fact rather than as a fault", async () => {
+    // The whole point of where this line sits and what colour it is. "19
+    // expired" has to finish the sentence "because OpenAI will not take them",
+    // so it names whose rule it is and it is NOT in the amber the WhatsApp
+    // warning uses -- the two must not look like the same kind of thing.
+    installResendFetch();
+    render(<CrmEventsPage />);
+    const note = await screen.findByTestId("resend-expired");
+    expect(note).toHaveTextContent(/That is OpenAI’s rule, not a fault here\./);
+    expect(note.className).toMatch(/muted/);
+    expect(note.className).not.toMatch(/amber|red|rose/);
+  });
+
+  it("says nothing about expired rows when there are none", async () => {
+    // Which is the ordinary state: an event is sent about a minute after
+    // signup, so a row only expires after an outage lasting a week. A permanent
+    // "0 expired" line is a line people stop reading.
+    installResendFetch({
+      ...RESENDABLE,
+      requeue: { ...RESENDABLE.requeue, openai: { resendable: 3, scrubbed: 7, expired: 0 } },
+    });
+    render(<CrmEventsPage />);
+    await screen.findByTestId("resend-safe");
+    expect(screen.queryByTestId("resend-expired")).toBeNull();
+  });
+
+  it("reads no expired rows from a response that carries none, rather than printing undefined", async () => {
+    installResendFetch(DISTINCT);
+    render(<CrmEventsPage />);
+    await screen.findByTestId("resend-safe");
+    expect(screen.queryByTestId("resend-expired")).toBeNull();
+  });
+
+  it("explains that a skip here can mean the clock, not only the stage", async () => {
+    // The first destination whose skip depends on when the row arrived. After
+    // an outage `skipped` rises for rows OpenAI would now refuse on their age,
+    // and it is the same counter that holds every registration the website
+    // pixel owns. One counter, because the backend has one vocabulary of seven
+    // statuses -- so the page says what the two meanings are and where to tell
+    // them apart.
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("dest-openai");
+    const note = screen.getByText(/only destination whose/i);
+    expect(note).toHaveTextContent(/pixel owns that conversion/);
+    expect(note).toHaveTextContent(/no conversion more than 7 days old/);
+    expect(note).toHaveTextContent(/skipped for its age/);
+    expect(note).toHaveTextContent(/detail in the table below/);
+  });
+
+  it("counts a problem in the fourth destination as a problem, like the other three", async () => {
+    // The filter is a separate list from the cards and the columns, and a row
+    // whose ONLY failure is here is exactly the row an operator filters for.
+    installFetch({
+      ...DISTINCT,
+      events: [
+        event(1, "openai-only", "verified", ["sent", "skipped", "skipped", "rejected"]),
+        event(2, "all-clean", "verified", ["sent", "skipped", "skipped", "sent"]),
+      ],
+    });
+    render(<CrmEventsPage />);
+    await screen.findByText("all-clean");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    await waitFor(() => expect(shownIds()).toEqual(["openai-only"]));
   });
 });
 
 describe("the controls", () => {
   it("show what they are set to, rather than snapping back after a change", async () => {
-    installFetch({ ...DISTINCT, events: [event(1, "row-a", "registered", ["sent", "sent", "sent"])] });
+    installFetch({ ...DISTINCT, events: [event(1, "row-a", "registered", ["sent", "sent", "sent", "sent"])] });
     render(<CrmEventsPage />);
     await screen.findByText("row-a");
     const period = screen.getByLabelText(/period/i) as HTMLSelectElement;
