@@ -123,9 +123,18 @@ conversion, a message or a contact.
 `"client"` only when `%client_is_lead%` is a recognised falsy literal (`0`,
 `false`, `no`, `n`, `off`); `"lead"` for anything else — including absent,
 empty, and any value we do not recognise, all of which mean *unknown* rather
-than *client*. The failure modes are not symmetric: a client who misses their
-welcome message is a support ticket, a lead who receives a login link for an
-account that does not exist is a complaint.
+than *client*.
+
+~~The failure modes are not symmetric: a client who misses their welcome message
+is a support ticket, a lead who receives a login link for an account that does
+not exist is a complaint.~~ **That reasoning is superseded (2026-10-14, user's
+call — §4).** The welcome message goes to leads as well now, so nothing is
+gated on this verdict: `record_type` is a stored statistic. The cautious default
+stays, because a statistic that claims `client` for a literal nobody recognises
+is worse than one that admits doubt — but it is no longer the reason anybody
+gets or misses a message, and a second test, `saysLead`, exists for the one
+destination that does gate on lead/client. The two are deliberately **not** each
+other's negation; §4 has the argument.
 
 The WordPress plugin posts `lead: false`, so every website signup is already a
 client. Only promo step-1 records are leads. FXBO's actual literals are still
@@ -152,7 +161,7 @@ One endpoint, five rules, one `stage` on each row.
 | Our `stage` | FXBO event | Meta `event_name` | WhatsApp | Brevo |
 |---|---|---|---|---|
 | `lead` | (none yet, §11) | `Lead` | no | no |
-| `registered` | `Client registered` | `CompleteRegistration` | **yes** | **yes** |
+| `registered` | `Client registered` | `CompleteRegistration` | **yes**, lead or client | **yes**, clients only |
 | `verified` | `A client has been verified` | `Client_Verified` | no | no |
 | `live_account` | `Client opened new live account` | `TradingAccountOpened` | no | no |
 | `first_deposit` | `First time deposit by client` | `Purchase` | no | no |
@@ -160,6 +169,11 @@ One endpoint, five rules, one `stage` on each row.
 Meta fires at every stage. WhatsApp and Brevo fire only at `registered`; at
 every other stage they are stored `skipped` with reason `stage not applicable`,
 so the admin view shows a complete row rather than a blank.
+
+The lead/client split in the last two columns was the other way round until
+2026-10-14 — WhatsApp took clients only and Brevo took everyone. Both were
+reversed that day (§4), and the two gates now fail in opposite directions on
+purpose.
 
 ---
 
@@ -173,6 +187,25 @@ fires `Client registered` for those people they receive two messages — the
 stored row stops *CRM retries*, not *a second independent sender*. The
 integration plan confirms the plugin's send is being removed. **It is a required
 step, not a follow-up.**
+
+**~~WhatsApp goes to clients only; a lead is skipped with `lead, not client`
+(2026-10-09).~~ Superseded 2026-10-14 — see the next entry.** The reason given
+was the approved template: its body and its button both point at
+`https://skylinkscapital.com/en/login/`, and a lead has no account to log into.
+
+**The welcome goes to leads as well as clients, on the same template
+(2026-10-14, user's call).** The user was told the login link will not work for
+a lead and chose to send anyway. No second template and no configuration for one
+— the template is approved by Meta as it stands, and anything carrying a
+different link would need its own approval.
+
+So `decideWhatsappSkip` no longer takes a record type at all, and
+**`record_type` gates no WhatsApp send.** What is left there is the funnel stage,
+`WA_API_KEY`, the `SKIP_SOURCES` exclusion and the phone format — and the last
+two apply to a lead exactly as to a client, so a lead with no usable number is
+still `invalid phone number` rather than a send to nothing. The skip reason
+`lead, not client` did not disappear with the gate: it moved to Brevo, three
+entries below.
 
 **~~This becomes the only sender of Meta conversion events (2026-10-12).~~
 Superseded 2026-10-14 -- see the next entry.** The 12 October plan was that the
@@ -227,6 +260,38 @@ Everyone lands in Brevo with consent recorded as `OPT_IN`, which is Brevo's own
 flag and which its double-opt-in and compliance tooling reads. Campaigns segment
 on it. Revisit if the list is ever used for something a non-consenting client
 should not receive.
+
+**Brevo takes clients only (2026-10-14, user's call).** Until that day
+`decideBrevoSkip` tested the API key and the stage and nothing else, so every
+`registered` event became a contact, lead or client. It now carries the
+`lead, not client` skip the WhatsApp gate used to.
+
+**And the gate is a *positive lead test*, which is the part that matters.** It
+skips only when the raw `%client_is_lead%` literal is one a new `LEAD_LITERALS`
+set recognises (`1`, `true`, `yes`, `y`, `on`); absent, empty and anything
+unrecognised **send**. It is deliberately not `record_type !== "client"`, which
+looks like the same gate and behaves like its opposite:
+
+- The wrong guess is not per-client. `deriveRecordType` resolves everything it
+  does not recognise to `lead` (§2), so one unrecognised literal — a new FXBO
+  version, a renamed field, a placeholder that stops rendering — would read
+  **every** person as a lead and silently stop the Brevo list growing at all,
+  with nothing erroring anywhere. §11 and CUTOVER step 5 exist because that
+  literal genuinely cannot be known until the first live signup, so no
+  destination may depend on having guessed it.
+- The two failures are not comparable. A lead wrongly added to Brevo is one
+  unwanted marketing contact, carrying `OPT_IN` and segmentable inside Brevo. A
+  real client wrongly left out is marketing reach nobody can see was lost.
+
+So this one fails toward **including** people, and the old WhatsApp gate failed
+the other way for a reason that no longer applies. `deriveRecordType` is
+unchanged — `record_type` is also stored as a statistic and has to keep meaning
+what it means today — and the second test lives beside it as `saysLead`, with
+the asymmetry written down in both places.
+
+The cost, recorded rather than hidden: until the real lead literal is in
+`LEAD_LITERALS`, every lead becomes a Brevo contact. That is the recoverable
+direction, which is the whole point of choosing it.
 
 **The verified stage sends a custom event, `Client_Verified` (2026-10-13,
 user's call).** Not the standard `SubmitApplication`. Nothing needs creating in
@@ -295,8 +360,11 @@ stage after the fact.
 holds the raw `%client_is_lead%` literal in its place — `"0"`, `"false"`, `"1"`
 or whatever FXBO renders. That literal is a flag, not client data, and it is the
 one value `raw_payload` was being kept for: §11 and CUTOVER step 5 settle the
-placeholder's contents by reading it, and getting it wrong means every client is
-read as a lead and **nobody gets a WhatsApp message.** A second new column,
+placeholder's contents by reading it. Since 2026-10-14 it is also read at send
+time — Brevo's gate tests this column rather than `record_type` beside it — so
+getting it wrong now costs a wrong `record_type` statistic and a Brevo contact
+per lead, and **no longer stops anybody getting a WhatsApp message.** A second
+new column,
 `scrubbed_at`, makes the scrub auditable, tells the settings tab "scrubbed" apart
 from "never had one", and gives the periodic queries something indexed to filter
 on.
@@ -480,7 +548,9 @@ Plus `src/pages/settings/CrmEventsPage.tsx` — the settings tab itself (§12).
 `normalise.js`, `clickId.js`, the payload builders and the outcome classifiers
 are pure and tested directly. That is where the subtle bugs live: the
 `messages[0].status` trap, the `fbc` wrapping, the hash normalisation, the phone
-regex, the lead/client call.
+regex, and the two lead/client calls — `deriveRecordType` for the stored
+statistic and `saysLead` for Brevo's gate, which are not each other's negation
+(§4).
 
 ---
 
@@ -494,7 +564,7 @@ regex, the lead/client call.
 | `fbc` | The assembled click identifier, **frozen at first write** — see §8 |
 | `fxbo_unique_id` | Distinguishes a genuine FXBO redelivery from a real second event |
 | `raw_payload` | The body as received. **Scrubbed once all three destinations are `sent` or `skipped` (2026-10-14)** — `is_lead_raw` below replaced the one use it was kept for |
-| `is_lead_raw` | The raw `%client_is_lead%` literal, which survives the scrub. The first live delivery settles what the placeholder contains by reading this |
+| `is_lead_raw` | The raw `%client_is_lead%` literal, which survives the scrub. The first live delivery settles what the placeholder contains by reading this — and since 2026-10-14 Brevo's gate reads it too, so it is a live field and not only evidence |
 | `scrubbed_at` | When the row's client data was removed, or NULL if it never was. Audited, read by the settings tab, and the leading column of the retention index |
 
 Plus the normalised fields from §2, `received_at`, and per-action
@@ -603,9 +673,13 @@ financial-category restriction on custom parameters never comes into play.
 
 ### WhatsApp (DoubleTick)
 
-Runs only when **all** hold: stage is `registered`, `record_type` is client,
-phone matches `/^\+[1-9]\d{7,14}$/`, `source` is not in `SKIP_SOURCES`, and
-`WA_API_KEY` is set. Otherwise `skipped` with the reason stored.
+Runs only when **all** hold: stage is `registered`, phone matches
+`/^\+[1-9]\d{7,14}$/`, `source` is not in `SKIP_SOURCES`, and `WA_API_KEY` is
+set. Otherwise `skipped` with the reason stored.
+
+**`record_type` is not among them (2026-10-14, §4).** A lead gets the same
+template; the gate does not take a record type at all. The phone format and
+`SKIP_SOURCES` apply to a lead exactly as they do to a client.
 
 `POST https://public.doubletick.io/whatsapp/message/template`, header
 `Authorization: <WA_API_KEY>` — **raw key, not `Bearer`**. Body as the brief
@@ -661,7 +735,11 @@ template or a bad key only burns attempts and delays the alert.
 ### Brevo
 
 `POST /v3/contacts` with `updateEnabled: true` and `listIds: [19]` ("All
-Clients"), at the `registered` stage only.
+Clients"), at the `registered` stage only, and **to clients only since
+2026-10-14 (§4)** — a lead is `skipped` with `lead, not client`. That gate is a
+positive test on the raw `%client_is_lead%` literal, so an unrecognised value
+adds the contact rather than emptying the list; §4 has the argument, and it is
+the one thing here not to "simplify" into `record_type !== "client"`.
 
 Twelve fields (§4). Two reuse Brevo's own attributes rather than minting custom
 twins: `EXT_ID` carries the CRM client id, and `OPT_IN` carries marketing
@@ -733,8 +811,15 @@ mistaken for a test. A detected press is stored `invalid` and runs nothing.
 - **What `%client_is_lead%` actually contains** — `1`/`0`, `true`/`false`,
   `Yes`/`No`. Settled by one Test webhook press plus the first live delivery,
   both visible in `is_lead_raw` (§4, 2026-10-14 — `raw_payload` is scrubbed).
+  Both halves are wanted now: the client literal for `CLIENT_LITERALS` and the
+  lead literal for `LEAD_LITERALS`. Neither can stop a message or empty a list
+  any more (§4), so this is no longer a blocker — it is a wrong `record_type`
+  statistic and a Brevo contact per lead until it is known.
 - **Whether `Client registered` also fires for leads.** If it does,
-  `%client_is_lead%` is doing real work. Test before asking FXBO for anything.
+  `%client_is_lead%` is doing real work — and since 2026-10-14 the work is
+  entirely Brevo's: those leads get the WhatsApp welcome either way, and the
+  question is only whether they land in the marketing list. Test before asking
+  FXBO for anything.
 - **A reliable lead-creation trigger.** The dropdown offers only
   `A new lead has been assigned to you` and `A lead has been assigned to other
   manager` — both assignment, not creation. The `lead` stage ships last and may

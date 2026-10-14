@@ -13,13 +13,17 @@ Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 | Stage | Meta event | WhatsApp | Brevo |
 |---|---|---|---|
 | `lead` | `Lead` | no | no |
-| `registered` | **not sent** -- the website pixel owns it | yes, to clients with a valid phone | yes |
+| `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only |
 | `verified` | `Client_Verified` | no | no |
 | `live_account` | `TradingAccountOpened` | no | no |
 | `first_deposit` | `Purchase` | no | no |
 
 **No single event sends to all three.** `registered` sends WhatsApp and Brevo;
 every other stage sends Meta alone.
+
+**The lead/client split applies to Brevo and not to WhatsApp (2026-10-14, user's
+call).** It was the other way round until that date. The two gates fail in
+opposite directions on purpose — see "which way each gate fails" below.
 
 A destination that does not apply is stored as `skipped` with its reason, so a
 processed row shows all three. FXBO has no trigger for `lead` yet (spec section
@@ -48,7 +52,45 @@ is a body parameter for the same reason, even though that route is session-gated
 and deliberately **not** on the allow-list: the allow-list is for FXBO, which
 cannot carry a session.
 
-## Five things that are easy to get wrong
+## Six things that are easy to get wrong
+
+**The two lead/client gates fail in opposite directions, and copying one into
+the other inverts it** — *which way each gate fails*. `deriveRecordType` in
+`normalise.js` returns `"client"` only for a recognised client literal
+(`CLIENT_LITERALS` = `0` `false` `no` `n` `off`); absent, empty and anything
+unrecognised resolve to `"lead"`.
+
+- **WhatsApp has no gate at all any more.** A lead gets the same template as a
+  client. Its body and button both link to
+  `https://skylinkscapital.com/en/login/`, which a lead has no account for; the
+  user was told that and chose to send anyway (2026-10-14). There is no second
+  template and no configuration for one. `record_type` therefore gates no
+  WhatsApp send — the phone format and `SKIP_SOURCES` are the only facts about
+  the person left in `decideWhatsappSkip`, and both apply to a lead exactly as
+  they do to a client.
+- **Brevo's gate is a *positive lead test*, not `recordType !== "client"`.**
+  `decideBrevoSkip` skips only when the raw `%client_is_lead%` literal is one
+  `LEAD_LITERALS` recognises (`1` `true` `yes` `y` `on`); absent, empty and
+  unrecognised values all send.
+
+The second one looks like a style choice and is not. `recordType !== "client"`
+would read **every** person as a lead the moment FXBO sends one literal we do
+not recognise — a new FXBO version, a renamed field, a placeholder that stops
+rendering — and the Brevo list would silently stop growing, with nothing
+erroring anywhere. The wrong guess is not per-client, which is what makes it
+dangerous: `CUTOVER.md` step 5 exists precisely because that literal cannot be
+known until the first live signup.
+
+Weigh the two failures and they are not comparable. A lead wrongly added to
+Brevo is one unwanted marketing contact, carrying `OPT_IN` and segmentable
+inside Brevo. A real client wrongly left out is marketing reach nobody can see
+was lost. So Brevo fails toward **including** them. The old WhatsApp gate failed
+the other way for the reason that no longer applies: while leads were skipped,
+guessing wrong cost a client their welcome message rather than sending a lead a
+dead login link.
+
+`deriveRecordType` itself is unchanged, and must stay that way: `record_type` is
+stored as a statistic and has to keep meaning what it means today.
 
 **A 2xx from DoubleTick does not mean the message was sent.** It means the
 request was accepted. The outcome is `messages[0].status`: `SENT` and
@@ -130,7 +172,7 @@ column, `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
 columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
 
-**Two of those are load-bearing, not merely kept:**
+**Three of those are load-bearing, not merely kept:**
 
 - **`fbc` deliberately survives.** It is captured at signup and reused weeks
   later for the first-deposit conversion. Scrubbing it would send every later
@@ -139,6 +181,11 @@ funnel stage after the fact.
 - **`crm_client_id` deliberately survives.** It is half the dedupe key. Without
   it FXBO's redelivery of a stage no longer collides on
   `(crm_client_id, stage)`: it inserts a second row and sends a second welcome.
+- **`is_lead_raw` deliberately survives, and since 2026-10-14 it is read at send
+  time rather than only by a person.** Brevo's gate tests this literal, not
+  `record_type` beside it. A requeued `failed` Brevo row is sent from the row,
+  so the column has to be there when the resend runs — which it is, because the
+  scrub leaves it and the send guard refuses a scrubbed row anyway.
 
 **When it happens.** Three paths, in `worker.js`:
 
@@ -220,8 +267,9 @@ a skip is a deliberate decision not to send, and nothing decided this.
 **The cost, recorded rather than hidden:** the table can no longer be searched by
 email or phone, because neither is retained. `is_lead_raw` holds the raw
 `%client_is_lead%` literal so that CUTOVER step 5 still works without
-`raw_payload`; `scrubbed_at` is what lets the settings tab tell a scrubbed row
-apart from one that never carried the value.
+`raw_payload` — and, since 2026-10-14, so that Brevo's gate has a literal to
+test; `scrubbed_at` is what lets the settings tab tell a scrubbed row apart from
+one that never carried the value.
 
 ## Resending a failure
 

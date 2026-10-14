@@ -196,16 +196,32 @@ Then register one real test client and read `is_lead_raw` again, for the real
 value rather than the test-press value.
 
 If that value is not one of `0` `false` `no` `n` `off`, add the real literal to
-**`CLIENT_LITERALS`** in `normalise.js` — not to `FALSY`, which sits next to it
-in the same file and looks like the right place. Only `CLIENT_LITERALS` decides
-lead-versus-client (`deriveRecordType`); `FALSY` is for the consent and IB
-flags, and holds `""`, `null` and `undefined` as well. Adding the literal to
-`FALSY` changes nothing about who gets a message.
+**`CLIENT_LITERALS`** in `normalise.js` — and if its opposite is not one of `1`
+`true` `yes` `y` `on`, add that to **`LEAD_LITERALS`** beside it. Neither goes
+in `FALSY`, which sits next to both in the same file and looks like the right
+place: `FALSY` is for the consent and IB flags and holds `""`, `null` and
+`undefined` as well, and adding a literal to it changes nothing about any of
+this.
 
-Until the real literal is in `CLIENT_LITERALS`, **every client is read as a lead
-and nobody gets a WhatsApp message.** That direction is deliberate: a lead who
-receives a login link for an account that does not exist is worse than a client
-who misses a welcome message.
+**What a wrong literal costs, since 2026-10-14.** It no longer stops any
+WhatsApp message: the welcome goes to leads as well as clients, so
+`record_type` gates nothing there. And it cannot empty the Brevo list either —
+`decideBrevoSkip` tests `LEAD_LITERALS` **positively**, so a literal in neither
+set sends. Both failures are deliberately in the including direction, and the
+reasoning is under "which way each gate fails" in `README.md`.
+
+So this step is no longer the thing standing between a deploy and anyone getting
+anything. It is still worth doing, for two reasons:
+
+- **`record_type` is stored as a statistic**, and with a literal missing from
+  `CLIENT_LITERALS` it reads `lead` for every client. Nothing acts on it, but
+  anyone counting leads against clients on this table counts wrong, and the
+  settings tab shows the same wrong word.
+- **Brevo's gate only works once it knows the lead literal.** With
+  `%client_is_lead%` rendering something `LEAD_LITERALS` has never seen, every
+  lead becomes a Brevo contact. That is one unwanted marketing contact each,
+  carrying `OPT_IN` and segmentable inside Brevo — recoverable, which is exactly
+  why the gate was built to fail this way rather than the other.
 
 ## 6. Build the frontend, or the settings tab will not appear
 
@@ -254,7 +270,9 @@ an outage rather than as a permission problem.
    the allowlist in `whatsapp.js`; the row then reads `sent` for the next client,
    and this one needs nothing sent to it at all.
 3. **Brevo:** the contact appears in list 19 with `EXT_ID` and `OPT_IN`
-   populated.
+   populated. **Register a client, not a lead** — since 2026-10-14 a lead is
+   skipped here with `lead, not client`, so testing with one proves nothing
+   about Brevo. The WhatsApp check above works with either.
 4. **Idempotency:** re-posting the identical webhook sends no second message and
    creates no second row.
 5. **`fbc` reuse:** the same client at a different stage creates a new row and
