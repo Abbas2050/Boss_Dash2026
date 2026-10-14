@@ -27,9 +27,12 @@ import {
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
 } from "./store.js";
-// The settled vocabulary both the worker and these statements are built from,
-// imported so a test can prove the statement names every value in it.
-import { SETTLED_STATUSES } from "./settled.js";
+// The two vocabularies the worker and these statements are built from, imported
+// so a test can prove each statement names every value in the one it belongs to
+// -- and none of the values in the other. The scrub is built from SCRUBBABLE
+// ("this row is safe to forget"); the backstop's settle statements are built
+// from SETTLED ("do not attempt this action again").
+import { SETTLED_STATUSES, SCRUBBABLE_STATUSES } from "./settled.js";
 // Imported for the one case that walks the whole leak path: Brevo's own 400,
 // through its own classifier, into the column.
 import { classifyBrevoOutcome } from "./brevo.js";
@@ -581,7 +584,7 @@ describe("scrubSignupEvent", () => {
     expect(await scrubSignupEvent(7, SCRUBBED)).toBe(0);
   });
 
-  it("asks the row itself whether all three have settled, rather than trusting the caller", async () => {
+  it("asks the row itself whether all three are scrubbable, rather than trusting the caller", async () => {
     // The worker decides whether to TRY from its own in-memory copy of the row,
     // and an overlapped IIS recycle gives two workers a copy each with one claim
     // in it -- so neither copy ever shows all three settled. Decided from the copy
@@ -592,7 +595,7 @@ describe("scrubSignupEvent", () => {
     await scrubSignupEvent(7, SCRUBBED);
     const { sql, params } = db.state.calls[0];
     for (const action of ["meta", "whatsapp", "brevo"]) {
-        expect(sql, action).toContain(`AND ${action}_status IN ('sent','skipped','rejected','failed','invalid')`);
+        expect(sql, action).toContain(`AND ${action}_status IN ('sent','skipped')`);
     }
     // Unlike a claiming write there is no claim moment to bind: this takes
     // nothing away from another worker, so a second attempt is a no-op rather
@@ -600,8 +603,8 @@ describe("scrubSignupEvent", () => {
     expect(params).toEqual([SCRUBBED, 7]);
   });
 
-  it("names every settled status, so the statement and the worker cannot come to disagree", async () => {
-    // Both are built from SETTLED_STATUSES. A value in one and not the other
+  it("names every scrubbable status, so the statement and the worker cannot come to disagree", async () => {
+    // Both are built from SCRUBBABLE_STATUSES. A value in one and not the other
     // would be silent in the worst direction: the worker attempts a scrub the
     // statement refuses, and the row keeps its client data for thirty days with
     // nothing anywhere saying so.
@@ -609,8 +612,28 @@ describe("scrubSignupEvent", () => {
     const { sql } = db.state.calls[0];
     for (const action of ["meta", "whatsapp", "brevo"]) {
       const list = sql.split(`${action}_status IN (`)[1].split(")")[0].split(",");
-      expect(list, action).toEqual(SETTLED_STATUSES.map((status) => `'${status}'`));
+      expect(list, action).toEqual(SCRUBBABLE_STATUSES.map((status) => `'${status}'`));
     }
+  });
+
+  it("keeps a row whose send failed, refused or was never valid: scrubbing it is what destroyed the resend", async () => {
+    // The gap this closes (2026-10-14, user's call). Built from SETTLED instead,
+    // the three error statuses are in the clause, and a row whose Brevo send
+    // failed because BREVO_LIST_ID was wrong is scrubbed a minute later -- so the
+    // name, email and phone the resend needs are gone for good, and the only
+    // trace is a `failed` nobody can act on. The thirty-day backstop is what
+    // bounds the data this keeps instead.
+    //
+    // The other direction of the same mistake is in worker.js, where the step
+    // skip reads SETTLED: narrowed there, a refused action would be claimed again
+    // and the client would get a second WhatsApp welcome.
+    await scrubSignupEvent(7, SCRUBBED);
+    const { sql } = db.state.calls[0];
+    for (const status of ["rejected", "failed", "invalid"]) {
+      expect(sql, status).not.toContain(`'${status}'`);
+    }
+    // And the wide list in full, in case a future edit pastes it back in here.
+    expect(sql).not.toContain(SETTLED_STATUSES.map((status) => `'${status}'`).join(","));
   });
 
   it("reports how many rows it matched, so a caller can tell scrubbed-now from scrubbed-already", async () => {
@@ -727,6 +750,22 @@ describe("scrubStaleSignupEvents", () => {
       const setList = sql.slice(0, sql.indexOf("WHERE"));
       for (const [, action] of setList.matchAll(/(meta|whatsapp|brevo)_(?:status|detail) = /g)) {
         expect(sql, action).toContain(`AND ${action}_status NOT IN ('sent','skipped','rejected','failed','invalid')`);
+      }
+    }
+  });
+
+  it("settles only what is still unsent, by the wide list, so a real refusal is never overwritten", async () => {
+    // These statements are built from SETTLED and not from the scrub's narrower
+    // SCRUBBABLE, and the two are not interchangeable here. Narrowed, each
+    // statement would also match the destinations that were refused or failed and
+    // overwrite them -- status and detail both -- with its own `failed` and "not
+    // attempted". The record of a provider's refusal would become the record of a
+    // scrub, which is the one thing the tab needs to be able to tell apart.
+    await scrubStaleSignupEvents(new Date(), new Date());
+    for (const action of ACTIONS) {
+      const { sql } = settleCall(action);
+      for (const status of SETTLED_STATUSES) {
+        expect(sql, `${action}/${status}`).toContain(`'${status}'`);
       }
     }
   });

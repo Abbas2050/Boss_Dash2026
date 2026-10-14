@@ -8,7 +8,10 @@ import {
   parseSkipSources,
 } from "./whatsapp.js";
 import { decideBrevoSkip, buildBrevoContact, upsertBrevoContact } from "./brevo.js";
-import { SETTLED } from "./settled.js";
+// Two sets, two questions, and reading one for the other is silent in opposite
+// directions (settled.js spells both out). SETTLED is "do not attempt this
+// action again"; SCRUBBABLE is "this row is safe to forget".
+import { SETTLED, SCRUBBABLE } from "./settled.js";
 import {
   claimDueEvents,
   updateMetaStatus,
@@ -312,8 +315,8 @@ export async function processSignupEvent(row, deps) {
   // from it would hand Brevo a contact with no address and DoubleTick a welcome
   // template with no name in it, and both would be accepted -- that is the point:
   // nothing downstream would complain. claimDueEvents selects only
-  // `pending`/`retrying` and the scrub only runs once all three have settled, so
-  // no row should ever arrive here scrubbed. That is the reason this is a guard
+  // `pending`/`retrying` and the scrub only runs once all three are `sent` or
+  // `skipped`, so no row should ever arrive here scrubbed. That is the reason this is a guard
   // and not an assumption: whatever later makes a scrubbed row claimable, it
   // sends nothing and writes nothing.
   if (row?.scrubbed_at) {
@@ -328,6 +331,11 @@ export async function processSignupEvent(row, deps) {
   ];
 
   for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of steps) {
+    // SETTLED, not SCRUBBABLE: this is "is this action still mine to attempt",
+    // and a `rejected` or `failed` one is finished with even though the row it
+    // sits on is not safe to forget. Read SCRUBBABLE here and every refused
+    // action would be claimed again -- a second WhatsApp welcome, which is the
+    // one message with nothing deduplicating it.
     if (SETTLED.has(str(row[statusColumn]))) continue;
     if (isWaiting(row[clockColumn], deps.now())) continue;
 
@@ -385,21 +393,32 @@ export async function processSignupEvent(row, deps) {
     await saveOutcome(save, row.id, result[key], deps.logger);
   }
 
-  // Nothing left for this worker to do for the row, so nothing downstream needs
-  // the client's name, email or phone again and the row goes on holding the
-  // statistics it was kept for.
+  // Every destination succeeded or was deliberately skipped, so nothing
+  // downstream needs the client's name, email or phone again and the row goes on
+  // holding the statistics it was kept for.
+  //
+  // SCRUBBABLE, not SETTLED, and the difference is the whole point of this
+  // decision (2026-10-14, user's call). A `failed` or `rejected` destination is
+  // settled -- nothing will attempt it again -- but the row is NOT safe to
+  // forget: the name, email and phone are what the resend needs once the cause is
+  // fixed, and a misconfigured destination (an unusable BREVO_LIST_ID, say) fails
+  // every row that way. Scrubbing on SETTLED made those clients permanently
+  // unrecoverable. The thirty-day backstop still takes such a row, so nothing
+  // nobody ever fixes becomes a permanent store of client data.
   //
   // This decides only WHETHER TO TRY, which is why the common case still issues
   // exactly one statement; what makes trying safe is the statement's own
-  // precondition (see settledClause in store.js), which reads the three statuses
-  // off the row as the table holds it.
+  // precondition (see scrubbableClause in store.js), which reads the three
+  // statuses off the row as the table holds it.
   //
   // An action's status is read from its own place: the step's own outcome when it
   // ran this pass, the column it was found with otherwise. That covers the two
   // reasons a step runs nothing -- one already settled reports the settled status
   // it was skipped for, and one still waiting on its clock reports the
   // `pending`/`retrying` it was found with, so a row with a send still ahead of
-  // it is not read as finished.
+  // it is not read as finished. A status that is settled but not scrubbable
+  // (`rejected`, `failed`, `invalid`) reads as not-scrubbable from either place,
+  // which is what keeps the row's data for the resend.
   //
   // An action another worker claimed is the exception, and the reason this is no
   // longer decided by our copy alone: our column for it is stale by definition,
@@ -410,9 +429,9 @@ export async function processSignupEvent(row, deps) {
   // a minute. Both attempt it now: the earlier attempt finds the other's actions
   // still `retrying` in the table and matches nothing, and whichever worker
   // finishes last scrubs.
-  const settledHere = ([key, statusColumn]) =>
-    claimedElsewhere.has(key) || SETTLED.has(result[key] ? str(result[key].status) : str(row[statusColumn]));
-  if (steps.every(settledHere)) {
+  const scrubbableHere = ([key, statusColumn]) =>
+    claimedElsewhere.has(key) || SCRUBBABLE.has(result[key] ? str(result[key].status) : str(row[statusColumn]));
+  if (steps.every(scrubbableHere)) {
     // Not caught. A scrub that cannot be written leaves the row for the 30-day
     // backstop, and sweepOnce logs the row -- swallowing it here would hide a
     // scrub that never happens behind a month of silence.

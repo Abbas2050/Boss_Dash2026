@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise";
 import { maskEmail, maskPhone } from "./normalise.js";
-import { SETTLED_STATUSES } from "./settled.js";
+import { SETTLED_STATUSES, SCRUBBABLE_STATUSES } from "./settled.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -436,18 +436,31 @@ function claimClause(action, claimAt) {
   };
 }
 
-// The settled statuses as a SQL list, built from the one JavaScript list so the
-// statement and the worker cannot come to disagree about what "settled" means.
+// The two vocabularies as SQL lists, each built from the one JavaScript list so
+// a statement and the worker cannot come to disagree about what either word
+// means. They are different sets and the clauses below are named for the set
+// each is built from, because reading one where the other belongs is silent:
+// scrubbing on SETTLED destroys the client data a `failed` send would be resent
+// from, and settling on SCRUBBABLE overwrites a real refusal.
 const SETTLED_LIST = SETTLED_STATUSES.map((status) => `'${status}'`).join(",");
+const SCRUBBABLE_LIST = SCRUBBABLE_STATUSES.map((status) => `'${status}'`).join(",");
 
 /**
  * The precondition that makes a scrub correct whatever its caller believes.
+ *
+ * Built from SCRUBBABLE and deliberately NOT from SETTLED: a row is safe to
+ * forget only once every destination either succeeded or was deliberately
+ * skipped (2026-10-14, user's call). A `failed` or `rejected` destination is
+ * settled -- nothing will attempt it again -- but its client data is exactly
+ * what the resend needs once the cause is fixed, and `BREVO_LIST_ID` fails that
+ * way. Scrubbing on SETTLED here made those clients permanently unrecoverable.
+ * The thirty-day backstop still takes such a row, so the data is bounded.
  *
  * Same lesson as claimClause above: a precondition that matters belongs in the
  * statement, not in the caller's copy of the row. The worker reads the three
  * statuses out of its own in-memory row, and during an overlapped IIS recycle
  * two workers split the three claims between them -- so NEITHER copy ever shows
- * all three settled, and a scrub decided by the copy alone never happens. The
+ * all three scrubbable, and a scrub decided by the copy alone never happens. The
  * row then holds a name, an email and a phone until the thirty-day backstop, in
  * precisely the case the policy asks to reduce to a minute.
  *
@@ -462,11 +475,20 @@ const SETTLED_LIST = SETTLED_STATUSES.map((status) => `'${status}'`).join(",");
  * the statement's, not this helper's: the two scrubs share it for a different
  * reason (the audit trail must not move).
  */
-function settledClause(action) {
-  return `${action}_status IN (${SETTLED_LIST})`;
+function scrubbableClause(action) {
+  return `${action}_status IN (${SCRUBBABLE_LIST})`;
 }
 
-/** The same list negated: the destinations the backstop has to settle itself. */
+/**
+ * The destinations the backstop has to settle itself: SETTLED negated, which is
+ * `pending` and `retrying`.
+ *
+ * SETTLED and not SCRUBBABLE, and that is not interchangeable here. The backstop
+ * writes `failed` with a detail saying the send was never attempted, so built
+ * from the narrower list it would overwrite the `rejected` a provider really
+ * gave us -- and its detail with it -- turning the record of a refusal into the
+ * record of a scrub.
+ */
 function unsettledClause(action) {
   return `${action}_status NOT IN (${SETTLED_LIST})`;
 }
@@ -580,8 +602,9 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
  *
  * The reason any of this is stored at all is that the endpoint answers FXBO
  * immediately and sends afterwards, so the phone and the email must survive from
- * receipt until all three destinations settle, retries included. After that
- * nothing needs them -- FXBO is the system of record for who a client is, and
+ * receipt until all three destinations have succeeded or been skipped, retries
+ * included -- and on a row whose destination failed they survive longer still, so
+ * the cause can be fixed and the send retried. After that nothing needs them -- FXBO is the system of record for who a client is, and
  * this table only has to say whether client 48217 got their welcome and to
  * recognise FXBO's redeliveries.
  *
@@ -614,9 +637,15 @@ export const SCRUB_COLUMNS = [
 const SCRUB_SET = SCRUB_COLUMNS.map((column) => `${column} = NULL`).join(", ");
 
 /**
- * One row's client data, removed, once the table says all three have settled.
+ * One row's client data, removed, once the table says all three succeeded or were
+ * deliberately skipped.
  *
- * The settled predicate is the statement's own (see settledClause): the worker
+ * Successes and skips, not every settled status (see scrubbableClause): a row
+ * with a `failed` or `rejected` destination keeps its client data so the cause
+ * can be fixed and the send retried, and the thirty-day backstop is what bounds
+ * how long it may do so.
+ *
+ * The predicate is the statement's own (see scrubbableClause): the worker
  * decides whether to try from its in-memory copy of the row, and two workers
  * sharing a recycle window hold two copies that each saw one claim. Neither copy
  * is the truth; the row is. So both may attempt this, the attempt from the copy
@@ -638,9 +667,9 @@ export async function scrubSignupEvent(id, at = new Date()) {
         SET ${SCRUB_SET}, scrubbed_at = ?
       WHERE id = ?
         AND scrubbed_at IS NULL
-        AND ${settledClause("meta")}
-        AND ${settledClause("whatsapp")}
-        AND ${settledClause("brevo")}`,
+        AND ${scrubbableClause("meta")}
+        AND ${scrubbableClause("whatsapp")}
+        AND ${scrubbableClause("brevo")}`,
     [at, id]
   );
   return matchedRows(result);

@@ -10,9 +10,11 @@
 // the stage that makes it, and several run at both.
 import { describe, it, expect, vi } from "vitest";
 import { planRetry, rowToFields, processSignupEvent } from "./worker.js";
-// The settled vocabulary the worker reads, so the fake store below applies the
-// same precondition the real statement does rather than a copy of it.
-import { SETTLED as SETTLED_SET } from "./settled.js";
+// The two vocabularies the worker reads, so the fake store below applies the
+// same precondition the real statement does rather than a copy of it. SETTLED is
+// "do not attempt this action again"; SCRUBBABLE is "this row is safe to
+// forget", and the scrub is built from the second.
+import { SETTLED as SETTLED_SET, SCRUBBABLE as SCRUBBABLE_SET } from "./settled.js";
 
 describe("planRetry", () => {
   const now = new Date("2026-10-12T12:00:00Z");
@@ -118,7 +120,7 @@ function deps(overrides = {}) {
     saveMeta: vi.fn(async () => {}),
     saveWhatsapp: vi.fn(async () => {}),
     saveBrevo: vi.fn(async () => {}),
-    // The scrub, which runs once all three have settled. Injected like the three
+    // The scrub, which runs once all three are sent or skipped. Injected like the three
     // writers rather than defaulted in the worker, so a case that must prove the
     // row was NOT scrubbed can see the absence.
     scrub: vi.fn(async () => 1),
@@ -686,6 +688,29 @@ describe("nothing settled is touched again", () => {
     });
   }
 
+  it("reads the wide set here, so the three statuses the scrub keeps are still never re-sent", async () => {
+    // The two sets differ by exactly these three, and each usage site has to read
+    // the one that answers its own question. This one is "is this action still
+    // mine to attempt". Read SCRUBBABLE here and every refused or failed action
+    // would be claimed again, and the client would get a second WhatsApp welcome
+    // -- the one message with nothing deduplicating it. (The opposite mistake, at
+    // the scrub, destroys the data the resend needs.)
+    for (const status of ["rejected", "failed", "invalid"]) {
+      expect(SETTLED_SET.has(status), status).toBe(true);
+      expect(SCRUBBABLE_SET.has(status), status).toBe(false);
+      for (const stage of SENDING_STAGES) {
+        const d = deps();
+        const r = row({ stage });
+        for (const a of ACTIONS) r[a.status] = status;
+        await processSignupEvent(r, d);
+        for (const a of ACTIONS) {
+          expect(d[a.send], `${status}/${a.name} at ${stage}`).not.toHaveBeenCalled();
+          expect(d[a.save], `${status}/${a.name} at ${stage}`).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
   it("runs exactly the unsettled actions, reading each from its own status column", async () => {
     const settledAs = { meta: "sent", whatsapp: "rejected", brevo: "invalid" };
     const openAs = { meta: "pending", whatsapp: "retrying", brevo: "pending" };
@@ -711,8 +736,11 @@ describe("nothing settled is touched again", () => {
 // settle -- the endpoint answers FXBO immediately and sends afterwards, and a
 // retry is five minutes away. The moment all three are settled, nothing needs
 // them again.
-describe("the row is scrubbed once all three have settled", () => {
-  const SETTLED = ["sent", "skipped", "rejected", "failed", "invalid"];
+describe("the row is scrubbed once all three have succeeded or been skipped", () => {
+  // The two sets, written out rather than imported, so an edit to settled.js that
+  // moved a status from one to the other has to come past these cases.
+  const SCRUBBABLE = ["sent", "skipped"];
+  const KEPT = ["rejected", "failed", "invalid"];
 
   it("scrubs the row, with the sweeper's own clock, after the last action settles", async () => {
     for (const stage of SENDING_STAGES) {
@@ -743,7 +771,7 @@ describe("the row is scrubbed once all three have settled", () => {
     // Nothing is sent and nothing is written, but the row still holds client data
     // it no longer needs -- the case a worker that only scrubbed what it had just
     // sent would leave behind for a month.
-    for (const status of SETTLED) {
+    for (const status of SCRUBBABLE) {
       const d = deps();
       await processSignupEvent(
         row({ meta_status: status, whatsapp_status: status, brevo_status: status }),
@@ -751,6 +779,25 @@ describe("the row is scrubbed once all three have settled", () => {
       );
       expect(d.scrub, status).toHaveBeenCalledTimes(1);
       for (const a of ACTIONS) expect(d[a.save], `${status}/${a.name}`).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not scrub a row whose destination was refused, failed or was never valid", async () => {
+    // Settled is not the same question as safe to forget (2026-10-14, user's
+    // call). These three are finished with -- nothing attempts them again -- but
+    // the client data is exactly what the resend needs once the cause is fixed,
+    // and a misconfigured destination fails every row this way. Scrubbing them
+    // made those clients permanently unrecoverable, with a `failed` nobody could
+    // act on as the only trace. The thirty-day backstop is what bounds the data
+    // this keeps.
+    for (const status of KEPT) {
+      for (const a of ACTIONS) {
+        const d = deps();
+        const r = row();
+        for (const other of ACTIONS) r[other.status] = other === a ? status : "sent";
+        await processSignupEvent(r, d);
+        expect(d.scrub, `${a.name} ${status}`).not.toHaveBeenCalled();
+      }
     }
   });
 
@@ -824,11 +871,13 @@ describe("the row is scrubbed once all three have settled", () => {
     // statuses the TABLE says are settled and that has not been scrubbed yet.
     const table = { meta_status: "pending", whatsapp_status: "pending", brevo_status: "pending", scrubbed_at: null };
     const stamps = [];
-    const settledInTable = () =>
-      ["meta_status", "whatsapp_status", "brevo_status"].every((c) => SETTLED_SET.has(table[c]));
+    // SCRUBBABLE, because that is the set the statement's predicate is built
+    // from: a `failed` destination is settled and still keeps the row's data.
+    const scrubbableInTable = () =>
+      ["meta_status", "whatsapp_status", "brevo_status"].every((c) => SCRUBBABLE_SET.has(table[c]));
     const scrub = vi.fn(async (_id, at) => {
       stamps.push(at);
-      if (!settledInTable() || table.scrubbed_at) return 0;
+      if (!scrubbableInTable() || table.scrubbed_at) return 0;
       table.scrubbed_at = at;
       return 1;
     });
