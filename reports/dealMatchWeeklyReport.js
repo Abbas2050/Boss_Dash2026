@@ -457,6 +457,106 @@ function spanCell(value, { colspan = 1, align = "left", cls = "" } = {}) {
   return `<td class="txt" colspan="${colspan}" style="text-align:${align};"><span class="val${cls ? ` ${cls}` : ""}">${value}</span></td>`;
 }
 
+// ── per-million figures, bracketed beside the notional ───────────────────────
+//
+// "where we are showing volume add over there per million value also" / "add in
+// small font in brackets". Both figures the desk asked for ride in one bracket:
+// net revenue per million of notional, and LP commission per million.
+//
+// WHICH LP FIGURE, AND WHY THE OTHER ONE WOULD BE WRONG.
+// DealMatch/Run publishes two LP costs per client and the row carries both.
+// This uses `lpCommPerM` -- the backend's lpCommPerMillionUsd, notional x the
+// weighted per-million rate, and the cost Net Revenue is actually built from:
+// docs/dealing-reporting.md §5 records that `gross - lpCommPerMillionUsd`
+// reproduced totalRevenueUsd on 78 of 78 client rows for 8-14 Aug and
+// `gross - lpCommissionUsd` on none of them. Dividing it by notional recovers
+// that weighted per-million rate itself, which is exactly the number being
+// asked for, and it is the same cost the net figure beside it in this bracket
+// has already had taken off.
+//
+// The other figure, `lpComm` (lpCommissionUsd), is coverage-attributed -- the
+// commission allocated through the LP orders a client's flow actually matched
+// against. Divided by notional it would be a coverage-attributed cost spread
+// over volume: arithmetically fine, and a different quantity from the rate the
+// desk is charged, which is why subtracting it is the documented way to get
+// Net Revenue wrong.
+//
+// NOTE FOR THE READER'S ARITHMETIC. The visible LP Comm COLUMN prints
+// `row.lpComm`, so "LP Comm / Notional" will NOT generally reproduce the LP
+// figure in this bracket -- on the delivered 2026-10-13 report the column gives
+// $9.16 per million against a per-million-rate basis that the backend computes
+// separately. That is a real difference between two real costs, not a rounding
+// slip, and a reader who checks will find it, so the section subtitle says so
+// in a clause. The LP Comm column is deliberately left showing lpComm: it is
+// the coverage-attributed cost, and this bracket is not the place to change
+// what a column has always meant.
+function perMillionOf(amount, millionsUsd) {
+  const m = Number(millionsUsd) || 0;
+  const a = Number(amount) || 0;
+  // A client can hold lots with no notional at all, and then a per-million
+  // figure is UNDEFINED rather than zero. Returning null (rendered as an em
+  // dash, the same treatment volumeSection.js gives a scalar it never
+  // received) keeps "$0.00" -- a confident claim that the client earned
+  // nothing per million -- and a literal "Infinity"/"NaN" out of the email.
+  if (!Number.isFinite(m) || m === 0) return null;
+  const ratio = a / m;
+  if (!Number.isFinite(ratio)) return null;
+  // Rounded exactly once, here, from the UNROUNDED inputs. Never from the 2 dp
+  // displays beside it: a ratio of two rounded figures is a third rounding and
+  // would drift from the figures it claims to divide.
+  return money(ratio);
+}
+
+// Two tones for the one bracket, because it is printed on both a white body row
+// and the TOTAL row's #0f172a. #64748b is unreadable on that navy, so the dark
+// variant borrows the colour the total row already gives its own labels.
+const PER_M_TONE = {
+  light: { muted: "#64748b", neg: "#b91c1c" },
+  dark: { muted: "#94a3b8", neg: "#fca5a5" },
+};
+
+// Styled INLINE rather than through a new class. Three reasons: the card is
+// built by rptCard() in reportShared.js, which emits inline styles only and is
+// shared with other reports, so a stylesheet rule could not reach it anyway;
+// Zoho ships a 29-property CSS allow-list and silently drops the rest, so a
+// brand-new rule is a thing to verify rather than assume (docs §6); and the
+// TOTAL row's own `tr.total-row td .val { color:#ffffff }` has to be beaten,
+// which only an inline style does. `perm` rides along as a machine-readable
+// hook for the tests -- the same hook-not-styling convention rptCard documents
+// for kpi-value.
+function perMillionBracket(netDisplay, lpDisplay, { onDark = false } = {}) {
+  const t = onDark ? PER_M_TONE.dark : PER_M_TONE.light;
+  const net = netDisplay == null ? "&mdash;" : netDisplay;
+  const lp = lpDisplay == null ? "&mdash;" : lpDisplay;
+  // A negative net per million is the most useful number on the row -- one
+  // client's was -$11.67 on 2026-10-13 -- and it must not read as a quiet grey
+  // aside. The sign comes from money(), which always prints it; the colour is
+  // decided from that PRINTED string, so the styling cannot disagree with the
+  // sign on screen.
+  const negative = typeof net === "string" && net.startsWith("-");
+  const netSpan = negative
+    ? `<span class="money-neg" style="color:${t.neg};font-weight:700">${net}</span>`
+    : net;
+  // Each HALF is nowrap, the bracket as a whole is not. A figure must never
+  // break mid-value (docs §6 -- "51,/90/0.0/0" is worse than no table at all),
+  // but the two halves may take separate lines, and that is what keeps the
+  // bracket inside its container: the table cell is capped at max-width:156px,
+  // the pair measures ~137px at the magnitudes seen so far, and a client with
+  // tiny notional and real revenue can print a four-figure rate that would
+  // otherwise overflow into the cell beside it. The separator rides with the
+  // second half so a wrapped bracket reads "($310.66 net" / "· $10.00 LP per M)".
+  return ` <span class="perm" style="font-size:10px;font-weight:400;letter-spacing:0;color:${t.muted}"><span style="white-space:nowrap">(${netSpan} net</span> <span style="white-space:nowrap">&middot; ${lp} LP per M)</span></span>`;
+}
+
+// The notional figure and its bracket as one cell/card value. The wrapper sets
+// white-space:normal because both containers it lands in are nowrap
+// (`table.data td.num .val`, and rptCard's 20px figure div): without it there
+// is no break opportunity between figure and bracket, and on a 375px screen
+// the pair would run off the side instead of taking a second line.
+function withPerMillion(figure, bracket) {
+  return `<span style="white-space:normal">${figure}${bracket}</span>`;
+}
+
 // ── inline charts ────────────────────────────────────────────────────────────
 // Charts ship as real Chart.js PNGs embedded in the message via Content-ID, so
 // shapes CSS cannot draw (doughnut, dual-axis line) are available and nothing is
@@ -922,12 +1022,18 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       acc.clientComm += Number(row.clientComm) || 0;
       acc.swap += Number(row.swap) || 0;
       acc.lpComm += Number(row.lpComm) || 0;
+      // The per-million LP cost, accumulated for the bracketed LP-per-million
+      // figure on the card and the TOTAL row. Nothing PRINTS this sum on its
+      // own, only its ratio to notional, which is what makes a missing seed or
+      // a missing accumulate line cheap to ship: the bracket would read
+      // "$0.00 LP per M" against rows that each carry a real rate.
+      acc.lpCommPerM += Number(row.lpCommPerM) || 0;
       acc.rebateWithdrawn += Number(row.rebateWithdrawn) || 0;
       acc.totalRev += Number(row.totalRev) || 0;
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { lots: 0, millionsUsd: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
+    { lots: 0, millionsUsd: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, lpCommPerM: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
   );
 
   // The notional total, formatted ONCE, because it is printed twice: on the
@@ -946,6 +1052,24 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
   // which is the comparison a reader actually makes.
   const notionalTotalDisplay = fmtNum(totals.millionsUsd, 2);
 
+  // The two per-million figures for the totals, formatted ONCE each, for the
+  // same reason notionalTotalDisplay is: they are printed in three places (the
+  // card, the row-derived KPI tile, and the table's TOTAL row) and a reader who
+  // notices one goes and checks it against another. One pair of consts cannot
+  // drift; three money() calls on three expressions can.
+  //
+  // Both divide the UNROUNDED totals -- totals.netRev and totals.lpCommPerM
+  // over totals.millionsUsd -- and round once, the treatment every money column
+  // in this table already gets. Dividing the rendered displays instead (the
+  // notional total is already a string by here, which makes that an easy
+  // mistake) would be a ratio of two roundings.
+  const netPerMillionDisplay = perMillionOf(totals.netRev, totals.millionsUsd);
+  const lpPerMillionDisplay = perMillionOf(totals.lpCommPerM, totals.millionsUsd);
+  // Same digits, two tones: the cards sit on a light background, the TOTAL row
+  // on #0f172a.
+  const notionalPerMillion = perMillionBracket(netPerMillionDisplay, lpPerMillionDisplay);
+  const notionalPerMillionOnDark = perMillionBracket(netPerMillionDisplay, lpPerMillionDisplay, { onDark: true });
+
   const bodyRows = rows
     .map(
       (row) => `<tr>
@@ -959,8 +1083,24 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
               dataCell repeats the label inside every cell, so a phone reader
               sees "NOTIONAL (M USD)" directly above the figure and a "M"
               suffix would only widen a nowrap numeric cell. Bare digits also
-              keep it from being misread as the dollars its neighbours are. */ ""}
-        ${dataCell("Notional (M USD)", fmtNum(row.millionsUsd, 2), { align: "right" })}
+              keep it from being misread as the dollars its neighbours are.
+
+              The bracket beside it is this client's own net revenue and LP
+              commission PER MILLION of that notional -- the rate, which is
+              what the volume figure is there to be divided into. Both from the
+              unrounded row values, not from the 2 dp displays in the cells
+              either side. See perMillionOf() on which LP figure and why. */ ""}
+        ${dataCell(
+          "Notional (M USD)",
+          withPerMillion(
+            fmtNum(row.millionsUsd, 2),
+            perMillionBracket(
+              perMillionOf(row.netRev, row.millionsUsd),
+              perMillionOf(row.lpCommPerM, row.millionsUsd),
+            ),
+          ),
+          { align: "right" },
+        )}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
         ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
@@ -1222,13 +1362,22 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       // No `unit`: the label already says M USD, and a
                       // "112.87 M USD" would both repeat it and widen a nowrap
                       // figure. Same reason the column keeps bare digits.
+                      //
+                      // The bracket carries the two per-million figures for
+                      // these same totals, so the card answers "and what did a
+                      // million earn?" where the figure is read rather than
+                      // twenty blocks further down. It is the TOTALS that
+                      // belong here: a card is a whole-table statement, and a
+                      // single client's rate on it would be read as the book's.
                       {
                         label: "Notional (M USD)",
-                        value: notionalTotalDisplay,
+                        value: withPerMillion(notionalTotalDisplay, notionalPerMillion),
                         tone: "em",
                         // The note names the row this must equal, because a
-                        // reader who doubts the card will go and check it.
-                        note: `Summed over the ${fmtNum(rows.length, 0)} listed clients — the same figure as the TOTAL (listed clients) row below. The notional the per-million LP commission is charged against.`,
+                        // reader who doubts the card will go and check it, and
+                        // names the LP basis, because this card can be read
+                        // without ever reaching the table's own subtitle.
+                        note: `Summed over the ${fmtNum(rows.length, 0)} listed clients — the same figure as the TOTAL (listed clients) row below. The notional the per-million LP commission is charged against; in brackets, net revenue and that per-million LP cost per million of it.`,
                       },
                     ],
                     3,
@@ -1280,11 +1429,12 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                     absent. When they are present the figure still appears, as
                     its own card under the hero, where it has to say out loud
                     that it is a row sum because its neighbours there are not.
-                    Both read notionalTotalDisplay, so the two paths cannot
-                    print different totals. */ ""}
+                    Both read notionalTotalDisplay and the same per-million
+                    bracket, so the two paths cannot print different totals or
+                    different rates. */ ""}
               <td class="kpi lots" width="20%">
                 <p class="kpi-label">Notional (M USD)</p>
-                <p class="kpi-value">${notionalTotalDisplay}</p>
+                <p class="kpi-value">${withPerMillion(notionalTotalDisplay, notionalPerMillion)}</p>
               </td>
               <td class="kpi gross" width="20%">
                 <p class="kpi-label">Total Revenue</p>
@@ -1360,7 +1510,15 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 Kept as a JS comment, not an HTML one: an HTML comment ships
                 inside every email for no reader's benefit. */ ""}
 
-          <p class="section-title" style="margin-top:18px;">Client revenue<span style="font-weight:500;letter-spacing:0;text-transform:none;color:#64748b;font-size:11px;"> &mdash; per client, net of that client's own withdrawn rebate</span></p>
+          ${/* The clause about the two LP figures earns its place: the bracket
+                beside Notional shows LP commission per million taken from the
+                PER-MILLION cost, while the LP Comm column shows the
+                coverage-attributed one, so "LP Comm / Notional" does not
+                reproduce it. Without a word here that reads as an arithmetic
+                error in the report rather than as two different real costs.
+                In the always-rendered subtitle, not the paragraph below it:
+                that paragraph only appears when whole-run revenueStats do. */ ""}
+          <p class="section-title" style="margin-top:18px;">Client revenue<span style="font-weight:500;letter-spacing:0;text-transform:none;color:#64748b;font-size:11px;"> &mdash; per client, net of that client's own withdrawn rebate; bracketed per-million figures divide the unrounded row, and their LP is the weighted per-million rate Net Revenue is built from, not the LP Comm column over notional</span></p>
           ${
             revenueStats
               ? `<p style="font-size:11px;color:#64748b;margin:0 0 10px;">
@@ -1396,7 +1554,10 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       broken. Naming the scope is what makes both honest. */ ""}
                 ${spanCell("TOTAL (listed clients)", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
-                ${dataCell("Notional (M USD)", notionalTotalDisplay, { align: "right" })}
+                ${/* The dark variant of the bracket: this row's background is
+                      #0f172a, and the light grey the body rows use disappears
+                      into it. */ ""}
+                ${dataCell("Notional (M USD)", withPerMillion(notionalTotalDisplay, notionalPerMillionOnDark), { align: "right" })}
                 ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
                 ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
                 ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
