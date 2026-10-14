@@ -105,9 +105,11 @@ function isQuiet(stage: StageHealth | undefined): boolean {
 
 /** Name, email and phone, which almost every row no longer holds.
  *
- *  The backend nulls them once Meta, WhatsApp and Brevo have all settled, which
- *  is about a minute after signup, so an empty cell here is the normal case and
- *  not a broken page. Saying so is the whole job of this: an operator reading
+ *  The backend nulls them once Meta, WhatsApp and Brevo have all succeeded or
+ *  been deliberately skipped, which is about a minute after signup, so an empty
+ *  cell here is the normal case and not a broken page. A row with a failed or
+ *  rejected destination still holds them, because a resend needs them.
+ *  Saying so is the whole job of this: an operator reading
  *  three blank columns concludes the feed is broken, and would be wrong. A row
  *  that genuinely never carried the value reads as a dash instead, which is what
  *  `scrubbedAt` is for. */
@@ -351,9 +353,10 @@ export function CrmEventsPage() {
               </div>
 
               <p className="mb-2 text-xs text-muted-foreground">
-                Name, email and phone are removed once Meta, WhatsApp and Brevo have all settled — about a minute
-                after signup — so most rows read “scrubbed”. FXBO holds the client record; this table holds the
-                statistics. A row that never settled is scrubbed anyway after 30 days, and whatever it had not sent
+                Name, email and phone are removed once Meta, WhatsApp and Brevo have all succeeded or been skipped —
+                about a minute after signup — so most rows read “scrubbed”. FXBO holds the client record; this table
+                holds the statistics. A row with a failed or rejected destination keeps its name, email and phone so
+                the send can be fixed and retried; it is scrubbed anyway after 30 days, and whatever it had not sent
                 by then reads “failed”, with a detail saying it was never attempted.
               </p>
 

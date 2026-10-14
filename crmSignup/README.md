@@ -85,7 +85,9 @@ columns, so a recycle costs at most one interval.
   not start, and every webhook is answered 503.
 - A destination with no key is recorded as `skipped`, and a skipped row is
   final. Set `META_CAPI_ACCESS_TOKEN`, `WA_API_KEY` and `BREVO_API_KEY` before
-  pointing FXBO at the endpoint.
+  pointing FXBO at the endpoint. `BREVO_LIST_ID` is the fourth: with the Brevo
+  key set, an unusable list id is a `failed` send rather than a skip, and the
+  startup log says so.
 - Two workers can run at once, and the host arranges exactly that during an
   overlapped recycle. The sweeper's `SELECT` takes no lock, so both read the
   same due rows; the pre-send write is the claim, and the one whose `UPDATE`
@@ -102,8 +104,9 @@ redeliveries.
 
 The client's details are stored at all for one reason: the endpoint answers FXBO
 immediately and sends afterwards, so the phone number and the email have to
-survive from receipt until all three destinations settle — including across
-retries, which run up to three attempts five minutes apart. After that, nothing
+survive from receipt until all three destinations are done with — including
+across retries, which run up to three attempts five minutes apart, and including
+a destination that failed, which a resend will need them for. After that, nothing
 needs them.
 
 **The scrub.** These eight columns are nulled and `scrubbed_at` is stamped:
@@ -137,7 +140,7 @@ funnel stage after the fact.
 
 | | When | What |
 |---|---|---|
-| Settle | As soon as all three statuses are settled — normally about a minute after signup | Scrub |
+| Settle | As soon as all three destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
 | Invalid | `received_at` older than **7 days**, and all three statuses `invalid` | The whole row is deleted |
 | Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say, and settle whatever is still unsent as `failed` |
 
@@ -152,9 +155,40 @@ That is deliberate: those rows never sent anything and never will, and they are
 the rows CUTOVER step 5 reads, so they keep everything including `raw_payload`
 for their 7 days and then go whole.
 
+**A failed or rejected row keeps its client data (2026-10-14, user's call).**
+Scrubbing on *any* final state meant a row whose destination was misconfigured
+was scrubbed the minute it failed, and the name, email and phone a resend needs
+were gone for good — so the clients were permanently unrecoverable, with a
+`failed` nobody could act on as the only trace. `BREVO_LIST_ID` is the concrete
+case. So a row is scrubbable only once **every** destination is `sent` or
+`skipped`; if any is `failed`, `rejected` or `invalid`, the client data stays
+until the send is retried or the 30-day backstop takes it. The backstop is what
+bounds that: a destination nobody ever fixes still does not make this table a
+permanent store of client data.
+
+That makes two sets, and conflating them is the mistake to avoid — both live in
+`settled.js`, named for the question each answers:
+
+| Set | Question | Members |
+|---|---|---|
+| `SETTLED` | do not attempt this action again | `sent`, `skipped`, `rejected`, `failed`, `invalid` |
+| `SCRUBBABLE` | this row is safe to forget | `sent`, `skipped` |
+
+They fail in opposite directions and only one of them is recoverable. The wide
+set where the narrow one belongs **destroys data**: the scrub nulls a row a
+resend still needs. The narrow set where the wide one belongs **re-sends**: a
+refused action reads as unfinished, is claimed again, and the client gets a
+second WhatsApp welcome. The step skip in `worker.js` reads `SETTLED`; the scrub
+and its SQL precondition read `SCRUBBABLE`; the backstop's "still unsent" clause
+reads `SETTLED`, because built from the narrow one it would overwrite a real
+refusal with its own `failed`.
+
+`invalid` is excluded from `SCRUBBABLE` and that changes nothing about those
+rows: an all-`invalid` row is handled by the 7-day delete, not by the scrub.
+
 **The settle path asks the row, not the worker.** The `UPDATE` carries its own
-precondition — all three statuses settled, `scrubbed_at` still NULL — so it is
-correct whatever the worker believes (`settledClause` in `store.js`, the same
+precondition — all three statuses scrubbable, `scrubbed_at` still NULL — so it is
+correct whatever the worker believes (`scrubbableClause` in `store.js`, the same
 lesson as the row claim above). The worker's own check decides only whether to
 try, so the ordinary row still costs one statement. It matters during an
 overlapped recycle: when two workers split the three claims, neither one's copy
@@ -196,3 +230,16 @@ does not know returns 400, classified permanent and stored as `rejected` — so 
 new field needs the attribute created in Brevo first. All three destinations use
 the same two words: `rejected` is the provider refusing this event, `failed` is a
 transport failure or a spent attempt budget.
+
+**`BREVO_LIST_ID` fails closed (2026-10-14, user's call).** Unset, blank or not a
+positive number, no request is made and the row records `failed` with a detail
+naming the variable — terminal, because a wrong environment variable will not be
+right in five minutes, and the row keeps its client data so the send can be
+retried once it is fixed. It used to fail *open*: the contact was created, joined
+no list, and the row said `sent`, so nobody would have found out until they
+opened list 19 to run a campaign and found it short. `failed` rather than
+`rejected` because Brevo never saw the request, and rather than `skipped` because
+nothing decided this. `server.js` also warns at startup when `BREVO_API_KEY` is
+set and the list id is not usable, which catches the typo before a signup
+arrives; both read `isUsableBrevoListId` in `brevo.js`, so the warning and the
+gate cannot disagree.

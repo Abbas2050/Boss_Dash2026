@@ -693,9 +693,12 @@ describe("the events table in detail", () => {
 });
 
 // Almost every row this tab shows is scrubbed: the backend nulls the client's
-// name, email and phone once Meta, WhatsApp and Brevo have all settled, which is
-// about a minute after signup. Three blank columns on nearly every row is what an
-// operator reads as a broken page, so the page has to say what it is.
+// name, email and phone once Meta, WhatsApp and Brevo have all succeeded or been
+// deliberately skipped, which is about a minute after signup. Three blank columns
+// on nearly every row is what an operator reads as a broken page, so the page has
+// to say what it is. A row whose destination failed or was rejected keeps its
+// client data instead, so that the send can be fixed and retried, which is the
+// other half the note has to carry.
 describe("a scrubbed row", () => {
   const SCRUBBED = {
     id: 11,
@@ -764,7 +767,12 @@ describe("a scrubbed row", () => {
     render(<CrmEventsPage />);
     await screen.findByText("90010");
     expect(screen.getByText(/Name, email and phone are removed once/i)).toBeInTheDocument();
-    expect(screen.getByText(/all settled/i)).toBeInTheDocument();
+    expect(screen.getByText(/all succeeded or been skipped/i)).toBeInTheDocument();
+    // And the other half of the policy, since 2026-10-14: a row whose destination
+    // failed or was rejected still holds its client data, so that the send can be
+    // fixed and retried. An operator who reads a failed row's name as a leak has
+    // to find the reason it is there on the same line.
+    expect(screen.getByText(/failed or rejected destination keeps/i)).toBeInTheDocument();
     // The thirty-day backstop's rows are the other shape of scrubbed row, and the
     // note has to cover them too: they arrive here reading `failed` on
     // destinations nothing ever tried.

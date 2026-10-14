@@ -179,9 +179,11 @@ Read it, **not** `record_type` beside it: `record_type` is derived, and
 `lead` there tells you nothing about what arrived.
 
 Do not reach for `raw_payload` — it is scrubbed. An ordinary row is scrubbed
-about a minute after it arrives, once all three destinations settle; an `invalid`
-row (which is what a test press is) keeps everything for 7 days and is then
-deleted whole. `is_lead_raw` is the column that survives both, and it exists for
+about a minute after it arrives, once all three destinations have succeeded or
+been deliberately skipped; a row whose destination failed or was rejected keeps
+its client data until the send is retried or the 30-day backstop takes it. An
+`invalid` row (which is what a test press is) keeps everything for 7 days and is
+then deleted whole. `is_lead_raw` is the column that survives both, and it exists for
 exactly this step. See "What the table holds" in `README.md`.
 
 Then register one real test client and read `is_lead_raw` again, for the real

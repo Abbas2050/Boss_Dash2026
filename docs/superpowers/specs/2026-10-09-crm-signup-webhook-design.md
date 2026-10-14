@@ -242,7 +242,8 @@ integration plan: Meta learns that a deposit happened but not what it was worth,
 so there is no return-on-ad-spend measurement.
 
 **The table stores statistics, not client records, and scrubs the client data as
-soon as all three destinations settle (2026-10-14, user's call).** §6 left
+soon as all three destinations settle (2026-10-14, user's call — narrowed to
+successes and skips later the same day, three entries below).** §6 left
 retention as an open decision and the module README said so honestly: nothing
 deleted or expired a row, so every name, email, phone and complete `raw_payload`
 was kept for ever. The decision closes it. FXBO is the system of record for who a
@@ -251,12 +252,13 @@ message?" and to recognise FXBO's redeliveries.
 
 The client data is stored at all because the endpoint answers FXBO immediately
 and sends afterwards, so the phone number and the email must survive from receipt
-until all three destinations settle, retries included — three attempts five
-minutes apart. After that nothing needs them.
+until all three destinations are done with, retries included — three attempts
+five minutes apart. After that nothing needs them, except on a row whose
+destination failed, which a resend needs them for (the entry three below).
 
 Scrubbed: `first_name`, `middle_name`, `last_name`, `email`, `phone`,
 `full_link`, `referer`, `raw_payload`. Three windows: the scrub runs the moment
-all three statuses settle (about a minute); an all-`invalid` row — a bad payload
+all three statuses are `sent` or `skipped` (about a minute); an all-`invalid` row — a bad payload
 or an FXBO test press, which never sent anything and never will — is deleted
 whole after **7 days**; and any row still unscrubbed after **30 days** is
 scrubbed regardless of its statuses, which catches rows that never settle because
@@ -266,8 +268,9 @@ by an instant the sweep remembers, because §7's rule about timers applies to th
 too.
 
 Two corrections to the first implementation of that, both 2026-10-14. **The
-settle scrub carries its own SQL precondition** — all three statuses settled and
-`scrubbed_at` still NULL — rather than trusting the worker's in-memory copy of
+settle scrub carries its own SQL precondition** — all three statuses final and
+`scrubbed_at` still NULL, narrowed to successes and skips by the entry below —
+rather than trusting the worker's in-memory copy of
 the row: under the overlapped recycle of §7 two workers split the three claims,
 so neither copy ever showed all three settled and neither scrubbed, which made
 the thirty-day backstop the normal path for every recycle window instead of the
@@ -303,6 +306,69 @@ by email or phone, because neither is retained.** A question of the form "which
 row belongs to this address" has to be answered from FXBO, by client id. The
 settings tab shows "scrubbed" in those columns rather than blank cells, so the
 absence reads as the policy working rather than as a broken page.
+
+**Only successes and deliberate skips are scrubbed; a failure keeps its client
+data (2026-10-14, user's call).** Scrubbing on *any* final state scrubbed the
+failures too. So a `failed` or `rejected` destination lost the name, the email
+and the phone a resend needs about a minute after signup, and the clients were
+permanently unrecoverable with a `failed` nobody could act on as the only trace —
+which is the worst way for a misconfigured destination to behave, because the
+misconfiguration is exactly the case that fails every row. A row is scrubbable
+now only once **every** destination is `sent` or `skipped`; if any is `failed`,
+`rejected` or `invalid`, the client data stays.
+
+The 30-day backstop still catches those rows, and the user accepted that bound
+explicitly. **The trade-off: recoverability bought at the price of holding client
+data for up to 30 days on rows that failed.** A destination nobody ever fixes
+therefore does not turn this table into a permanent store of client data; it only
+widens the window from a minute to a month for the rows it broke.
+
+That makes two sets of statuses, and conflating them is the mistake this is
+written down to prevent. Both live in `crmSignup/settled.js`, named for the
+question each answers: `SETTLED` (`sent`, `skipped`, `rejected`, `failed`,
+`invalid`) is "do not attempt this action again", and `SCRUBBABLE` (`sent`,
+`skipped`) is "this row is safe to forget". They fail in opposite directions and
+only one of them is recoverable. The wide set where the narrow one belongs
+**destroys data**: the scrub nulls a row a resend still needs. The narrow set
+where the wide one belongs **re-sends**: a refused action reads as unfinished, is
+claimed again, and the client gets a second WhatsApp welcome — the one message
+with nothing deduplicating it (§8). The step skip in `worker.js` reads `SETTLED`;
+the scrub and its SQL precondition read `SCRUBBABLE`; the backstop's "still
+unsent" clause reads `SETTLED`, because built from the narrow one it would
+overwrite a real refusal with its own `failed` and "never attempted". `settled.js`
+refuses the drift at import rather than at deploy. `invalid` is outside
+`SCRUBBABLE` and that changes nothing about those rows: all-`invalid` rows are
+handled by the 7-day delete, not by the scrub.
+
+What this decision does **not** include is the action that resets a kept row to
+`pending` so it is claimed again. Keeping the data makes the resend possible; the
+requeue itself is its own change.
+
+**An unusable `BREVO_LIST_ID` is a failure at send time, not a contact in no
+list (2026-10-14, user's call).** It failed open: unset, blank or non-numeric,
+the contact was still created in Brevo but joined no list, while the row recorded
+`sent`. Nobody would have found out until they opened list 19 to run a campaign
+and found it short. Brevo is not called at all now, and the row records `failed`
+with a detail naming the variable. **Terminal, not retryable:** a wrong
+environment variable will not become right in five minutes, so three attempts
+would be three identical non-attempts in the log. `failed` and not `rejected`
+because Brevo never saw the request and `rejected` means the provider refused it
+(§8); and not `skipped`, because a skip is a deliberate decision not to send and
+this is a misconfiguration — the same reading the backstop's never-attempted
+`failed` takes. With the decision above in place the row keeps its client data,
+which is what makes the eventual resend possible.
+
+**And `server.js` warns at startup when `BREVO_API_KEY` is set and the list id is
+not usable (2026-10-14, user's call).** Beside the existing `CRM_WEBHOOK_SECRET`
+warning, naming the variable and saying that every Brevo send will be recorded as
+failed until it is fixed. It catches a typo before a single signup arrives, which
+is the whole point. **Only when the API key is set:** with no key Brevo is
+switched off entirely and recorded as "brevo not configured", so a warning about
+its list would be noise on every boot of every install that does not use it. The
+warning and the send-time gate read the one predicate (`isUsableBrevoListId`), so
+a boot that calls the id fine and a send that then fails on it cannot happen.
+Neither the key nor the list value is printed: the commonest way this variable
+goes wrong is a paste from the line above it in `.env`.
 
 **Lives in this app.** MySQL, cron, admin routes and an FXBO webhook endpoint
 all already exist here. The cost is inheriting IIS recycle behaviour, which §7
@@ -352,7 +418,7 @@ regex, the lead/client call.
 | `*_attempts`, one per action | The brief had a single `attempts`. One shared counter cannot carry three independent retry schedules |
 | `fbc` | The assembled click identifier, **frozen at first write** — see §8 |
 | `fxbo_unique_id` | Distinguishes a genuine FXBO redelivery from a real second event |
-| `raw_payload` | The body as received. **Scrubbed as soon as all three destinations settle (2026-10-14)** — `is_lead_raw` below replaced the one use it was kept for |
+| `raw_payload` | The body as received. **Scrubbed once all three destinations are `sent` or `skipped` (2026-10-14)** — `is_lead_raw` below replaced the one use it was kept for |
 | `is_lead_raw` | The raw `%client_is_lead%` literal, which survives the scrub. The first live delivery settles what the placeholder contains by reading this |
 | `scrubbed_at` | When the row's client data was removed, or NULL if it never was. Audited, read by the settings tab, and the leading column of the retention index |
 
@@ -537,6 +603,11 @@ document data. All are available and all are deliberately left out.
 
 Retry transport / 429 / 5xx up to 3 times; any other 4xx is permanent.
 
+**An unusable `BREVO_LIST_ID` is a `failed` send, decided before the request
+(2026-10-14, §4).** Unset, blank or not a positive number: nothing is posted, and
+the detail names the variable. Terminal, so no attempt is spent and no clock is
+set. It used to fail open — a contact created in no list, recorded as `sent`.
+
 ### Independence
 
 The three actions never block each other. One failing leaves the others' status
@@ -645,7 +716,7 @@ them, and nothing rebuilds on push. One command, but not an optional one.
 | `WA_FROM_NUMBER` | `+971507192185` |
 | `WA_MAX_ATTEMPTS` | `3` |
 | `BREVO_API_KEY` | Already set. Unset → Brevo skipped silently |
-| `BREVO_LIST_ID` | `19` — "All Clients" |
+| `BREVO_LIST_ID` | `19` — "All Clients". Unset, blank or not a positive number → Brevo is **not called** and the row records `failed`; warned about at startup when `BREVO_API_KEY` is set |
 | `SKIP_SOURCES` | Comma-separated `%custom_formname%` values never messaged. WhatsApp only |
 
 Never logged: `META_CAPI_ACCESS_TOKEN`, `WA_API_KEY`, `BREVO_API_KEY`,
