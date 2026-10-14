@@ -105,7 +105,14 @@ export function rowToFields(row = {}) {
     lastName: str(row.last_name),
     email: str(row.email),
     phone: str(row.phone),
+    // A statistic since 2026-10-14: no destination is gated on it any more.
+    // Kept here so the settings tab and anything else reading fields sees the
+    // same shape the row has.
     recordType: str(row.record_type) || "lead",
+    // The raw `%client_is_lead%` literal, which Brevo's gate reads rather than
+    // `recordType` -- the two are not each other's negation (decideBrevoSkip
+    // says why). It survives the scrub, so a requeued row still has it.
+    isLeadRaw: str(row.is_lead_raw),
     marketingConsent: Boolean(Number(row.marketing_consent)),
     isIb: Boolean(Number(row.is_ib)),
     entity: str(row.entity),
@@ -171,10 +178,12 @@ async function runMetaStep(row, fields, deps, begin) {
 async function runWhatsappStep(row, fields, deps, begin) {
   const { config, sendWhatsapp, newMessageId, now, logger } = deps;
 
+  // No record type: a lead gets the same welcome as a client (2026-10-14,
+  // user's call), so the only facts about the client left here are the phone
+  // format and SKIP_SOURCES.
   const skip = decideWhatsappSkip({
     stage: fields.stage,
     apiKey: config.waApiKey,
-    recordType: fields.recordType,
     source: fields.source,
     phone: fields.phone,
     skipSources: config.skipSources,
@@ -225,7 +234,13 @@ async function runWhatsappStep(row, fields, deps, begin) {
 async function runBrevoStep(row, fields, deps, begin) {
   const { config, upsertBrevo, now, logger } = deps;
 
-  const skip = decideBrevoSkip({ stage: fields.stage, apiKey: config.brevoApiKey });
+  // The raw literal, not `fields.recordType`: the gate is a positive lead test
+  // so that an unrecognised value adds a contact rather than emptying the list.
+  const skip = decideBrevoSkip({
+    stage: fields.stage,
+    apiKey: config.brevoApiKey,
+    isLeadRaw: fields.isLeadRaw,
+  });
   if (skip) {
     return {
       status: "skipped",

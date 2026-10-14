@@ -76,6 +76,50 @@ describe("skip decisions", () => {
     // with consent recorded as OPT_IN, and campaigns segment on it.
     expect(decideBrevoSkip({ stage: "registered", apiKey: "k", marketingConsent: false })).toBeNull();
   });
+
+  // Added 2026-10-14, user's call: until then every `registered` event became a
+  // contact, lead or client. The gate's DIRECTION is the part to read twice.
+  describe("clients only, by a positive lead test", () => {
+    it("skips a payload that positively says lead, with the reason WhatsApp used to give", () => {
+      for (const isLeadRaw of ["1", "true", "TRUE", "yes", "Y", "on", "  1  "]) {
+        expect(decideBrevoSkip({ stage: "registered", apiKey: "k", isLeadRaw }), isLeadRaw).toEqual({
+          reason: "lead, not client",
+        });
+      }
+    });
+
+    it("adds the contact when the literal is absent, empty or unrecognised", () => {
+      // The asymmetry, and the reason this is not `recordType !== "client"`.
+      // deriveRecordType reads every one of these as "lead", so that predicate
+      // would turn one unrecognised %client_is_lead% -- a new FXBO version, a
+      // renamed field, a placeholder that stopped rendering -- into a silently
+      // empty Brevo list, with nothing erroring. A lead wrongly added is one
+      // unwanted contact, segmentable on OPT_IN; a client wrongly left out is
+      // reach nobody can see was lost. CUTOVER step 5 exists because the literal
+      // cannot be known until the first live signup, so this must not depend on
+      // having guessed it.
+      for (const isLeadRaw of [undefined, null, "", "   ", "maybe", "2", "lead", "null", "undefined"]) {
+        expect(decideBrevoSkip({ stage: "registered", apiKey: "k", isLeadRaw }), String(isLeadRaw)).toBeNull();
+      }
+    });
+
+    it("adds a client, by the literals that say client", () => {
+      for (const isLeadRaw of ["0", "false", "no", "n", "off"]) {
+        expect(decideBrevoSkip({ stage: "registered", apiKey: "k", isLeadRaw }), isLeadRaw).toBeNull();
+      }
+    });
+
+    it("reports the configuration and the stage ahead of the lead, in that order", () => {
+      // An unset key is our problem and must never be recorded as a fact about
+      // this person; the stage is a fact about the event rather than the person.
+      expect(decideBrevoSkip({ stage: "registered", apiKey: "", isLeadRaw: "1" })).toEqual({
+        reason: "brevo not configured",
+      });
+      expect(decideBrevoSkip({ stage: "verified", apiKey: "k", isLeadRaw: "1" })).toEqual({
+        reason: "stage not applicable",
+      });
+    });
+  });
 });
 
 // Until 2026-10-14 an unusable BREVO_LIST_ID failed OPEN: the contact was

@@ -196,12 +196,23 @@ describe("toTableRow", () => {
   });
 
   it("keeps the stage, the id and all three statuses with their reasons", () => {
-    const view = toTableRow(row({ whatsapp_status: "skipped", whatsapp_detail: "lead, not client" }));
+    // Two different skip reasons on one row, because one column showing the
+    // other's detail would pass with a single reason. "lead, not client" is
+    // Brevo's since 2026-10-14; WhatsApp no longer has it, and the phone format
+    // is the fact about the person it does still refuse on.
+    const view = toTableRow(
+      row({
+        whatsapp_status: "skipped",
+        whatsapp_detail: "invalid phone number",
+        brevo_status: "skipped",
+        brevo_detail: "lead, not client",
+      })
+    );
     expect(view.stage).toBe("registered");
     expect(view.crmClientId).toBe("88214");
-    expect(view.whatsapp).toEqual({ status: "skipped", detail: "lead, not client", attempts: 1 });
+    expect(view.whatsapp).toEqual({ status: "skipped", detail: "invalid phone number", attempts: 1 });
+    expect(view.brevo).toEqual({ status: "skipped", detail: "lead, not client", attempts: 1 });
     expect(view.meta.status).toBe("sent");
-    expect(view.brevo.status).toBe("sent");
   });
 
   it("carries scrubbed_at, so the page can tell a scrubbed row from one that never had the value", () => {

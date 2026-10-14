@@ -1,3 +1,7 @@
+// The positive lead test, not deriveRecordType. The two are not each other's
+// negation and the comment on LEAD_LITERALS says why; reading the wrong one here
+// would empty this list rather than add one contact too many.
+import { saysLead } from "./normalise.js";
 import { sendTimeoutSignal } from "./sendTimeout.js";
 import { isTransientHttpStatus } from "./transientHttp.js";
 
@@ -6,14 +10,37 @@ export const BREVO_CONTACTS_URL = "https://api.brevo.com/v3/contacts";
 const text = (v) => String(v ?? "").trim();
 
 /**
- * Brevo runs at registration only. It is deliberately NOT gated on marketing
- * consent: decided 2026-10-09 and reaffirmed 2026-10-12, everyone lands in the
- * list with consent recorded as OPT_IN, which is Brevo's own flag and which its
- * double-opt-in tooling reads. Campaigns segment on it.
+ * Brevo runs at registration only, and takes clients only.
+ *
+ * It is deliberately NOT gated on marketing consent: decided 2026-10-09 and
+ * reaffirmed 2026-10-12, everyone lands in the list with consent recorded as
+ * OPT_IN, which is Brevo's own flag and which its double-opt-in tooling reads.
+ * Campaigns segment on it.
+ *
+ * **Clients only (2026-10-14, user's call).** Until then every `registered`
+ * event became a contact, lead or client.
+ *
+ * **The lead gate is a positive test on the raw `%client_is_lead%` literal, and
+ * that is load-bearing.** It reads `saysLead`, which is true only for a
+ * recognised lead literal; absent, empty and unrecognised values all send. It is
+ * NOT `recordType !== "client"`, which would look like the same gate and behave
+ * like its opposite: `deriveRecordType` resolves everything it does not
+ * recognise to "lead", so one unrecognised literal -- a new FXBO version, a
+ * renamed field, a placeholder that stops rendering -- would read every person
+ * as a lead and silently stop this list growing at all, with nothing erroring.
+ * A lead wrongly added here is one unwanted marketing contact, segmentable on
+ * OPT_IN; a client wrongly left out is reach nobody can see was lost. So this
+ * fails toward including them. (See LEAD_LITERALS in normalise.js, and CUTOVER
+ * step 5, which exists because the literal cannot be known until the first live
+ * signup.)
+ *
+ * Configuration first and the client last, in that order: an unset key is our
+ * problem and must not be reported as a fact about this person.
  */
-export function decideBrevoSkip({ stage, apiKey }) {
+export function decideBrevoSkip({ stage, apiKey, isLeadRaw }) {
   if (!text(apiKey)) return { reason: "brevo not configured" };
   if (stage !== "registered") return { reason: "stage not applicable" };
+  if (saysLead(isLeadRaw)) return { reason: "lead, not client" };
   return null;
 }
 

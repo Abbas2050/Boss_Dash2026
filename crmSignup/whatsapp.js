@@ -39,11 +39,23 @@ export function parseSkipSources(raw) {
 /**
  * Whether to send at all, and why not. Configuration first: an unset key is
  * our problem and should not be reported as a fact about the client.
+ *
+ * **The record type is not asked about, and takes no parameter (2026-10-14,
+ * user's call).** A lead gets the same template as a client. The link in its
+ * body and its button is `https://skylinkscapital.com/en/login/`, so for a lead
+ * it leads to a page they have no account for; the user was told that and chose
+ * to send anyway. There is no second template and no configuration for one --
+ * the template is approved by Meta as it stands, and a second one would need its
+ * own approval before it could carry anything different.
+ *
+ * So nothing here reads `record_type`. The phone format and SKIP_SOURCES are the
+ * only remaining facts about the client, and they apply to a lead exactly as
+ * they do to a client: a lead with no usable phone is still `invalid phone
+ * number`, not a send.
  */
-export function decideWhatsappSkip({ stage, apiKey, recordType, source, phone, skipSources }) {
+export function decideWhatsappSkip({ stage, apiKey, source, phone, skipSources }) {
   if (!String(apiKey ?? "").trim()) return { reason: "whatsapp not configured" };
   if (stage !== "registered") return { reason: "stage not applicable" };
-  if (recordType !== "client") return { reason: "lead, not client" };
   const sources = skipSources instanceof Set ? skipSources : parseSkipSources(skipSources);
   if (sources.has(String(source ?? "").trim().toLowerCase())) return { reason: "source excluded" };
   if (!PHONE_RE.test(String(phone ?? ""))) return { reason: "invalid phone number" };

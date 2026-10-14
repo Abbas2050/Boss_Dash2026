@@ -14,17 +14,18 @@ import {
   sendWhatsappTemplate,
 } from "./whatsapp.js";
 
+// No recordType: since 2026-10-14 the gate does not take one (see the case
+// below). The remaining facts about the person are the phone and the source.
 const base = {
   stage: "registered",
   apiKey: "k",
-  recordType: "client",
   source: "SVG",
   phone: "+971507192185",
   skipSources: new Set(),
 };
 
 describe("skip decisions", () => {
-  it("sends for a registered client with a valid phone from an allowed source", () => {
+  it("sends for a registered person with a valid phone from an allowed source", () => {
     expect(decideWhatsappSkip(base)).toBeNull();
   });
 
@@ -36,10 +37,18 @@ describe("skip decisions", () => {
     }
   });
 
-  it("skips a lead with the exact documented reason", () => {
-    expect(decideWhatsappSkip({ ...base, recordType: "lead" })).toEqual({
-      reason: "lead, not client",
-    });
+  // This case used to pin the opposite: a lead was skipped with the reason
+  // "lead, not client". The gate is gone (2026-10-14, user's call) -- a lead gets
+  // the same template as a client, and the user was told the login link in its
+  // body and button does not work for a lead and chose to send anyway. The reason
+  // string moved to decideBrevoSkip, which had no lead gate at all before today.
+  it("sends to a lead as well as a client, and reads no record type at all", () => {
+    // Every value the old gate would have skipped on, including the ones
+    // deriveRecordType resolves to "lead" when it cannot tell. Restoring
+    // `recordType !== "client"` fails on all but the first.
+    for (const recordType of ["client", "lead", "", "   ", "maybe", null, undefined]) {
+      expect(decideWhatsappSkip({ ...base, recordType }), String(recordType)).toBeNull();
+    }
   });
 
   it("skips an invalid phone without trying to repair it", () => {
@@ -47,6 +56,22 @@ describe("skip decisions", () => {
       reason: "invalid phone number",
     });
     expect(decideWhatsappSkip({ ...base, phone: "" })).toEqual({ reason: "invalid phone number" });
+    // A lead's phone is checked exactly as a client's. Dropping the lead gate
+    // dropped one condition, not the two that are still facts about the person:
+    // a lead with no usable number is a skip, not a send to nothing.
+    expect(decideWhatsappSkip({ ...base, recordType: "lead", phone: "00971507192185" })).toEqual({
+      reason: "invalid phone number",
+    });
+    expect(decideWhatsappSkip({ ...base, recordType: "lead", phone: "" })).toEqual({
+      reason: "invalid phone number",
+    });
+  });
+
+  it("excludes a lead's source exactly as a client's", () => {
+    const skipSources = parseSkipSources("manual");
+    expect(decideWhatsappSkip({ ...base, recordType: "lead", source: "manual", skipSources })).toEqual({
+      reason: "source excluded",
+    });
   });
 
   it("skips an excluded source, case-insensitively", () => {
@@ -68,8 +93,11 @@ describe("skip decisions", () => {
   });
 
   it("reports an unconfigured key before anything about the client", () => {
-    // An unconfigured environment is our problem, not a fact about the lead.
-    expect(decideWhatsappSkip({ ...base, apiKey: "", recordType: "lead" })).toEqual({
+    // An unconfigured environment is our problem, not a fact about the person.
+    // Re-pointed from the record type, which this gate no longer reads, at the
+    // two facts about them it does: the phone and the source.
+    const skipSources = parseSkipSources("manual");
+    expect(decideWhatsappSkip({ ...base, apiKey: "", phone: "", source: "manual", skipSources })).toEqual({
       reason: "whatsapp not configured",
     });
   });

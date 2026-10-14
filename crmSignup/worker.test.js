@@ -239,15 +239,53 @@ describe("processSignupEvent", () => {
     expect("value" in payload.data[0].custom_data).toBe(false);
   });
 
-  it("skips a lead's WhatsApp with the documented reason, but still adds the contact", async () => {
+  // This case used to pin the exact opposite -- WhatsApp skipped with "lead, not
+  // client" while Brevo took everyone. Both decisions were reversed on
+  // 2026-10-14 (user's call), so the subject is now which destination the lead
+  // gate sits on: WhatsApp has none, Brevo has one.
+  it("sends a lead the same WhatsApp welcome, and keeps them out of Brevo", async () => {
     const d = deps();
-    await processSignupEvent(row({ record_type: "lead" }), d);
-    expect(d.sendWhatsapp).not.toHaveBeenCalled();
-    expect(d.saveWhatsapp).toHaveBeenCalledWith(
+    // record_type and is_lead_raw agree here, which is the ordinary case. The
+    // one that matters is where they do not -- the case below.
+    await processSignupEvent(row({ record_type: "lead", is_lead_raw: "1" }), d);
+    expect(d.sendWhatsapp).toHaveBeenCalledTimes(1);
+    expect(d.saveWhatsapp).toHaveBeenCalledWith(7, expect.objectContaining({ status: "sent" }));
+    expect(d.upsertBrevo).not.toHaveBeenCalled();
+    expect(d.saveBrevo).toHaveBeenCalledWith(
       7,
       expect.objectContaining({ status: "skipped", detail: "lead, not client" })
     );
-    expect(d.upsertBrevo).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds the contact whenever is_lead_raw is absent or unrecognised, whatever record_type says", async () => {
+    // Brevo's gate reads the raw literal positively, so a value FXBO starts
+    // sending that nobody predicted adds contacts rather than silently emptying
+    // the list. Every row here has record_type "lead" -- which is exactly what
+    // `recordType !== "client"` would have skipped on, and why it is not what
+    // the gate reads.
+    for (const is_lead_raw of [undefined, null, "", "   ", "maybe", "2", "lead"]) {
+      const d = deps();
+      await processSignupEvent(row({ record_type: "lead", is_lead_raw }), d);
+      expect(d.upsertBrevo, String(is_lead_raw)).toHaveBeenCalledTimes(1);
+      expect(d.saveBrevo, String(is_lead_raw)).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ status: "sent" })
+      );
+      // And the welcome goes out either way: nothing about the record type gates
+      // WhatsApp any more.
+      expect(d.sendWhatsapp, String(is_lead_raw)).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("still skips a lead's WhatsApp for an unusable phone", async () => {
+    // The lead gate went; the phone format did not go with it.
+    const d = deps();
+    await processSignupEvent(row({ record_type: "lead", is_lead_raw: "1", phone: "00971507192185" }), d);
+    expect(d.sendWhatsapp).not.toHaveBeenCalled();
+    expect(d.saveWhatsapp).toHaveBeenCalledWith(
+      7,
+      expect.objectContaining({ status: "skipped", detail: "invalid phone number" })
+    );
   });
 
   it("touches nothing already settled", async () => {
@@ -1461,7 +1499,7 @@ describe("what each provider is handed", () => {
 });
 
 describe("rowToFields, field by field", () => {
-  // The brief's case maps six of eighteen columns.
+  // The brief's case maps six of nineteen columns.
   it("maps every column to its own field, trimmed", () => {
     expect(
       rowToFields({
@@ -1473,6 +1511,9 @@ describe("rowToFields, field by field", () => {
         email: " e@x.com ",
         phone: " +9715 ",
         record_type: " client ",
+        // Added 2026-10-14: Brevo's gate reads this literal rather than
+        // record_type, so the worker has to carry it out of the row.
+        is_lead_raw: " 0 ",
         marketing_consent: 1,
         is_ib: 1,
         entity: " ent ",
@@ -1493,6 +1534,7 @@ describe("rowToFields, field by field", () => {
       email: "e@x.com",
       phone: "+9715",
       recordType: "client",
+      isLeadRaw: "0",
       marketingConsent: true,
       isIb: true,
       entity: "ent",
@@ -1517,6 +1559,10 @@ describe("rowToFields, field by field", () => {
     expect(rowToFields({})).toMatchObject({ recordType: "lead", marketingConsent: false, isIb: false, email: "", stage: "" });
     expect(rowToFields(undefined).recordType).toBe("lead");
     expect(rowToFields({ record_type: null }).recordType).toBe("lead");
+    // But the raw literal is empty rather than defaulted, and empty is not
+    // "positively a lead": a row with no literal at all is still a Brevo send.
+    expect(rowToFields({}).isLeadRaw).toBe("");
+    expect(rowToFields({ is_lead_raw: null }).isLeadRaw).toBe("");
   });
 });
 
