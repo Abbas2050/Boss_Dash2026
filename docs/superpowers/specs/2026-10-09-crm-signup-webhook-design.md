@@ -241,6 +241,55 @@ the financial-category risk. The trade-off, already stated in the user's own
 integration plan: Meta learns that a deposit happened but not what it was worth,
 so there is no return-on-ad-spend measurement.
 
+**The table stores statistics, not client records, and scrubs the client data as
+soon as all three destinations settle (2026-10-14, user's call).** §6 left
+retention as an open decision and the module README said so honestly: nothing
+deleted or expired a row, so every name, email, phone and complete `raw_payload`
+was kept for ever. The decision closes it. FXBO is the system of record for who a
+client is; this table only has to answer "did client 48217 get their welcome
+message?" and to recognise FXBO's redeliveries.
+
+The client data is stored at all because the endpoint answers FXBO immediately
+and sends afterwards, so the phone number and the email must survive from receipt
+until all three destinations settle, retries included — three attempts five
+minutes apart. After that nothing needs them.
+
+Scrubbed: `first_name`, `middle_name`, `last_name`, `email`, `phone`,
+`full_link`, `referer`, `raw_payload`. Three windows: the scrub runs the moment
+all three statuses settle (about a minute); an all-`invalid` row — a bad payload
+or an FXBO test press, which never sent anything and never will — is deleted
+whole after **7 days**; and any row still unscrubbed after **30 days** is
+scrubbed regardless of its statuses, which catches rows that never settle because
+`CRM_EVENTS_WORKER_ENABLED` was left off. Both windows are constants, not
+configuration; the two periodic passes run from `sweepOnce` gated to once an hour
+by an instant the sweep remembers, because §7's rule about timers applies to them
+too.
+
+Two columns deliberately survive the scrub. **`fbc`**, because it is captured at
+signup and reused weeks later for the first-deposit conversion (§8), so scrubbing
+it would send every later conversion to Meta with no ad attached and Meta would
+accept all of them. **`crm_client_id`**, because it is half the dedupe key, and
+without it a redelivery inserts a second row and sends a second welcome.
+`entity`, `source` and the three `utm_*` columns stay as well: they are
+segmentation, not identity, and they cannot be recovered from FXBO per funnel
+stage after the fact.
+
+`raw_payload` goes with the rest, and a new `is_lead_raw VARCHAR(32)` column
+holds the raw `%client_is_lead%` literal in its place — `"0"`, `"false"`, `"1"`
+or whatever FXBO renders. That literal is a flag, not client data, and it is the
+one value `raw_payload` was being kept for: §11 and CUTOVER step 5 settle the
+placeholder's contents by reading it, and getting it wrong means every client is
+read as a lead and **nobody gets a WhatsApp message.** A second new column,
+`scrubbed_at`, makes the scrub auditable, tells the settings tab "scrubbed" apart
+from "never had one", and gives the periodic queries something indexed to filter
+on.
+
+**The trade-off, recorded rather than hidden: the table can no longer be searched
+by email or phone, because neither is retained.** A question of the form "which
+row belongs to this address" has to be answered from FXBO, by client id. The
+settings tab shows "scrubbed" in those columns rather than blank cells, so the
+absence reads as the policy working rather than as a broken page.
+
 **Lives in this app.** MySQL, cron, admin routes and an FXBO webhook endpoint
 all already exist here. The cost is inheriting IIS recycle behaviour, which §7
 is designed around.
@@ -289,7 +338,9 @@ regex, the lead/client call.
 | `*_attempts`, one per action | The brief had a single `attempts`. One shared counter cannot carry three independent retry schedules |
 | `fbc` | The assembled click identifier, **frozen at first write** — see §8 |
 | `fxbo_unique_id` | Distinguishes a genuine FXBO redelivery from a real second event |
-| `raw_payload` | The body as received, so the first live delivery settles what `%client_is_lead%` contains |
+| `raw_payload` | The body as received. **Scrubbed as soon as all three destinations settle (2026-10-14)** — `is_lead_raw` below replaced the one use it was kept for |
+| `is_lead_raw` | The raw `%client_is_lead%` literal, which survives the scrub. The first live delivery settles what the placeholder contains by reading this |
+| `scrubbed_at` | When the row's client data was removed, or NULL if it never was. Audited, read by the settings tab, and the leading column of the retention index |
 
 Plus the normalised fields from §2, `received_at`, and per-action
 `*_status` / `*_detail` ( `whatsapp_message_id` additionally).
@@ -514,7 +565,7 @@ mistaken for a test. A detected press is stored `invalid` and runs nothing.
 
 - **What `%client_is_lead%` actually contains** — `1`/`0`, `true`/`false`,
   `Yes`/`No`. Settled by one Test webhook press plus the first live delivery,
-  both visible in `raw_payload`.
+  both visible in `is_lead_raw` (§4, 2026-10-14 — `raw_payload` is scrubbed).
 - **Whether `Client registered` also fires for leads.** If it does,
   `%client_is_lead%` is doing real work. Test before asking FXBO for anything.
 - **A reliable lead-creation trigger.** The dropdown offers only

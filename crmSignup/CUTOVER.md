@@ -164,9 +164,27 @@ and reinstates exactly that collision.
 
 Press a rule's **Test webhook** button. The press is recognised and stored as
 `invalid`, so it creates no Brevo contact and posts no conversion to Meta — then
-read `raw_payload` on that row to see exactly what FXBO sends.
+read **`is_lead_raw`** on that row to see exactly what FXBO sends:
 
-Then register one real test client and read `raw_payload` again, for the real
+```sql
+SELECT id, stage, is_lead_raw, record_type, received_at
+  FROM signup_events
+ ORDER BY received_at DESC
+ LIMIT 10;
+```
+
+`is_lead_raw` is the `%client_is_lead%` literal verbatim, in FXBO's own casing.
+Read it, **not** `record_type` beside it: `record_type` is derived, and
+`deriveRecordType` resolves everything it does not recognise to `lead`, so a
+`lead` there tells you nothing about what arrived.
+
+Do not reach for `raw_payload` — it is scrubbed. An ordinary row is scrubbed
+about a minute after it arrives, once all three destinations settle; an `invalid`
+row (which is what a test press is) keeps everything for 7 days and is then
+deleted whole. `is_lead_raw` is the column that survives both, and it exists for
+exactly this step. See "What the table holds" in `README.md`.
+
+Then register one real test client and read `is_lead_raw` again, for the real
 value rather than the test-press value.
 
 If that value is not one of `0` `false` `no` `n` `off`, add the real literal to

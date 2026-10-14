@@ -95,10 +95,72 @@ columns, so a recycle costs at most one interval.
 
 ## What the table holds
 
-`signup_events` stores each client's email, phone and name along with the full
-raw webhook payload (`raw_payload`), for valid, invalid and test-press events
-alike. Nothing in this module deletes or expires rows, and no retention or purge
-policy has been defined.
+**`signup_events` stores statistics, not client records (2026-10-14, user's
+call).** FXBO is the system of record for who a client is. This table only has to
+answer "did client 48217 get their welcome message?" and to recognise FXBO's
+redeliveries.
+
+The client's details are stored at all for one reason: the endpoint answers FXBO
+immediately and sends afterwards, so the phone number and the email have to
+survive from receipt until all three destinations settle — including across
+retries, which run up to three attempts five minutes apart. After that, nothing
+needs them.
+
+**The scrub.** These eight columns are nulled and `scrubbed_at` is stamped:
+
+    first_name, middle_name, last_name, email, phone,
+    full_link, referer, raw_payload
+
+`full_link` and `referer` are in that list because `full_link` carries the
+`fbclid` and the whole query string verbatim, and both are redundant once `fbc`
+and the `utm_*` columns have been extracted from them.
+
+Everything else stays, because it is the statistics the table exists for:
+`crm_client_id`, `stage`, `fxbo_unique_id`, `record_type`, `is_lead_raw`,
+`marketing_consent`, `is_ib`, `entity`, `source`, `language`, the three `utm_*`
+columns, `fbc`, `whatsapp_request_id`, every status / detail / attempts / clock
+column, `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
+columns are segmentation, not identity, and FXBO cannot be asked for them per
+funnel stage after the fact.
+
+**Two of those are load-bearing, not merely kept:**
+
+- **`fbc` deliberately survives.** It is captured at signup and reused weeks
+  later for the first-deposit conversion. Scrubbing it would send every later
+  conversion to Meta with no ad attached, and Meta would accept all of them
+  without complaint.
+- **`crm_client_id` deliberately survives.** It is half the dedupe key. Without
+  it FXBO's redelivery of a stage no longer collides on
+  `(crm_client_id, stage)`: it inserts a second row and sends a second welcome.
+
+**When it happens.** Three paths, in `worker.js`:
+
+| | When | What |
+|---|---|---|
+| Settle | As soon as all three statuses are settled — normally about a minute after signup | Scrub |
+| Invalid | `received_at` older than **7 days**, and all three statuses `invalid` | The whole row is deleted |
+| Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say |
+
+Both windows are constants in `worker.js`, not environment variables. The two
+periodic passes run from `sweepOnce`, gated to at most once an hour by an instant
+the sweep remembers — not a timer, for the reason every other clock here lives in
+a column.
+
+An **invalid** row — an unparseable payload or an FXBO "Test webhook" press — is
+settled at insert and never reaches the worker, so the settle path never sees it.
+That is deliberate: those rows never sent anything and never will, and they are
+the rows CUTOVER step 5 reads, so they keep everything including `raw_payload`
+for their 7 days and then go whole.
+
+The **backstop** catches rows that never settle: a worker left off by
+`CRM_EVENTS_WORKER_ENABLED`, or a row whose three claims split between two
+overlapped workers so that neither of them ever saw all three settle.
+
+**The cost, recorded rather than hidden:** the table can no longer be searched by
+email or phone, because neither is retained. `is_lead_raw` holds the raw
+`%client_is_lead%` literal so that CUTOVER step 5 still works without
+`raw_payload`; `scrubbed_at` is what lets the settings tab tell a scrubbed row
+apart from one that never carried the value.
 
 ## Attributes
 
