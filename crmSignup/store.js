@@ -1,5 +1,6 @@
 import mysql from "mysql2/promise";
 import { maskEmail, maskPhone } from "./normalise.js";
+import { SETTLED_STATUSES } from "./settled.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -435,6 +436,37 @@ function claimClause(action, claimAt) {
   };
 }
 
+// The settled statuses as a SQL list, built from the one JavaScript list so the
+// statement and the worker cannot come to disagree about what "settled" means.
+const SETTLED_LIST = SETTLED_STATUSES.map((status) => `'${status}'`).join(",");
+
+/**
+ * The precondition that makes a scrub correct whatever its caller believes.
+ *
+ * Same lesson as claimClause above: a precondition that matters belongs in the
+ * statement, not in the caller's copy of the row. The worker reads the three
+ * statuses out of its own in-memory row, and during an overlapped IIS recycle
+ * two workers split the three claims between them -- so NEITHER copy ever shows
+ * all three settled, and a scrub decided by the copy alone never happens. The
+ * row then holds a name, an email and a phone until the thirty-day backstop, in
+ * precisely the case the policy asks to reduce to a minute.
+ *
+ * With the predicate here, both workers may attempt it: the one whose statuses
+ * are not all in the table yet matches no row and writes nothing, and whichever
+ * of them finishes last matches and scrubs. It is read against the row as the
+ * table actually holds it, which is the only copy that has seen all three.
+ *
+ * Unlike claimClause there is no claim moment to pass: this is not a claim on an
+ * action, it takes nothing away from another worker, and a second attempt is a
+ * no-op rather than a loss. `scrubbed_at IS NULL` is the other half, and it is
+ * the statement's, not this helper's: the two scrubs share it for a different
+ * reason (the audit trail must not move).
+ */
+function settledClause(action) {
+  return `${action}_status IN (${SETTLED_LIST})`;
+}
+
+
 /**
  * How many rows the UPDATE matched, or null when the driver did not say.
  *
@@ -578,9 +610,17 @@ export const SCRUB_COLUMNS = [
 const SCRUB_SET = SCRUB_COLUMNS.map((column) => `${column} = NULL`).join(", ");
 
 /**
- * One row's client data, removed.
+ * One row's client data, removed, once the table says all three have settled.
  *
- * `scrubbed_at IS NULL` is what makes a second scrub a no-op rather than a second
+ * The settled predicate is the statement's own (see settledClause): the worker
+ * decides whether to try from its in-memory copy of the row, and two workers
+ * sharing a recycle window hold two copies that each saw one claim. Neither copy
+ * is the truth; the row is. So both may attempt this, the attempt from the copy
+ * whose siblings are still `retrying` in the table matches nothing, and whichever
+ * worker finishes last scrubs. Nothing is lost by attempting: this takes no
+ * claim, and a second attempt is a no-op.
+ *
+ * `scrubbed_at IS NULL` is what makes that no-op silent rather than a second
  * timestamp: the column is the audit trail, and overwriting it would move the
  * moment the data actually went. It also means the two scrubs cannot fight -- the
  * backstop below skips what this has already done, and the other way round.
@@ -592,7 +632,11 @@ export async function scrubSignupEvent(id, at = new Date()) {
   const result = await run(
     `UPDATE signup_events
         SET ${SCRUB_SET}, scrubbed_at = ?
-      WHERE id = ? AND scrubbed_at IS NULL`,
+      WHERE id = ?
+        AND scrubbed_at IS NULL
+        AND ${settledClause("meta")}
+        AND ${settledClause("whatsapp")}
+        AND ${settledClause("brevo")}`,
     [at, id]
   );
   return matchedRows(result);

@@ -8,6 +8,7 @@ import {
   parseSkipSources,
 } from "./whatsapp.js";
 import { decideBrevoSkip, buildBrevoContact, upsertBrevoContact } from "./brevo.js";
+import { SETTLED } from "./settled.js";
 import {
   claimDueEvents,
   updateMetaStatus,
@@ -17,8 +18,6 @@ import {
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
 } from "./store.js";
-
-const SETTLED = new Set(["sent", "skipped", "rejected", "failed", "invalid"]);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -304,6 +303,10 @@ async function saveOutcome(save, id, outcome, logger) {
 export async function processSignupEvent(row, deps) {
   const fields = rowToFields(row);
   const result = { meta: null, whatsapp: null, brevo: null };
+  // The actions another worker took off us during this pass. Not an outcome and
+  // never written anywhere: it is only read by the scrub decision below, which
+  // must not read our stale column for an action somebody else is settling.
+  const claimedElsewhere = new Set();
 
   // A scrubbed row has no name, no email and no phone left. Building a payload
   // from it would hand Brevo a contact with no address and DoubleTick a welcome
@@ -367,6 +370,7 @@ export async function processSignupEvent(row, deps) {
       // a failure to retry or to record.
       if (error?.code === CLAIM_LOST) {
         deps.logger.warn?.(`[crm-events] ${key} left to the sweeper that claimed row ${row.id}`);
+        claimedElsewhere.add(key);
         continue;
       }
       deps.logger.error?.(`[crm-events] ${key} step threw: ${error?.message || String(error)}`);
@@ -381,19 +385,34 @@ export async function processSignupEvent(row, deps) {
     await saveOutcome(save, row.id, result[key], deps.logger);
   }
 
-  // All three settled, so nothing downstream needs the client's name, email or
-  // phone again, and the row goes on holding the statistics it was kept for.
+  // Nothing left for this worker to do for the row, so nothing downstream needs
+  // the client's name, email or phone again and the row goes on holding the
+  // statistics it was kept for.
   //
-  // The status read is the step's own outcome when it ran this pass, and the
-  // column it was found with otherwise -- which covers both reasons a step runs
-  // nothing: one already settled reports the settled status it was skipped for,
-  // and one still on its clock or lost to another sweeper's claim reports the
-  // `pending`/`retrying` it was found with, so neither is mistaken for settled.
-  // A row whose claims split between two workers therefore scrubs from neither,
-  // and waits for the backstop. That is the trade for never scrubbing a row
-  // another worker is still sending from.
-  const statusOf = ([key, statusColumn]) => (result[key] ? str(result[key].status) : str(row[statusColumn]));
-  if (steps.map(statusOf).every((status) => SETTLED.has(status))) {
+  // This decides only WHETHER TO TRY, which is why the common case still issues
+  // exactly one statement; what makes trying safe is the statement's own
+  // precondition (see settledClause in store.js), which reads the three statuses
+  // off the row as the table holds it.
+  //
+  // An action's status is read from its own place: the step's own outcome when it
+  // ran this pass, the column it was found with otherwise. That covers the two
+  // reasons a step runs nothing -- one already settled reports the settled status
+  // it was skipped for, and one still waiting on its clock reports the
+  // `pending`/`retrying` it was found with, so a row with a send still ahead of
+  // it is not read as finished.
+  //
+  // An action another worker claimed is the exception, and the reason this is no
+  // longer decided by our copy alone: our column for it is stale by definition,
+  // and its owner is settling it. During an overlapped IIS recycle two workers
+  // split the three claims, and while each read its own stale copy NEITHER ever
+  // saw all three settled -- so neither scrubbed, and the row waited the full
+  // thirty days for the backstop in exactly the case the policy asks to reduce to
+  // a minute. Both attempt it now: the earlier attempt finds the other's actions
+  // still `retrying` in the table and matches nothing, and whichever worker
+  // finishes last scrubs.
+  const settledHere = ([key, statusColumn]) =>
+    claimedElsewhere.has(key) || SETTLED.has(result[key] ? str(result[key].status) : str(row[statusColumn]));
+  if (steps.every(settledHere)) {
     // Not caught. A scrub that cannot be written leaves the row for the 30-day
     // backstop, and sweepOnce logs the row -- swallowing it here would hide a
     // scrub that never happens behind a month of silence.

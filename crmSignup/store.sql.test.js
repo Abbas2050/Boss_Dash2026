@@ -27,6 +27,9 @@ import {
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
 } from "./store.js";
+// The settled vocabulary both the worker and these statements are built from,
+// imported so a test can prove the statement names every value in it.
+import { SETTLED_STATUSES } from "./settled.js";
 // Imported for the one case that walks the whole leak path: Brevo's own 400,
 // through its own classifier, into the column.
 import { classifyBrevoOutcome } from "./brevo.js";
@@ -572,10 +575,48 @@ describe("scrubSignupEvent", () => {
     // data actually went. It is also what keeps the settle path and the thirty-day
     // backstop from undoing each other's record.
     await scrubSignupEvent(7, SCRUBBED);
-    expect(db.state.calls[0].sql).toMatch(/WHERE id = \? AND scrubbed_at IS NULL/);
+    expect(db.state.calls[0].sql).toMatch(/WHERE id = \?\s+AND scrubbed_at IS NULL/);
 
     db.state.respond = () => [{ affectedRows: 0 }];
     expect(await scrubSignupEvent(7, SCRUBBED)).toBe(0);
+  });
+
+  it("reports how many rows it matched, so a caller can tell scrubbed-now from scrubbed-already", async () => {
+    db.state.respond = () => [{ affectedRows: 1 }];
+    expect(await scrubSignupEvent(7, SCRUBBED)).toBe(1);
+    db.state.respond = () => [{}];
+    expect(await scrubSignupEvent(7, SCRUBBED)).toBeNull();
+  });
+  it("asks the row itself whether all three have settled, rather than trusting the caller", async () => {
+    // The worker decides whether to TRY from its own in-memory copy of the row,
+    // and an overlapped IIS recycle gives two workers a copy each with one claim
+    // in it -- so neither copy ever shows all three settled. Decided from the copy
+    // alone, the scrub then happened in neither worker and the row held its name,
+    // email and phone for the full thirty days, in exactly the case the policy
+    // asks to reduce to a minute. The predicate belongs in the statement, where
+    // the row read is the one the table holds.
+    await scrubSignupEvent(7, SCRUBBED);
+    const { sql, params } = db.state.calls[0];
+    for (const action of ["meta", "whatsapp", "brevo"]) {
+        expect(sql, action).toContain(`AND ${action}_status IN ('sent','skipped','rejected','failed','invalid')`);
+    }
+    // Unlike a claiming write there is no claim moment to bind: this takes
+    // nothing away from another worker, so a second attempt is a no-op rather
+    // than a loss, and both workers may make one.
+    expect(params).toEqual([SCRUBBED, 7]);
+  });
+
+  it("names every settled status, so the statement and the worker cannot come to disagree", async () => {
+    // Both are built from SETTLED_STATUSES. A value in one and not the other
+    // would be silent in the worst direction: the worker attempts a scrub the
+    // statement refuses, and the row keeps its client data for thirty days with
+    // nothing anywhere saying so.
+    await scrubSignupEvent(7, SCRUBBED);
+    const { sql } = db.state.calls[0];
+    for (const action of ["meta", "whatsapp", "brevo"]) {
+      const list = sql.split(`${action}_status IN (`)[1].split(")")[0].split(",");
+      expect(list, action).toEqual(SETTLED_STATUSES.map((status) => `'${status}'`));
+    }
   });
 
   it("reports how many rows it matched, so a caller can tell scrubbed-now from scrubbed-already", async () => {

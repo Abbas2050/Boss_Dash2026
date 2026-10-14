@@ -10,6 +10,9 @@
 // the stage that makes it, and several run at both.
 import { describe, it, expect, vi } from "vitest";
 import { planRetry, rowToFields, processSignupEvent } from "./worker.js";
+// The settled vocabulary the worker reads, so the fake store below applies the
+// same precondition the real statement does rather than a copy of it.
+import { SETTLED as SETTLED_SET } from "./settled.js";
 
 describe("planRetry", () => {
   const now = new Date("2026-10-12T12:00:00Z");
@@ -793,15 +796,78 @@ describe("the row is scrubbed once all three have settled", () => {
     }
   });
 
-  it("does not scrub when another sweeper holds a claim, because that sweeper is still sending", async () => {
-    // An overlapped IIS recycle runs two workers. The loser of a claim records
-    // nothing, and its copy of the row still reads pending -- so it must not
-    // scrub the fields the winner's send is about to read.
+  it("still attempts the scrub when another sweeper holds a claim, and lets the statement refuse it", async () => {
+    // An overlapped IIS recycle runs two workers, and the loser of a claim
+    // records nothing. Our column for the action somebody else is sending is
+    // stale by definition, so it is not what decides this: the statement's own
+    // precondition is (store.sql.test.js pins that predicate). Deciding it from
+    // the stale column instead is what left a split row unscrubbed in BOTH
+    // workers, waiting the full thirty days for the backstop.
     for (const a of ACTIONS) {
       const d = deps({ [a.save]: vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1)) });
       await processSignupEvent(row({ stage: a.stage }), d);
-      expect(d.scrub, a.name).not.toHaveBeenCalled();
+      expect(d.scrub, a.name).toHaveBeenCalledTimes(1);
+      expect(d.scrub, a.name).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
     }
+  });
+
+  it("scrubs a row whose three claims split between two overlapped workers, exactly once", async () => {
+    // The case the predicate exists for. Two workers share the recycle window on
+    // one row: each took a copy before the other had written anything, worker A
+    // wins the WhatsApp claim and worker B the Brevo one. Neither copy ever shows
+    // all three settled, so while the scrub was decided from the copy alone
+    // NEITHER scrubbed and the row kept its name, email and phone for thirty
+    // days -- in exactly the case the policy asks to reduce to a minute.
+    //
+    // The table below applies what the statement applies: a claiming write lands
+    // only on an action still unsent, and the scrub only on a row whose three
+    // statuses the TABLE says are settled and that has not been scrubbed yet.
+    const table = { meta_status: "pending", whatsapp_status: "pending", brevo_status: "pending", scrubbed_at: null };
+    const stamps = [];
+    const settledInTable = () =>
+      ["meta_status", "whatsapp_status", "brevo_status"].every((c) => SETTLED_SET.has(table[c]));
+    const scrub = vi.fn(async (_id, at) => {
+      stamps.push(at);
+      if (!settledInTable() || table.scrubbed_at) return 0;
+      table.scrubbed_at = at;
+      return 1;
+    });
+    // `owns` is which claim this worker won; the other worker's is refused the
+    // way the store refuses it, with a 0.
+    const worker = (owns, at) => {
+      const writer = (column, mine) => async (_id, outcome, claimAt) => {
+        if (claimAt && !mine) return 0;
+        table[column] = outcome.status;
+        return 1;
+      };
+      return deps({
+        saveMeta: writer("meta_status", true),
+        saveWhatsapp: writer("whatsapp_status", owns === "whatsapp"),
+        saveBrevo: writer("brevo_status", owns === "brevo"),
+        scrub,
+        now: () => at,
+      });
+    };
+
+    // Both read the row as it was before either of them ran.
+    const copyA = row({ stage: "registered" });
+    const copyB = row({ stage: "registered" });
+    const first = new Date("2026-10-12T12:00:00Z");
+    const second = new Date("2026-10-12T12:00:30Z");
+    await processSignupEvent(copyA, worker("whatsapp", first));
+    await processSignupEvent(copyB, worker("brevo", second));
+
+    // Both tried; the earlier attempt found the other's action still unsettled in
+    // the table and matched nothing, and the one that finished last scrubbed.
+    expect(scrub).toHaveBeenCalledTimes(2);
+    expect(stamps).toEqual([first, second]);
+    expect(table.scrubbed_at).toEqual(second);
+    expect(table).toEqual({
+      meta_status: "skipped",
+      whatsapp_status: "sent",
+      brevo_status: "sent",
+      scrubbed_at: second,
+    });
   });
 
   it("lets a scrub that cannot be written surface, rather than hiding it for a month", async () => {
