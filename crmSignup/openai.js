@@ -117,11 +117,14 @@ export const PIXEL_OWNED_STAGE = "registered";
  * divides by 1000; OpenAI's `timestamp_ms` is in milliseconds and divides by
  * nothing. The two fields are built from the same column on the same row, a
  * factor of 1000 puts the event in 1970, and the symptom would not be an error
- * -- it would be OpenAI refusing the event with nothing to say the units were
- * wrong. So there is no division in this function at all, which is the one form
+ * -- it would be OpenAI refusing every event for falling outside the window
+ * below. So there is no division in this function at all, which is the one form
  * of the rule a reader can check at a glance.
  *
- * One parse, so that everything reading this column reads it the same way.
+ * One parse, read by the two callers that must not disagree: the window test in
+ * decideOpenaiSkip and the `timestamp_ms` buildOpenaiPayload emits. A row judged
+ * inside the window and then stamped from a second, differently written reading
+ * of the same column would be two opinions about one instant.
  */
 export function openaiTimestampMs(receivedAt) {
   if (receivedAt === null || receivedAt === undefined || receivedAt === "") return null;
@@ -135,10 +138,30 @@ export function openaiTimestampMs(receivedAt) {
   // in `timestamp_ms` serialises to null: a required field present and empty,
   // which is the one shape worse than a missing one.
   if (!Number.isFinite(ms)) return null;
-  // An integer because the field is documented as one, truncated rather than
-  // rounded so that a fractional millisecond cannot move the instant forward.
+  // An integer because the field is documented as one. Truncated rather than
+  // rounded, so a fractional millisecond can never move the instant forward past
+  // the future bound below.
   return Math.trunc(ms);
 }
+
+/**
+ * OpenAI's own bound, verbatim: "The timestamp must be within the last 7 days
+ * and no more than 10 minutes in the future."
+ *
+ * This is a hard constraint on an architecture that retries from database
+ * columns. `POST /api/crm-events/requeue` exists to retry old failures, so a row
+ * resent after a week would otherwise produce a request certain to be rejected,
+ * and the only alternative -- re-stamping the event with the current time -- is
+ * not available: it would claim the conversion happened today, and the row's
+ * whole purpose is to say when it actually happened (spec section 7a).
+ */
+export const OPENAI_MAX_EVENT_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The other half of the same sentence. `received_at` is written by us on
+ *  arrival, so this trips only on a badly skewed server clock -- which is
+ *  exactly the case where sending anyway buys a rejection and a spent retry
+ *  budget in place of a reason an operator can read. */
+export const OPENAI_MAX_EVENT_SKEW_MS = 10 * 60 * 1000;
 
 /**
  * Whether this event is ours to send, and if not, why not.
@@ -155,16 +178,44 @@ export function openaiTimestampMs(receivedAt) {
  * is named separately from the key because the two live on different lines of
  * .env and "not configured" alone would not say which to look at.
  *
- * The last reason is a guard, not a decision: a stage with no mapping would
+ * The taxonomy reason is a guard, not a decision: a stage with no mapping would
  * build an event with no name and no family, and a family mismatch is the one
  * failure OpenAI rejects outright. Recording it as a skip keeps the reason in
  * the row instead of in OpenAI's rejection text.
+ *
+ * **The three time reasons come last, after every reason that is a permanent
+ * fact about the stage.** `registered` is never ours at any age, and a stage
+ * outside the taxonomy is unsendable however fresh it is, so neither should be
+ * reported as a row that merely arrived too long ago -- the age is the one
+ * reason here that would read differently tomorrow. This is also the only reason
+ * the resend action can produce on a row that was otherwise perfectly sendable,
+ * so it has to name the window rather than say "not applicable" (spec 7a).
+ *
+ * `now` is the caller's clock, as planRetry already takes it, so a test and the
+ * worker's injected clock are the same thing; absent or unusable, it is the real
+ * one, because a skewed-clock guard that silently stopped guarding would be
+ * worse than none.
  */
-export function decideOpenaiSkip({ stage, apiKey, pixelId }) {
+export function decideOpenaiSkip({ stage, apiKey, pixelId, receivedAt, now } = {}) {
   if (!text(apiKey)) return { reason: "openai not configured" };
   if (!text(pixelId)) return { reason: "openai pixel id not configured" };
   if (stage === PIXEL_OWNED_STAGE) return { reason: `${PIXEL_OWNED_STAGE} is owned by the website pixel` };
   if (!openaiEventFor(stage)) return { reason: "stage not in the OpenAI taxonomy" };
+
+  const eventMs = openaiTimestampMs(receivedAt);
+  // `timestamp_ms` is required, so a row with no readable time has no sendable
+  // event at all. Named separately from the window: "outside the last 7 days"
+  // would send an operator looking at a date that does not exist.
+  if (eventMs === null) return { reason: "received_at is not a usable timestamp" };
+
+  const nowMs = openaiTimestampMs(now) ?? Date.now();
+  if (nowMs - eventMs > OPENAI_MAX_EVENT_AGE_MS) {
+    return { reason: "received_at is outside OpenAI's window: older than 7 days" };
+  }
+  if (eventMs - nowMs > OPENAI_MAX_EVENT_SKEW_MS) {
+    return { reason: "received_at is outside OpenAI's window: more than 10 minutes in the future" };
+  }
+
   return null;
 }
 
@@ -288,7 +339,9 @@ const ACTION_SOURCE = "offline";
  * mapping or no family, a client with no id, a row with no readable time. The
  * gate above already refuses the first of those, and this is the second half of
  * that one test rather than a separate opinion -- "no payload" is a louder way
- * to get it wrong than a malformed one.
+ * to get it wrong than a malformed one. What it does NOT judge is whether a
+ * readable time is one OpenAI will accept: the window is a decision about a row,
+ * and decideOpenaiSkip makes it, with a reason that lands in the row.
  */
 export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, receivedAt, validateOnly } = {}) {
   const mapped = openaiEventFor(stage);

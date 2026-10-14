@@ -19,6 +19,8 @@ import {
   OPENAI_EVENTS,
   OPENAI_EVENT_FAMILIES,
   OPENAI_EVENTS_URL,
+  OPENAI_MAX_EVENT_AGE_MS,
+  OPENAI_MAX_EVENT_SKEW_MS,
   PIXEL_OWNED_STAGE,
   openaiEventFor,
   openaiDataType,
@@ -175,7 +177,10 @@ describe("event names", () => {
 });
 
 describe("decideOpenaiSkip", () => {
-  const configured = { apiKey: "sk-test", pixelId: "px_1" };
+  // A configured destination and a row that arrived a minute ago, which is what
+  // an ordinary send is: everything below that skips is skipping for its own
+  // reason and not for the clock.
+  const configured = { apiKey: "sk-test", pixelId: "px_1", receivedAt: RECEIVED_AT, now: RECEIVED_AT };
 
   it("skips every stage when there is no key", () => {
     for (const stage of ALL_STAGES) {
@@ -237,6 +242,108 @@ describe("decideOpenaiSkip", () => {
         reason: "stage not in the OpenAI taxonomy",
       });
     }
+  });
+});
+
+describe("decideOpenaiSkip and OpenAI's timestamp window", () => {
+  // "The timestamp must be within the last 7 days and no more than 10 minutes in
+  // the future." This is a hard constraint on an architecture that retries from
+  // database columns: POST /api/crm-events/requeue exists to retry old failures,
+  // so a row resent after a week would otherwise produce a request certain to be
+  // rejected -- and re-stamping the event with the current time is not available,
+  // because it would claim the conversion happened today when the row's whole
+  // purpose is to say when it actually happened (spec section 7a).
+  const configured = { stage: "verified", apiKey: "sk-test", pixelId: "px_1" };
+  const at = (ms) => ({ ...configured, receivedAt: new Date(ms), now: new Date(RECEIVED_MS) });
+
+  it("states the window in OpenAI's own units", () => {
+    expect(OPENAI_MAX_EVENT_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(OPENAI_MAX_EVENT_SKEW_MS).toBe(10 * 60 * 1000);
+  });
+
+  it("sends a row from inside the last 7 days", () => {
+    for (const ago of [0, 60 * 1000, 24 * 60 * 60 * 1000, 6 * 24 * 60 * 60 * 1000]) {
+      expect(decideOpenaiSkip(at(RECEIVED_MS - ago)), String(ago)).toBeNull();
+    }
+  });
+
+  it("skips a row older than 7 days, naming the window rather than failing the send", () => {
+    // The resend of an old failure, which is the case this exists for: a button
+    // offering to resend forty and delivering none is the failure spec 7a is
+    // written down to avoid, and a request certain to be rejected is worse than a
+    // reason an operator can read.
+    const eightDays = 8 * 24 * 60 * 60 * 1000;
+    expect(decideOpenaiSkip(at(RECEIVED_MS - eightDays))).toEqual({
+      reason: "received_at is outside OpenAI's window: older than 7 days",
+    });
+    expect(decideOpenaiSkip(at(RECEIVED_MS - eightDays)).reason).toContain("7 days");
+  });
+
+  it("puts the boundary exactly where OpenAI puts it", () => {
+    // Seven days to the millisecond is still inside; one millisecond more is not.
+    expect(decideOpenaiSkip(at(RECEIVED_MS - OPENAI_MAX_EVENT_AGE_MS))).toBeNull();
+    expect(decideOpenaiSkip(at(RECEIVED_MS - OPENAI_MAX_EVENT_AGE_MS - 1))).toEqual({
+      reason: "received_at is outside OpenAI's window: older than 7 days",
+    });
+  });
+
+  it("skips a row more than 10 minutes in the future, which is a skewed clock", () => {
+    // received_at is written by us on arrival, so this trips only on a server
+    // whose clock is wrong -- and then every event would be refused with nothing
+    // in the row to say why.
+    expect(decideOpenaiSkip(at(RECEIVED_MS + 60 * 60 * 1000))).toEqual({
+      reason: "received_at is outside OpenAI's window: more than 10 minutes in the future",
+    });
+    expect(decideOpenaiSkip(at(RECEIVED_MS + OPENAI_MAX_EVENT_SKEW_MS))).toBeNull();
+    expect(decideOpenaiSkip(at(RECEIVED_MS + OPENAI_MAX_EVENT_SKEW_MS + 1)).reason).toContain(
+      "10 minutes in the future"
+    );
+  });
+
+  it("skips a row whose received_at is not a time at all, separately from the window", () => {
+    // `timestamp_ms` is required, so there is no sendable event here either --
+    // but "outside the last 7 days" would send an operator looking for a date
+    // that does not exist.
+    for (const receivedAt of ["", "   ", "not a date", undefined, null, new Date("nonsense")]) {
+      expect(decideOpenaiSkip({ ...configured, receivedAt, now: RECEIVED_AT }), String(receivedAt)).toEqual({
+        reason: "received_at is not a usable timestamp",
+      });
+    }
+  });
+
+  it("names the configuration reasons before the window, as all four senders do", () => {
+    // An eight-day-old row on an unconfigured destination: the key is the reason
+    // an operator can act on, and reading a missing key as "too old" is how a
+    // dead integration looks like a data problem.
+    const old = { ...at(RECEIVED_MS - 8 * 24 * 60 * 60 * 1000) };
+    expect(decideOpenaiSkip({ ...old, apiKey: "" })).toEqual({ reason: "openai not configured" });
+    expect(decideOpenaiSkip({ ...old, pixelId: "" })).toEqual({
+      reason: "openai pixel id not configured",
+    });
+    // And the stage reasons too: `registered` is not ours at any age, and a
+    // stage outside the taxonomy is unsendable however fresh it is.
+    expect(decideOpenaiSkip({ ...old, stage: "registered" })).toEqual({
+      reason: "registered is owned by the website pixel",
+    });
+    expect(decideOpenaiSkip({ ...old, stage: "appointment" })).toEqual({
+      reason: "stage not in the OpenAI taxonomy",
+    });
+  });
+
+  it("falls back to the real clock when it is given none", () => {
+    // A guard that silently stopped guarding because a caller forgot to pass a
+    // clock would be worse than no guard.
+    expect(decideOpenaiSkip({ ...configured, receivedAt: new Date() })).toBeNull();
+    expect(decideOpenaiSkip({ ...configured, receivedAt: new Date(Date.now() - 8 * 86400000) })).toEqual({
+      reason: "received_at is outside OpenAI's window: older than 7 days",
+    });
+    expect(decideOpenaiSkip({ ...configured, receivedAt: new Date(Date.now() + 3600000) })).toEqual({
+      reason: "received_at is outside OpenAI's window: more than 10 minutes in the future",
+    });
+    // An unusable clock is not a reason to stop checking either.
+    expect(
+      decideOpenaiSkip({ ...configured, receivedAt: new Date(Date.now() - 8 * 86400000), now: "nonsense" })
+    ).toEqual({ reason: "received_at is outside OpenAI's window: older than 7 days" });
   });
 });
 
@@ -598,6 +705,14 @@ describe("buildOpenaiPayload", () => {
     for (const receivedAt of ["", "   ", "not a date", undefined, null, new Date("nonsense")]) {
       expect(buildOpenaiPayload({ ...base, receivedAt }), String(receivedAt)).toBeNull();
     }
+  });
+
+  it("still builds a payload for a row outside OpenAI's window, because that is a decision not a shape", () => {
+    // The window is decideOpenaiSkip's to enforce, with a reason that lands in
+    // the row; this function refuses only what it cannot shape. Two opinions on
+    // one question is the pattern this module avoids everywhere else.
+    const old = buildOpenaiPayload({ ...base, receivedAt: new Date(RECEIVED_MS - 30 * 86400000) });
+    expect(old.events[0].timestamp_ms).toBe(RECEIVED_MS - 30 * 86400000);
   });
 
   it("sends action_source offline, because no browser and no page produced these", () => {
