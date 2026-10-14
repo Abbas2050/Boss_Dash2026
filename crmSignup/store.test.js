@@ -489,7 +489,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
   });
 
   it("never cuts the dedupe key: crm_client_id and stage reach the builder whole", () => {
-    // Two values that cut to one would collide into one row, and findExistingFbc looks
+    // Two values that cut to one would collide into one row, and findExistingClickIds looks
     // the id up uncut. insertSignupEvent refuses an over-width key before any statement
     // runs (store.sql.test.js); the builder must not hide it first.
     const params = buildInsertParams({ crmClientId: "9".repeat(256), stage: "s".repeat(40) }, {}, "{}");
