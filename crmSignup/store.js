@@ -466,6 +466,10 @@ function settledClause(action) {
   return `${action}_status IN (${SETTLED_LIST})`;
 }
 
+/** The same list negated: the destinations the backstop has to settle itself. */
+function unsettledClause(action) {
+  return `${action}_status NOT IN (${SETTLED_LIST})`;
+}
 
 /**
  * How many rows the UPDATE matched, or null when the driver did not say.
@@ -665,17 +669,68 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
   return matchedRows(result);
 }
 
+/** The three destinations, in the order the tab shows them. */
+const DESTINATIONS = ["meta", "whatsapp", "brevo"];
+
+/**
+ * What an unsent destination is left saying when the backstop takes its data.
+ *
+ * `failed` is the status: it is terminal, and the vocabulary has nothing better.
+ * `skipped` would be wrong -- a skip is a deliberate decision not to send, and
+ * this was not a decision. The detail is what has to carry the difference to
+ * whoever reads the tab, where it prints under the status: this one was never
+ * attempted, as against attempted and refused.
+ */
+const UNSENDABLE_DETAIL = "not attempted: the client data this send needed was scrubbed";
+
 /**
  * The backstop: every row still unscrubbed past its window, scrubbed regardless
- * of what its statuses say.
+ * of what its statuses say, and every destination it leaves unsendable settled.
  *
  * The settle path scrubs a row about a minute after signup. This catches the ones
- * that never settle -- a worker left off by CRM_EVENTS_WORKER_ENABLED, or a row
- * whose three claims split between two overlapped workers so neither of them ever
- * saw all three settle. Those rows are never claimed again, so without this they
- * would keep a name, an email and a phone for ever.
+ * it never reaches -- a worker left off by CRM_EVENTS_WORKER_ENABLED, or a row
+ * whose scrub could not be written in the moment it settled. Nothing claims those
+ * rows again, so without this they would keep a name, an email and a phone for
+ * ever.
+ *
+ * And the statuses have to be settled with them, because the send guard refuses
+ * a scrubbed row for ever while nothing writes a status saying so. Such a row
+ * reads `pending` in the destination counters for the rest of the table's life,
+ * and `pending` piling up is the single signal that means the dispatch worker is
+ * dead -- one row stuck there for ever is enough to make the number an operator
+ * would check unusable.
+ *
+ * Four statements rather than one UPDATE carrying an IF() per column. Atomicity
+ * buys nothing here (hourly, against thirty-day-old rows, and a pass that dies
+ * half way leaves the row unscrubbed for the next hour to finish), and the four
+ * read as what they are. The IF() form also has a trap: MySQL evaluates an
+ * UPDATE's assignments left to right and a later one sees the new value, so
+ * `<action>_detail = IF(<action>_status IN (...), ...)` would be deciding against
+ * the status the same statement had just overwritten -- a mistake no fake pool
+ * could show us. Each statement here names one destination and skips the rows
+ * where that one is already settled, so a `sent` keeps both its status and its
+ * detail while its unsent sibling is settled beside it.
+ *
+ * Settling runs BEFORE the scrub, and not the other way round: a pass that dies
+ * between the two leaves a row unscrubbed, which `scrubbed_at IS NULL` brings
+ * back here next hour. Scrubbing first would leave a scrubbed row with `pending`
+ * statuses and nothing that ever selects it again -- the very row this exists to
+ * stop existing.
+ *
+ * Returns how many rows were scrubbed, which is what the sweep reports.
  */
 export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
+  for (const action of DESTINATIONS) {
+    await run(
+      `UPDATE signup_events
+          SET ${action}_status = 'failed', ${action}_detail = ?
+        WHERE scrubbed_at IS NULL
+          AND received_at < ?
+          AND ${unsettledClause(action)}`,
+      [UNSENDABLE_DETAIL, receivedBefore]
+    );
+  }
+
   const result = await run(
     `UPDATE signup_events
         SET ${SCRUB_SET}, scrubbed_at = ?

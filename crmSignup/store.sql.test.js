@@ -581,12 +581,6 @@ describe("scrubSignupEvent", () => {
     expect(await scrubSignupEvent(7, SCRUBBED)).toBe(0);
   });
 
-  it("reports how many rows it matched, so a caller can tell scrubbed-now from scrubbed-already", async () => {
-    db.state.respond = () => [{ affectedRows: 1 }];
-    expect(await scrubSignupEvent(7, SCRUBBED)).toBe(1);
-    db.state.respond = () => [{}];
-    expect(await scrubSignupEvent(7, SCRUBBED)).toBeNull();
-  });
   it("asks the row itself whether all three have settled, rather than trusting the caller", async () => {
     // The worker decides whether to TRY from its own in-memory copy of the row,
     // and an overlapped IIS recycle gives two workers a copy each with one claim
@@ -652,16 +646,23 @@ describe("deleteInvalidSignupEvents", () => {
 });
 
 describe("scrubStaleSignupEvents", () => {
+  const ACTIONS = ["meta", "whatsapp", "brevo"];
+  // The pass is four statements: one per destination, settling what the scrub is
+  // about to make unsendable, and then the scrub itself as the last of them.
+  const scrubCall = () => db.state.calls.at(-1);
+  const settleCall = (action) => db.state.calls.find(({ sql }) => sql.includes(`${action}_status = `));
+
   it("scrubs every unscrubbed row past the cutoff, whatever its statuses say", async () => {
     const before = new Date("2026-09-14T12:00:00Z");
     const at = new Date("2026-10-14T12:00:00Z");
     const scrubbed = await scrubStaleSignupEvents(before, at);
-    const { sql, params } = db.state.calls[0];
+    const { sql, params } = scrubCall();
     for (const column of SCRUB_COLUMNS) {
       expect(sql, column).toMatch(new RegExp(`\\b${column} = NULL\\b`));
     }
-    // No status clause at all: the rows this is for are precisely the ones whose
-    // statuses never settled.
+    // No status clause in the scrub itself: the rows this is for are precisely
+    // the ones whose statuses never settled. Which is why the statuses are
+    // settled by the statements before it rather than by a clause here.
     expect(sql).toMatch(/WHERE scrubbed_at IS NULL AND received_at < \?/);
     expect(sql).not.toMatch(/_status/);
     expect(params).toEqual([at, before]);
@@ -670,12 +671,87 @@ describe("scrubStaleSignupEvents", () => {
 
   it("sets the same columns as the single-row scrub, because both are built from one list", async () => {
     await scrubStaleSignupEvents(new Date(), new Date());
-    const bulk = db.state.calls[0].sql;
+    const bulk = scrubCall().sql;
     db.state.calls.length = 0;
     await scrubSignupEvent(7, new Date());
     const one = db.state.calls[0].sql;
     const setList = (sql) => sql.slice(sql.indexOf("SET"), sql.indexOf("WHERE")).trim();
     expect(setList(bulk)).toBe(setList(one));
+  });
+
+  it("settles whatever it is about to leave unsendable, as failed, over the same rows", async () => {
+    // A row this scrubs still reads `pending`, and the send guard refuses it for
+    // ever while nothing writes a status saying so. `pending` is also the single
+    // signal that means the dispatch worker is dead, so one row stuck at it for
+    // ever makes the one number an operator would check unusable.
+    const before = new Date("2026-09-14T12:00:00Z");
+    await scrubStaleSignupEvents(before, new Date("2026-10-14T12:00:00Z"));
+    for (const action of ACTIONS) {
+      const { sql, params } = settleCall(action);
+      expect(sql, action).toContain(`SET ${action}_status = 'failed', ${action}_detail = ?`);
+      expect(sql, action).toMatch(/WHERE scrubbed_at IS NULL\s+AND received_at < \?/);
+      expect(params[1], action).toEqual(before);
+    }
+  });
+
+  it("says in the detail that the send was never attempted, not that it was refused", async () => {
+    // What someone reading the tab has to be able to tell apart: a destination
+    // that was never reached because the data it needed is gone, as against one
+    // that was reached and turned down. `failed` on its own cannot say which.
+    await scrubStaleSignupEvents(new Date(), new Date());
+    for (const action of ACTIONS) {
+      const { params } = settleCall(action);
+      expect(params[0], action).toMatch(/not attempted/i);
+      expect(params[0], action).toMatch(/scrubbed/i);
+    }
+  });
+
+  it("never writes skipped, which would claim a decision nobody made", async () => {
+    // `skipped` is a deliberate decision not to send -- no key, or a stage the
+    // website pixel owns -- and it reads on the tab as a normal, intended, final
+    // outcome. Nothing decided this one. `failed` is terminal, and the
+    // vocabulary has nothing better.
+    await scrubStaleSignupEvents(new Date(), new Date());
+    for (const { sql } of db.state.calls) {
+      expect(sql).not.toMatch(/_status = '(?!failed')/);
+    }
+  });
+
+  it("touches no destination that had already settled, neither its status nor its detail", async () => {
+    // An existing `sent` stays `sent`, and the detail beside it stays the
+    // provider's own word. Each statement names one destination and skips the
+    // rows where that one is settled, so a settled destination is never in the
+    // SET list of a statement whose rows include it.
+    await scrubStaleSignupEvents(new Date(), new Date());
+    for (const { sql } of db.state.calls) {
+      const setList = sql.slice(0, sql.indexOf("WHERE"));
+      for (const [, action] of setList.matchAll(/(meta|whatsapp|brevo)_(?:status|detail) = /g)) {
+        expect(sql, action).toContain(`AND ${action}_status NOT IN ('sent','skipped','rejected','failed','invalid')`);
+      }
+    }
+  });
+
+  it("settles before it scrubs, so a pass that dies half way is finished by the next one", async () => {
+    // The other order leaves a scrubbed row holding `pending` statuses and
+    // nothing that ever selects it again: `scrubbed_at IS NULL` is the only
+    // handle either half has, and the scrub is what removes it. This way a pass
+    // that dies between the two leaves the row unscrubbed, and the next hour
+    // finishes both.
+    await scrubStaleSignupEvents(new Date(), new Date());
+    const statements = db.state.calls.map(({ sql }) => sql);
+    const scrubAt = statements.findIndex((sql) => sql.includes("first_name = NULL"));
+    expect(scrubAt).toBe(statements.length - 1);
+    for (const action of ACTIONS) {
+      expect(statements.indexOf(settleCall(action).sql), action).toBeLessThan(scrubAt);
+    }
+  });
+
+  it("reports the rows the scrub matched, not the rows a settle statement did", async () => {
+    // The sweep prints this as "N unscrubbed rows scrubbed", and the settle
+    // statements match a different, smaller set: only the rows that still had an
+    // unsettled destination in them.
+    db.state.respond = (sql) => [{ affectedRows: sql.includes("first_name = NULL") ? 2 : 9 }];
+    expect(await scrubStaleSignupEvents(new Date(), new Date())).toBe(2);
   });
 });
 

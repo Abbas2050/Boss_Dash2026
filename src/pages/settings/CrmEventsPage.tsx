@@ -353,7 +353,8 @@ export function CrmEventsPage() {
               <p className="mb-2 text-xs text-muted-foreground">
                 Name, email and phone are removed once Meta, WhatsApp and Brevo have all settled — about a minute
                 after signup — so most rows read “scrubbed”. FXBO holds the client record; this table holds the
-                statistics.
+                statistics. A row that never settled is scrubbed anyway after 30 days, and whatever it had not sent
+                by then reads “failed”, with a detail saying it was never attempted.
               </p>
 
               {rows.length === 0 ? (

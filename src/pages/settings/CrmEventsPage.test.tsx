@@ -765,6 +765,41 @@ describe("a scrubbed row", () => {
     await screen.findByText("90010");
     expect(screen.getByText(/Name, email and phone are removed once/i)).toBeInTheDocument();
     expect(screen.getByText(/all settled/i)).toBeInTheDocument();
+    // The thirty-day backstop's rows are the other shape of scrubbed row, and the
+    // note has to cover them too: they arrive here reading `failed` on
+    // destinations nothing ever tried.
+    expect(screen.getByText(/never attempted/i)).toBeInTheDocument();
+  });
+
+  it("reads as one thing when the thirty-day backstop both scrubbed and settled the row", async () => {
+    // What the backend leaves behind for a row that never settled: the client
+    // fields gone, and every destination it could no longer send `failed` with a
+    // detail saying why. The two have to read as one event rather than as two
+    // separate faults -- the status says it is over, the detail says it was never
+    // attempted, and the personal columns say where the data went.
+    const backstopped = {
+      ...SCRUBBED,
+      scrubbedAt: "2026-11-12T20:31:00.000Z",
+      meta: { status: "failed", detail: "not attempted: the client data this send needed was scrubbed", attempts: 0 },
+      whatsapp: {
+        status: "failed",
+        detail: "not attempted: the client data this send needed was scrubbed",
+        attempts: 0,
+      },
+      brevo: { status: "sent", detail: "http 201", attempts: 1 },
+    };
+    installFetch({ ...DISTINCT, events: [backstopped] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[3].textContent).toBe("scrubbed");
+    expect(cells[4].textContent).toBe("scrubbed");
+    expect(cells[5].textContent).toBe("scrubbed");
+    // Status and reason together, in the destination's own cell.
+    expect(cells[7].textContent).toBe("failednot attempted: the client data this send needed was scrubbed");
+    expect(cells[8].textContent).toBe("failednot attempted: the client data this send needed was scrubbed");
+    // A destination that did settle keeps its own word for it.
+    expect(cells[9].textContent).toBe("senthttp 201");
   });
 });
 
