@@ -50,7 +50,7 @@ const ROWS = [
 
 const NOW = new Date("2026-10-13T12:00:00Z");
 
-// The store, as the handler sees it: the four reads, each returning the shape the
+// The store, as the handler sees it: the five reads, each returning the shape the
 // real query returns. They are computed from `rows` the way SQL would compute them,
 // so a test that passes rows gets the same answer from every read.
 function groupRows(rows) {
@@ -439,7 +439,7 @@ describe("wiring in server.js", () => {
     expect(SERVER).toMatch(/app\.get\('\/api\/crm-events\/overview',\s*authRequired,\s*adminOnly,\s*makeCrmEventsOverviewHandler\(\{/);
   });
 
-  it("wires the admin predicate and all four reads", () => {
+  it("wires the admin predicate and all five reads", () => {
     const block = SERVER.match(/app\.get\('\/api\/crm-events\/overview'[\s\S]*?\}\)\);/);
     expect(block, "the registration was not found").not.toBeNull();
     expect(block[0]).toMatch(/\bcanManage:\s*canManageUsers\s*,/);
@@ -447,6 +447,7 @@ describe("wiring in server.js", () => {
     expect(block[0]).toMatch(/\bcountSince:\s*countEventsSince\s*,/);
     expect(block[0]).toMatch(/\blatestReceivedAt:\s*latestEventReceivedAt\s*,/);
     expect(block[0]).toMatch(/\blatestByStage:\s*latestReceivedAtByStage\s*,/);
+    expect(block[0]).toMatch(/\bcountResendable:\s*countResendableSends\s*,/);
   });
 
   it("is not on the public allow-list, because it reads the database for an admin", () => {

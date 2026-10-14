@@ -17,9 +17,10 @@ function windowDays(raw) {
 /**
  * GET /api/crm-events/overview?days=30
  *
- * Everything the settings tab needs in one call, from four reads. All four are
+ * Everything the settings tab needs in one call, from five reads. All five are
  * required: a missing read would fall back to the rows it was given, and the
- * counts would undercount with no sign of it.
+ * counts would undercount with no sign of it -- or, for the last of them, the
+ * resend control would promise nothing while forty failures waited.
  *
  *   listSince(since, tableLimit)  the newest rows in the window, capped in SQL. Table only.
  *   countSince(since)             grouped counts over the whole window, never capped.
