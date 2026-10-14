@@ -70,9 +70,31 @@ function groupRows(rows) {
   return [...groups.values()];
 }
 
+/** What countResendableSends returns: per destination, the failures the requeue
+ *  would match and the ones it no longer can. Computed from `rows` the way the
+ *  statement computes it -- `failed` or `rejected`, split on `scrubbed_at` --
+ *  so a test that passes rows gets an answer consistent with the counters. */
+function resendableOf(rows) {
+  const requeueable = new Set(["failed", "rejected"]);
+  return Object.fromEntries(
+    ["meta", "whatsapp", "brevo"].map((action) => {
+      const failures = rows.filter((r) => requeueable.has(r[`${action}_status`]));
+      return [
+        action,
+        {
+          resendable: failures.filter((r) => !r.scrubbed_at).length,
+          scrubbed: failures.filter((r) => r.scrubbed_at).length,
+        },
+      ];
+    })
+  );
+}
+
 function storeFor(rows) {
   const inWindow = (since) => rows.filter((r) => new Date(r.received_at) >= since);
   return {
+    // Whole table, like health and unlike the counts: the resend is not windowed.
+    countResendable: async () => resendableOf(rows),
     // Newest first, capped in SQL: the cap is applied by the read, not by the caller.
     listSince: async (since, cap) => inWindow(since).slice(0, cap),
     countSince: async (since) => groupRows(inWindow(since)),
@@ -138,6 +160,7 @@ describe("the payload", () => {
       "events",
       "funnel",
       "health",
+      "requeue",
       "windowDays",
     ]);
     expect(res.body.funnel.registered).toBe(1);
@@ -319,6 +342,58 @@ describe("the payload", () => {
     expect(res.body.destinations.meta.sent).toBe(1000);
     expect(res.body.destinations.meta.failed).toBe(4000);
     expect(res.body.destinations.whatsapp.skipped).toBe(4000);
+  });
+
+  it("reports what each destination could resend, over the whole table and not the window", async () => {
+    // The resend control's count cannot come from `destinations`: those counters
+    // follow the period and they count scrubbed rows, which cannot be resent at
+    // all. A button promising 40 and delivering 12 is worse than no button. So
+    // the two numbers travel separately, and this one ignores the window exactly
+    // as health does.
+    const rows = [
+      // Inside a one-day window: one Brevo failure that can still be resent.
+      { ...ROWS[0], id: 1, brevo_status: "failed", scrubbed_at: null },
+      // Outside it, and scrubbed: a failure the thirty-day backstop has taken.
+      { ...ROWS[0], id: 2, received_at: "2026-09-20T11:00:00Z", brevo_status: "failed", scrubbed_at: "2026-10-20T11:00:00Z" },
+      // Outside it, not scrubbed: still resendable, and still counted.
+      { ...ROWS[0], id: 3, received_at: "2026-09-21T11:00:00Z", whatsapp_status: "rejected", scrubbed_at: null },
+    ];
+    const res = fakeRes();
+    await build({ rows, now })({ auth: ADMIN, query: { days: "1" } }, res);
+    expect(res.body.requeue).toEqual({
+      meta: { resendable: 0, scrubbed: 0 },
+      whatsapp: { resendable: 1, scrubbed: 0 },
+      brevo: { resendable: 1, scrubbed: 1 },
+    });
+    // And the window still governs everything else, so the two cannot be read
+    // as the same number.
+    expect(res.body.events).toHaveLength(1);
+    expect(res.body.destinations.brevo.failed).toBe(1);
+  });
+
+  it("asks the resendable count for no window at all", async () => {
+    const countResendable = vi.fn(async () => ({
+      meta: { resendable: 0, scrubbed: 0 },
+      whatsapp: { resendable: 0, scrubbed: 0 },
+      brevo: { resendable: 0, scrubbed: 0 },
+    }));
+    await build({ now, countResendable })({ auth: ADMIN, query: { days: "7" } }, fakeRes());
+    expect(countResendable).toHaveBeenCalledTimes(1);
+    expect(countResendable.mock.calls[0]).toEqual([]);
+  });
+
+  it("answers 500 when the resendable count fails, rather than a page with a control that promises zero", async () => {
+    // A zero disables the control and says there is nothing to resend. Reporting
+    // that because a read failed would hide forty failures behind a calm page.
+    const res = fakeRes();
+    await build({
+      now,
+      countResendable: async () => {
+        throw new Error("ER_NO_SUCH_TABLE: signup_events");
+      },
+    })({ auth: ADMIN, query: {} }, res);
+    expect(res.statusCode).toBe(500);
+    expect(JSON.stringify(res.body)).not.toContain("ER_NO_SUCH_TABLE");
   });
 
   it("asks the store for no more rows than the table shows", async () => {

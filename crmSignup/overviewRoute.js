@@ -26,9 +26,14 @@ function windowDays(raw) {
  *   latestReceivedAt()            the newest event in the whole table, ignoring the window.
  *   latestByStage()               the newest event per stage, whole table. A stage with no
  *                                 row has never fired, and is not the same as one gone quiet.
+ *   countResendable()             per destination, how many failures the requeue would match
+ *                                 and how many it no longer can. Whole table, like health.
  *
  * Counts and the table follow the window. Health does not: a one-day window must
- * not make an event from thirty hours ago look like silence.
+ * not make an event from thirty hours ago look like silence. Nor does the
+ * resendable count, and that is the point of it: the resend is not windowed, so
+ * the per-destination counters beside it -- which are, and which count scrubbed
+ * rows -- cannot be what the resend control promises.
  */
 export function makeCrmEventsOverviewHandler({
   canManage,
@@ -36,11 +41,12 @@ export function makeCrmEventsOverviewHandler({
   countSince,
   latestReceivedAt,
   latestByStage,
+  countResendable,
   tableLimit = 200,
   now = () => new Date(),
   logger = console,
 }) {
-  const reads = { listSince, countSince, latestReceivedAt, latestByStage };
+  const reads = { listSince, countSince, latestReceivedAt, latestByStage, countResendable };
   for (const [name, read] of Object.entries(reads)) {
     if (typeof read !== "function") throw new TypeError(`makeCrmEventsOverviewHandler: ${name} is required`);
   }
@@ -56,11 +62,13 @@ export function makeCrmEventsOverviewHandler({
     let counted;
     let latest;
     let byStage;
+    let resendable;
     try {
       rows = await listSince(since, tableLimit);
       counted = await countSince(since);
       latest = await latestReceivedAt();
       byStage = await latestByStage();
+      resendable = await countResendable();
     } catch (error) {
       // The message can name internal schema, so it is logged, not returned.
       logger.error?.(`[crm-events] overview failed: ${error?.message || String(error)}`);
@@ -78,6 +86,10 @@ export function makeCrmEventsOverviewHandler({
       health,
       funnel,
       destinations,
+      // Separate from `destinations` on purpose, and not folded into those
+      // counters: they are the window's and they count scrubbed rows, while this
+      // is what the resend control may promise.
+      requeue: resendable,
       events: rows.slice(0, tableLimit).map(toTableRow),
     });
   };

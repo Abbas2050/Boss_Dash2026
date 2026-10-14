@@ -19,7 +19,8 @@ import { getDocusignPool } from "./docusign/store.js";
 import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
-import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage } from "./crmSignup/store.js";
+import { makeCrmEventsRequeueHandler } from "./crmSignup/requeueRoute.js";
+import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 // The one test for a usable BREVO_LIST_ID, so the boot-time warning below and the
 // send-time gate cannot come to disagree about what "usable" means.
@@ -1327,6 +1328,19 @@ app.get('/api/crm-events/overview', authRequired, adminOnly, makeCrmEventsOvervi
   countSince: countEventsSince,
   latestReceivedAt: latestEventReceivedAt,
   latestByStage: latestReceivedAtByStage,
+  countResendable: countResendableSends,
+}));
+
+// The settings tab's one write: a destination's failures put back in the queue,
+// which ends in messages going out to clients. Same pair of guards as the read
+// above, and NOT on PUBLIC_API_ROUTES either -- that list is for FXBO, which
+// cannot carry a session. Single-quoted path on purpose, like the webhook above:
+// auth/routeCoverage.test.js greps for it.
+app.post('/api/crm-events/requeue', authRequired, adminOnly, makeCrmEventsRequeueHandler({
+  canManage: canManageUsers,
+  requeue: requeueFailedSends,
+  count: countResendableSends,
+  kick: kickCrmEventsWorker,
 }));
 
 app.use("/oauth", oauthRouter);
