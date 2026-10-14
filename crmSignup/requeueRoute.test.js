@@ -35,10 +35,15 @@ const ADMIN = { sub: 7, email: "ops.manager@skylinkscapital.com", role: "admin" 
 const VIEWER = { sub: 8, email: "reader@skylinkscapital.com", role: "viewer" };
 const canManage = (auth) => auth?.role === "admin";
 
+// Every number different, so a count read from the wrong destination or the
+// wrong key cannot hide behind an equal neighbour. `expired` is a literal zero
+// for the three destinations with no deadline and a real number for OpenAI,
+// which is the only shape countResendableSends can return.
 const COUNTS = {
-  meta: { resendable: 1, scrubbed: 2 },
-  whatsapp: { resendable: 3, scrubbed: 4 },
-  brevo: { resendable: 12, scrubbed: 28 },
+  meta: { resendable: 1, scrubbed: 2, expired: 0 },
+  whatsapp: { resendable: 3, scrubbed: 4, expired: 0 },
+  brevo: { resendable: 12, scrubbed: 28, expired: 0 },
+  openai: { resendable: 5, scrubbed: 9, expired: 31 },
 };
 
 function build(options = {}) {
@@ -106,7 +111,7 @@ describe("the destination", () => {
     expect(requeue).toHaveBeenCalledTimes(1);
     expect(requeue).toHaveBeenCalledWith("brevo");
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ destination: "brevo", requeued: 12, alreadyScrubbed: 28 });
+    expect(res.body).toEqual({ destination: "brevo", requeued: 12, alreadyScrubbed: 28, expired: 0 });
   });
 
   it("takes each of the three, and requeues only that one", async () => {
@@ -134,7 +139,7 @@ describe("the destination", () => {
     }
   });
 
-  it("names the three it will take, so the refusal is actionable", async () => {
+  it("names the four it will take, so the refusal is actionable", async () => {
     const res = fakeRes();
     await build()(post("mailchimp"), res);
     expect(res.body.destinations).toEqual(DESTINATIONS);
@@ -165,13 +170,13 @@ describe("what the answer has to say", () => {
     // backstop has already scrubbed, and no requeue will ever reach them.
     const res = fakeRes();
     await build()(post("brevo"), res);
-    expect(res.body).toMatchObject({ requeued: 12, alreadyScrubbed: 28 });
+    expect(res.body).toMatchObject({ requeued: 12, alreadyScrubbed: 28, expired: 0 });
   });
 
   it("reads the count for its own destination, not another's", async () => {
     const res = fakeRes();
     await build({ requeue: async () => 3 })(post("whatsapp"), res);
-    expect(res.body).toEqual({ destination: "whatsapp", requeued: 3, alreadyScrubbed: 4 });
+    expect(res.body).toEqual({ destination: "whatsapp", requeued: 3, alreadyScrubbed: 4, expired: 0 });
   });
 
   it("counts after the requeue, which cannot have changed the scrubbed half", async () => {
@@ -198,7 +203,7 @@ describe("what the answer has to say", () => {
     const res = fakeRes();
     await handler(post("brevo"), res);
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ destination: "brevo", requeued: 12, alreadyScrubbed: null });
+    expect(res.body).toEqual({ destination: "brevo", requeued: 12, alreadyScrubbed: null, expired: null });
     expect(kick).toHaveBeenCalledTimes(1);
     expect(logger.error.mock.calls.flat().join(" ")).toContain("ER_LOCK_WAIT_TIMEOUT");
   });
@@ -207,6 +212,44 @@ describe("what the answer has to say", () => {
     const res = fakeRes();
     await build({ count: async () => ({}) })(post("meta"), res);
     expect(res.body.alreadyScrubbed).toBeNull();
+    expect(res.body.expired).toBeNull();
+  });
+
+  it("reports OpenAI's expired rows, which are the other half of its shortfall", async () => {
+    // The one destination with a deadline. Its failures are resendable, scrubbed
+    // OR expired -- rows still holding their client data that OpenAI refuses on
+    // their age alone (spec section 7a) -- so an answer carrying only
+    // `alreadyScrubbed` leaves an operator subtracting 5 + 9 from 45 and
+    // concluding something here is broken. Nothing is: 31 of them are older than
+    // seven days and OpenAI will not take them at any price.
+    const res = fakeRes();
+    await build({ requeue: async () => 5 })(post("openai"), res);
+    expect(res.body).toEqual({ destination: "openai", requeued: 5, alreadyScrubbed: 9, expired: 31 });
+  });
+
+  it("answers the same three keys for a destination that has no deadline at all", async () => {
+    // A literal zero rather than a missing key, so the page prints a number and
+    // the arithmetic reads identically on all four cards.
+    for (const destination of ["meta", "whatsapp", "brevo"]) {
+      const res = fakeRes();
+      await build()(post(destination), res);
+      expect(Object.keys(res.body).sort(), destination).toEqual([
+        "alreadyScrubbed",
+        "destination",
+        "expired",
+        "requeued",
+      ]);
+      expect(res.body.expired, destination).toBe(0);
+    }
+  });
+
+  it("takes both shortfalls from one read, so they cannot be two snapshots", async () => {
+    // Read twice, the scrubbed half could be counted either side of a scrub that
+    // moved a row out of the expired half, and the two numbers would not account
+    // for the same set of rows -- which is the only thing they are for.
+    const { handler, count } = withSpies();
+    await handler(post("openai"), fakeRes());
+    expect(count).toHaveBeenCalledTimes(1);
   });
 
   it("answers 500 without leaking the database message when the requeue itself fails", async () => {
@@ -241,6 +284,13 @@ describe("the audit line", () => {
     expect(line).toContain("destination=brevo");
     expect(line).toContain("requeued=12");
     expect(line).toContain("already_scrubbed=28");
+    expect(line).toContain("expired=0");
+  });
+
+  it("carries OpenAI's expired count too, so the log explains the same shortfall the page does", async () => {
+    const { handler, logger } = withSpies({ requeue: async () => 5 });
+    await handler(post("openai"), fakeRes());
+    expect(lineFrom(logger)).toContain("destination=openai requeued=5 already_scrubbed=9 expired=31");
   });
 
   it("masks the actor's address and never prints a whole one", async () => {

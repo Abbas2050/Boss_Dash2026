@@ -20,11 +20,19 @@ import { DESTINATIONS } from "./store.js";
  * that list -- it is session-gated by design, and the list is capped at six
  * entries for FXBO's sake.
  *
- * The answer carries both numbers. `requeued` is what the statement matched;
- * `alreadyScrubbed` is the rest of the destination's failures, whose client data
- * the thirty-day backstop has taken and which can therefore never be resent.
- * Without the second number an operator who can see 40 failures on the card and
- * gets 12 resends has to guess at the other 28.
+ * The answer carries all three numbers, because a destination's failures are
+ * exactly those three and nothing else. `requeued` is what the statement
+ * matched; `alreadyScrubbed` is the failures whose client data the thirty-day
+ * backstop has taken; `expired` is OpenAI's alone -- rows that still hold their
+ * client data and that OpenAI would now refuse on their age, since their
+ * `received_at` is outside the 7-day window and re-stamping it is not available
+ * (spec section 7a). It is a literal zero for the other three destinations, so
+ * every answer has the same shape and the arithmetic reads the same way.
+ *
+ * Without the other two numbers an operator who can see 40 failures on the card
+ * and gets 12 resends has to guess at the other 28 -- and reporting only one of
+ * the two causes is worse than reporting neither, because it makes the
+ * subtraction look complete when it is not.
  */
 export function makeCrmEventsRequeueHandler({
   canManage,
@@ -64,8 +72,18 @@ export function makeCrmEventsRequeueHandler({
     // happened into a 500 -- the rows are already pending and the sends are about
     // to go out -- so the shortfall is reported as unknown instead.
     let alreadyScrubbed = null;
+    let expired = null;
     try {
-      alreadyScrubbed = (await count())?.[destination]?.scrubbed ?? null;
+      // ONE read for both, so the two shortfalls are one snapshot of one
+      // statement and are guaranteed to account for the same set of rows. Read
+      // separately they could be taken either side of a scrub and would not add
+      // up, which is the whole thing these numbers exist to do.
+      const counts = (await count())?.[destination];
+      alreadyScrubbed = counts?.scrubbed ?? null;
+      // Zero for Meta, WhatsApp and Brevo, and a real number only for OpenAI:
+      // theirs is the one destination with a deadline, so theirs is the one
+      // whose failures can be unreachable while still holding their client data.
+      expired = counts?.expired ?? null;
     } catch (error) {
       logger.error?.(`[crm-events] requeue counted nothing for ${destination}: ${error?.message || String(error)}`);
     }
@@ -78,7 +96,7 @@ export function makeCrmEventsRequeueHandler({
     logger.log?.(
       `[crm-events] requeue by user=${String(req?.auth?.sub ?? "unknown")} ` +
         `(${maskEmail(req?.auth?.email) || "no address"}): destination=${destination} ` +
-        `requeued=${requeued} already_scrubbed=${alreadyScrubbed}`
+        `requeued=${requeued} already_scrubbed=${alreadyScrubbed} expired=${expired}`
     );
 
     // So the sends go now rather than up to a sweep later: the operator is
@@ -95,6 +113,6 @@ export function makeCrmEventsRequeueHandler({
       }
     }
 
-    return res.status(200).json({ destination, requeued, alreadyScrubbed });
+    return res.status(200).json({ destination, requeued, alreadyScrubbed, expired });
   };
 }
