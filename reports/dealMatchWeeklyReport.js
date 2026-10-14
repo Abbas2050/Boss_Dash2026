@@ -930,6 +930,22 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
     { lots: 0, millionsUsd: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
   );
 
+  // The notional total, formatted ONCE, because it is printed twice: on the
+  // card near the top of this email and in the table's TOTAL (listed clients)
+  // row far below it. A reader who notices the card goes down and checks it
+  // against the row, so the two must not be able to drift apart -- two
+  // fmtNum() calls on two expressions can, one const cannot. Do not inline
+  // this back into either call site.
+  //
+  // It sums the UNROUNDED row values and rounds once, the treatment every
+  // money column in that table already gets. The eye-sum of the per-row 2 dp
+  // displays can therefore land a cent or two away: the delivered 2026-10-13
+  // report's 30 rows displayed 112.90 against this total's 112.87, inside the
+  // half-cent per row that independent rounding costs. Summing the rounded
+  // displays instead would match that eye-sum and stop matching the TOTAL row,
+  // which is the comparison a reader actually makes.
+  const notionalTotalDisplay = fmtNum(totals.millionsUsd, 2);
+
   const bodyRows = rows
     .map(
       (row) => `<tr>
@@ -1141,6 +1157,82 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       note: `${pctOf(revenueStats.lpCommission, revenueStats.grossRevenue)} of gross`,
                     },
                   })
+                // ── Notional, as a card, in a deck of its own ──────────────
+                //
+                // Asked for after the per-client column shipped: the top of
+                // the email was checked for this figure and it was not there.
+                // The column is correct, but it is far down the page, and this
+                // number sizes the whole run.
+                //
+                // WHY IT IS NOT IN ANY DECK AROUND IT. Every card above and
+                // below is a whole-run scalar read straight off DealMatch/Run.
+                // This one is a SUM OVER THE LISTED CLIENT ROWS: there is no
+                // whole-run notional scalar, and the lite payload carries none
+                // (docs/dealing-reporting.md, section 2). Dropped in beside
+                // the revenue cards or the MT5 volume cards it would borrow a
+                // whole-run label it has not earned -- which is exactly the
+                // failure the comment in sendDealMatchReport records, where
+                // this email's KPIs were row sums and reported $389.74 against
+                // the tab's $10,256.24. Its own deck, with the row scope in
+                // the section subtitle and again on the card, is what keeps
+                // the figure honest next to its neighbours.
+                //
+                // WHY A ROW SUM IS LEGITIMATE HERE, WHEN IT WAS NOT THEN. The
+                // $389.74 failure was a row sum over a FILTERED and rebated
+                // population standing in for the whole run. This sum is over
+                // the whole population, measured on the delivered 2026-10-13
+                // report: 30 client rows, the header badge's own "30 active
+                // clients", and a Lots column totalling 400.07 -- the same
+                // 400.07 that report's whole-run TOTAL MT5 DEALS card carries.
+                // That card is the backend's totalMt5DealLots +
+                // totalShiftingMt5DealLots, a whole-run scalar and NOT a row
+                // sum, so a table listing only some clients could not have
+                // reached it. The rows are therefore the population, and
+                // summing notional over them is sound. For that day: 112.87.
+                //
+                // It is NOT cross-endpoint evidence and must not be cited as
+                // such. Both 400.07 figures come from DealMatch/Run.
+                // ClientVolume/Run reports REALIZED lots -- 152.76 in that
+                // same email -- about half of deal lots by definition (docs,
+                // section 1), so it could never have agreed with 400.07. A row
+                // sum checked against a whole-run scalar from the same payload
+                // is the right test for "are these all the rows?", and the only
+                // one this data supports.
+                //
+                // WHAT TO RE-CHECK IF THAT STOPS HOLDING. The check is
+                // "row-sum of Lots equals the whole-run deal-lots scalar", and
+                // it only holds while this table lists every client. Today
+                // `rows` has no slice and the one filter is lots > 0, which
+                // cannot drop notional-bearing flow. Add a slice, a top-N, or
+                // any filter that can drop a client with lots, and this card
+                // silently becomes a partial total under a total's label: re-run
+                // that comparison before trusting it, and if it fails, name the
+                // card's real scope the way the TOTAL row below names its own.
+                + rptSectionTitle(
+                    "Client notional",
+                    `summed across the ${fmtNum(rows.length, 0)} client row${rows.length === 1 ? "" : "s"} below, not a whole-run scalar: DealMatch/Run publishes none`,
+                  )
+                + rptCardGrid(
+                    [
+                      // "em" is the client-flow family, the same tone Client
+                      // Deals carries in the volume deck -- not "cy", which
+                      // this project reserves for realized lots, and which
+                      // would group a USD figure with a volume one.
+                      //
+                      // No `unit`: the label already says M USD, and a
+                      // "112.87 M USD" would both repeat it and widen a nowrap
+                      // figure. Same reason the column keeps bare digits.
+                      {
+                        label: "Notional (M USD)",
+                        value: notionalTotalDisplay,
+                        tone: "em",
+                        // The note names the row this must equal, because a
+                        // reader who doubts the card will go and check it.
+                        note: `Summed over the ${fmtNum(rows.length, 0)} listed clients — the same figure as the TOTAL (listed clients) row below. The notional the per-million LP commission is charged against.`,
+                      },
+                    ],
+                    3,
+                  )
                 + rptSectionTitle("Revenue build-up", "how gross was earned, before cost — from DealMatch/Run, the figures the Deal Match Analysis tab shows")
                 + rptCardGrid(
                     [
@@ -1179,19 +1271,20 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 <p class="kpi-label">Total Lots (deals)</p>
                 <p class="kpi-value">${fmtNum(totals.lots, 2)}</p>
               </td>
-              ${/* Notional sits next to lots: the same flow in the other unit,
-                    and the one LP commission is charged against. It is in THIS
-                    deck and not in the revenueStats deck above because every
-                    tile here is already a row-derived sum of the table below,
-                    so one more is consistent. The revenueStats deck is
-                    whole-run by contract -- see the note in
-                    sendDealMatchReport about the email's KPIs once being row
-                    sums -- and the backend publishes no whole-run notional
-                    scalar, so a tile there could only be this same row sum
-                    under a whole-run label. */ ""}
+              ${/* Notional sits next to lots: the same flow in the other
+                    unit, and the one LP commission is charged against. Every
+                    tile in THIS deck is already a row-derived sum of the table
+                    below, so it needs no scope of its own here -- the deck has
+                    one scope throughout.
+                    This deck renders only when whole-run revenueStats are
+                    absent. When they are present the figure still appears, as
+                    its own card under the hero, where it has to say out loud
+                    that it is a row sum because its neighbours there are not.
+                    Both read notionalTotalDisplay, so the two paths cannot
+                    print different totals. */ ""}
               <td class="kpi lots" width="20%">
                 <p class="kpi-label">Notional (M USD)</p>
-                <p class="kpi-value">${fmtNum(totals.millionsUsd, 2)}</p>
+                <p class="kpi-value">${notionalTotalDisplay}</p>
               </td>
               <td class="kpi gross" width="20%">
                 <p class="kpi-label">Total Revenue</p>
@@ -1303,7 +1396,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       broken. Naming the scope is what makes both honest. */ ""}
                 ${spanCell("TOTAL (listed clients)", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
-                ${dataCell("Notional (M USD)", fmtNum(totals.millionsUsd, 2), { align: "right" })}
+                ${dataCell("Notional (M USD)", notionalTotalDisplay, { align: "right" })}
                 ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
                 ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
                 ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
