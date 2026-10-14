@@ -31,10 +31,19 @@ function row(overrides = {}) {
     brevo_status: "sent",
     brevo_detail: "http 201",
     brevo_attempts: 1,
+    openai_status: "sent",
+    openai_detail: "http 200",
+    openai_attempts: 1,
     received_at: "2026-10-13T11:00:00Z",
     ...overrides,
   };
 }
+
+/** The four destinations the aggregator has to account for, in the order
+ *  stats.js lists them. Every loop below reads this rather than its own copy:
+ *  a destination added to the module and not to one of these loops is a
+ *  destination that sends and then reports as though it did not exist. */
+const ALL = ["meta", "whatsapp", "brevo", "openai"];
 
 describe("health", () => {
   it("reports how long ago the newest event arrived", () => {
@@ -119,11 +128,15 @@ describe("funnel", () => {
 });
 
 describe("destinations", () => {
-  it("counts each status separately for each of the three", () => {
+  it("counts each status separately for each of the four", () => {
+    // Every destination given a different status on the same row, so a column
+    // read from a neighbour cannot pass. OpenAI's `skipped` is the ordinary case
+    // rather than an odd one: `registered` belongs to the website pixel, so
+    // every registration is a skip there (spec section 4).
     const rows = [
       row(),
-      row({ meta_status: "failed", whatsapp_status: "skipped", brevo_status: "retrying" }),
-      row({ meta_status: "failed", whatsapp_status: "rejected", brevo_status: "sent" }),
+      row({ meta_status: "failed", whatsapp_status: "skipped", brevo_status: "retrying", openai_status: "rejected" }),
+      row({ meta_status: "failed", whatsapp_status: "rejected", brevo_status: "sent", openai_status: "skipped" }),
     ];
     const { destinations } = summariseCrmEvents(rows, { now: NOW });
     expect(destinations.meta.sent).toBe(1);
@@ -132,11 +145,24 @@ describe("destinations", () => {
     expect(destinations.whatsapp.rejected).toBe(1);
     expect(destinations.brevo.retrying).toBe(1);
     expect(destinations.brevo.sent).toBe(2);
+    expect(destinations.openai.sent).toBe(1);
+    expect(destinations.openai.rejected).toBe(1);
+    expect(destinations.openai.skipped).toBe(1);
+  });
+
+  it("reports all four destinations, so one that sends cannot report as though it did not exist", () => {
+    // The failure this pins: openai dropped from the module's DESTINATIONS
+    // keeps sending, retrying and scrubbing exactly as before, and the tab
+    // simply never mentions it -- no card, no column, and a page that reads as a
+    // healthy three-destination system.
+    const { destinations } = summariseCrmEvents([row()], { now: NOW });
+    expect(Object.keys(destinations).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    expect(destinations.openai.sent).toBe(1);
   });
 
   it("always reports every status key, so a zero renders rather than vanishing", () => {
     const { destinations } = summariseCrmEvents([row()], { now: NOW });
-    for (const name of ["meta", "whatsapp", "brevo"]) {
+    for (const name of ALL) {
       expect(Object.keys(destinations[name]).sort(), name).toEqual([
         "failed",
         "invalid",
@@ -164,7 +190,7 @@ describe("destinations", () => {
 
   it("ignores a status named like an inherited property", () => {
     const { destinations } = summariseCrmEvents([row({ meta_status: "constructor", brevo_status: "toString" })], { now: NOW });
-    for (const name of ["meta", "whatsapp", "brevo"]) {
+    for (const name of ALL) {
       expect(Object.keys(destinations[name]).sort(), name).toEqual([
         "failed",
         "invalid",
@@ -178,6 +204,7 @@ describe("destinations", () => {
     expect(destinations.meta.sent).toBe(0);
     expect(destinations.brevo.sent).toBe(0);
     expect(destinations.whatsapp.sent).toBe(1);
+    expect(destinations.openai.sent).toBe(1);
   });
 
   it("counts an unknown status under nothing rather than throwing", () => {
@@ -193,6 +220,40 @@ describe("toTableRow", () => {
     expect(view.phone).toBe("+971***85");
     expect(JSON.stringify(view)).not.toContain("ali.khan@example.com");
     expect(JSON.stringify(view)).not.toContain("+971507192185");
+  });
+
+  it("carries the fourth destination's status, reason and attempt count like the other three", () => {
+    // Without this the ChatGPT Ads column on every row of the tab is empty --
+    // `undefined` for the status, which renders as nothing at all -- while the
+    // destination sends normally. The skip reason is the one most rows carry,
+    // because `registered` belongs to the website pixel.
+    const view = toTableRow(
+      row({
+        openai_status: "skipped",
+        openai_detail: "registered is owned by the website pixel",
+        openai_attempts: 0,
+      })
+    );
+    expect(view.openai).toEqual({
+      status: "skipped",
+      detail: "registered is owned by the website pixel",
+      attempts: 0,
+    });
+  });
+
+  it("gives every destination its own status, so no column can be showing a neighbour's", () => {
+    const view = toTableRow(
+      row({
+        meta_status: "sent",
+        whatsapp_status: "retrying",
+        brevo_status: "rejected",
+        openai_status: "failed",
+        openai_detail: "http 503",
+        openai_attempts: 2,
+      })
+    );
+    expect(ALL.map((name) => view[name].status)).toEqual(["sent", "retrying", "rejected", "failed"]);
+    expect(view.openai.attempts).toBe(2);
   });
 
   it("keeps the stage, the id and all three statuses with their reasons", () => {
@@ -256,9 +317,9 @@ describe("grouped counts", () => {
     // 3,201 events in three groups. No table cap applies to these counts, and each
     // count must equal the sum of its group sizes, not the number of groups.
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", n: 1200 },
-      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", n: 2000 },
-      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1 },
+      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", n: 1200 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", openai_status: "skipped", n: 2000 },
+      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "skipped", n: 1 },
     ];
     const { funnel, destinations } = summariseCrmEvents(groups, { now: NOW, latestReceivedAt: NOW });
     expect(funnel).toEqual({ lead: 1200, registered: 2001, verified: 0, live_account: 0, first_deposit: 0 });
@@ -266,6 +327,10 @@ describe("grouped counts", () => {
     expect(destinations.meta.failed).toBe(2000);
     expect(destinations.whatsapp.skipped).toBe(1200);
     expect(destinations.brevo.pending).toBe(2000);
+    // The group is the unit, for the fourth status as for the other three: 2,001
+    // registrations skipped as the pixel's, in two groups.
+    expect(destinations.openai.sent).toBe(1200);
+    expect(destinations.openai.skipped).toBe(2001);
   });
 });
 

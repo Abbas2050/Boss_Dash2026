@@ -28,7 +28,8 @@ function windowDays(raw) {
  *   latestByStage()               the newest event per stage, whole table. A stage with no
  *                                 row has never fired, and is not the same as one gone quiet.
  *   countResendable()             per destination, how many failures the requeue would match
- *                                 and how many it no longer can. Whole table, like health.
+ *                                 and the two reasons it no longer can -- `scrubbed` and, for
+ *                                 OpenAI, `expired`. Whole table, like health.
  *
  * Counts and the table follow the window. Health does not: a one-day window must
  * not make an event from thirty hours ago look like silence. Nor does the
@@ -90,6 +91,13 @@ export function makeCrmEventsOverviewHandler({
       // Separate from `destinations` on purpose, and not folded into those
       // counters: they are the window's and they count scrubbed rows, while this
       // is what the resend control may promise.
+      //
+      // Passed through whole rather than picked apart, because the three numbers
+      // per destination are one statement's single snapshot and have to stay
+      // one: `resendable + scrubbed + expired` is every failure a destination
+      // has, and that is the arithmetic the card prints. Dropping `expired`
+      // here would leave OpenAI's card short by the rows OpenAI itself refuses
+      // on their age, with nothing on the page to account for the difference.
       requeue: resendable,
       events: rows.slice(0, tableLimit).map(toTableRow),
     });

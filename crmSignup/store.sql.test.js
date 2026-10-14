@@ -603,6 +603,21 @@ describe("listEventsSince", () => {
     expect(params).toEqual([since, 2000]);
   });
 
+  it("reads every destination's status, detail and attempts, all four of them", async () => {
+    // A destination missing from this select list sends perfectly and then
+    // reports as though it did not exist: `toTableRow` reads `undefined` for its
+    // status, so its column is empty on every row of the one page built to
+    // reveal a broken pipeline. Nothing else would notice -- the sends, the
+    // retries and the scrub all read their own columns by name.
+    await listEventsSince(new Date("2026-09-13T00:00:00Z"));
+    const { sql } = db.state.calls[0];
+    for (const action of DESTINATIONS) {
+      for (const suffix of ["status", "detail", "attempts"]) {
+        expect(sql, `${action}_${suffix}`).toMatch(new RegExp(`\\b${action}_${suffix}\\b`));
+      }
+    }
+  });
+
   it("reads scrubbed_at, so the tab can tell a scrubbed row from one that never had the value", async () => {
     // Almost every row the tab shows is scrubbed, and a masked empty email looks
     // exactly like a scrubbed one. Without this column the page shows three blank
@@ -1205,8 +1220,10 @@ describe("countResendableSends", () => {
 });
 
 describe("countEventsSince", () => {
-  it("selects the stage, the three statuses and the count, grouped over the window, with no cap", async () => {
-    const groups = [{ stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", n: 3 }];
+  it("selects the stage, all four statuses and the count, grouped over the window, with no cap", async () => {
+    const groups = [
+      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", n: 3 },
+    ];
     db.state.respond = () => [groups];
     const since = new Date("2026-09-13T00:00:00Z");
     const result = await countEventsSince(since);
@@ -1214,10 +1231,25 @@ describe("countEventsSince", () => {
     // The whole statement, select list included. The fold reads the count as `n`, so
     // renaming the alias would make the funnel count groups instead of events.
     expect(sql).toMatch(
-      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status\s*$/
+      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status\s*$/
     );
     expect(params).toEqual([since]);
     expect(result).toEqual(groups);
+  });
+
+  it("groups by every status it selects, so no column is one arbitrary row's value", async () => {
+    // The two halves have to be the same list. A status selected and not grouped
+    // is one row of the group standing for all of it, which is not a count of
+    // anything; a status in neither reports zero for a destination that is
+    // sending. Asserted per destination as well as by the statement above, so
+    // the reason a missing one fails is readable.
+    await countEventsSince(new Date("2026-09-13T00:00:00Z"));
+    const { sql } = db.state.calls[0];
+    const [selectList, groupList] = [sql.slice(0, sql.indexOf("FROM")), sql.slice(sql.indexOf("GROUP BY"))];
+    for (const action of DESTINATIONS) {
+      expect(selectList, `${action}_status is not selected`).toMatch(new RegExp(`\\b${action}_status\\b`));
+      expect(groupList, `${action}_status is not grouped`).toMatch(new RegExp(`\\b${action}_status\\b`));
+    }
   });
 });
 

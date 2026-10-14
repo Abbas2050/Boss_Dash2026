@@ -5,10 +5,27 @@ export const STALE_HOURS = 72;
 
 const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected", "invalid"];
 
+/**
+ * The four destinations, each with the three row columns it is read from.
+ *
+ * Its own list rather than an import of `store.js`'s `DESTINATIONS`, because
+ * that one is a list of action NAMES used to interpolate column names into
+ * statements, and this one is a mapping from a name to the three columns a row
+ * actually carries -- a shared list would have to grow a convention tying the
+ * two together, and a convention is the thing that breaks silently.
+ *
+ * **What it costs to leave a destination out is the reason it is commented at
+ * all.** A missing entry does not fail: the destination sends, retries and
+ * scrubs exactly as before, and the tab simply never mentions it. Its card is
+ * absent, its column on every row is absent, and the one page built to reveal a
+ * broken pipeline reports a healthy three-destination system. openai is pinned
+ * by test here for that reason and no other.
+ */
 const DESTINATIONS = [
   ["meta", "meta_status", "meta_detail", "meta_attempts"],
   ["whatsapp", "whatsapp_status", "whatsapp_detail", "whatsapp_attempts"],
   ["brevo", "brevo_status", "brevo_detail", "brevo_attempts"],
+  ["openai", "openai_status", "openai_detail", "openai_attempts"],
 ];
 
 function zeroCounts() {

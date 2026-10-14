@@ -1064,13 +1064,23 @@ export async function countResendableSends(now = new Date()) {
  * countEventsSince, grouped in SQL and never capped: counting this capped list
  * in JavaScript is exactly the silent undercount Task 9 removed, so nothing
  * aggregated belongs here.
+ *
+ * **One status, detail and attempts column per destination, all four of them.**
+ * A destination missing from this select list sends perfectly and then reports
+ * as though it did not exist: `toTableRow` reads `undefined` for its status and
+ * the tab's own column shows an empty cell on every row. On the one page whose
+ * job is to reveal a broken pipeline, that is the worst way to be wrong -- so
+ * the list is enumerated here rather than built from DESTINATIONS, because the
+ * other statements that interpolate column names all write them, and a read
+ * cannot borrow their guard.
  */
 export async function listEventsSince(since, cap = 2000) {
   return all(
     `SELECT id, crm_client_id, stage, first_name, last_name, email, phone, record_type, source,
             meta_status, meta_detail, meta_attempts,
             whatsapp_status, whatsapp_detail, whatsapp_attempts,
-            brevo_status, brevo_detail, brevo_attempts, received_at, scrubbed_at
+            brevo_status, brevo_detail, brevo_attempts,
+            openai_status, openai_detail, openai_attempts, received_at, scrubbed_at
        FROM signup_events
       WHERE received_at >= ?
       ORDER BY received_at DESC
@@ -1080,18 +1090,28 @@ export async function listEventsSince(since, cap = 2000) {
 }
 
 /**
- * Event counts per (stage, status triple) since a date, over the whole window.
+ * Event counts per (stage, status quadruple) since a date, over the whole window.
  *
  * Grouped in SQL and never capped: the result is bounded by the number of distinct
  * status combinations, not by how many events the window holds. A count read from
  * the capped list would undercount a busy month without saying so.
+ *
+ * **Every destination's status is in the select list AND in the GROUP BY, and
+ * the two have to stay the same list.** A status selected but not grouped is
+ * one arbitrary row's value standing for a whole group under MySQL's
+ * ONLY_FULL_GROUP_BY-off behaviour, which is not a count of anything; and a
+ * destination left out of both reports nothing at all, so its card reads seven
+ * zeroes while it is sending. Adding a fourth status multiplies the number of
+ * groups, not the number of rows scanned, and the result is still bounded by
+ * the distinct combinations that actually occur -- which is a handful, because
+ * a row's four statuses move together.
  */
 export async function countEventsSince(since) {
   return all(
-    `SELECT stage, meta_status, whatsapp_status, brevo_status, COUNT(*) AS n
+    `SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, COUNT(*) AS n
        FROM signup_events
       WHERE received_at >= ?
-      GROUP BY stage, meta_status, whatsapp_status, brevo_status`,
+      GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status`,
     [since]
   );
 }

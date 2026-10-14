@@ -44,9 +44,18 @@ const ROWS = [
     brevo_status: "sent",
     brevo_detail: "http 201",
     brevo_attempts: 1,
+    openai_status: "sent",
+    openai_detail: "http 200",
+    openai_attempts: 1,
     received_at: "2026-10-13T11:00:00Z",
   },
 ];
+
+/** The four destinations, in the order stats.js lists them. Imported from
+ *  nowhere on purpose: this file's job is to pin what the ROUTE answers, and a
+ *  list read from the module under test could not fail when that module loses
+ *  one. */
+const ALL = ["meta", "whatsapp", "brevo", "openai"];
 
 const NOW = new Date("2026-10-13T12:00:00Z");
 
@@ -56,12 +65,10 @@ const NOW = new Date("2026-10-13T12:00:00Z");
 function groupRows(rows) {
   const groups = new Map();
   for (const r of rows) {
-    const key = [r.stage, r.meta_status, r.whatsapp_status, r.brevo_status].join("|");
+    const key = [r.stage, ...ALL.map((action) => r[`${action}_status`])].join("|");
     const g = groups.get(key) ?? {
       stage: r.stage,
-      meta_status: r.meta_status,
-      whatsapp_status: r.whatsapp_status,
-      brevo_status: r.brevo_status,
+      ...Object.fromEntries(ALL.map((action) => [`${action}_status`, r[`${action}_status`]])),
       n: 0,
     };
     g.n += 1;
@@ -71,19 +78,28 @@ function groupRows(rows) {
 }
 
 /** What countResendableSends returns: per destination, the failures the requeue
- *  would match and the ones it no longer can. Computed from `rows` the way the
- *  statement computes it -- `failed` or `rejected`, split on `scrubbed_at` --
- *  so a test that passes rows gets an answer consistent with the counters. */
-function resendableOf(rows) {
+ *  would match and the two reasons it no longer can. Computed from `rows` the
+ *  way the statement computes it -- `failed` or `rejected`, split on
+ *  `scrubbed_at` and, for OpenAI, on the 7-day window -- so a test that passes
+ *  rows gets an answer consistent with the counters.
+ *
+ *  `expired` is a literal zero for the three destinations with no deadline,
+ *  which is what the real statement emits for them: a missing key would print
+ *  as "undefined" on the card. */
+function resendableOf(rows, now = NOW) {
   const requeueable = new Set(["failed", "rejected"]);
+  const fresh = (r) => now.getTime() - new Date(r.received_at).getTime() <= 7 * 24 * 3_600_000;
   return Object.fromEntries(
-    ["meta", "whatsapp", "brevo"].map((action) => {
+    ALL.map((action) => {
       const failures = rows.filter((r) => requeueable.has(r[`${action}_status`]));
+      const held = failures.filter((r) => !r.scrubbed_at);
+      const windowed = action === "openai";
       return [
         action,
         {
-          resendable: failures.filter((r) => !r.scrubbed_at).length,
+          resendable: (windowed ? held.filter(fresh) : held).length,
           scrubbed: failures.filter((r) => r.scrubbed_at).length,
+          expired: windowed ? held.filter((r) => !fresh(r)).length : 0,
         },
       ];
     })
@@ -165,6 +181,10 @@ describe("the payload", () => {
     ]);
     expect(res.body.funnel.registered).toBe(1);
     expect(res.body.destinations.meta.sent).toBe(1);
+    // All four, because a destination missing from the aggregator sends normally
+    // and then reports as though it did not exist.
+    expect(Object.keys(res.body.destinations).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    expect(res.body.destinations.openai.sent).toBe(1);
     expect(res.body.events).toHaveLength(1);
   });
 
@@ -325,8 +345,8 @@ describe("the payload", () => {
 
   it("counts from the grouped rows, so a window far past the table cap is counted in full", async () => {
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1000 },
-      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", n: 4000 },
+      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "sent", n: 1000 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "skipped", n: 4000 },
     ];
     const threeRows = Array.from({ length: 3 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
@@ -342,6 +362,7 @@ describe("the payload", () => {
     expect(res.body.destinations.meta.sent).toBe(1000);
     expect(res.body.destinations.meta.failed).toBe(4000);
     expect(res.body.destinations.whatsapp.skipped).toBe(4000);
+    expect(res.body.destinations.openai.skipped).toBe(4000);
   });
 
   it("reports what each destination could resend, over the whole table and not the window", async () => {
@@ -361,9 +382,10 @@ describe("the payload", () => {
     const res = fakeRes();
     await build({ rows, now })({ auth: ADMIN, query: { days: "1" } }, res);
     expect(res.body.requeue).toEqual({
-      meta: { resendable: 0, scrubbed: 0 },
-      whatsapp: { resendable: 1, scrubbed: 0 },
-      brevo: { resendable: 1, scrubbed: 1 },
+      meta: { resendable: 0, scrubbed: 0, expired: 0 },
+      whatsapp: { resendable: 1, scrubbed: 0, expired: 0 },
+      brevo: { resendable: 1, scrubbed: 1, expired: 0 },
+      openai: { resendable: 0, scrubbed: 0, expired: 0 },
     });
     // And the window still governs everything else, so the two cannot be read
     // as the same number.
@@ -371,11 +393,49 @@ describe("the payload", () => {
     expect(res.body.destinations.brevo.failed).toBe(1);
   });
 
+  it("carries OpenAI's expired rows, which are the other half of its shortfall", async () => {
+    // OpenAI's alone, and the only reason a failure can be unreachable while it
+    // still holds its client data: "within the last 7 days" is OpenAI's own
+    // bound on `timestamp_ms`, and that timestamp is the row's `received_at`
+    // (spec section 7a). Without this number the card shows 1 resendable beside
+    // 2 failures in the period and nothing accounts for the other one -- which
+    // reads as a fault here rather than as OpenAI's rule.
+    const rows = [
+      // Three days old: inside the window, so the requeue can have it.
+      { ...ROWS[0], id: 1, received_at: "2026-10-10T11:00:00Z", openai_status: "failed", scrubbed_at: null },
+      // Twenty-three days old, never scrubbed: OpenAI will not take it at any
+      // price, and re-stamping it would claim the conversion happened today.
+      { ...ROWS[0], id: 2, received_at: "2026-09-20T11:00:00Z", openai_status: "failed", scrubbed_at: null },
+      // Old AND scrubbed: counted as scrubbed, not twice.
+      { ...ROWS[0], id: 3, received_at: "2026-09-21T11:00:00Z", openai_status: "rejected", scrubbed_at: "2026-10-21T11:00:00Z" },
+    ];
+    const res = fakeRes();
+    await build({ rows, now })({ auth: ADMIN, query: {} }, res);
+    expect(res.body.requeue.openai).toEqual({ resendable: 1, scrubbed: 1, expired: 1 });
+  });
+
+  it("reports all three numbers for every destination, so a card can always reconcile", async () => {
+    // `resendable + scrubbed + expired` is every failure a destination has.
+    // Drop one of the three and the subtraction on the page is short by it, with
+    // nothing saying which rows went missing.
+    const res = fakeRes();
+    await build({ now })({ auth: ADMIN, query: {} }, res);
+    expect(Object.keys(res.body.requeue).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    for (const action of ALL) {
+      expect(Object.keys(res.body.requeue[action]).sort(), action).toEqual([
+        "expired",
+        "resendable",
+        "scrubbed",
+      ]);
+    }
+  });
+
   it("asks the resendable count for no window at all", async () => {
     const countResendable = vi.fn(async () => ({
-      meta: { resendable: 0, scrubbed: 0 },
-      whatsapp: { resendable: 0, scrubbed: 0 },
-      brevo: { resendable: 0, scrubbed: 0 },
+      meta: { resendable: 0, scrubbed: 0, expired: 0 },
+      whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
+      brevo: { resendable: 0, scrubbed: 0, expired: 0 },
+      openai: { resendable: 0, scrubbed: 0, expired: 0 },
     }));
     await build({ now, countResendable })({ auth: ADMIN, query: { days: "7" } }, fakeRes());
     expect(countResendable).toHaveBeenCalledTimes(1);
@@ -414,11 +474,16 @@ describe("the payload", () => {
   it("counts every group, even when there are more groups than the table shows", async () => {
     // Five stages of 1,000 events each. The table shows three rows; the counts show all five.
     const stages = ["lead", "registered", "verified", "live_account", "first_deposit"];
-    const groups = stages.map((stage) => ({ stage, meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", n: 1000 }));
+    const groups = stages.map((stage) => ({
+      stage,
+      ...Object.fromEntries(ALL.map((action) => [`${action}_status`, "sent"])),
+      n: 1000,
+    }));
     const res = fakeRes();
     await build({ now, tableLimit: 3, countSince: async () => groups })({ auth: ADMIN, query: {} }, res);
     for (const stage of stages) expect(res.body.funnel[stage], stage).toBe(1000);
     expect(res.body.destinations.meta.sent).toBe(5000);
+    expect(res.body.destinations.openai.sent).toBe(5000);
   });
 });
 
