@@ -13,9 +13,38 @@ import {
   updateMetaStatus,
   updateWhatsappStatus,
   updateBrevoStatus,
+  scrubSignupEvent,
+  deleteInvalidSignupEvents,
+  scrubStaleSignupEvents,
 } from "./store.js";
 
 const SETTLED = new Set(["sent", "skipped", "rejected", "failed", "invalid"]);
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// How long an all-`invalid` row is kept before the whole row goes. These never
+// sent anything and never will -- an unparseable payload or an FXBO "Test
+// webhook" press -- and they are the rows CUTOVER step 5 reads, so they keep
+// everything, raw_payload included, for exactly this long. Seven days is the
+// user's number; it is not configurable, because a window nobody chose is a
+// window nobody can be held to.
+const INVALID_RETENTION_DAYS = 7;
+
+// How long a row that never settles may keep its client data. The settle path
+// scrubs about a minute after signup; this catches what it never reaches -- a
+// worker left off by CRM_EVENTS_WORKER_ENABLED, or a row whose three claims
+// split between two overlapped workers so neither saw all three settle. Thirty
+// days is the user's number, and for the same reason not an env var.
+const UNSCRUBBED_BACKSTOP_DAYS = 30;
+
+// Retention is hourly work and the sweep runs every 60 seconds, so the sweep
+// remembers when it last ran one. Deliberately a remembered instant rather than
+// a second timer: a timer dies with the IIS worker, and a retention pass that
+// silently stopped running is the failure the backstop above exists to catch, so
+// it must not depend on the same thing. Starting at 0 means the first sweep after
+// a recycle runs one, which is the right direction to fail in.
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+let lastRetentionAt = 0;
 
 // Each action's attempt budget. WhatsApp's is configurable (WA_MAX_ATTEMPTS) and
 // travels in config. Each is read in two places -- before the request and after
@@ -276,6 +305,19 @@ export async function processSignupEvent(row, deps) {
   const fields = rowToFields(row);
   const result = { meta: null, whatsapp: null, brevo: null };
 
+  // A scrubbed row has no name, no email and no phone left. Building a payload
+  // from it would hand Brevo a contact with no address and DoubleTick a welcome
+  // template with no name in it, and both would be accepted -- that is the point:
+  // nothing downstream would complain. claimDueEvents selects only
+  // `pending`/`retrying` and the scrub only runs once all three have settled, so
+  // no row should ever arrive here scrubbed. That is the reason this is a guard
+  // and not an assumption: whatever later makes a scrubbed row claimable, it
+  // sends nothing and writes nothing.
+  if (row?.scrubbed_at) {
+    deps.logger?.warn?.(`[crm-events] row ${row.id} is scrubbed; nothing is sent from it`);
+    return result;
+  }
+
   const steps = [
     ["meta", "meta_status", "meta_attempts", "meta_next_attempt_at", runMetaStep, deps.saveMeta, META_MAX_ATTEMPTS],
     ["whatsapp", "whatsapp_status", "whatsapp_attempts", "whatsapp_next_attempt_at", runWhatsappStep, deps.saveWhatsapp, deps.config.waMaxAttempts],
@@ -339,7 +381,57 @@ export async function processSignupEvent(row, deps) {
     await saveOutcome(save, row.id, result[key], deps.logger);
   }
 
+  // All three settled, so nothing downstream needs the client's name, email or
+  // phone again, and the row goes on holding the statistics it was kept for.
+  //
+  // The status read is the step's own outcome when it ran this pass, and the
+  // column it was found with otherwise -- which covers both reasons a step runs
+  // nothing: one already settled reports the settled status it was skipped for,
+  // and one still on its clock or lost to another sweeper's claim reports the
+  // `pending`/`retrying` it was found with, so neither is mistaken for settled.
+  // A row whose claims split between two workers therefore scrubs from neither,
+  // and waits for the backstop. That is the trade for never scrubbing a row
+  // another worker is still sending from.
+  const statusOf = ([key, statusColumn]) => (result[key] ? str(result[key].status) : str(row[statusColumn]));
+  if (steps.map(statusOf).every((status) => SETTLED.has(status))) {
+    // Not caught. A scrub that cannot be written leaves the row for the 30-day
+    // backstop, and sweepOnce logs the row -- swallowing it here would hide a
+    // scrub that never happens behind a month of silence.
+    await deps.scrub(row.id, deps.now());
+  }
+
   return result;
+}
+
+/**
+ * The two retention passes, at most once an hour however often the sweep runs.
+ *
+ * Deleting runs first. An all-`invalid` row reaching seven days is gone before
+ * the thirty-day backstop could scrub it instead, which is what keeps seven days
+ * the window that governs those rows -- a scrubbed invalid row would have lost
+ * the `raw_payload` CUTOVER step 5 reads while still sitting in the table.
+ *
+ * A failure is logged and not rethrown: retention is housekeeping, and a sweep
+ * that delivered three welcomes must not report itself as failed because a DELETE
+ * timed out. The next hour tries again.
+ */
+async function runRetentionIfDue(deps, now) {
+  if (now.getTime() - lastRetentionAt < RETENTION_INTERVAL_MS) return;
+  // Stamped before the work, not after: a pass that throws every time must not
+  // retry at every sweep for ever.
+  lastRetentionAt = now.getTime();
+  try {
+    const deleted = await deps.deleteInvalid(new Date(now.getTime() - INVALID_RETENTION_DAYS * DAY_MS));
+    const scrubbed = await deps.scrubStale(new Date(now.getTime() - UNSCRUBBED_BACKSTOP_DAYS * DAY_MS), now);
+    if (deleted || scrubbed) {
+      console.log(
+        `[crm-events] retention: ${deleted} invalid rows deleted after ${INVALID_RETENTION_DAYS} days, ` +
+          `${scrubbed} unscrubbed rows scrubbed after ${UNSCRUBBED_BACKSTOP_DAYS}`
+      );
+    }
+  } catch (error) {
+    console.error(`[crm-events] retention pass failed: ${error?.message || String(error)}`);
+  }
 }
 
 function liveConfig() {
@@ -370,6 +462,9 @@ function liveDeps() {
     saveMeta: updateMetaStatus,
     saveWhatsapp: updateWhatsappStatus,
     saveBrevo: updateBrevoStatus,
+    scrub: scrubSignupEvent,
+    deleteInvalid: deleteInvalidSignupEvents,
+    scrubStale: scrubStaleSignupEvents,
     newMessageId: () => randomUUID(),
     now: () => new Date(),
     logger: console,
@@ -410,6 +505,9 @@ export async function sweepOnce() {
         console.error(`[crm-events] row ${row?.id} failed: ${error?.message || String(error)}`);
       }
     }
+    // After the rows, so a row that settled on this very sweep was already
+    // scrubbed by the settle path and the backstop has nothing to do for it.
+    await runRetentionIfDue(deps, new Date());
     return { processed: rows.length };
   } finally {
     sweeping = false;

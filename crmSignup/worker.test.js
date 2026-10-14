@@ -115,6 +115,10 @@ function deps(overrides = {}) {
     saveMeta: vi.fn(async () => {}),
     saveWhatsapp: vi.fn(async () => {}),
     saveBrevo: vi.fn(async () => {}),
+    // The scrub, which runs once all three have settled. Injected like the three
+    // writers rather than defaulted in the worker, so a case that must prove the
+    // row was NOT scrubbed can see the absence.
+    scrub: vi.fn(async () => 1),
     newMessageId: () => "uuid-fixed",
     now: () => new Date("2026-10-12T12:00:00Z"),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -336,6 +340,9 @@ vi.mock("./store.js", () => ({
   updateMetaStatus: vi.fn(async () => {}),
   updateWhatsappStatus: vi.fn(async () => {}),
   updateBrevoStatus: vi.fn(async () => {}),
+  scrubSignupEvent: vi.fn(async () => 1),
+  deleteInvalidSignupEvents: vi.fn(async () => 0),
+  scrubStaleSignupEvents: vi.fn(async () => 0),
 }));
 
 const NOW = new Date("2026-10-12T12:00:00Z");
@@ -692,6 +699,169 @@ describe("nothing settled is touched again", () => {
           expect(d[a.send], `${a.name} at ${stage}, settled=${names(settled)}`).toHaveBeenCalledTimes(sends ? 1 : 0);
         }
       }
+    }
+  });
+});
+
+// This table stores statistics, not client records. The client's name, email and
+// phone are here only so they survive from receipt until all three destinations
+// settle -- the endpoint answers FXBO immediately and sends afterwards, and a
+// retry is five minutes away. The moment all three are settled, nothing needs
+// them again.
+describe("the row is scrubbed once all three have settled", () => {
+  const SETTLED = ["sent", "skipped", "rejected", "failed", "invalid"];
+
+  it("scrubs the row, with the sweeper's own clock, after the last action settles", async () => {
+    for (const stage of SENDING_STAGES) {
+      const d = deps();
+      await processSignupEvent(row({ stage }), d);
+      expect(d.scrub, stage).toHaveBeenCalledTimes(1);
+      expect(d.scrub, stage).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
+    }
+  });
+
+  it("scrubs after the three writes, never before one of them", async () => {
+    // Order is the whole safety of this. A scrub between the claim and the send
+    // would null the phone number the send is about to read.
+    const order = [];
+    const note = (name) => vi.fn(async () => void order.push(name));
+    const d = deps({
+      saveMeta: note("saveMeta"),
+      saveWhatsapp: note("saveWhatsapp"),
+      saveBrevo: note("saveBrevo"),
+      scrub: note("scrub"),
+    });
+    await processSignupEvent(row(), d);
+    expect(order.at(-1)).toBe("scrub");
+    expect(order.filter((n) => n === "scrub")).toHaveLength(1);
+  });
+
+  it("scrubs a row that was already settled before this sweep ever saw it", async () => {
+    // Nothing is sent and nothing is written, but the row still holds client data
+    // it no longer needs -- the case a worker that only scrubbed what it had just
+    // sent would leave behind for a month.
+    for (const status of SETTLED) {
+      const d = deps();
+      await processSignupEvent(
+        row({ meta_status: status, whatsapp_status: status, brevo_status: status }),
+        d
+      );
+      expect(d.scrub, status).toHaveBeenCalledTimes(1);
+      for (const a of ACTIONS) expect(d[a.save], `${status}/${a.name}`).not.toHaveBeenCalled();
+    }
+  });
+
+  it("scrubs a row settled across a mix of this sweep's outcomes and earlier ones", async () => {
+    // Each action's status comes from its own place: the outcome if it ran, the
+    // column if it did not. Reading only one of the two would leave half the
+    // settled rows unscrubbed.
+    for (const stage of SENDING_STAGES) {
+      for (const settled of SUBSETS) {
+        const d = deps();
+        const r = row({ stage });
+        for (const a of ACTIONS) r[a.status] = settled.includes(a) ? "sent" : "pending";
+        await processSignupEvent(r, d);
+        expect(d.scrub, `${stage}, settled=${names(settled)}`).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it("does not scrub while any action is still pending or retrying", async () => {
+    // A retry is five minutes away and will read the phone number off this row.
+    // Scrubbing now sends a nameless template to a missing number.
+    for (const a of ACTIONS) {
+      for (const open of ["pending", "retrying"]) {
+        const d = deps({
+          [a.send]: vi.fn(async () => ({ status: "failed", retryable: true, detail: "http 503" })),
+        });
+        const r = row({ stage: a.stage });
+        for (const other of ACTIONS) r[other.status] = other === a ? open : "sent";
+        await processSignupEvent(r, d);
+        expect(d.scrub, `${a.name} ${open}`).not.toHaveBeenCalled();
+      }
+    }
+  });
+
+  it("does not scrub an action left waiting on its own clock", async () => {
+    // claimDueEvents returns the row because a SIBLING came due. The waiting
+    // action is untouched and still has a send ahead of it.
+    for (const a of ACTIONS) {
+      const d = deps();
+      const r = row({ stage: a.stage, [a.clock]: new Date("2026-10-12T12:04:00Z") });
+      await processSignupEvent(r, d);
+      expect(d.scrub, a.name).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not scrub when another sweeper holds a claim, because that sweeper is still sending", async () => {
+    // An overlapped IIS recycle runs two workers. The loser of a claim records
+    // nothing, and its copy of the row still reads pending -- so it must not
+    // scrub the fields the winner's send is about to read.
+    for (const a of ACTIONS) {
+      const d = deps({ [a.save]: vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1)) });
+      await processSignupEvent(row({ stage: a.stage }), d);
+      expect(d.scrub, a.name).not.toHaveBeenCalled();
+    }
+  });
+
+  it("lets a scrub that cannot be written surface, rather than hiding it for a month", async () => {
+    // sweepOnce logs the row. Swallowing it here would leave the row for the
+    // thirty-day backstop with nothing said about why.
+    const d = deps({ scrub: vi.fn(async () => { throw new Error("ECONNRESET"); }) });
+    await expect(processSignupEvent(row(), d)).rejects.toThrow("ECONNRESET");
+  });
+});
+
+describe("a scrubbed row sends nothing", () => {
+  // claimDueEvents selects only pending/retrying, and the scrub only runs once
+  // all three have settled, so nothing should reach the worker scrubbed. This is
+  // the guard for whatever later changes that -- a hand-run requeue, a new
+  // selection clause -- because the failure is silent: Brevo accepts a contact
+  // with no address and DoubleTick accepts a template with no name.
+  it("sends nothing and writes nothing for a row that carries a scrubbed_at", async () => {
+    for (const stage of SENDING_STAGES) {
+      const d = deps();
+      const result = await processSignupEvent(
+        row({ stage, scrubbed_at: new Date("2026-10-12T11:00:00Z"), first_name: "", email: "", phone: "" }),
+        d
+      );
+      for (const a of ACTIONS) {
+        expect(d[a.send], `${stage}/${a.name}`).not.toHaveBeenCalled();
+        expect(d[a.save], `${stage}/${a.name}`).not.toHaveBeenCalled();
+      }
+      expect(d.scrub, stage).not.toHaveBeenCalled();
+      expect(result, stage).toEqual({ meta: null, whatsapp: null, brevo: null });
+    }
+  });
+
+  it("refuses even when the statuses say the actions are still due", async () => {
+    // The statuses are not the test. A row holding a scrubbed_at has nothing left
+    // to build a payload from, whatever its status columns claim.
+    const d = deps();
+    await processSignupEvent(
+      row({ scrubbed_at: "2026-10-12T11:00:00.000Z", meta_status: "retrying", whatsapp_status: "pending" }),
+      d
+    );
+    for (const a of ACTIONS) expect(d[a.send], a.name).not.toHaveBeenCalled();
+  });
+
+  it("says which row it refused, without the client's details", async () => {
+    const d = deps();
+    await processSignupEvent(row({ scrubbed_at: new Date("2026-10-12T11:00:00Z") }), d);
+    const said = d.logger.warn.mock.calls.flat().join(" ");
+    expect(said).toContain("7");
+    expect(said).toMatch(/scrubbed/);
+    expect(said).not.toContain("ali@example.com");
+    expect(said).not.toContain("+971507192185");
+  });
+
+  it("still sends from a row that has never been scrubbed", async () => {
+    // The guard must read the column, not merely exist. A null and a missing
+    // scrubbed_at are both "never scrubbed".
+    for (const scrubbedAt of [null, undefined]) {
+      const d = deps();
+      await processSignupEvent(row({ scrubbed_at: scrubbedAt }), d);
+      expect(d.sendWhatsapp, String(scrubbedAt)).toHaveBeenCalledTimes(1);
     }
   });
 });
@@ -1432,6 +1602,132 @@ describe("the production wiring", () => {
       expect(store.updateBrevoStatus.mock.calls.at(-1)).toEqual([13, expect.objectContaining({ status: "sent" })]);
       // Nothing was sent for row 11: its first write failed before any request.
       expect(fetched("https://graph.facebook.com/")).toHaveLength(1);
+    });
+  });
+
+  // Retention. Both windows are the user's numbers, written as constants rather
+  // than read from the environment: a window nobody chose is a window nobody can
+  // be held to.
+  //
+  // The hourly gate lives in the sweep's own reckoning, not in a second timer --
+  // timers die with the IIS worker, and a retention pass that silently stopped
+  // running is the failure the thirty-day backstop exists to catch, so it cannot
+  // depend on the same thing. That is also why each case below starts from a
+  // system time later than the one before it: the only handle on the gate is the
+  // clock the sweep reads.
+  describe("the retention passes", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const startAt = (iso) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(iso));
+      return new Date(iso);
+    };
+
+    it("asks for seven days for the invalid rows and thirty for the unscrubbed ones", async () => {
+      // Seven days: an all-invalid row never sent anything and never will, and it
+      // is the row CUTOVER step 5 reads, so it keeps everything until it goes.
+      // Thirty days: the backstop for a row that never settles, so its client
+      // data cannot outlive the month.
+      const now = startAt("2027-01-01T00:00:00Z");
+      expect(await sweepOnce()).toEqual({ processed: 0 });
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledWith(new Date(now.getTime() - 7 * DAY));
+      expect(store.scrubStaleSignupEvents).toHaveBeenCalledTimes(1);
+      expect(store.scrubStaleSignupEvents).toHaveBeenCalledWith(new Date(now.getTime() - 30 * DAY), now);
+    });
+
+    it("deletes before it scrubs, so a seven-day invalid row still has its raw_payload when it goes", async () => {
+      // The other order would let the thirty-day backstop scrub an invalid row
+      // that the delete had not reached yet, leaving it in the table with the one
+      // thing it was kept for already gone.
+      startAt("2027-02-01T00:00:00Z");
+      const order = [];
+      store.deleteInvalidSignupEvents.mockImplementation(async () => {
+        order.push("delete");
+        return 0;
+      });
+      store.scrubStaleSignupEvents.mockImplementation(async () => {
+        order.push("scrub");
+        return 0;
+      });
+      await sweepOnce();
+      expect(order).toEqual(["delete", "scrub"]);
+    });
+
+    it("runs at most once an hour, however often the sweep runs", async () => {
+      // The sweep runs every 60 seconds. Two full-table passes a minute is not
+      // what either window asks for.
+      startAt("2027-03-01T00:00:00Z");
+      await sweepOnce();
+      await sweepOnce();
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+      expect(store.scrubStaleSignupEvents).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2027-03-01T00:59:59Z"));
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2027-03-01T01:00:00Z"));
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(2);
+      expect(store.scrubStaleSignupEvents).toHaveBeenCalledTimes(2);
+    });
+
+    it("runs even when no row was due, because retention is not about the due rows", async () => {
+      startAt("2027-04-01T00:00:00Z");
+      store.claimDueEvents.mockResolvedValue([]);
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run while the worker is switched off, and catches up when it is switched back on", async () => {
+      // Which is the point of the thirty-day backstop: rows accumulate
+      // unscrubbed while sending is paused, and the first sweep after it is
+      // turned back on is where they are caught up.
+      startAt("2027-05-01T00:00:00Z");
+      setEnv({ CRM_EVENTS_WORKER_ENABLED: "false" });
+      expect(await sweepOnce()).toEqual({ disabled: true });
+      expect(store.deleteInvalidSignupEvents).not.toHaveBeenCalled();
+      expect(store.scrubStaleSignupEvents).not.toHaveBeenCalled();
+
+      setEnv({ CRM_EVENTS_WORKER_ENABLED: "true" });
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs a failed pass, still reports the sweep's rows, and does not retry it every minute", async () => {
+      // Retention is housekeeping. A sweep that delivered three welcomes must not
+      // report itself as failed because a DELETE timed out -- and a pass that
+      // throws every time must not throw at every sweep for an hour.
+      startAt("2027-06-01T00:00:00Z");
+      store.claimDueEvents.mockResolvedValue([]);
+      store.deleteInvalidSignupEvents.mockRejectedValue(new Error("ER_LOCK_WAIT_TIMEOUT"));
+      expect(await sweepOnce()).toEqual({ processed: 0 });
+      expect(spies.error).toHaveBeenCalledWith("[crm-events] retention pass failed: ER_LOCK_WAIT_TIMEOUT");
+      expect(store.scrubStaleSignupEvents).not.toHaveBeenCalled();
+
+      vi.setSystemTime(new Date("2027-06-01T00:01:00Z"));
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(1);
+    });
+
+    it("says what it removed, with the window it applied, and says nothing when there was nothing", async () => {
+      startAt("2027-07-01T00:00:00Z");
+      store.deleteInvalidSignupEvents.mockResolvedValue(2);
+      store.scrubStaleSignupEvents.mockResolvedValue(3);
+      await sweepOnce();
+      expect(spies.log).toHaveBeenCalledWith(
+        "[crm-events] retention: 2 invalid rows deleted after 7 days, 3 unscrubbed rows scrubbed after 30"
+      );
+
+      vi.setSystemTime(new Date("2027-07-01T01:00:00Z"));
+      store.deleteInvalidSignupEvents.mockResolvedValue(0);
+      store.scrubStaleSignupEvents.mockResolvedValue(0);
+      spies.log.mockClear();
+      await sweepOnce();
+      expect(store.deleteInvalidSignupEvents).toHaveBeenCalledTimes(2);
+      expect(spies.log).not.toHaveBeenCalled();
     });
   });
 
