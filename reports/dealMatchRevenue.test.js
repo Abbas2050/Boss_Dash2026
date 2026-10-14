@@ -137,3 +137,126 @@ describe("client swap, split by direction", () => {
     expect(html()).toMatch(/Already netted inside Gross Revenue/);
   });
 });
+
+// ── Notional in USD millions, in the client table (2026-10-14) ──────────────
+//
+// "in Daily Deal Match Analysis report lets add the volume in millions also."
+//
+// The figure was already on every row as millionsUsd, derived from the
+// backend's clientMillionsUsd -- the notional the per-million LP commission is
+// charged against, and so the basis of Net Revenue. Nothing new is fetched;
+// these tests pin that it is actually surfaced, and that the TOTAL row sums it.
+//
+// The trap this guards: `totals` is a reduce with an explicit seed, so a cell
+// rendered from `totals.millionsUsd` with no matching seed key and no matching
+// accumulate line renders a confident "0.00" rather than throwing.
+describe("notional (M USD) in the client revenue table", () => {
+  // Built from the real summaries above, so the whole path from the backend's
+  // clientMillionsUsd to the rendered cell is under test, not a hand-made row.
+  const ROWS = deriveClientRevenueRows({ clientRevenueSummaries: SUMMARIES }).map((row) => ({
+    ...row,
+    accounts: [row.login],
+    rebateWithdrawn: 0,
+    netRev: row.totalRev,
+  }));
+
+  const render = (rows = ROWS, extra = {}) =>
+    buildEmailHtml({
+      fromYmd: "2026-08-08",
+      toYmd: "2026-08-14",
+      rows,
+      volume: null,
+      ...extra,
+    });
+
+  // Pulls the value out of each Notional cell in document order. The TOTAL row
+  // sits at the TOP of <tbody> (a <tfoot> always renders last, which would put
+  // the headline below every client), so index 0 is the total.
+  const notionalCells = (html) =>
+    [...html.matchAll(/data-label="Notional \(M USD\)"[^>]*>.*?<span class="val[^"]*">([^<]*)<\/span>/g)]
+      .map((m) => m[1]);
+
+  it("shows each client's own notional on its row", () => {
+    // Not the total repeated: 166.24 and 156.40 are different figures, and a
+    // cell rendered from `totals` instead of `row` would print 322.64 twice.
+    expect(notionalCells(render()).slice(1)).toEqual(["166.24", "156.40"]);
+  });
+
+  it("totals the notional from the unrounded rows", () => {
+    const cells = notionalCells(render());
+    // The backend sends notional to 4 dp (166.2371), so the TOTAL has to sum
+    // the unrounded values and round once -- not sum the 2 dp displays. Same
+    // treatment every money column in this table already gets.
+    const unrounded = SUMMARIES.reduce((acc, s) => acc + s.clientMillionsUsd, 0);
+    expect(unrounded).toBeCloseTo(322.6371, 4);
+    expect(cells[0]).toBe("322.64");
+    // The arithmetic the reader does by eye still has to come out, to within
+    // the half-cent per row that independent rounding can cost.
+    const eyeSum = cells.slice(1).reduce((acc, v) => acc + Number(v), 0);
+    expect(Math.abs(eyeSum - Number(cells[0]))).toBeLessThanOrEqual(0.005 * (cells.length - 1));
+  });
+
+  it("does not leave the total at zero when the rows carry a figure", () => {
+    // The specific failure an unseeded or unaccumulated key produces.
+    expect(notionalCells(render())[0]).not.toBe("0.00");
+  });
+
+  it("does not total lots into the notional column", () => {
+    // 734.48 is the lots total. The two columns measure the same flow in
+    // different units and are trivially easy to cross-wire in the reducer.
+    const cells = notionalCells(render());
+    expect(cells[0]).not.toBe("734.48");
+    expect(cells[0]).toBe("322.64");
+  });
+
+  it("renders a small notional rather than rounding it away", () => {
+    // 0.07 million is $70k of notional -- small beside a 166-million client,
+    // but a real row, and 2 dp is what keeps it from reading as nothing. This
+    // is why the column is fmtNum(_, 2) and not whole millions.
+    const [small] = deriveClientRevenueRows({
+      clientRevenueSummaries: [{ ...SUMMARIES[0], clientMillionsUsd: 0.0712 }],
+    });
+    const html = render([{ ...small, accounts: [small.login], rebateWithdrawn: 0, netRev: small.totalRev }]);
+    expect(notionalCells(html).slice(1)).toEqual(["0.07"]);
+  });
+
+  it("carries the unit in the label and leaves the value as bare digits", () => {
+    const html = render();
+    // dataCell repeats the label inside every cell, so the unit reaches a
+    // phone reader without being stamped on each figure.
+    expect(html).toContain('<span class="lbl">Notional (M USD)</span>');
+    // No "$" and no "M" on the value: among money columns a "$166.24" would
+    // read as dollars rather than as 166 million dollars of notional.
+    expect(notionalCells(html)).not.toContain("$166.24");
+    expect(notionalCells(html)).not.toContain("166.24 M");
+  });
+
+  it("keeps the header row and the empty-state colspan at the same width", () => {
+    // The column count lives in three places: the body cells, the <th> list
+    // (inert, since thead is display:none, but it documents the columns) and
+    // the empty-state colspan. A colspan left at 9 is invisible until a day
+    // with no rows at all.
+    const table = render([]).match(/<table class="data">[\s\S]*?<\/table>/)[0];
+    const headers = [...table.matchAll(/<th /g)].length;
+    expect(headers).toBe(10);
+    expect(table).toContain(`colspan="${headers}"`);
+  });
+
+  it("puts notional on the summary tile beside lots", () => {
+    // The row-derived KPI deck, which renders when whole-run revenueStats are
+    // not supplied. Both volume units belong together there.
+    const html = render(ROWS, { revenueStats: null });
+    expect(html).toContain('<p class="kpi-label">Total Lots (deals)</p>');
+    expect(html).toContain('<p class="kpi-label">Notional (M USD)</p>');
+    expect(html).toMatch(/kpi-label">Notional \(M USD\)<\/p>\s*<p class="kpi-value">322\.64<\/p>/);
+  });
+
+  it("appears in all three cadences, since one renderer builds them all", () => {
+    // The request named the daily report. This module renders daily, weekly
+    // and monthly from the same builder, so the column lands in all three --
+    // intended, and recorded here so it is not read later as a regression.
+    for (const cadence of ["daily", "weekly", "monthly"]) {
+      expect(notionalCells(render(ROWS, { cadence }))[0]).toBe("322.64");
+    }
+  });
+});

@@ -914,6 +914,10 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
   const totals = rows.reduce(
     (acc, row) => {
       acc.lots += Number(row.lots) || 0;
+      // Notional is accumulated here because the TOTAL row reads it from
+      // `totals`. Without this line every body row carries a figure and the
+      // total silently reads 0.00 -- a zero that looks like real data.
+      acc.millionsUsd += Number(row.millionsUsd) || 0;
       acc.markup += Number(row.markup) || 0;
       acc.clientComm += Number(row.clientComm) || 0;
       acc.swap += Number(row.swap) || 0;
@@ -923,7 +927,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
       acc.netRev += Number(row.netRev) || 0;
       return acc;
     },
-    { lots: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
+    { lots: 0, millionsUsd: 0, markup: 0, clientComm: 0, swap: 0, lpComm: 0, rebateWithdrawn: 0, totalRev: 0, netRev: 0 },
   );
 
   const bodyRows = rows
@@ -932,6 +936,15 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
         ${dataCell("Client", escapeHtml(row.name || "(unnamed)"))}
         ${dataCell("Accounts", escapeHtml(row.accounts.join(", ")))}
         ${dataCell("Lots", fmtNum(row.lots, 2), { align: "right" })}
+        ${/* Notional traded in USD millions, already on the row as
+              millionsUsd (the backend's clientMillionsUsd). Beside Lots, and
+              ahead of the money columns, because it sizes the flow rather
+              than the earnings. The unit is in the label, not the value:
+              dataCell repeats the label inside every cell, so a phone reader
+              sees "NOTIONAL (M USD)" directly above the figure and a "M"
+              suffix would only widen a nowrap numeric cell. Bare digits also
+              keep it from being misread as the dollars its neighbours are. */ ""}
+        ${dataCell("Notional (M USD)", fmtNum(row.millionsUsd, 2), { align: "right" })}
         ${dataCell("Markup", money(row.markup), { align: "right" })}
         ${dataCell("Client Comm", money(row.clientComm), { align: "right" })}
         ${dataCell("LP Comm", money(row.lpComm), { align: "right" })}
@@ -1158,19 +1171,33 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                   )
               : `<table class="kpis" role="presentation">
             <tr>
-              <td class="kpi clients" width="25%">
+              <td class="kpi clients" width="20%">
                 <p class="kpi-label">Active Clients</p>
                 <p class="kpi-value">${fmtNum(rows.length, 0)}</p>
               </td>
-              <td class="kpi lots" width="25%">
+              <td class="kpi lots" width="20%">
                 <p class="kpi-label">Total Lots (deals)</p>
                 <p class="kpi-value">${fmtNum(totals.lots, 2)}</p>
               </td>
-              <td class="kpi gross" width="25%">
+              ${/* Notional sits next to lots: the same flow in the other unit,
+                    and the one LP commission is charged against. It is in THIS
+                    deck and not in the revenueStats deck above because every
+                    tile here is already a row-derived sum of the table below,
+                    so one more is consistent. The revenueStats deck is
+                    whole-run by contract -- see the note in
+                    sendDealMatchReport about the email's KPIs once being row
+                    sums -- and the backend publishes no whole-run notional
+                    scalar, so a tile there could only be this same row sum
+                    under a whole-run label. */ ""}
+              <td class="kpi lots" width="20%">
+                <p class="kpi-label">Notional (M USD)</p>
+                <p class="kpi-value">${fmtNum(totals.millionsUsd, 2)}</p>
+              </td>
+              <td class="kpi gross" width="20%">
                 <p class="kpi-label">Total Revenue</p>
                 <p class="kpi-value">${money(totals.totalRev)}</p>
               </td>
-              <td class="kpi net" width="25%">
+              <td class="kpi net" width="20%">
                 <p class="kpi-label">Net Revenue</p>
                 <p class="kpi-value">${money(totals.netRev)}</p>
               </td>
@@ -1256,15 +1283,16 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
           <table class="data">
             <thead>
               <tr>
-                <th width="22%">Client</th>
-                <th width="14%">Accounts</th>
-                <th width="8%">Lots</th>
-                <th width="9%">Markup</th>
-                <th width="10%">Client Comm</th>
-                <th width="8%">LP Comm</th>
-                <th width="9%">Total Rev</th>
+                <th width="19%">Client</th>
+                <th width="13%">Accounts</th>
+                <th width="7%">Lots</th>
+                <th width="10%">Notional (M USD)</th>
+                <th width="8%">Markup</th>
+                <th width="9%">Client Comm</th>
+                <th width="7%">LP Comm</th>
+                <th width="8%">Total Rev</th>
                 <th width="10%">Rebate Withdrawn</th>
-                <th width="10%">Net Revenue</th>
+                <th width="9%">Net Revenue</th>
               </tr>
             </thead>
             <tbody>
@@ -1275,6 +1303,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                       broken. Naming the scope is what makes both honest. */ ""}
                 ${spanCell("TOTAL (listed clients)", { colspan: 2 })}
                 ${dataCell("Lots", fmtNum(totals.lots, 2), { align: "right" })}
+                ${dataCell("Notional (M USD)", fmtNum(totals.millionsUsd, 2), { align: "right" })}
                 ${dataCell("Markup", money(totals.markup), { align: "right", cls: "money-pos" })}
                 ${dataCell("Client Comm", money(totals.clientComm), { align: "right", cls: "money-pos" })}
                 ${dataCell("LP Comm", money(totals.lpComm), { align: "right", cls: "money-cost" })}
@@ -1282,7 +1311,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 ${dataCell("Rebate Withdrawn", money(totals.rebateWithdrawn), { align: "right", cls: "money-cost" })}
                 ${dataCell("Net Revenue", money(totals.netRev), { align: "right", cls: totals.netRev < 0 ? "money-neg" : "money-pos" })}
               </tr>
-              ${bodyRows || `<tr>${spanCell(`No rows with Lots &gt; 0 for this ${periodNoun}.`, { colspan: 9, align: "center" })}</tr>`}
+              ${bodyRows || `<tr>${spanCell(`No rows with Lots &gt; 0 for this ${periodNoun}.`, { colspan: 10, align: "center" })}</tr>`}
             </tbody>
           </table>
           </div>
