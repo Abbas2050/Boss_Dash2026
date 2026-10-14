@@ -10,13 +10,14 @@ import {
   INSERT_COLUMNS,
   buildInsertParams,
   initCrmSignupStore,
-  findExistingFbc,
+  findExistingClickIds,
   insertSignupEvent,
   UNSTORABLE_KEY_CODE,
   claimDueEvents,
   updateMetaStatus,
   updateWhatsappStatus,
   updateBrevoStatus,
+  updateOpenaiStatus,
   listEventsSince,
   countEventsSince,
   latestEventReceivedAt,
@@ -36,6 +37,10 @@ import {
 // ("this row is safe to forget"); the backstop's settle statements are built
 // from SETTLED ("do not attempt this action again").
 import { SETTLED_STATUSES, SCRUBBABLE_STATUSES, REQUEUEABLE_STATUSES } from "./settled.js";
+// OpenAI's window, imported for the same reason the statements import it: the
+// resend's promise and the send's own skip decision have to be one rule, and a
+// test that restated the bound here would agree with a drifted statement.
+import { OPENAI_MAX_EVENT_AGE_MS, OPENAI_MAX_EVENT_SKEW_MS } from "./openai.js";
 // Imported for the one case that walks the whole leak path: Brevo's own 400,
 // through its own classifier, into the column.
 import { classifyBrevoOutcome } from "./brevo.js";
@@ -194,10 +199,11 @@ describe("insertSignupEvent", () => {
     await insertSignupEvent(FIELDS, {}, "{}", "missing required fields: email");
     expect(db.state.calls).toHaveLength(1);
     const { params } = db.state.calls[0];
-    for (const action of ["meta", "whatsapp", "brevo"]) {
+    for (const action of DESTINATIONS) {
       expect(at(params, `${action}_status`), action).toBe("invalid");
     }
     expect(at(params, "brevo_detail")).toBe("missing required fields: email");
+    expect(at(params, "openai_detail")).toBe("missing required fields: email");
   });
 
   it("names the columns in INSERT_COLUMNS order, with one placeholder and one parameter for each", async () => {
@@ -260,38 +266,83 @@ describe("insertSignupEvent", () => {
   });
 });
 
-describe("findExistingFbc", () => {
-  it("takes the earliest click on file, breaking a one-second tie by id", async () => {
-    db.state.respond = () => [[{ fbc: "fb.1.1.EARLIEST" }]];
-    expect(await findExistingFbc(88214)).toBe("fb.1.1.EARLIEST");
+describe("findExistingClickIds", () => {
+  it("takes the earliest click of each kind on file, breaking a one-second tie by id", async () => {
+    db.state.respond = () => [[{ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" });
     const { sql, params } = db.state.calls[0];
-    expect(sql).toMatch(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/);
-    expect(params).toEqual(["88214"]);
+    expect(sql.match(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/g)).toHaveLength(2);
+    expect(params).toEqual(["88214", "88214"]);
   });
 
-  it("returns empty when no click is on file, and never queries for the word undefined", async () => {
+  it("asks for each column in its own subquery, because the two need not sit on one row", async () => {
+    // A client can reach the funnel from a Meta click and come back through a
+    // ChatGPT one (or the other way round), so the earliest row carrying an
+    // `fbclid` need not be the row carrying an `oppref`. "The first non-empty
+    // value stored for this client" is a question per column; one row's two
+    // columns would answer a different question and silently drop whichever
+    // identifier was not on that row.
+    db.state.respond = () => [[{ fbc: "", oppref: "" }]];
+    await findExistingClickIds(88214);
+    const { sql } = db.state.calls[0];
+    expect(sql).toMatch(/\(SELECT fbc FROM signup_events[\s\S]*fbc IS NOT NULL AND fbc <> ''/);
+    expect(sql).toMatch(/\(SELECT oppref FROM signup_events[\s\S]*oppref IS NOT NULL AND oppref <> ''/);
+  });
+
+  it("is one statement, so the webhook that is answering FXBO makes one round trip", async () => {
+    db.state.respond = () => [[{ fbc: null, oppref: null }]];
+    await findExistingClickIds(88214);
+    expect(db.state.calls).toHaveLength(1);
+  });
+
+  it("returns empty strings when no click is on file, and never queries for the word undefined", async () => {
+    // Both NULLs is the common case: most signups are organic.
+    db.state.respond = () => [[{ fbc: null, oppref: null }]];
+    expect(await findExistingClickIds(undefined)).toEqual({ fbc: "", oppref: "" });
+    expect(db.state.calls[0].params).toEqual(["", ""]);
+  });
+
+  it("returns empty strings for an empty result set as well as for NULLs", async () => {
     db.state.respond = () => [[]];
-    expect(await findExistingFbc(undefined)).toBe("");
-    expect(db.state.calls[0].params).toEqual([""]);
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "" });
+  });
+
+  it("hands back one id when only the other is on file", async () => {
+    db.state.respond = () => [[{ fbc: null, oppref: "oppref-ONLY" }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "oppref-ONLY" });
   });
 });
 
 describe("claimDueEvents", () => {
-  it("selects due rows by three independent clauses, each on its own status and clock", async () => {
+  it("selects due rows by one independent clause per destination, each on its own status and clock", async () => {
+    // **A destination missing from here never sends at all, and says nothing.**
+    // No row is ever claimed for it, so no step ever runs, so no status is ever
+    // written: the column reads `pending` for ever and the only sign is a
+    // counter nobody has reason to look at yet. Each clause is pinned on its own
+    // because each has its own two columns.
     db.state.respond = () => [[]];
     const now = new Date("2026-10-13T10:00:00Z");
     await claimDueEvents(25, now);
     const { sql, params } = db.state.calls[0];
-    expect(sql).toMatch(
-      /meta_status\s+IN \('pending','retrying'\)\s+AND \(meta_next_attempt_at\s+IS NULL\s+OR meta_next_attempt_at\s+<= \?\)/
-    );
-    expect(sql).toMatch(
-      /whatsapp_status\s+IN \('pending','retrying'\)\s+AND \(whatsapp_next_attempt_at\s+IS NULL\s+OR whatsapp_next_attempt_at\s+<= \?\)/
-    );
-    expect(sql).toMatch(
-      /brevo_status\s+IN \('pending','retrying'\)\s+AND \(brevo_next_attempt_at\s+IS NULL\s+OR brevo_next_attempt_at\s+<= \?\)/
-    );
-    expect(params).toEqual([now, now, now, 25]);
+    for (const action of DESTINATIONS) {
+      expect(sql, action).toMatch(
+        new RegExp(
+          `${action}_status\\s+IN \\('pending','retrying'\\)\\s+AND \\(${action}_next_attempt_at\\s+IS NULL\\s+OR ${action}_next_attempt_at\\s+<= \\?\\)`
+        )
+      );
+    }
+    // One clock bound per destination, then the limit. A clause added without
+    // its parameter would silently read the next destination's clock.
+    expect(params).toEqual([...DESTINATIONS.map(() => now), 25]);
+  });
+
+  it("names openai among them, so ChatGPT Ads is claimed rather than silently never sent", async () => {
+    // The literal, not only the list: dropping `openai` from DESTINATIONS and
+    // from the statement together would otherwise agree with itself.
+    db.state.respond = () => [[]];
+    await claimDueEvents(25, new Date("2026-10-13T10:00:00Z"));
+    expect(DESTINATIONS).toContain("openai");
+    expect(db.state.calls[0].sql).toContain("openai_status   IN ('pending','retrying')");
   });
 
   it("defaults a zero limit to 25", async () => {
@@ -301,7 +352,7 @@ describe("claimDueEvents", () => {
   });
 });
 
-describe("the three action writers", () => {
+describe("the four action writers", () => {
   const next = new Date("2026-10-13T11:00:00Z");
 
   it("updateMetaStatus writes only the meta columns", async () => {
@@ -334,6 +385,19 @@ describe("the three action writers", () => {
     expect(params).toEqual(["sent", null, 0, null, 7]);
   });
 
+  it("updateOpenaiStatus writes only the openai columns", async () => {
+    await updateOpenaiStatus(7, { status: "sent", detail: "http 200", attempts: 1, nextAttemptAt: null });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /SET openai_status = \?, openai_detail = \?, openai_attempts = \?, openai_next_attempt_at = \?\s+WHERE id = \?/
+    );
+    expect(sql).not.toMatch(/meta_|whatsapp|brevo/);
+    // And never the frozen click id: `oppref` is written once, at insert, and a
+    // send has nothing to add to it.
+    expect(sql).not.toMatch(/oppref/);
+    expect(params).toEqual(["sent", "http 200", 1, null, 7]);
+  });
+
   it("updateMetaStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
     await updateMetaStatus(7, { status: "retrying" });
     expect(db.state.calls[0].params).toEqual(["retrying", null, 0, null, 7]);
@@ -350,6 +414,11 @@ describe("the three action writers", () => {
 
   it("updateBrevoStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
     await updateBrevoStatus(7, { status: "failed" });
+    expect(db.state.calls[0].params).toEqual(["failed", null, 0, null, 7]);
+  });
+
+  it("updateOpenaiStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
+    await updateOpenaiStatus(7, { status: "failed" });
     expect(db.state.calls[0].params).toEqual(["failed", null, 0, null, 7]);
   });
 
@@ -374,6 +443,7 @@ describe("a detail is masked on the way into its column", () => {
     ["meta", updateMetaStatus, 1],
     ["whatsapp", updateWhatsappStatus, 2],
     ["brevo", updateBrevoStatus, 1],
+    ["openai", updateOpenaiStatus, 1],
   ];
 
   for (const [action, write, detailAt] of WRITERS) {
@@ -440,6 +510,7 @@ describe("a claiming write", () => {
     ["meta", updateMetaStatus],
     ["whatsapp", updateWhatsappStatus],
     ["brevo", updateBrevoStatus],
+    ["openai", updateOpenaiStatus],
   ];
 
   for (const [action, write] of WRITERS) {
@@ -587,7 +658,7 @@ describe("scrubSignupEvent", () => {
     expect(await scrubSignupEvent(7, SCRUBBED)).toBe(0);
   });
 
-  it("asks the row itself whether all three are scrubbable, rather than trusting the caller", async () => {
+  it("asks the row itself whether every destination is scrubbable, rather than trusting the caller", async () => {
     // The worker decides whether to TRY from its own in-memory copy of the row,
     // and an overlapped IIS recycle gives two workers a copy each with one claim
     // in it -- so neither copy ever shows all three settled. Decided from the copy
@@ -597,7 +668,7 @@ describe("scrubSignupEvent", () => {
     // the row read is the one the table holds.
     await scrubSignupEvent(7, SCRUBBED);
     const { sql, params } = db.state.calls[0];
-    for (const action of ["meta", "whatsapp", "brevo"]) {
+    for (const action of DESTINATIONS) {
         expect(sql, action).toContain(`AND ${action}_status IN ('sent','skipped')`);
     }
     // Unlike a claiming write there is no claim moment to bind: this takes
@@ -613,10 +684,23 @@ describe("scrubSignupEvent", () => {
     // nothing anywhere saying so.
     await scrubSignupEvent(7, SCRUBBED);
     const { sql } = db.state.calls[0];
-    for (const action of ["meta", "whatsapp", "brevo"]) {
+    for (const action of DESTINATIONS) {
       const list = sql.split(`${action}_status IN (`)[1].split(")")[0].split(",");
       expect(list, action).toEqual(SCRUBBABLE_STATUSES.map((status) => `'${status}'`));
     }
+  });
+
+  it("requires openai too, so no row is scrubbed while ChatGPT Ads is still pending", async () => {
+    // **The failure this one exists for destroys data for ever.** The OpenAI
+    // send reads the email and the phone off the row; a precondition missing it
+    // scrubs the row the moment the other three settle -- about a minute after
+    // signup -- while `openai_status` is still `pending`. The row is then
+    // claimed on every sweep, refused by the send guard, and the conversion can
+    // never be sent by anything. The literal is named here as well as the list
+    // because dropping it from both at once would agree with itself.
+    await scrubSignupEvent(7, SCRUBBED);
+    expect(DESTINATIONS).toContain("openai");
+    expect(db.state.calls[0].sql).toContain("AND openai_status IN ('sent','skipped')");
   });
 
   it("keeps a row whose send failed, refused or was never valid: scrubbing it is what destroyed the resend", async () => {
@@ -648,33 +732,43 @@ describe("scrubSignupEvent", () => {
 });
 
 describe("deleteInvalidSignupEvents", () => {
-  it("deletes only rows where all three statuses are invalid, past the cutoff", async () => {
+  it("deletes only rows where every status is invalid, past the cutoff", async () => {
     const before = new Date("2026-10-07T12:00:00Z");
     const removed = await deleteInvalidSignupEvents(before);
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(
-      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND received_at < \?\s*$/
+      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND openai_status = 'invalid'\s+AND received_at < \?\s*$/
     );
     expect(params).toEqual([before]);
     expect(removed).toBe(1);
   });
 
-  it("requires all three statuses, so a row that sent anything is never deleted", async () => {
-    // `invalid` is written to all three in the insert itself, so all three is what
-    // identifies these rows. One `invalid` status beside two real ones is a
-    // different animal, and deleting it would destroy a record of a real send.
+  it("requires every destination's status, so a row that sent anything is never deleted", async () => {
+    // `invalid` is written to every destination in the insert itself, so all of
+    // them is what identifies these rows. One `invalid` status beside three real
+    // ones is a different animal, and deleting it would destroy a record of a
+    // real send.
+    //
+    // The other direction is why a destination may not be missing from here: the
+    // condition is a conjunction, so a destination named in the insert's invalid
+    // writes but absent from this statement is simply unchecked -- and one
+    // missing from the insert while named here can never be satisfied, so no
+    // invalid row would be deleted again and CUTOVER step 5's rows would pile up
+    // for ever with their raw_payload.
     const { sql } = (await deleteInvalidSignupEvents(new Date()), db.state.calls[0]);
     expect(sql).not.toMatch(/\bOR\b/);
-    for (const column of ["meta_status", "whatsapp_status", "brevo_status"]) {
-      expect(sql, column).toMatch(new RegExp(`${column} = 'invalid'`));
+    for (const action of DESTINATIONS) {
+      expect(sql, action).toMatch(new RegExp(`${action}_status = 'invalid'`));
     }
+    expect(DESTINATIONS).toContain("openai");
+    expect(sql).toContain("openai_status = 'invalid'");
   });
 });
 
 describe("scrubStaleSignupEvents", () => {
-  const ACTIONS = ["meta", "whatsapp", "brevo"];
-  // The pass is four statements: one per destination, settling what the scrub is
-  // about to make unsendable, and then the scrub itself as the last of them.
+  const ACTIONS = DESTINATIONS;
+  // The pass is one statement per destination, settling what the scrub is about
+  // to make unsendable, and then the scrub itself as the last of them.
   const scrubCall = () => db.state.calls.at(-1);
   const settleCall = (action) => db.state.calls.find(({ sql }) => sql.includes(`${action}_status = `));
 
@@ -751,10 +845,27 @@ describe("scrubStaleSignupEvents", () => {
     await scrubStaleSignupEvents(new Date(), new Date());
     for (const { sql } of db.state.calls) {
       const setList = sql.slice(0, sql.indexOf("WHERE"));
-      for (const [, action] of setList.matchAll(/(meta|whatsapp|brevo)_(?:status|detail) = /g)) {
+      const written = new RegExp(`(${DESTINATIONS.join("|")})_(?:status|detail) = `, "g");
+      for (const [, action] of setList.matchAll(written)) {
         expect(sql, action).toContain(`AND ${action}_status NOT IN ('sent','skipped','rejected','failed','invalid')`);
       }
     }
+  });
+
+  it("settles openai too, so a backstop-scrubbed row cannot read pending for ever", async () => {
+    // **The counter this protects is the only signal that the worker is dead.**
+    // The backstop takes the client data the OpenAI send needs, and the send
+    // guard then refuses the row for ever while nothing writes a status saying
+    // so: `openai_status` stays `pending` for the rest of the table's life, and
+    // one permanently stuck row makes "pending is piling up" unreadable. The
+    // literal and the list, for the usual reason.
+    const before = new Date("2026-09-14T12:00:00Z");
+    await scrubStaleSignupEvents(before, new Date("2026-10-14T12:00:00Z"));
+    expect(DESTINATIONS).toContain("openai");
+    const settled = settleCall("openai");
+    expect(settled, "no statement settles openai").toBeTruthy();
+    expect(settled.sql).toContain("SET openai_status = 'failed', openai_detail = ?");
+    expect(settled.params[1]).toEqual(before);
   });
 
   it("settles only what is still unsent, by the wide list, so a real refusal is never overwritten", async () => {
@@ -798,6 +909,14 @@ describe("scrubStaleSignupEvents", () => {
 });
 
 describe("requeueFailedSends", () => {
+  // The instant the resend is judged against, and the two edges of OpenAI's
+  // window as the statements must bind them. Built from the exported constants,
+  // never from a 7 typed here: a test carrying its own copy of the bound would
+  // agree with a statement that had drifted from the skip decision.
+  const RESEND_AT = new Date("2026-10-14T12:00:00Z");
+  const OLDEST_SENDABLE = new Date(RESEND_AT.getTime() - OPENAI_MAX_EVENT_AGE_MS);
+  const NEWEST_SENDABLE = new Date(RESEND_AT.getTime() + OPENAI_MAX_EVENT_SKEW_MS);
+
   it("puts one destination's failures back to pending, with the attempt count and the clock reset", async () => {
     // The three things the resend is: claimable again, a fresh budget, and due
     // now. Each is pinned on its own, because each has its own failure -- a
@@ -895,6 +1014,45 @@ describe("requeueFailedSends", () => {
     expect(sql).not.toMatch(/whatsapp_detail/);
   });
 
+  it("accepts openai, so a fixed key or pixel id can clear the ChatGPT Ads backlog", async () => {
+    db.state.respond = () => [{ affectedRows: 4 }];
+    expect(await requeueFailedSends("openai", RESEND_AT)).toBe(4);
+    const { sql } = db.state.calls[0];
+    expect(sql).toMatch(/SET openai_status = 'pending', openai_attempts = 0, openai_next_attempt_at = NULL/);
+    expect(sql).toMatch(/AND openai_status IN \('failed','rejected'\)/);
+  });
+
+  it("will not requeue an openai row OpenAI could no longer accept, by their own window", async () => {
+    // `timestamp_ms` comes from `received_at`, and OpenAI refuses anything
+    // outside the last 7 days. Re-stamping it with today's time is not available
+    // -- the row's whole purpose is to say when the conversion happened -- so
+    // such a row is unsendable whatever anybody fixes. Requeueing it would spend
+    // a claim to reach a step that can only skip it, and would replace the
+    // record of the real failure with a skip; it stays `failed`, holding the
+    // reason it failed for.
+    //
+    // The bounds are bound, not written into the SQL text: `received_at` is
+    // written by Node, so comparing it against the database's own NOW() would
+    // judge one clock's timestamps by another's.
+    await requeueFailedSends("openai", RESEND_AT);
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(/AND \(received_at >= \? AND received_at <= \?\)/);
+    expect(params).toEqual([OLDEST_SENDABLE, NEWEST_SENDABLE]);
+  });
+
+  it("leaves the other three statements with no window and nothing bound at all", async () => {
+    // Meta, WhatsApp and Brevo take an event of any age, so the window must not
+    // reach them: a Brevo failure from last month is still perfectly resendable
+    // once BREVO_LIST_ID is fixed, and a window here would quietly refuse it.
+    for (const action of DESTINATIONS.filter((a) => a !== "openai")) {
+      db.state.calls.length = 0;
+      await requeueFailedSends(action, RESEND_AT);
+      const { sql, params } = db.state.calls[0];
+      expect(sql, action).not.toMatch(/received_at/);
+      expect(params, action).toEqual([]);
+    }
+  });
+
   it("refuses an unknown destination before any statement runs, rather than building a column name from it", async () => {
     // The destination is interpolated into column names. The route 400s an
     // unknown one; this is the floor under that, for whatever calls the store
@@ -912,6 +1070,11 @@ describe("requeueFailedSends", () => {
 });
 
 describe("countResendableSends", () => {
+  const COUNTED_AT = new Date("2026-10-14T12:00:00Z");
+  const OLDEST_SENDABLE = new Date(COUNTED_AT.getTime() - OPENAI_MAX_EVENT_AGE_MS);
+  const NEWEST_SENDABLE = new Date(COUNTED_AT.getTime() + OPENAI_MAX_EVENT_SKEW_MS);
+  const WINDOW = "received_at >= ? AND received_at <= ?";
+
   const counts = (over = {}) => [
     [
       {
@@ -921,6 +1084,9 @@ describe("countResendableSends", () => {
         whatsapp_scrubbed: 4,
         brevo_resendable: 5,
         brevo_scrubbed: 6,
+        openai_resendable: 7,
+        openai_scrubbed: 8,
+        openai_expired: 9,
         ...over,
       },
     ],
@@ -928,44 +1094,85 @@ describe("countResendableSends", () => {
 
   it("counts, per destination, what the requeue would match and what it no longer can", async () => {
     // Every number different, so a column read into the wrong destination cannot
-    // hide behind an equal neighbour.
+    // hide behind an equal neighbour. `expired` is zero for the three
+    // destinations that have no window, and a real number for the one that does.
     db.state.respond = () => counts();
-    expect(await countResendableSends()).toEqual({
-      meta: { resendable: 1, scrubbed: 2 },
-      whatsapp: { resendable: 3, scrubbed: 4 },
-      brevo: { resendable: 5, scrubbed: 6 },
+    expect(await countResendableSends(COUNTED_AT)).toEqual({
+      meta: { resendable: 1, scrubbed: 2, expired: 0 },
+      whatsapp: { resendable: 3, scrubbed: 4, expired: 0 },
+      brevo: { resendable: 5, scrubbed: 6, expired: 0 },
+      openai: { resendable: 7, scrubbed: 8, expired: 9 },
     });
   });
 
-  it("asks for both halves in one statement, over the whole table and not a window", async () => {
-    // One statement, so the two numbers are one snapshot and add up: "12
-    // resendable, 28 already scrubbed" has to account for the 40 failures an
-    // operator can see on the destination card. And no `received_at` clause,
-    // because the resend is not windowed either -- the counters on the tab are,
-    // which is exactly why they cannot answer this.
+  it("asks for every half in one statement, over the whole table and not the tab's period", async () => {
+    // One statement, so the numbers are one snapshot and add up: "12 resendable,
+    // 28 already scrubbed" has to account for the 40 failures an operator can
+    // see on the destination card. And no period clause, because the resend is
+    // not scoped to a period either -- the counters on the tab are, which is
+    // exactly why they cannot answer this.
+    //
+    // The only `received_at` in it is OpenAI's own window, which is not a period
+    // at all but their refusal to accept an old event; the four parameters are
+    // its two edges, once for the resendable half and once for the expired one.
     db.state.respond = () => counts();
-    await countResendableSends();
+    await countResendableSends(COUNTED_AT);
     expect(db.state.calls).toHaveLength(1);
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(/FROM signup_events\s*$/);
-    expect(sql).not.toMatch(/received_at/);
-    expect(params).toEqual([]);
+    expect(sql.match(/received_at/g)).toHaveLength(4);
+    expect(params).toEqual([OLDEST_SENDABLE, NEWEST_SENDABLE, OLDEST_SENDABLE, NEWEST_SENDABLE]);
   });
 
   it("counts a scrubbed row as not resendable, by the same predicate the requeue uses", async () => {
     // A button that promises 40 and delivers 12 is worse than no button. The
     // resendable half must therefore read `scrubbed_at IS NULL`, exactly as the
-    // UPDATE does, and the scrubbed half is what explains the shortfall.
+    // UPDATE does, and the other two halves are what explain the shortfall.
     db.state.respond = () => counts();
-    await countResendableSends();
+    await countResendableSends(COUNTED_AT);
     const { sql } = db.state.calls[0];
     for (const action of DESTINATIONS) {
+      const window = action === "openai" ? ` AND (${WINDOW})` : "";
       expect(sql, action).toContain(
-        `COUNT(CASE WHEN ${action}_status IN ('failed','rejected') AND scrubbed_at IS NULL THEN 1 END) AS ${action}_resendable`
+        `COUNT(CASE WHEN ${action}_status IN ('failed','rejected') AND scrubbed_at IS NULL${window} THEN 1 END) AS ${action}_resendable`
       );
       expect(sql, action).toContain(
         `COUNT(CASE WHEN ${action}_status IN ('failed','rejected') AND scrubbed_at IS NOT NULL THEN 1 END) AS ${action}_scrubbed`
       );
+    }
+  });
+
+  it("never promises an openai row older than OpenAI's window, which no resend could send", async () => {
+    // **The failure this one exists for is a button offering forty and
+    // delivering none** (spec 7a). The count and the UPDATE are built from one
+    // clause, so the promise cannot drift from what the statement will match,
+    // and both are built from the constants decideOpenaiSkip tests against, so
+    // neither can drift from what the step will actually attempt.
+    db.state.respond = () => counts();
+    await countResendableSends(COUNTED_AT);
+    const { sql } = db.state.calls[0];
+    expect(sql).toContain(
+      `COUNT(CASE WHEN openai_status IN ('failed','rejected') AND scrubbed_at IS NULL AND (${WINDOW}) THEN 1 END) AS openai_resendable`
+    );
+  });
+
+  it("accounts for the shortfall the window causes, as a third number rather than a gap", async () => {
+    // Scrubbed is no longer the whole of why a failure cannot be resent, so a
+    // card showing 40 failures, 12 resendable and 2 scrubbed would leave 26
+    // unexplained. `expired` is exactly the complement of the resendable half
+    // within the unscrubbed failures, so the three add up to what the operator
+    // is looking at.
+    db.state.respond = () => counts();
+    await countResendableSends(COUNTED_AT);
+    const { sql } = db.state.calls[0];
+    expect(sql).toContain(
+      `COUNT(CASE WHEN openai_status IN ('failed','rejected') AND scrubbed_at IS NULL AND NOT (${WINDOW}) THEN 1 END) AS openai_expired`
+    );
+    // A literal zero for the destinations that cannot expire a failure, not a
+    // missing column: the card prints this number, and `undefined` prints as
+    // "undefined".
+    for (const action of DESTINATIONS.filter((a) => a !== "openai")) {
+      expect(sql, action).toContain(`0 AS ${action}_expired`);
     }
   });
 
@@ -985,13 +1192,14 @@ describe("countResendableSends", () => {
     // The page disables its control on a zero and prints the number beside it:
     // "0" is truthy and "12" is not a number.
     db.state.respond = () => counts({ meta_resendable: "7" });
-    expect((await countResendableSends()).meta).toEqual({ resendable: 7, scrubbed: 2 });
+    expect((await countResendableSends()).meta).toEqual({ resendable: 7, scrubbed: 2, expired: 0 });
 
     db.state.respond = () => [[]];
     expect(await countResendableSends()).toEqual({
-      meta: { resendable: 0, scrubbed: 0 },
-      whatsapp: { resendable: 0, scrubbed: 0 },
-      brevo: { resendable: 0, scrubbed: 0 },
+      meta: { resendable: 0, scrubbed: 0, expired: 0 },
+      whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
+      brevo: { resendable: 0, scrubbed: 0, expired: 0 },
+      openai: { resendable: 0, scrubbed: 0, expired: 0 },
     });
   });
 });

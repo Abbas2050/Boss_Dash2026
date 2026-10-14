@@ -69,7 +69,7 @@ describe("signup_events schema", () => {
     expect(SIGNUP_EVENTS_SCHEMA).not.toMatch(/UNIQUE KEY\s+\w+\s+\(crm_client_id\)/i);
   });
 
-  it("gives each of the three actions its own counter and clock", () => {
+  it("gives each of the four actions its own counter and clock", () => {
     for (const column of [
       "meta_attempts",
       "meta_next_attempt_at",
@@ -77,13 +77,36 @@ describe("signup_events schema", () => {
       "whatsapp_next_attempt_at",
       "brevo_attempts",
       "brevo_next_attempt_at",
+      "openai_attempts",
+      "openai_next_attempt_at",
     ]) {
       expect(SIGNUP_EVENTS_SCHEMA, column).toContain(column);
     }
   });
 
+  it("gives the fourth destination exactly the shape of the other three", () => {
+    // Not merely present: the same types and the same defaults. A status column
+    // that is nullable, or one without the 'pending' default, holds NULL on a row
+    // the claim and the scrub both read a word from -- and NULL is in no status
+    // list at all, so such a row is never claimed and never scrubbed.
+    expect(definitionOf("openai_status")).toBe(definitionOf("brevo_status").replace(/^brevo_/, "openai_"));
+    expect(definitionOf("openai_detail")).toBe(definitionOf("brevo_detail").replace(/^brevo_/, "openai_"));
+    expect(definitionOf("openai_attempts")).toBe(definitionOf("brevo_attempts").replace(/^brevo_/, "openai_"));
+    expect(definitionOf("openai_next_attempt_at")).toBe(
+      definitionOf("brevo_next_attempt_at").replace(/^brevo_/, "openai_")
+    );
+  });
+
   it("stores the click id, so it can be frozen across stages", () => {
     expect(SIGNUP_EVENTS_SCHEMA).toMatch(/\bfbc\b/);
+  });
+
+  it("stores OpenAI's click id too, in its own column, so it can be frozen the same way", () => {
+    // `oppref` arrives inside full_link, which is scrubbed about a minute after
+    // signup, and the first deposit is a different row weeks later whose own
+    // full_link is empty. OpenAI's Conversions API does not capture it, so this
+    // column is the only copy of the ad click there will ever be.
+    expect(definitionOf("oppref")).toBe("oppref VARCHAR(512) NULL");
   });
 
   it("stores the WhatsApp request id, so a retry cannot send a second welcome", () => {
@@ -120,8 +143,8 @@ describe("signup_events schema", () => {
     expect(ddlSegments()).toContain("KEY idx_signup_events_retention (scrubbed_at, received_at)");
   });
 
-  it("defaults all three action statuses to pending", () => {
-    for (const column of ["meta_status", "whatsapp_status", "brevo_status"]) {
+  it("defaults every action status to pending", () => {
+    for (const column of ["meta_status", "whatsapp_status", "brevo_status", "openai_status"]) {
       expect(SIGNUP_EVENTS_SCHEMA, column).toMatch(
         new RegExp(`${column}[^,]*DEFAULT 'pending'`, "i")
       );
@@ -167,9 +190,11 @@ describe("signup_events schema", () => {
     expect(segments).toContain("PRIMARY KEY (id)");
   });
 
-  it("pins the two frozen id columns to the widths their values need", () => {
-    // fbc is a Meta click id and needs room; the WhatsApp request id is a UUID.
+  it("pins the three frozen id columns to the widths their values need", () => {
+    // fbc is a Meta click id and needs room; oppref is opaque and passed to
+    // OpenAI unmodified, so it is given more; the WhatsApp request id is a UUID.
     expect(definitionOf("fbc")).toBe("fbc VARCHAR(255) NULL");
+    expect(definitionOf("oppref")).toBe("oppref VARCHAR(512) NULL");
     expect(definitionOf("whatsapp_request_id")).toBe("whatsapp_request_id VARCHAR(64) NULL");
   });
 });
@@ -198,11 +223,18 @@ describe("the scrub list", () => {
     ]);
   });
 
-  it("never scrubs the frozen click id", () => {
-    // fbc is captured at signup and reused weeks later for the first-deposit
-    // conversion. Scrubbing it would send every later conversion to Meta with no
-    // ad attached -- and Meta would accept all of them without complaint.
+  it("never scrubs either frozen click id", () => {
+    // Both are captured at signup and reused weeks later for the first-deposit
+    // conversion. Scrubbing one would send every later conversion to that
+    // platform with no ad attached -- and both platforms would accept all of
+    // them without complaint, which is the whole hazard: there is no error to
+    // notice, only a funnel that stops attributing.
+    //
+    // `oppref` has no second source at all. Meta's is rebuildable from a
+    // full_link in principle; OpenAI documents that their Conversions API does
+    // not capture theirs, and the deposit row's own full_link is empty.
     expect(SCRUB_COLUMNS).not.toContain("fbc");
+    expect(SCRUB_COLUMNS).not.toContain("oppref");
   });
 
   it("never scrubs the dedupe key", () => {
@@ -317,18 +349,24 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
   it("carries each frozen id in its own column", () => {
     const params = buildInsertParams(
       FIELDS,
-      { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
+      {
+        fbc: "fb.1.1673035686000.ABC",
+        oppref: "oppref-XYZ",
+        whatsappRequestId: "11111111-2222-4333-8444-555555555555",
+      },
       "{}"
     );
     expect(at(params, "fbc")).toBe("fb.1.1673035686000.ABC");
+    expect(at(params, "oppref")).toBe("oppref-XYZ");
     expect(at(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
   });
 
   it("writes NULL, not a string, when an id is absent", () => {
     // `String(undefined)` would write the literal text "undefined", which
-    // findExistingFbc would later hand back as a perfectly good click id.
+    // findExistingClickIds would later hand back as a perfectly good click id.
     const params = buildInsertParams(FIELDS, {}, "{}");
     expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "oppref")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
@@ -349,7 +387,11 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
     // moves a value and fails a line.
     const params = buildInsertParams(
       FIELDS,
-      { fbc: "fb.1.1673035686000.ABC", whatsappRequestId: "11111111-2222-4333-8444-555555555555" },
+      {
+        fbc: "fb.1.1673035686000.ABC",
+        oppref: "oppref-XYZ",
+        whatsappRequestId: "11111111-2222-4333-8444-555555555555",
+      },
       "{}",
       null,
       RECEIVED
@@ -376,6 +418,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       referer: "https://skylinkscapital.com/en/",
       full_link: "https://skylinkscapital.com/en/?fbclid=ABC",
       fbc: "fb.1.1673035686000.ABC",
+      oppref: "oppref-XYZ",
       whatsapp_request_id: "11111111-2222-4333-8444-555555555555",
       meta_status: "pending",
       meta_detail: null,
@@ -383,6 +426,8 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       whatsapp_detail: null,
       brevo_status: "pending",
       brevo_detail: null,
+      openai_status: "pending",
+      openai_detail: null,
       received_at: RECEIVED,
       raw_payload: "{}",
     };
@@ -396,8 +441,9 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
   it("writes NULL for an empty id too, not only for an absent one", () => {
     // deriveFbc returns "" for every lead that carried no Meta click, so an
     // empty string is the common case here, not an edge case.
-    const params = buildInsertParams(FIELDS, { fbc: "", whatsappRequestId: "" }, "{}");
+    const params = buildInsertParams(FIELDS, { fbc: "", oppref: "", whatsappRequestId: "" }, "{}");
     expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "oppref")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
@@ -461,8 +507,9 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
   });
 
   it("writes NULL for a null click id or request id, not the word null", () => {
-    const params = buildInsertParams(FIELDS, { fbc: null, whatsappRequestId: null }, "{}");
+    const params = buildInsertParams(FIELDS, { fbc: null, oppref: null, whatsappRequestId: null }, "{}");
     expect(at(params, "fbc")).toBeNull();
+    expect(at(params, "oppref")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
@@ -493,6 +540,32 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
 
   });
 
+  // oppref is never cut either, and for the same reason: OpenAI passes it through
+  // unmodified, so a cut value is a different click id that matches nothing.
+  describe("oppref at its width boundary", () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps a click id of exactly its column width, with no warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const oppref = "o".repeat(512);
+      const params = buildInsertParams(FIELDS, { oppref }, "{}");
+      expect(at(params, "oppref")).toBe(oppref);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("writes NULL, and warns with the column and length, for a click id one over", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const params = buildInsertParams(FIELDS, { oppref: "o".repeat(513) }, "{}");
+      expect(at(params, "oppref")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(1);
+      const message = String(warn.mock.calls[0][0]);
+      expect(message).toMatch(/\boppref\b/);
+      expect(message).toMatch(/\b513\b/);
+      // The event is kept: losing attribution is recoverable, losing the signup is not.
+      expect(at(params, "crm_client_id")).toBe("88214");
+    });
+  });
+
   // whatsapp_request_id is cut, not NULLed. The worker reads it back from the row on
   // every attempt, so a NULL would mint a fresh id per attempt: the second welcome the
   // column exists to prevent. A cut value is replayed verbatim, so the freeze holds.
@@ -516,9 +589,12 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
     });
   });
 
-  it("writes all three actions as invalid, with the reason, when given one", () => {
+  it("writes every action as invalid, with the reason, when given one", () => {
+    // Every one of them, because the 7-day delete asks for all four at once: a
+    // destination left `pending` here would make that condition unsatisfiable
+    // and no invalid row would ever be deleted again.
     const params = buildInsertParams(FIELDS, {}, "{}", "missing required fields: email");
-    for (const action of ["meta", "whatsapp", "brevo"]) {
+    for (const action of ["meta", "whatsapp", "brevo", "openai"]) {
       expect(at(params, `${action}_status`), action).toBe("invalid");
       expect(at(params, `${action}_detail`), action).toBe("missing required fields: email");
     }

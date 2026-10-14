@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { normaliseEvent, maskEmail } from "./normalise.js";
-import { deriveFbc } from "./clickId.js";
+import { deriveFbc, extractOppref } from "./clickId.js";
 import { UNSTORABLE_KEY_CODE } from "./store.js";
 import {
   detectUnsubstitutedPlaceholder,
@@ -76,7 +76,7 @@ export function readCrmWebhookSecret(env = process.env) {
  */
 export function makeCrmEventsHandler({
   secret,
-  findFbc,
+  findClickIds,
   insert,
   onStored = () => {},
   normalise = normaliseEvent,
@@ -142,23 +142,34 @@ export function makeCrmEventsHandler({
     const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
 
     try {
-      // Frozen: assembled once, at the first stage whose full_link carries an
-      // fbclid, then reused verbatim. An earlier stage without one stores
-      // nothing, so the freeze starts at the first stage that has a click.
-      // Recomputing per stage gives Meta a different click identity for the
-      // same person at each step.
+      // Both click ids are frozen the same way: captured once, at the first
+      // stage whose full_link carried one, then reused verbatim. An earlier
+      // stage without one stores nothing, so the freeze starts at the first
+      // stage that has a click. Recomputing per stage gives the platform a
+      // different click identity for the same person at each step -- and by the
+      // first deposit, weeks later, there is nothing to recompute from: that row
+      // has its own full_link, normally empty, and this one's was scrubbed a
+      // minute after it arrived.
+      //
+      // `oppref` is OpenAI's, and it is taken raw: no `fb.1.<ms>.` wrapper and no
+      // timestamp, so the value itself is the whole of what is frozen.
       let fbc = "";
+      let oppref = "";
       try {
-        fbc = (await findFbc(fields.crmClientId)) || deriveFbc(fields.fullLink, now().getTime());
+        const frozen = await findClickIds(fields.crmClientId);
+        fbc = String(frozen?.fbc ?? "") || deriveFbc(fields.fullLink, now().getTime());
+        oppref = String(frozen?.oppref ?? "") || extractOppref(fields.fullLink);
       } catch (error) {
-        // Empty, NOT derived. When the lookup fails we cannot know whether a
-        // frozen id already exists, and deriving one here would stamp this stage
-        // with a fresh timestamp: a different click identity for the same person.
-        // A missing matcher is recoverable (Meta falls back to the hashed email
-        // and phone, and a later event still picks up the frozen value from an
-        // earlier row); an inconsistent one is silently wrong.
+        // Both empty, NEITHER derived. When the lookup fails we cannot know
+        // whether a frozen id already exists, and deriving one here would claim a
+        // click identity this row cannot check: for `fbc` a fresh timestamp, and
+        // for `oppref` this visit's click where the client's first one is what is
+        // frozen. A missing identifier is recoverable (both platforms fall back to
+        // the hashed email and phone, and a later event still picks the frozen
+        // value up from an earlier row); an inconsistent one is silently wrong.
         logger.error?.(`[crm-events] click id lookup failed: ${error?.message || String(error)}`);
         fbc = "";
+        oppref = "";
       }
 
       // Generated once, here, and reused on every send attempt. A send times
@@ -166,7 +177,7 @@ export function makeCrmEventsHandler({
       // delivered, so a retry carrying a fresh id would be a second welcome.
       const { inserted } = await insert(
         fields,
-        { fbc, whatsappRequestId: newRequestId() },
+        { fbc, oppref, whatsappRequestId: newRequestId() },
         req?.body,
         invalidReason
       );

@@ -20,7 +20,7 @@ import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
 import { makeCrmEventsRequeueHandler } from "./crmSignup/requeueRoute.js";
-import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends } from "./crmSignup/store.js";
+import { initCrmSignupStore, findExistingClickIds, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 // The one test for a usable BREVO_LIST_ID, so the boot-time warning below and the
 // send-time gate cannot come to disagree about what "usable" means.
@@ -1316,7 +1316,7 @@ app.use("/api/docusign", docusignRouter);
 const CRM_WEBHOOK_SECRET = readCrmWebhookSecret(process.env);
 app.post('/api/crm-events', makeCrmEventsHandler({
   secret: CRM_WEBHOOK_SECRET,
-  findFbc: findExistingFbc,
+  findClickIds: findExistingClickIds,
   insert: insertSignupEvent,
   onStored: kickCrmEventsWorker,
 }));

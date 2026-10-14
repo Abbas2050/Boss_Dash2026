@@ -1,6 +1,9 @@
 import mysql from "mysql2/promise";
 import { maskEmail, maskPhone } from "./normalise.js";
 import { SETTLED_STATUSES, SCRUBBABLE_STATUSES, REQUEUEABLE_STATUSES } from "./settled.js";
+// OpenAI's own bound on how old an event may be, imported so that the resend's
+// promise and the send's own skip decision are the same rule (see sendableWindow).
+import { OPENAI_MAX_EVENT_AGE_MS, OPENAI_MAX_EVENT_SKEW_MS } from "./openai.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -42,6 +45,7 @@ export const SIGNUP_EVENTS_SCHEMA = `
     referer VARCHAR(512) NULL,
     full_link VARCHAR(1024) NULL,
     fbc VARCHAR(255) NULL,
+    oppref VARCHAR(512) NULL,
     whatsapp_request_id VARCHAR(64) NULL,
     meta_status VARCHAR(16) NOT NULL DEFAULT 'pending',
     meta_detail TEXT NULL,
@@ -56,6 +60,10 @@ export const SIGNUP_EVENTS_SCHEMA = `
     brevo_detail TEXT NULL,
     brevo_attempts INT NOT NULL DEFAULT 0,
     brevo_next_attempt_at DATETIME NULL,
+    openai_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    openai_detail TEXT NULL,
+    openai_attempts INT NOT NULL DEFAULT 0,
+    openai_next_attempt_at DATETIME NULL,
     raw_payload LONGTEXT NULL,
     received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -91,6 +99,20 @@ const RETENTION_INDEX = "idx_signup_events_retention";
 export const SIGNUP_EVENTS_ADDED_COLUMNS = [
   ["is_lead_raw", `ALTER TABLE signup_events ADD COLUMN is_lead_raw VARCHAR(32) NULL`],
   ["scrubbed_at", `ALTER TABLE signup_events ADD COLUMN scrubbed_at DATETIME NULL`],
+  // The ChatGPT Ads destination, added 2026-10-14. `oppref` is OpenAI's click
+  // identifier and the four after it are the fourth destination's own statistics,
+  // in the same shape and with the same defaults as the other three -- the
+  // default matters most: a table altered without it would hold NULL where the
+  // claim and the scrub both read a word, and a NULL is in no status list at all,
+  // so such a row would never be claimed and never be scrubbed.
+  ["oppref", `ALTER TABLE signup_events ADD COLUMN oppref VARCHAR(512) NULL`],
+  [
+    "openai_status",
+    `ALTER TABLE signup_events ADD COLUMN openai_status VARCHAR(16) NOT NULL DEFAULT 'pending'`,
+  ],
+  ["openai_detail", `ALTER TABLE signup_events ADD COLUMN openai_detail TEXT NULL`],
+  ["openai_attempts", `ALTER TABLE signup_events ADD COLUMN openai_attempts INT NOT NULL DEFAULT 0`],
+  ["openai_next_attempt_at", `ALTER TABLE signup_events ADD COLUMN openai_next_attempt_at DATETIME NULL`],
 ];
 
 /** Exported so a test can pin each parameter to its column by name rather
@@ -118,6 +140,7 @@ export const INSERT_COLUMNS = [
   "referer",
   "full_link",
   "fbc",
+  "oppref",
   "whatsapp_request_id",
   "meta_status",
   "meta_detail",
@@ -125,6 +148,8 @@ export const INSERT_COLUMNS = [
   "whatsapp_detail",
   "brevo_status",
   "brevo_detail",
+  "openai_status",
+  "openai_detail",
   "received_at",
   "raw_payload",
 ];
@@ -218,7 +243,14 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     str(fields.referer, "referer"),
     str(fields.fullLink, "full_link"),
     identifier(derived.fbc, "fbc"),
+    // Never cut, for exactly the reason fbc is not: a cut click id is a wrong
+    // click id, and OpenAI would accept every conversion carrying it and match
+    // none of them. Unlike fbc there is no wrapper around it, so the raw value is
+    // the whole of what is frozen here.
+    identifier(derived.oppref, "oppref"),
     str(derived.whatsappRequestId, "whatsapp_request_id"),
+    status,
+    detail,
     status,
     detail,
     status,
@@ -296,23 +328,47 @@ async function addWhatIsMissing() {
 }
 
 /**
- * The click id this client already has, if any.
+ * The click ids this client already has, if any: Meta's `fbc` and OpenAI's
+ * `oppref`.
  *
- * This is what freezes it. The fbc is assembled once, at the first stage whose
- * full_link carries an fbclid -- a stage that arrives earlier without one
- * stores nothing here -- and every later stage reuses the exact string.
- * Recomputing it would give Meta a different click identity for the same person
- * at each step, with no error anywhere.
+ * This is what freezes them. Each is captured once, at the first stage whose
+ * full_link carried it -- a stage that arrived earlier without one stores
+ * nothing -- and every later stage reuses the exact string. Recomputing per
+ * stage would give the platform a different click identity for the same person
+ * at each step, with no error anywhere; and `full_link` is scrubbed about a
+ * minute after signup, so by the first deposit there is nothing left to parse
+ * (the deposit is a different row, arriving weeks later, whose own full_link is
+ * normally empty because that visit is not an ad click).
+ *
+ * **Two scalar subqueries, not two columns off one row, and not two round
+ * trips.** The earliest row carrying an `fbclid` need not be the one carrying an
+ * `oppref`: a client can click a Meta ad, come back through a ChatGPT ad, and
+ * reach the funnel on either. "The first non-empty value stored for this client"
+ * is therefore a question per column, which is what each subquery asks. It is
+ * still one statement and one round trip, because the webhook answers FXBO
+ * inside this request.
  */
-export async function findExistingFbc(crmClientId) {
+export async function findExistingClickIds(crmClientId) {
+  const id = String(crmClientId ?? "");
   const rows = await all(
-    `SELECT fbc FROM signup_events
-      WHERE crm_client_id = ? AND fbc IS NOT NULL AND fbc <> ''
-      ORDER BY received_at ASC, id ASC
-      LIMIT 1`,
-    [String(crmClientId ?? "")]
+    `SELECT
+       (SELECT fbc FROM signup_events
+          WHERE crm_client_id = ? AND fbc IS NOT NULL AND fbc <> ''
+          ORDER BY received_at ASC, id ASC
+          LIMIT 1) AS fbc,
+       (SELECT oppref FROM signup_events
+          WHERE crm_client_id = ? AND oppref IS NOT NULL AND oppref <> ''
+          ORDER BY received_at ASC, id ASC
+          LIMIT 1) AS oppref`,
+    [id, id]
   );
-  return rows.length ? String(rows[0].fbc) : "";
+  // A client with neither gets one row of two NULLs, which is the common case:
+  // most signups are organic and carry no click at all.
+  const frozen = rows[0] ?? {};
+  return {
+    fbc: frozen.fbc ? String(frozen.fbc) : "",
+    oppref: frozen.oppref ? String(frozen.oppref) : "",
+  };
 }
 
 /**
@@ -361,7 +417,7 @@ function refuseOverWidthDedupeKey(fields) {
  * `affectedRows === 1` would be true for a duplicate too. The error code does not
  * depend on any connection setting.
  *
- * Pass `invalidReason` and all three actions are stored as `invalid` in this same
+ * Pass `invalidReason` and every destination is stored as `invalid` in this same
  * statement. There is no window in which a sweeper could send the payload, which
  * matters for an FXBO test press.
  */
@@ -385,7 +441,7 @@ export async function insertSignupEvent(fields, derived, rawPayload, invalidReas
  * The rows that look due for an action. This takes no lock: it is a plain
  * SELECT, and two concurrent callers do receive the same rows.
  *
- * That is safe because the claim is one statement later, in the three writers
+ * That is safe because the claim is one statement later, in the four writers
  * below: a sweeper sends only after its own pre-send UPDATE has reported that
  * it, and not the other one, moved the row. IIS overlapped app-pool recycling
  * briefly runs two Node workers, each with its own in-process `sweeping` flag,
@@ -399,9 +455,10 @@ export async function claimDueEvents(limit = 25, now = new Date()) {
       WHERE (meta_status     IN ('pending','retrying') AND (meta_next_attempt_at     IS NULL OR meta_next_attempt_at     <= ?))
          OR (whatsapp_status IN ('pending','retrying') AND (whatsapp_next_attempt_at IS NULL OR whatsapp_next_attempt_at <= ?))
          OR (brevo_status    IN ('pending','retrying') AND (brevo_next_attempt_at    IS NULL OR brevo_next_attempt_at    <= ?))
+         OR (openai_status   IN ('pending','retrying') AND (openai_next_attempt_at   IS NULL OR openai_next_attempt_at   <= ?))
       ORDER BY received_at ASC
       LIMIT ?`,
-    [now, now, now, Number(limit) || 25]
+    [now, now, now, now, Number(limit) || 25]
   );
 }
 
@@ -458,17 +515,17 @@ const REQUEUEABLE_LIST = REQUEUEABLE_STATUSES.map((status) => `'${status}'`).joi
  * The thirty-day backstop still takes such a row, so the data is bounded.
  *
  * Same lesson as claimClause above: a precondition that matters belongs in the
- * statement, not in the caller's copy of the row. The worker reads the three
+ * statement, not in the caller's copy of the row. The worker reads the four
  * statuses out of its own in-memory row, and during an overlapped IIS recycle
- * two workers split the three claims between them -- so NEITHER copy ever shows
- * all three scrubbable, and a scrub decided by the copy alone never happens. The
+ * two workers split the four claims between them -- so NEITHER copy ever shows
+ * all four scrubbable, and a scrub decided by the copy alone never happens. The
  * row then holds a name, an email and a phone until the thirty-day backstop, in
  * precisely the case the policy asks to reduce to a minute.
  *
  * With the predicate here, both workers may attempt it: the one whose statuses
  * are not all in the table yet matches no row and writes nothing, and whichever
  * of them finishes last matches and scrubs. It is read against the row as the
- * table actually holds it, which is the only copy that has seen all three.
+ * table actually holds it, which is the only copy that has seen all four.
  *
  * Unlike claimClause there is no claim moment to pass: this is not a claim on an
  * action, it takes nothing away from another worker, and a second attempt is a
@@ -514,8 +571,8 @@ const matchedRows = (result) => (typeof result?.affectedRows === "number" ? resu
  * provider quotes back what we sent it -- Brevo's 400 names the email address
  * from the request body -- so spec section 13's masking has to hold here and
  * not only in the log line: this column is read straight into the admin table.
- * Cutting first could leave half an address whole. One function for all three
- * writers, so a fourth destination cannot forget.
+ * Cutting first could leave half an address whole. One function for every writer,
+ * so the destination added next cannot forget.
  */
 export function redactDetail(detail) {
   return (
@@ -533,7 +590,7 @@ export function redactDetail(detail) {
 const detailFor = (detail) => redactDetail(detail).slice(0, 500) || null;
 
 /**
- * The three action writers. Each writes only its own action's columns, and each
+ * The four action writers. Each writes only its own action's columns, and each
  * returns how many rows it matched.
  *
  * Pass `claimAt` and the write is a claim (see claimClause): a 0 back means
@@ -596,6 +653,27 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
   return matchedRows(result);
 }
 
+/** Nothing of OpenAI's is written outside these four columns: there is no
+ *  provider-side id to record (the event's `id` is derived from the row) and
+ *  `oppref` is frozen at insert, so a send has nothing to add to it. */
+export async function updateOpenaiStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+  const claim = claimClause("openai", claimAt);
+  const result = await run(
+    `UPDATE signup_events
+        SET openai_status = ?, openai_detail = ?, openai_attempts = ?, openai_next_attempt_at = ?
+      WHERE id = ?${claim.sql}`,
+    [
+      String(status),
+      detailFor(detail),
+      Number(attempts) || 0,
+      nextAttemptAt ?? null,
+      id,
+      ...claim.params,
+    ]
+  );
+  return matchedRows(result);
+}
+
 /**
  * The columns that are the client, as opposed to the statistics the table exists
  * for. Exported so a test can pin the list: both scrubs below are built from it,
@@ -603,17 +681,25 @@ export async function updateBrevoStatus(id, { status, detail, attempts, nextAtte
  *
  * The reason any of this is stored at all is that the endpoint answers FXBO
  * immediately and sends afterwards, so the phone and the email must survive from
- * receipt until all three destinations have succeeded or been skipped, retries
+ * receipt until every destination has succeeded or been skipped, retries
  * included -- and on a row whose destination failed they survive longer still, so
  * the cause can be fixed and the send retried. After that nothing needs them -- FXBO is the system of record for who a client is, and
  * this table only has to say whether client 48217 got their welcome and to
  * recognise FXBO's redeliveries.
  *
- * Two absences are deliberate, and both are load-bearing:
+ * Three absences are deliberate, and all three are load-bearing:
  *
  *   `fbc` stays. It is captured at signup and reused weeks later for the
  *   first-deposit conversion, so scrubbing it would send every later conversion
  *   to Meta with no ad attached.
+ *
+ *   `oppref` stays, for the same reason and one more. It is OpenAI's click
+ *   identifier, their Conversions API does not capture it, and the deposit is a
+ *   different row arriving weeks later whose own `full_link` is empty -- so the
+ *   only copy of it is this column, and scrubbing it would send every later
+ *   ChatGPT Ads conversion unattributed, accepted and unmatched. It is not
+ *   client data: it identifies an ad click, not a person, which is why it sits
+ *   beside `fbc` here rather than with `full_link` below.
  *
  *   `crm_client_id` stays. It is the dedupe key; without it FXBO's redeliveries
  *   insert again and send a second welcome.
@@ -638,7 +724,7 @@ export const SCRUB_COLUMNS = [
 const SCRUB_SET = SCRUB_COLUMNS.map((column) => `${column} = NULL`).join(", ");
 
 /**
- * One row's client data, removed, once the table says all three succeeded or were
+ * One row's client data, removed, once the table says every destination succeeded or was
  * deliberately skipped.
  *
  * Successes and skips, not every settled status (see scrubbableClause): a row
@@ -670,7 +756,8 @@ export async function scrubSignupEvent(id, at = new Date()) {
         AND scrubbed_at IS NULL
         AND ${scrubbableClause("meta")}
         AND ${scrubbableClause("whatsapp")}
-        AND ${scrubbableClause("brevo")}`,
+        AND ${scrubbableClause("brevo")}
+        AND ${scrubbableClause("openai")}`,
     [at, id]
   );
   return matchedRows(result);
@@ -679,10 +766,16 @@ export async function scrubSignupEvent(id, at = new Date()) {
 /**
  * The rows that never sent anything and never will, removed whole.
  *
- * An invalid row is an unparseable payload or an FXBO "Test webhook" press. All
- * three statuses are written `invalid` in the insert itself, so this is the shape
- * that identifies them; a row where only some are invalid is not one of these and
- * is deliberately left alone.
+ * An invalid row is an unparseable payload or an FXBO "Test webhook" press. Every
+ * destination's status is written `invalid` in the insert itself, so this is the
+ * shape that identifies them; a row where only some are invalid is not one of
+ * these and is deliberately left alone.
+ *
+ * Every destination has to be named here, and a missing one is not a narrower
+ * delete but a dead one: the condition asks for all of them at once, so a
+ * destination absent from it is a column that can hold anything -- and one absent
+ * from the INSERT's invalid writes while present here would make the condition
+ * unsatisfiable, so no invalid row would ever be deleted again.
  *
  * They are the only rows that keep their `raw_payload` for a while, because they
  * are the rows CUTOVER step 5 reads.
@@ -693,6 +786,7 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
       WHERE meta_status = 'invalid'
         AND whatsapp_status = 'invalid'
         AND brevo_status = 'invalid'
+        AND openai_status = 'invalid'
         AND received_at < ?`,
     [receivedBefore]
   );
@@ -700,14 +794,47 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
 }
 
 /**
- * The three destinations, in the order the tab shows them.
+ * The four destinations, in the order the tab shows them.
  *
  * Exported because the requeue route validates its body parameter against this
  * list: the destination is interpolated into a column name below, so the route
  * and the statement have to agree about what a destination is, and two copies of
- * three strings is exactly the kind of list that drifts.
+ * four strings is exactly the kind of list that drifts.
  */
-export const DESTINATIONS = ["meta", "whatsapp", "brevo"];
+export const DESTINATIONS = ["meta", "whatsapp", "brevo", "openai"];
+
+/**
+ * The rows a destination could still send, when it has a deadline at all.
+ *
+ * Only OpenAI does. Their documentation bounds `timestamp_ms` to "within the
+ * last 7 days and no more than 10 minutes in the future", and that timestamp
+ * comes from `received_at`, so a row older than the window can never be sent --
+ * re-stamping it with today's time is not available, because the row's whole
+ * purpose is to say when the conversion happened (spec section 7a). Meta,
+ * WhatsApp and Brevo take an event of any age, so for them this is empty and
+ * their statements are unchanged.
+ *
+ * **Built from the two constants decideOpenaiSkip tests against**, imported
+ * rather than restated, because the whole point is that the count and the skip
+ * cannot drift: a count built on 7 days beside a skip built on 6 would be a
+ * button offering forty rows and delivering none, which is the failure spec 7a
+ * is written down to prevent. The comparisons are `>=` and `<=` for the same
+ * reason -- decideOpenaiSkip refuses only what is strictly outside, so a row
+ * exactly on either edge is sendable in both places.
+ *
+ * `now` is the caller's, so the count and the UPDATE that follows it are judged
+ * against one instant rather than two readings of the clock.
+ */
+function sendableWindow(action, now) {
+  if (action !== "openai") return null;
+  return {
+    sql: "received_at >= ? AND received_at <= ?",
+    params: [
+      new Date(now.getTime() - OPENAI_MAX_EVENT_AGE_MS),
+      new Date(now.getTime() + OPENAI_MAX_EVENT_SKEW_MS),
+    ],
+  };
+}
 
 /**
  * The destination, or an error naming it.
@@ -842,13 +969,22 @@ export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
  *
  * Returns how many rows it matched, so the caller can say what happened.
  */
-export async function requeueFailedSends(destination) {
+export async function requeueFailedSends(destination, now = new Date()) {
   const action = requireDestination(destination);
+  // The fourth precondition, and OpenAI's alone (see sendableWindow): a row
+  // outside their 7-day window is unsendable whatever anybody fixes, so
+  // requeueing it would spend a claim to reach a step that can only skip it --
+  // and would replace the record of the real failure with a skip. It stays
+  // `failed`, holding the reason it failed for. Nothing is appended for the other
+  // three, whose statements are byte for byte what they were.
+  const window = sendableWindow(action, now);
   const result = await run(
     `UPDATE signup_events
         SET ${action}_status = 'pending', ${action}_attempts = 0, ${action}_next_attempt_at = NULL
       WHERE scrubbed_at IS NULL
-        AND ${action}_status IN (${REQUEUEABLE_LIST})`
+        AND ${action}_status IN (${REQUEUEABLE_LIST})${window ? `
+        AND (${window.sql})` : ""}`,
+    window ? window.params : []
   );
   return matchedRows(result);
 }
@@ -862,24 +998,44 @@ export async function requeueFailedSends(destination) {
  * button.
  *
  * So `resendable` is what requeueFailedSends would match -- `failed` or
- * `rejected`, not scrubbed -- over the whole table and not a window, because the
- * action is not windowed either. `scrubbed` is the rest of the same set: rows
- * whose send went wrong and whose client data the thirty-day backstop has since
- * taken, which is the whole of the difference between the 40 an operator can see
- * and the 12 they get. Both come out of ONE statement, so the two numbers are a
- * single snapshot and are guaranteed to add up; read separately they would not.
+ * `rejected`, not scrubbed, and for OpenAI inside their window -- over the whole
+ * table and not the tab's period, because the action is not scoped to a period
+ * either. `scrubbed` is part of the rest of the same set: rows whose send went
+ * wrong and whose client data the thirty-day backstop has since taken.
+ * `expired` is the remainder, and exists only because OpenAI has a window: rows
+ * still holding their client data that OpenAI would now refuse on their age
+ * alone. Between them the three account for every failure an operator can see on
+ * the card, which is the whole of the difference between the 40 they are looking
+ * at and the 12 they get. All three come out of ONE statement, so the numbers are
+ * a single snapshot and are guaranteed to add up; read separately they would not.
  *
  * The retention index leads with `scrubbed_at`, so the resendable half is a
  * handful of rows however large the table grows.
  */
-export async function countResendableSends() {
-  const columns = DESTINATIONS.flatMap((action) => [
-    `COUNT(CASE WHEN ${action}_status IN (${REQUEUEABLE_LIST}) AND scrubbed_at IS NULL THEN 1 END) AS ${action}_resendable`,
-    `COUNT(CASE WHEN ${action}_status IN (${REQUEUEABLE_LIST}) AND scrubbed_at IS NOT NULL THEN 1 END) AS ${action}_scrubbed`,
-  ]);
+export async function countResendableSends(now = new Date()) {
+  const params = [];
+  const columns = DESTINATIONS.flatMap((action) => {
+    const window = sendableWindow(action, now);
+    const failures = `${action}_status IN (${REQUEUEABLE_LIST})`;
+    if (window) params.push(...window.params, ...window.params);
+    return [
+      // Exactly what requeueFailedSends would match, window included, because
+      // this number is a promise about that statement and nothing else.
+      `COUNT(CASE WHEN ${failures} AND scrubbed_at IS NULL${window ? ` AND (${window.sql})` : ""} THEN 1 END) AS ${action}_resendable`,
+      `COUNT(CASE WHEN ${failures} AND scrubbed_at IS NOT NULL THEN 1 END) AS ${action}_scrubbed`,
+      // The third reason a failure can no longer be resent, and the only one
+      // that is not a scrub: OpenAI's window has closed on it. A literal zero
+      // for the destinations that have no window, rather than a missing key --
+      // the card prints this number, and `undefined` prints as "undefined".
+      window
+        ? `COUNT(CASE WHEN ${failures} AND scrubbed_at IS NULL AND NOT (${window.sql}) THEN 1 END) AS ${action}_expired`
+        : `0 AS ${action}_expired`,
+    ];
+  });
   const rows = await all(
     `SELECT ${columns.join(", ")}
-       FROM signup_events`
+       FROM signup_events`,
+    params
   );
   const counts = rows[0] ?? {};
   // COUNT never returns NULL, but an empty result set and a driver that hands
@@ -892,7 +1048,11 @@ export async function countResendableSends() {
   return Object.fromEntries(
     DESTINATIONS.map((action) => [
       action,
-      { resendable: n(counts[`${action}_resendable`]), scrubbed: n(counts[`${action}_scrubbed`]) },
+      {
+        resendable: n(counts[`${action}_resendable`]),
+        scrubbed: n(counts[`${action}_scrubbed`]),
+        expired: n(counts[`${action}_expired`]),
+      },
     ])
   );
 }

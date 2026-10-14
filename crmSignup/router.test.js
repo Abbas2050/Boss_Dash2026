@@ -34,13 +34,20 @@ const VALID_BODY = {
   email: "ali.khan@example.com",
   phone: "+971507192185",
   is_lead: "0",
-  full_link: "https://skylinkscapital.com/en/?fbclid=IwY2xjawUsILdI",
+  // One landing URL carrying both click ids, because that is what a real one
+  // looks like: the website hands the CRM the whole query string, and each
+  // platform's identifier is one parameter in it.
+  full_link: "https://skylinkscapital.com/en/?fbclid=IwY2xjawUsILdI&oppref=oppref-9f2b",
 };
+
+// What the store's one lookup returns: the first non-empty value of each click
+// id on file for this client, or an empty string where there is none.
+const noClickIds = () => ({ fbc: "", oppref: "" });
 
 function deps(overrides = {}) {
   return {
     secret: "s3cret",
-    findFbc: vi.fn(async () => ""),
+    findClickIds: vi.fn(async () => noClickIds()),
     insert: vi.fn(async () => ({ inserted: true, id: 1 })),
     onStored: vi.fn(() => {}),
     now: () => new Date("2026-10-12T12:00:00Z"),
@@ -89,38 +96,82 @@ describe("authentication", () => {
   });
 });
 
-describe("the click id", () => {
-  it("derives it from the landing URL on a client's first event", async () => {
+describe("the click ids", () => {
+  it("derives both from the landing URL on a client's first event", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
     const [, derived] = d.insert.mock.calls[0];
     expect(derived.fbc).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    // Raw: no wrapper and no timestamp, because OpenAI passes it through
+    // unmodified. There is nothing to build, only something to keep.
+    expect(derived.oppref).toBe("oppref-9f2b");
   });
 
-  it("reuses the stored one rather than recomputing it", async () => {
-    // Recomputing per stage gives Meta a different click identity for the same
-    // person at each step -- no error, just a quietly broken funnel.
-    const d = deps({ findFbc: vi.fn(async () => "fb.1.1673035686000.OLD") });
+  it("reuses the stored ones rather than recomputing them", async () => {
+    // Recomputing per stage gives the platform a different click identity for
+    // the same person at each step -- no error, just a quietly broken funnel.
+    // And by the first deposit, weeks later, there is nothing to recompute from:
+    // that row's own full_link is empty and this one's was scrubbed within the
+    // minute, which is why the value is frozen in a column at all.
+    const d = deps({
+      findClickIds: vi.fn(async () => ({ fbc: "fb.1.1673035686000.OLD", oppref: "oppref-FIRST" })),
+    });
     await makeCrmEventsHandler(d)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "verified" }),
       fakeRes()
     );
     const [, derived] = d.insert.mock.calls[0];
     expect(derived.fbc).toBe("fb.1.1673035686000.OLD");
+    expect(derived.oppref).toBe("oppref-FIRST");
   });
 
-  it("is empty for an organic signup, which is normal", async () => {
+  it("prefers the stored oppref over this row's own, even when they differ", async () => {
+    // The row carries `oppref-9f2b`; the client's first event carried another.
+    // The frozen one wins, exactly as it does for the fbc: the conversion
+    // belongs to the click that produced the client, not to the latest visit.
+    const d = deps({ findClickIds: vi.fn(async () => ({ fbc: "", oppref: "oppref-FIRST" })) });
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][1].oppref).toBe("oppref-FIRST");
+  });
+
+  it("takes this row's oppref when the client has none on file yet", async () => {
+    // The freeze starts at the first stage that actually has a click: an earlier
+    // stage that arrived without one stores nothing, so an empty stored value is
+    // not an answer, it is the absence of one.
+    const d = deps({ findClickIds: vi.fn(async () => ({ fbc: "", oppref: "" })) });
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][1].oppref).toBe("oppref-9f2b");
+  });
+
+  it("leaves both empty for an organic signup, which is normal", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/" }),
       fakeRes()
     );
     expect(d.insert.mock.calls[0][1].fbc).toBe("");
+    expect(d.insert.mock.calls[0][1].oppref).toBe("");
+  });
+
+  it("keeps each independent: a Meta click with no ChatGPT one, and the other way round", async () => {
+    const d = deps();
+    await makeCrmEventsHandler(d)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/?oppref=only-openai" }),
+      fakeRes()
+    );
+    expect(d.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "only-openai" });
+
+    const e = deps();
+    await makeCrmEventsHandler(e)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/?fbclid=ONLYMETA" }),
+      fakeRes()
+    );
+    expect(e.insert.mock.calls[0][1]).toMatchObject({ fbc: "fb.1.1791806400000.ONLYMETA", oppref: "" });
   });
 
   it("stores the event even when the lookup throws", async () => {
     const d = deps({
-      findFbc: vi.fn(async () => {
+      findClickIds: vi.fn(async () => {
         throw new Error("db down");
       }),
     });
@@ -462,24 +513,37 @@ describe("telling a test press from a broken rule", () => {
 
 describe("the click id lookup, further", () => {
   it("is keyed on the CRM client id", async () => {
-    // findFbc is a stub that answers the same whatever it is asked, so looking a
-    // client up by stage instead survived. The freeze depends on this key.
+    // findClickIds is a stub that answers the same whatever it is asked, so
+    // looking a client up by stage instead survived. The freeze depends on this
+    // key.
     const d = deps();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
-    expect(d.findFbc).toHaveBeenCalledWith("88214");
+    expect(d.findClickIds).toHaveBeenCalledWith("88214");
   });
 
-  it("leaves the click id empty, and says why, when the lookup throws", async () => {
-    // Empty, not derived. A failed lookup cannot tell us whether a frozen id
-    // already exists, and deriving one here stamps this stage with a fresh
-    // timestamp: a different click identity for the same person, which is the
-    // quietly broken funnel the freeze exists to prevent. The landing URL below
-    // does carry a fbclid, so a derived value would be non-empty. A missing
-    // matcher is recoverable (Meta falls back to the hashed email and phone, and
-    // a later event picks up the frozen value from an earlier row); an
-    // inconsistent one is silently wrong. The event itself is still stored.
+  it("asks for both ids in one lookup, because the webhook is answering FXBO", async () => {
+    // A second round trip per event buys nothing: one statement returns the
+    // first non-empty value of each column, and this handler runs inside the
+    // request FXBO is waiting on.
+    const d = deps();
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.findClickIds).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves both click ids empty, and says why, when the lookup throws", async () => {
+    // Empty, not derived, and that holds for both. A failed lookup cannot tell
+    // us whether a frozen id already exists, and deriving one here would claim
+    // an identity this row cannot check: for the fbc a fresh timestamp, and for
+    // the oppref this visit's click where the client's first one is what is
+    // frozen. Either is a different click identity for the same person, which is
+    // the quietly broken funnel the freeze exists to prevent. The landing URL
+    // below carries both, so a derived value would be non-empty in each case. A
+    // missing identifier is recoverable (both platforms fall back to the hashed
+    // email and phone, and a later event picks the frozen value up from an
+    // earlier row); an inconsistent one is silently wrong. The event itself is
+    // still stored.
     const d = deps({
-      findFbc: vi.fn(async () => {
+      findClickIds: vi.fn(async () => {
         throw new Error("db down");
       }),
     });
@@ -487,9 +551,23 @@ describe("the click id lookup, further", () => {
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
     expect(d.insert).toHaveBeenCalledTimes(1);
     expect(d.insert.mock.calls[0][1].fbc).toBe("");
+    expect(d.insert.mock.calls[0][1].oppref).toBe("");
     expect(res.body).toEqual({ ok: true, stored: true, duplicate: false });
     expect(d.logger.error).toHaveBeenCalledTimes(1);
     expect(d.logger.error.mock.calls[0][0]).toContain("db down");
+  });
+
+  it("survives a lookup that answers with nothing at all", async () => {
+    // A store that returned undefined (or a partial object) must not become
+    // "undefined" in a column: the handler reads each id defensively, as it does
+    // every other value that comes from outside it.
+    for (const answer of [undefined, null, {}, { fbc: "fb.1.1.X" }]) {
+      const d = deps({ findClickIds: vi.fn(async () => answer) });
+      await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+      const { fbc, oppref } = d.insert.mock.calls[0][1];
+      expect(String(fbc), JSON.stringify(answer)).not.toContain("undefined");
+      expect(String(oppref), JSON.stringify(answer)).not.toContain("undefined");
+    }
   });
 });
 
@@ -508,19 +586,21 @@ describe("what the handler hands the store", () => {
     expect(column(params, "stage")).toBe("registered");
     expect(column(params, "email")).toBe("ali.khan@example.com");
     expect(column(params, "fbc")).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
+    expect(column(params, "oppref")).toBe("oppref-9f2b");
     expect(column(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
     expect(column(params, "meta_status")).toBe("pending");
     expect(column(params, "whatsapp_status")).toBe("pending");
     expect(column(params, "brevo_status")).toBe("pending");
+    expect(column(params, "openai_status")).toBe("pending");
     expect(JSON.parse(column(params, "raw_payload"))).toEqual(VALID_BODY);
   });
 
-  it("marks all three destinations invalid, with the reason, for a bad one", async () => {
+  it("marks every destination invalid, with the reason, for a bad one", async () => {
     const d = deps();
     const body = { ...VALID_BODY, stage: "typo" };
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, body), fakeRes());
     const params = buildInsertParams(...d.insert.mock.calls[0]);
-    for (const status of ["meta_status", "whatsapp_status", "brevo_status"]) {
+    for (const status of ["meta_status", "whatsapp_status", "brevo_status", "openai_status"]) {
       expect(column(params, status), status).toBe("invalid");
     }
     expect(column(params, "meta_detail")).toContain("missing required fields");
@@ -599,7 +679,7 @@ describe("wiring in server.js, further", () => {
     expect(registration, "the registration block was not found").not.toBeNull();
     const wired = registration[1];
     expect(wired).toMatch(/\bsecret:\s*CRM_WEBHOOK_SECRET\s*,/);
-    expect(wired).toMatch(/\bfindFbc:\s*findExistingFbc\s*,/);
+    expect(wired).toMatch(/\bfindClickIds:\s*findExistingClickIds\s*,/);
     expect(wired).toMatch(/\binsert:\s*insertSignupEvent\s*,/);
     // ...and that constant is read from the environment through the trimming
     // reader, not from some other variable or a hand-rolled read.
@@ -706,7 +786,7 @@ describe("the configured secret", () => {
 });
 
 describe("the production defaults", () => {
-  // server.js passes only { secret, findFbc, insert }, so production runs the
+  // server.js passes only { secret, findClickIds, insert }, so production runs the
   // default now, newRequestId, logger and onStored. Every case above overrides
   // them, so a constant request id, a frozen clock and a logger that logs nothing
   // all survived.
@@ -715,7 +795,7 @@ describe("the production defaults", () => {
 
   it("mints a fresh UUID per row and stamps the click id with the current time", async () => {
     const insert = vi.fn(async () => ({ inserted: true, id: 1 }));
-    const handler = makeCrmEventsHandler({ secret: "s3cret", findFbc: async () => "", insert });
+    const handler = makeCrmEventsHandler({ secret: "s3cret", findClickIds: async () => noClickIds(), insert });
     const before = Date.now();
     await handler(req(auth, VALID_BODY), fakeRes());
     await handler(req(auth, { ...VALID_BODY, stage: "verified" }), fakeRes());
@@ -738,7 +818,7 @@ describe("the production defaults", () => {
     try {
       const handler = makeCrmEventsHandler({
         secret: "s3cret",
-        findFbc: async () => "",
+        findClickIds: async () => noClickIds(),
         insert: async () => {
           throw new Error("ER_LOCK_WAIT_TIMEOUT");
         },
