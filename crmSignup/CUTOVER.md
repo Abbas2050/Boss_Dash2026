@@ -1,7 +1,8 @@
 # crmSignup — cutover runbook
 
 Every step here changes a live system: the production server, the FXBO CRM, the
-Meta dataset, or the WordPress plugin that currently sends the welcome message.
+Meta dataset, the ChatGPT Ads conversion setup, or the WordPress plugin that
+currently sends the welcome message.
 None of it is automated and none of it should be done by anyone but the account
 owner.
 
@@ -30,7 +31,7 @@ Generate the Meta token in Events Manager → the CRM implementation guide →
 **Generate Access Token**. Doing this also rotates the token currently sitting
 exposed inside FXBO.
 
-Three of these will cost you an afternoon if you get them wrong:
+Four of these will cost you an afternoon if you get them wrong:
 
 - **`BREVO_LIST_ID` has no default.** Unset, blank or not a positive number and
   Brevo is not called at all: the row records `failed` with a detail naming the
@@ -40,6 +41,14 @@ Three of these will cost you an afternoon if you get them wrong:
   waits for someone to press it.
 - **Set `META_TEST_EVENT_CODE` now.** The first real traffic then lands under
   Events Manager → Test events and touches no production data. Step 8 removes it.
+- **`OPENAI_PIXEL_ID` and `OPENAI_CONVERSIONS_API_KEY` go together, and neither
+  is `OPENAI_API_KEY`.** That third variable already exists in `.env.example`
+  near the top and belongs to the client-profiling LLM agent; this file now
+  holds two OpenAI keys for two different products, so read the line you are
+  pasting into. With the conversions key set and the pixel id missing, every
+  conversion records `skipped` — **final**, and the resend control cannot reach
+  it, because that takes `failed` and `rejected` rows only. Step 2's log carries
+  a warning at boot for exactly that case. Step 1b is how to get the pair.
 - **Set every provider key before you point FXBO at the endpoint.** A missing
   key stores that row as `skipped`, and `skipped` is **final** — setting the key
   later does not resend those rows. There is no backfill, and the resend control
@@ -48,6 +57,33 @@ Three of these will cost you an afternoon if you get them wrong:
   is not its job.
 
 Then recycle the app.
+
+## 1b. Get the ChatGPT Ads pixel id and key, from the same ad account
+
+*ChatGPT Ads → the conversion you are tracking → **conversion setup**.* Both
+values are on that one screen: the **Pixel ID** and the **Conversions API key**.
+
+**Take them from the same screen, in the same sitting, and do not assemble the
+pair from two places.** They must belong to the same ad account, and nothing
+checks it for you:
+
+- A key paired with another account's pixel is refused over HTTP. We classify
+  that as `rejected` — **permanent, never retried**, because it is identical on
+  every attempt — so the row reads like a defect in this service rather than
+  like a mismatch in a setting. The detail column carries the status and
+  whatever OpenAI said, which is the only thing that will point you back here.
+- The pixel id is **not** a secret: it is in the website's own browser pixel.
+  The key is. It never appears in a URL — it travels in an `Authorization`
+  header, so no request line in any proxy log between here and OpenAI can carry
+  it — and it is redacted out of any error message before the row or the log
+  sees it. Keep it that way.
+- If you already have the website's pixel id from the WordPress plugin, check it
+  against this screen rather than assuming. One pixel per ad account is the
+  normal arrangement, but the merge rule that makes `registration_completed` the
+  pixel's (step 9) depends on it, and so does every conversion we send.
+
+Set `OPENAI_CONVERSIONS_API_KEY` and `OPENAI_PIXEL_ID` in the Plesk environment
+block, and **leave `OPENAI_VALIDATE_ONLY` unset until step 6b**.
 
 ## 2. Deploy and confirm the worker started
 
@@ -71,6 +107,11 @@ Two other lines worth recognising in that log:
 - `[crm-events] worker disabled by CRM_EVENTS_WORKER_ENABLED=false` — nothing
   will be sent at all until that is changed back, webhooks included. See the
   note at the bottom of this file.
+- `[crm-events] OPENAI_CONVERSIONS_API_KEY is set but OPENAI_PIXEL_ID is unset
+  or blank…` — step 1b was half done. This is the one boot warning about a
+  setting whose rows cannot be recovered afterwards: those conversions record
+  `skipped`, which is final and which the resend control does not take. Fix it
+  before FXBO points at the endpoint, not after. Neither value is printed.
 
 ## 3. Allow-list the endpoint in the CRM
 
@@ -261,6 +302,47 @@ The tab appears under Settings → **CRM Events**, and needs both `Settings` and
 it is admin-only and a visible tab that always answers "Could not load" reads as
 an outage rather than as a permission problem.
 
+## 6b. The ChatGPT Ads dry run, and what it does and does not prove
+
+Set `OPENAI_VALIDATE_ONLY=true` and recycle. **Only the literal `true` (any
+case) turns it on** — `1`, `yes` and `on` all leave it off and send for real.
+That is the *inverse* of `CRM_EVENTS_WORKER_ENABLED`, where only the literal
+`false` turns the worker off, and the inversion is deliberate: a value that
+wrongly read as "on" here would stop every conversion being recorded while every
+row still said `sent`.
+
+Then make one event happen — verify a test client, or press **Test webhook** on
+the `verified` rule and then do it for real, since a test press is stored as
+`invalid` and sends nothing.
+
+**Read the response body, not only the status.** The row's detail column carries
+it; the iisnode log carries the warning line for anything that is not a send.
+This is the whole point of the dry run, because **three payload field names were
+inferred rather than read from OpenAI's reference**: `oppref` at the event level
+rather than inside `user`, and the two the reference later confirmed. A strict
+API rejecting an unknown field is how we would find that out, and this is the
+one moment where finding out costs nothing — no real conversion is at stake and
+nothing is recorded on OpenAI's side either way.
+
+What the dry run proves and what it does not:
+
+- **A 2xx means the payload is well-formed. It means nothing else.** OpenAI
+  documents no response shape at all, so this service treats a 2xx with no error
+  in the body as a send — including a 2xx whose body was empty or unreadable,
+  which for this API is normal rather than suspicious.
+- **A validated request does not appear in event monitoring at all.** So a clean
+  validation is not evidence that anything landed, and it cannot be: nothing
+  landed. `validate_only` records nothing on OpenAI's side by design.
+- The rows say so too. Every outcome's detail begins
+  `validate_only: nothing was recorded by OpenAI`, on a rejection as much as on
+  a success — reading `rejected` without that prefix would send somebody looking
+  for an event OpenAI never had.
+
+**Then unset `OPENAI_VALIDATE_ONLY` and recycle before step 7.** Leaving it on
+is the quiet failure this flag is dangerous for: conversions stop, every row
+reads `sent`, and nothing in ChatGPT Ads can tell you, because validated
+requests are not monitored.
+
 ## 7. Acceptance test
 
 1. **Meta:** events appear under Events Manager → Test events within minutes.
@@ -288,11 +370,30 @@ an outage rather than as a permission problem.
    reuses the stored `fbc` — check the two rows carry an identical value. A
    different value per stage would hand Meta a different click identity for the
    same person at each step, with no error anywhere.
+6. **ChatGPT Ads: the event appears under *View event stream*** in the
+   conversion setup screen. **A 200 does not count**, and neither does a row
+   reading `sent`: OpenAI documents no response shape, so this service treats a
+   2xx with no error in the body as a send — which is the right reading and is
+   still not proof that a conversion was recorded. The event stream is the only
+   confirmation there is. If step 6b's dry run is still on, nothing will ever
+   appear here, because validated requests are not monitored at all.
+   Expect **three** stages to produce events, not five: `registered` is the
+   website pixel's (step 9) and `lead` has no FXBO trigger yet.
+7. **`oppref` reuse:** a client whose landing URL carried `oppref` shows the
+   same stored value on a later stage's row as on their first — the `fbc` check
+   above, for OpenAI's click identifier. Register through a ChatGPT Ads link to
+   get one; without it the conversion is still sent, simply unattributed. The
+   first deposit is the row that matters, because it arrives weeks later with
+   its own `full_link`, which will be empty.
 
 ## 8. Unset the test event code and go live
 
 Remove `META_TEST_EVENT_CODE` and recycle. Events then appear in Events Manager
 within the hour, and Diagnostics reports anything Meta objects to.
+
+Check `OPENAI_VALIDATE_ONLY` is unset here too, if step 6b was not finished in
+one sitting. There is no ChatGPT Ads equivalent of Test events: the dry run
+either records nothing or you are live.
 
 ## 9. Switch off the duplicate senders
 
@@ -308,6 +409,12 @@ messages.**
    that stage; we own the other four. The trade-off is that registration is only
    ever counted as accurately as a browser pixel, so signups from ad-blocked or
    tracking-restricted browsers go unattributed for that one step.
+   **The same applies to the ChatGPT Ads pixel, if the site carries one**: keep
+   its `registration_completed` and leave it alone. This service does not send
+   that event either, for the same reason and taken the same day — OpenAI merges
+   a browser event with a server one only when the pixel id, the event name and
+   the id all match, and the pixel's id exists only in the page. One owner per
+   stage, and for registration the owner is the browser.
 2. **FXBO's own Meta integration**, once this is confirmed live.
 3. **The Lovable promo pages** must not add conversion events for either step.
 

@@ -1442,6 +1442,30 @@ server.listen(PORT, () => {
         'to Brevo until it is fixed. Set BREVO_LIST_ID in .env (19 is the "All Clients" list) and restart.',
     );
   }
+  // The same shape as the Brevo line above, and for a worse failure. Only when
+  // the key is set: with no OPENAI_CONVERSIONS_API_KEY ChatGPT Ads is off
+  // entirely and every row records "openai not configured", so a warning about
+  // the pixel id would be noise on every boot of every install that does not use
+  // it. With the key set and no pixel id there is no URL to post to, so every
+  // conversion records `skipped` -- and `skipped` is FINAL. Setting the pixel id
+  // tomorrow does not send today's conversions, and the resend control cannot
+  // reach them either, because it takes `failed` and `rejected` rows only. So
+  // the whole window between this boot and somebody noticing is unrecoverable,
+  // and until now nothing in the product said so: the only trace was a detail
+  // column in a settings tab nobody has open at deploy time.
+  // The same trim-and-empty test decideOpenaiSkip applies, so the warning and
+  // the skip cannot disagree about what "configured" means. Neither value is
+  // printed -- the key is a secret, and this file now holds two OpenAI keys,
+  // which makes a paste into the wrong line the likeliest way to get here.
+  if (process.env.OPENAI_CONVERSIONS_API_KEY && !String(process.env.OPENAI_PIXEL_ID || '').trim()) {
+    console.error(
+      '[crm-events] OPENAI_CONVERSIONS_API_KEY is set but OPENAI_PIXEL_ID is unset or blank. ' +
+        'Every ChatGPT Ads conversion will be recorded as skipped with "openai pixel id not configured", ' +
+        'and a skipped row is final: setting the pixel id later does not send it, and the resend control ' +
+        'cannot reach it. Take OPENAI_PIXEL_ID from the same ChatGPT Ads conversion setup screen as the key, ' +
+        'which is what makes them the same ad account, set it in .env and restart.',
+    );
+  }
   initCrmSignupStore()
     .then(() => startCrmEventsWorker())
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));

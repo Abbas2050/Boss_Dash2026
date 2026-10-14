@@ -2,31 +2,42 @@
 
 Receives FXBO webhooks at five points in the client funnel, stores each once,
 then independently sends a Meta Conversions API event, a DoubleTick WhatsApp
-welcome, and a Brevo contact.
+welcome, a Brevo contact, and an OpenAI conversion for ChatGPT Ads.
 
 Design: `../docs/superpowers/specs/2026-10-09-crm-signup-webhook-design.md`
+ChatGPT Ads: `../docs/superpowers/specs/2026-10-14-chatgpt-ads-conversions-design.md`
 
 Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 
 ## What each stage sends
 
-| Stage | Meta event | WhatsApp | Brevo |
-|---|---|---|---|
-| `lead` | `Lead` | no | no |
-| `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only |
-| `verified` | `Client_Verified` | no | no |
-| `live_account` | `TradingAccountOpened` | no | no |
-| `first_deposit` | `Purchase` | no | no |
+| Stage | Meta event | WhatsApp | Brevo | ChatGPT Ads event (`data.type`) |
+|---|---|---|---|---|
+| `lead` | `Lead` | no | no | `lead_created` (`customer_action`) — blocked upstream, no FXBO trigger |
+| `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it |
+| `verified` | `Client_Verified` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
+| `live_account` | `TradingAccountOpened` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) |
+| `first_deposit` | `Purchase` | no | no | `order_created` (`contents`) |
 
-**No single event sends to all three.** `registered` sends WhatsApp and Brevo;
-every other stage sends Meta alone.
+**No single event sends to all four.** `registered` sends WhatsApp and Brevo;
+every other stage sends Meta and ChatGPT Ads together, and nothing else.
+
+**`data.type` is the data *family*, not the event name**, and a mismatched pair
+is rejected — so the family is never written beside an event name in code. It is
+looked up from the one table in `openai.js` that holds all thirteen of OpenAI's
+event names. The column above repeats it only to be read.
+
+**ChatGPT Ads carries no deposit amount** (2026-10-14, user's call), exactly as
+Meta's `Purchase` does not: both platforms learn that a deposit happened, not
+what it was worth, so there is no return-on-ad-spend measurement on either. The
+amount needs an FXBO REST call that is deferred to its own piece of work.
 
 **The lead/client split applies to Brevo and not to WhatsApp (2026-10-14, user's
 call).** It was the other way round until that date. The two gates fail in
 opposite directions on purpose — see "which way each gate fails" below.
 
 A destination that does not apply is stored as `skipped` with its reason, so a
-processed row shows all three. FXBO has no trigger for `lead` yet (spec section
+processed row shows all four. FXBO has no trigger for `lead` yet (spec section
 11).
 
 `registered` is mapped to `CompleteRegistration` in `META_EVENT_NAMES` but
@@ -42,7 +53,7 @@ one change rather than two.
 |---|---|
 | `POST /api/crm-events` | `CRM_WEBHOOK_SECRET` in the `Authorization` header, as the whole header value: `Bearer <secret>` is rejected, and an unset secret rejects everything. On the `PUBLIC_API_ROUTES` allow-list because FXBO cannot carry a session. |
 | `GET /api/crm-events/overview` | `authRequired` + `adminOnly` (`canManageUsers`, otherwise 403). Takes `?days=` (1 to 90, default 30). Feeds the settings tab, whose menu entry (`/settings/crm-events`, `admin` group) requires `Settings` + `Auth:ManageUsers`. A per-page `Settings:crm-events` access chip also opens the tab, but does not satisfy the endpoint's gate. |
-| `POST /api/crm-events/requeue` | `authRequired` + `adminOnly`, the same pair. Body `{"destination": "meta" \| "whatsapp" \| "brevo"}`; an unknown one is a 400 and is never defaulted. Puts that destination's `failed` and `rejected` rows back to `pending`, logs who asked, kicks the worker, and answers `{destination, requeued, alreadyScrubbed}`. See "Resending a failure" below. |
+| `POST /api/crm-events/requeue` | `authRequired` + `adminOnly`, the same pair. Body `{"destination": "meta" \| "whatsapp" \| "brevo" \| "openai"}`; an unknown one is a 400 and is never defaulted. Puts that destination's `failed` and `rejected` rows back to `pending`, logs who asked, kicks the worker, and answers `{destination, requeued, alreadyScrubbed, expired}`. `expired` is OpenAI's alone and is a literal `0` for the other three: it is the failures still holding their client data that OpenAI refuses on their age. Together the three numbers account for every failure a destination has, which is the whole of the difference between what a card shows and what a press delivers. See "Resending a failure" below. |
 
 The stage is a **body parameter**, not a path segment, and all five rules post
 to the one path. `auth/requireSession.js` matches its allow-list against actual
@@ -52,7 +63,7 @@ is a body parameter for the same reason, even though that route is session-gated
 and deliberately **not** on the allow-list: the allow-list is for FXBO, which
 cannot carry a session.
 
-## Six things that are easy to get wrong
+## Nine things that are easy to get wrong
 
 **The two lead/client gates fail in opposite directions, and copying one into
 the other inverts it** — *which way each gate fails*. `deriveRecordType` in
@@ -109,6 +120,54 @@ person at each step, with no error anywhere.
 lowercased and trimmed, phone digits only. Hashing raw input produces a hash
 Meta cannot match, and reports no problem.
 
+**OpenAI's phone rule is not Meta's, and no test you would naturally write
+could tell.** OpenAI strips a leading `+` **and leading zeroes**; Meta's
+`hashPhone` strips every non-digit and *keeps* leading zeroes. For every phone
+this service can currently send the two produce an identical digest, because
+`PHONE_RE` is `/^\+[1-9]\d{7,14}$/` — a stored phone always begins with a plus
+followed by a non-zero digit, so there are never leading zeroes to strip, and
+that regex already enforces OpenAI's own 8–15 digits. So calling Meta's helper
+here would pass every realistic test, work against live data, and silently stop
+matching the day `PHONE_RE` is loosened: a `0097150…` would be hashed with its
+zeroes and never match again, with no error anywhere. `openai.js` therefore
+writes OpenAI's rule on its own terms and `openai.test.js` pins it with a number
+that *has* the zeroes, so the difference is exercised rather than assumed. The
+**email** helper is also a second copy, for the opposite reason: that rule
+genuinely is identical today, so a test asserts the two digests are equal — and
+a divergence on either side then fails loudly instead of being inherited.
+
+**OpenAI refuses a conversion more than 7 days old, which is a constraint on
+retrying from database columns.** Their bound on `timestamp_ms` is "within the
+last 7 days and no more than 10 minutes in the future", and that timestamp comes
+from the row's `received_at`. An ordinary send, about a minute after signup, is
+nowhere near it. A **resend** of a week-old failure is outside it — and
+re-stamping the event with the current time is not available, because it would
+claim the conversion happened today and saying when it happened is the row's
+whole purpose. So the OpenAI step skips such a row with a reason naming the
+window, `requeueFailedSends` will not match it, and `countResendableSends`
+reports it as `expired` instead of promising it. The count and the skip are built
+from the same two constants in `openai.js`, imported rather than restated: a
+count built on 7 days beside a skip built on 6 is a button offering forty rows
+and delivering none. The 10-minute future bound needs no handling, since
+`received_at` is written by us on arrival — but a badly skewed server clock would
+trip it, which is why that reason exists too.
+
+**`registration_completed` is the website pixel's, exactly as
+`CompleteRegistration` is.** Same decision, same day, same reason, taken
+independently for each destination. OpenAI merges a browser event and a server
+event into one conversion only when the pixel id, the event name **and** the id
+all match — the pixel's `event_id` must equal our `id`. The pixel's id exists
+only in the page; ours comes from FXBO, which has no field that could carry the
+browser's value across. Sending both with different ids double counts, so one
+owner per stage, and for the registration stage the owner is the browser. The
+mapping in `OPENAI_EVENTS` stays complete so that lifting the gate is one change
+rather than two, and `PIXEL_OWNED_STAGE` is its own constant rather than an
+import from `meta.js` — lifting one gate must not silently lift the other. The
+cost, recorded rather than hidden: that conversion is only ever as complete as a
+browser pixel, so registrations from ad-blocked or tracking-restricted browsers
+are unattributed for that step on both platforms. Every other stage is
+server-side.
+
 **The handler never returns 5xx because a provider failed.** It answers 200 the
 moment the row is stored, and that includes a duplicate, an invalid payload and
 an FXBO "Test webhook" press (the last two are stored as `invalid` and send
@@ -130,10 +189,13 @@ columns, so a recycle costs at most one interval.
   `AUTH_DB_*` variables are missing, the store fails to start, the sweeper does
   not start, and every webhook is answered 503.
 - A destination with no key is recorded as `skipped`, and a skipped row is
-  final. Set `META_CAPI_ACCESS_TOKEN`, `WA_API_KEY` and `BREVO_API_KEY` before
-  pointing FXBO at the endpoint. `BREVO_LIST_ID` is the fourth: with the Brevo
-  key set, an unusable list id is a `failed` send rather than a skip, and the
-  startup log says so.
+  final. Set `META_CAPI_ACCESS_TOKEN`, `WA_API_KEY`, `BREVO_API_KEY` and
+  `OPENAI_CONVERSIONS_API_KEY` before pointing FXBO at the endpoint. Two more
+  settings behave like keys without being one, and the startup log says so for
+  both: `BREVO_LIST_ID`, where with the Brevo key set an unusable list id is a
+  `failed` send rather than a skip, and `OPENAI_PIXEL_ID`, where with the OpenAI
+  key set a missing pixel id is a `skipped` send — final, and unreachable by the
+  resend, which is why it is warned about at boot.
 - Two workers can run at once, and the host arranges exactly that during an
   overlapped recycle. The sweeper's `SELECT` takes no lock, so both read the
   same due rows; the pre-send write is the claim, and the one whose `UPDATE`
@@ -150,7 +212,7 @@ redeliveries.
 
 The client's details are stored at all for one reason: the endpoint answers FXBO
 immediately and sends afterwards, so the phone number and the email have to
-survive from receipt until all three destinations are done with — including
+survive from receipt until all four destinations are done with — including
 across retries, which run up to three attempts five minutes apart, and including
 a destination that failed, which a resend will need them for. After that, nothing
 needs them.
@@ -161,23 +223,34 @@ needs them.
     full_link, referer, raw_payload
 
 `full_link` and `referer` are in that list because `full_link` carries the
-`fbclid` and the whole query string verbatim, and both are redundant once `fbc`
-and the `utm_*` columns have been extracted from them.
+`fbclid`, the `oppref` and the whole query string verbatim, and both are
+redundant once `fbc`, `oppref` and the `utm_*` columns have been extracted from
+them.
 
 Everything else stays, because it is the statistics the table exists for:
 `crm_client_id`, `stage`, `fxbo_unique_id`, `record_type`, `is_lead_raw`,
 `marketing_consent`, `is_ib`, `entity`, `source`, `language`, the three `utm_*`
-columns, `fbc`, `whatsapp_request_id`, every status / detail / attempts / clock
-column, `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
+columns, `fbc`, `oppref`, `whatsapp_request_id`, every status / detail /
+attempts / clock column, `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
 columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
 
-**Three of those are load-bearing, not merely kept:**
+**Four of those are load-bearing, not merely kept:**
 
 - **`fbc` deliberately survives.** It is captured at signup and reused weeks
   later for the first-deposit conversion. Scrubbing it would send every later
   conversion to Meta with no ad attached, and Meta would accept all of them
   without complaint.
+- **`oppref` deliberately survives, for the same reasons as `fbc` and with one
+  difference.** It is OpenAI's click identifier, extracted from `full_link` at
+  the client's first event and reused weeks later for the first-deposit
+  conversion — whose own `full_link` is normally empty, because that visit is
+  not an ad click. OpenAI's Conversions API does not capture it, so without it a
+  conversion cannot be attributed to the ad that produced it, and OpenAI would
+  accept every unattributed one without complaint. The difference from `fbc`:
+  it is sent **raw**, with no `fb.1.<ms>.` wrapper and no timestamp, so there is
+  nothing about it to freeze beyond the value itself. Absent is normal — the
+  event is still sent, simply unattributed.
 - **`crm_client_id` deliberately survives.** It is half the dedupe key. Without
   it FXBO's redelivery of a stage no longer collides on
   `(crm_client_id, stage)`: it inserts a second row and sends a second welcome.
@@ -191,8 +264,8 @@ funnel stage after the fact.
 
 | | When | What |
 |---|---|---|
-| Settle | As soon as all three destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
-| Invalid | `received_at` older than **7 days**, and all three statuses `invalid` | The whole row is deleted |
+| Settle | As soon as all four destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
+| Invalid | `received_at` older than **7 days**, and all four statuses `invalid` | The whole row is deleted |
 | Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say, and settle whatever is still unsent as `failed` |
 
 Both windows are constants in `worker.js`, not environment variables. The two
@@ -244,12 +317,12 @@ refusal with its own `failed`.
 rows: an all-`invalid` row is handled by the 7-day delete, not by the scrub.
 
 **The settle path asks the row, not the worker.** The `UPDATE` carries its own
-precondition — all three statuses scrubbable, `scrubbed_at` still NULL — so it is
+precondition — all four statuses scrubbable, `scrubbed_at` still NULL — so it is
 correct whatever the worker believes (`scrubbableClause` in `store.js`, the same
 lesson as the row claim above). The worker's own check decides only whether to
 try, so the ordinary row still costs one statement. It matters during an
-overlapped recycle: when two workers split the three claims, neither one's copy
-of the row ever shows all three settled, and a scrub decided from the copy alone
+overlapped recycle: when two workers split the four claims, neither one's copy
+of the row ever shows all four settled, and a scrub decided from the copy alone
 happened in neither — the row waited the full thirty days in exactly the case
 this policy reduces to a minute. Both attempt it now, the earlier attempt matches
 nothing, and the one that finishes last scrubs.
@@ -311,14 +384,21 @@ never saw that id — while a resend of one that *did* arrive is deduplicated. B
 are what we want. Minting a fresh id would guarantee the duplicate instead. (Same
 reasoning as an over-width id being cut rather than nulled, in `store.js`.)
 
-**WhatsApp has its own control, and its own warning.** Meta deduplicates on
-`event_id` and the Brevo upsert is idempotent, so those two share one control and
-resending them is safe. WhatsApp has neither property, and a `failed` WhatsApp
-row **may already have reached the handset** — CUTOVER step 7's case, where
-DoubleTick answers 2xx with a status outside our allowlist and we record
-`rejected` on purpose so the value gets found. So its control says in visible
-text that resending may send a second welcome message, and it takes an explicit
-confirmation.
+**WhatsApp has its own control, and its own warning. The other three share
+one.** Meta deduplicates on `event_id`, the Brevo upsert is idempotent, and
+OpenAI deduplicates on the event `id` — which is derived from
+`<crm_client_id>:<stage>` and is therefore identical on every retry and every
+resend. So those three share one control and resending them is safe. WhatsApp
+has none of those properties, and a `failed` WhatsApp row **may already have
+reached the handset** — CUTOVER step 7's case, where DoubleTick answers 2xx with
+a status outside our allowlist and we record `rejected` on purpose so the value
+gets found. So its control says in visible text that resending may send a second
+welcome message, and it takes an explicit confirmation.
+
+The test for that grouping is **"would a repeat reach a person twice"**, not
+"would a repeat be wasted". An OpenAI resend of a row outside the 7-day window
+reaches nobody and sends nothing — the step skips it and the count never offered
+it — so the window makes the number smaller and is not a reason to warn.
 
 **The 30-day backstop is absolute**, measured from signup, whatever a resend
 does. There is no window extension: a row scrubbed mid-resend is refused by the
@@ -326,6 +406,16 @@ in-worker send guard, which sends nothing and records why. That is also why the
 answer carries `alreadyScrubbed` — the operator can see 40 failures on the
 destination card (those counters count scrubbed rows) and get 12 resends, and the
 other 28 are rows no requeue will ever reach.
+
+**ChatGPT Ads has a second such reason, and the answer carries that too.**
+`expired` is the failures that still hold their client data and that OpenAI
+refuses on their age alone. So a destination's failures are exactly
+`resendable + scrubbed + expired`, and all three travel together out of one
+statement — read separately they could be counted either side of a scrub and
+would not add up. Reporting one of the two shortfalls and not the other is worse
+than reporting neither, because the subtraction then looks complete when it is
+not. The tab says the expired rows are OpenAI's rule rather than a fault here,
+in the muted tone the card uses and not the amber of WhatsApp's warning.
 
 The route logs the action: who asked (the session user id, with their address
 masked), which destination, and how many rows. It triggers outbound messages to
@@ -345,7 +435,7 @@ nothing to create for it.
 An attribute with no value is left out, except the two booleans, `OPT_IN` and
 `IS_IB`, which are always sent, `false` included. Posting an attribute Brevo
 does not know returns 400, classified permanent and stored as `rejected` — so a
-new field needs the attribute created in Brevo first. All three destinations use
+new field needs the attribute created in Brevo first. All four destinations use
 the same two words: `rejected` is the provider refusing this event, `failed` is a
 transport failure or a spent attempt budget.
 

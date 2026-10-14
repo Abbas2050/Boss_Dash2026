@@ -8,6 +8,8 @@
 // are pinned by test rather than by care, and the phone is pinned with a number
 // that actually has the zeroes.
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "fs";
+import path from "path";
 import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import { PHONE_RE } from "./normalise.js";
 // Meta's own helpers, imported ONLY to be compared against. The email rule is
@@ -1205,5 +1207,70 @@ describe("sendOpenaiEvent when the response body times out", () => {
         detail: `http ${status} body timed out`,
       });
     }
+  });
+});
+
+// The warning that catches the mismatch before a single conversion is lost.
+// Nothing else reads server.js for ChatGPT Ads' configuration, and the failure
+// it covers is the worst of the configuration failures in this module: a missing
+// pixel id records `skipped`, which is FINAL -- the resend takes `failed` and
+// `rejected` rows only -- so every conversion between a deploy and somebody
+// noticing is gone for good. The same shape as the BREVO_LIST_ID check beside
+// it, which this file's reasoning is borrowed from.
+describe("the boot-time warning in server.js", () => {
+  const SERVER = readFileSync(path.resolve("server.js"), "utf8");
+  const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
+  const warning = listen.match(
+    /if \(process\.env\.OPENAI_CONVERSIONS_API_KEY && !String\(process\.env\.OPENAI_PIXEL_ID \|\| ''\)\.trim\(\)\) \{([\s\S]*?)\n  \}/
+  );
+
+  it("warns when the key is set and the pixel id is not", () => {
+    // Both halves of the condition are the test. Dropping the line, inverting
+    // it, and warning on the key alone all pass every other test in this file.
+    expect(warning, "no boot-time check of OPENAI_PIXEL_ID in the listen callback").not.toBeNull();
+    expect(warning[1]).toContain("console.error(");
+  });
+
+  it("warns only when the key is set, because with no key ChatGPT Ads is off entirely", () => {
+    // Unset OPENAI_CONVERSIONS_API_KEY and the destination is skipped as
+    // "openai not configured", so a warning about its pixel id would be noise on
+    // every boot of every install that does not use ChatGPT Ads. The key is the
+    // first half of the condition, and it is read for truthiness only.
+    expect(listen).toMatch(/if \(process\.env\.OPENAI_CONVERSIONS_API_KEY &&/);
+  });
+
+  it("asks the same question the skip asks, so the warning and the send cannot disagree", () => {
+    // decideOpenaiSkip records "openai pixel id not configured" for a value that
+    // is empty after a trim. A boot that said the pixel id was fine and a send
+    // that then skipped on it would be worse than no warning at all.
+    expect(decideOpenaiSkip({ stage: "verified", apiKey: "k", pixelId: "   ", receivedAt: RECEIVED_AT })).toEqual({
+      reason: "openai pixel id not configured",
+    });
+    expect(warning[0]).toContain("|| '').trim()");
+  });
+
+  it("reads the conversions key, never the LLM agent's OPENAI_API_KEY", () => {
+    // Two OpenAI keys live in .env now. A warning gated on the wrong one would
+    // fire on every install that uses the client-profiling agent and stay silent
+    // on the one install that has this misconfigured.
+    expect(warning[0]).not.toMatch(/OPENAI_API_KEY/);
+  });
+
+  it("names the variable, what happens, and that it cannot be undone", () => {
+    expect(warning[1]).toContain("OPENAI_PIXEL_ID");
+    expect(warning[1]).toMatch(/unset or blank/);
+    expect(warning[1]).toMatch(/recorded as skipped/);
+    expect(warning[1]).toMatch(/skipped row is final/);
+    expect(warning[1]).toMatch(/same ad account/);
+    expect(warning[1]).toContain("[crm-events]");
+  });
+
+  it("never prints either value", () => {
+    // The key is a secret. The pixel id is not, but the commonest way this goes
+    // wrong is a paste into the wrong line, and echoing the value back invites
+    // reading it as confirmation that the right thing is in the right place.
+    expect(warning[1]).not.toMatch(/\$\{[^}]*OPENAI_CONVERSIONS_API_KEY/);
+    expect(warning[1]).not.toMatch(/\$\{[^}]*OPENAI_PIXEL_ID/);
+    expect(warning[1]).not.toMatch(/OPENAI_PIXEL_ID\}/);
   });
 });
