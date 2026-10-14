@@ -139,7 +139,7 @@ funnel stage after the fact.
 |---|---|---|
 | Settle | As soon as all three statuses are settled — normally about a minute after signup | Scrub |
 | Invalid | `received_at` older than **7 days**, and all three statuses `invalid` | The whole row is deleted |
-| Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say |
+| Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say, and settle whatever is still unsent as `failed` |
 
 Both windows are constants in `worker.js`, not environment variables. The two
 periodic passes run from `sweepOnce`, gated to at most once an hour by an instant
@@ -152,9 +152,26 @@ That is deliberate: those rows never sent anything and never will, and they are
 the rows CUTOVER step 5 reads, so they keep everything including `raw_payload`
 for their 7 days and then go whole.
 
-The **backstop** catches rows that never settle: a worker left off by
-`CRM_EVENTS_WORKER_ENABLED`, or a row whose three claims split between two
-overlapped workers so that neither of them ever saw all three settle.
+**The settle path asks the row, not the worker.** The `UPDATE` carries its own
+precondition — all three statuses settled, `scrubbed_at` still NULL — so it is
+correct whatever the worker believes (`settledClause` in `store.js`, the same
+lesson as the row claim above). The worker's own check decides only whether to
+try, so the ordinary row still costs one statement. It matters during an
+overlapped recycle: when two workers split the three claims, neither one's copy
+of the row ever shows all three settled, and a scrub decided from the copy alone
+happened in neither — the row waited the full thirty days in exactly the case
+this policy reduces to a minute. Both attempt it now, the earlier attempt matches
+nothing, and the one that finishes last scrubs.
+
+The **backstop** catches rows the settle path never reaches: a worker left off by
+`CRM_EVENTS_WORKER_ENABLED`, or a row whose scrub could not be written in the
+moment it settled. It also **settles what it makes unsendable**: a destination
+still `pending` or `retrying` is written `failed`, with a detail saying the send
+was never attempted because the data it needed is gone. Without that the row
+reads `pending` for the rest of the table's life — and `pending` piling up is the
+one signal that means the dispatch worker is dead, so a single row stuck there
+makes the number an operator would check unusable. `failed` rather than `skipped`:
+a skip is a deliberate decision not to send, and nothing decided this.
 
 **The cost, recorded rather than hidden:** the table can no longer be searched by
 email or phone, because neither is retained. `is_lead_raw` holds the raw

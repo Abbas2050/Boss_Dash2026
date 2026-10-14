@@ -265,6 +265,20 @@ configuration; the two periodic passes run from `sweepOnce` gated to once an hou
 by an instant the sweep remembers, because §7's rule about timers applies to them
 too.
 
+Two corrections to the first implementation of that, both 2026-10-14. **The
+settle scrub carries its own SQL precondition** — all three statuses settled and
+`scrubbed_at` still NULL — rather than trusting the worker's in-memory copy of
+the row: under the overlapped recycle of §7 two workers split the three claims,
+so neither copy ever showed all three settled and neither scrubbed, which made
+the thirty-day backstop the normal path for every recycle window instead of the
+safety net it is. Both workers attempt it now, and the one that finishes last
+wins. **And the backstop settles what it makes unsendable**, writing `failed`
+with a detail saying the send was never attempted, because the send guard refuses
+a scrubbed row for ever while nothing wrote a status saying so — a row left at
+`pending` for the rest of the table's life poisons the one counter (§12) that
+means "the dispatch worker is dead". `skipped` would be wrong: a skip is a
+deliberate decision not to send.
+
 Two columns deliberately survive the scrub. **`fbc`**, because it is captured at
 signup and reused weeks later for the first-deposit conversion (§8), so scrubbing
 it would send every later conversion to Meta with no ad attached and Meta would
