@@ -9,6 +9,7 @@ import {
   PHONE_RE,
   isFalsyLiteral,
   deriveRecordType,
+  saysLead,
   deriveMiddleName,
   maskEmail,
   maskPhone,
@@ -55,8 +56,11 @@ describe("record type", () => {
   });
 
   it("reads absent, empty and unrecognised as a lead", () => {
-    // A client who misses a welcome message is a support ticket; a lead who
-    // gets a login link for an account that does not exist is a complaint.
+    // "lead" here means "lead, or we could not tell" -- absent and unrecognised
+    // are unknown rather than client. Since 2026-10-14 nothing is gated on this
+    // verdict (WhatsApp goes to leads too, and Brevo reads saysLead below), so it
+    // is a stored statistic; the default stays because a statistic that claims
+    // "client" on a value nobody recognises is worse than one that admits doubt.
     expect(deriveRecordType(undefined)).toBe("lead");
     expect(deriveRecordType("")).toBe("lead");
     expect(deriveRecordType("maybe")).toBe("lead");
@@ -69,6 +73,48 @@ describe("record type", () => {
     // arrives as one of these strings, and unknown resolves to lead.
     for (const v of ["null", "undefined"]) {
       expect(deriveRecordType(v), v).toBe("lead");
+    }
+  });
+});
+
+// Brevo's gate (2026-10-14, user's call). Deliberately NOT the negation of
+// deriveRecordType, and the whole value of it is in that difference.
+describe("saysLead", () => {
+  const LEAD = ["1", "true", "yes", "y", "on"];
+
+  it("is true for a recognised lead literal, trimmed and in any case", () => {
+    for (const v of LEAD) {
+      expect(saysLead(v), v).toBe(true);
+      expect(saysLead(v.toUpperCase()), v).toBe(true);
+      expect(saysLead(`  ${v}  `), v).toBe(true);
+    }
+  });
+
+  it("is false for absent, empty, unrendered and unrecognised alike", () => {
+    // This is the direction that matters. A value FXBO starts sending that we
+    // have never seen must ADD the contact, because the alternative is a Brevo
+    // list that silently stops growing with nothing erroring anywhere.
+    for (const v of [undefined, null, "", "   ", "maybe", "2", "lead", "null", "undefined"]) {
+      expect(saysLead(v), String(v)).toBe(false);
+    }
+  });
+
+  it("is false for every client literal, so the two tests cannot both fire", () => {
+    for (const v of ["0", "false", "no", "n", "off"]) {
+      expect(saysLead(v), v).toBe(false);
+      expect(deriveRecordType(v), v).toBe("client");
+    }
+  });
+
+  it("disagrees with deriveRecordType on exactly the unknown values", () => {
+    // The asymmetry, stated as a test so that collapsing one into the other is
+    // not silent: for an unknown literal the record type says "lead" (a cautious
+    // statistic) while saysLead says false (an included contact). Copying
+    // `recordType !== "client"` into the Brevo gate would read every row below
+    // as a lead and empty the list.
+    for (const v of [undefined, "", "maybe", "null", "2"]) {
+      expect(deriveRecordType(v), String(v)).toBe("lead");
+      expect(saysLead(v), String(v)).toBe(false);
     }
   });
 });
@@ -224,9 +270,10 @@ describe("normaliseEvent", () => {
   it("keeps the is_lead literal beside the verdict, so the row can be read backwards", () => {
     // The verdict cannot: deriveRecordType resolves everything it does not
     // recognise to "lead", so "lead" says nothing about what FXBO actually sent.
-    // CUTOVER step 5 has to learn that literal, because one missing from
-    // CLIENT_LITERALS means every client is read as a lead and nobody gets a
-    // WhatsApp message -- and raw_payload, which used to carry it, is scrubbed.
+    // CUTOVER step 5 has to learn that literal, because one in neither
+    // CLIENT_LITERALS nor LEAD_LITERALS makes `record_type` wrong for everyone --
+    // and raw_payload, which used to carry it, is scrubbed. The literal is also
+    // what Brevo's gate reads, so it is a live field and not only evidence.
     for (const [sent, expected] of [
       ["0", "client"],
       ["false", "client"],
