@@ -203,6 +203,15 @@ place: `FALSY` is for the consent and IB flags and holds `""`, `null` and
 `undefined` as well, and adding a literal to it changes nothing about any of
 this.
 
+**What the CRM's own API says it should be.** `CRM api doc.txt` in the repo
+root is FXBO's OpenAPI spec, and it defines `lead` as a **boolean**, nullable,
+defaulting to `false` -- "Lead will be created, if value is \"true\". Client will
+be created, if value is \"false\"." So the renderings to expect are `true`/`false`
+or `1`/`0`, and **both pairs are already in the two sets**. That makes a surprise
+here unlikely rather than impossible: the spec describes the REST field, not what
+the webhook placeholder prints for it, and a placeholder rendering a boolean
+could still emit something like an empty string for false. Confirm, do not assume.
+
 **What a wrong literal costs, since 2026-10-14.** It no longer stops any
 WhatsApp message: the welcome goes to leads as well as clients, so
 `record_type` gates nothing there. And it cannot empty the Brevo list either —
