@@ -6,6 +6,22 @@ import { authHeaders } from "@/lib/auth";
 import { formatDubaiInstant } from "@/lib/dubaiTime";
 
 const OVERVIEW_URL = "/api/crm-events/overview";
+const REQUEUE_URL = "/api/crm-events/requeue";
+
+/** The two destinations one control resends together.
+ *
+ *  Safe to repeat, each for its own reason: Meta deduplicates server events that
+ *  share an event id and an event name, and the Brevo call is an upsert. So a row
+ *  that did in fact go through is not counted twice or contacted twice, and there
+ *  is nothing to be gained by making an operator press two buttons.
+ *
+ *  WhatsApp is deliberately not in here (2026-10-14, user's call). It has neither
+ *  property, and a `failed` or `rejected` WhatsApp row may already have reached
+ *  the handset -- DoubleTick can answer 2xx carrying a status outside our
+ *  allowlist, which we record as `rejected` on purpose so that the value gets
+ *  found. Resending one of those sends a second welcome. It gets its own control,
+ *  its own warning in plain sight, and its own confirmation. */
+const SAFE_TO_REPEAT = ["meta", "brevo"] as const;
 
 const STAGE_LABELS: Record<string, string> = {
   lead: "Lead",
@@ -61,6 +77,16 @@ type StageHealth = {
   everSeen: boolean;
 };
 
+/** Per destination, how many failures the resend would pick up and how many it
+ *  can no longer reach.
+ *
+ *  Not the same numbers as `destinations`, and it has to be its own field for
+ *  two reasons: those counters follow the selected period, and they count rows
+ *  whose client data has been scrubbed, which cannot be resent at all. A button
+ *  promising 40 and delivering 12 is worse than no button -- `scrubbed` is what
+ *  accounts for the difference. */
+type Resendable = { resendable: number; scrubbed: number };
+
 type Overview = {
   windowDays: number;
   health: {
@@ -73,6 +99,11 @@ type Overview = {
   };
   funnel: Counts;
   destinations: Record<string, Counts>;
+  /** Optional on purpose, like `health.stages`: a response from a server that
+   *  predates the resend must still render the rest of the page. The controls
+   *  then read zero and say there is nothing to resend, which is the safe
+   *  direction to be wrong in. */
+  requeue?: Record<string, Resendable>;
   events: EventRow[];
 };
 
@@ -138,6 +169,9 @@ function isOverview(body: unknown): body is Overview {
 const CARD = "rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800/80 dark:bg-slate-950/70";
 const SECTION_TITLE = "mb-2 text-sm font-semibold uppercase tracking-wide text-primary";
 const CONTROL = "rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900/70";
+const BUTTON = `${CONTROL} font-medium disabled:cursor-not-allowed disabled:opacity-50`;
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 export function CrmEventsPage() {
   const [days, setDays] = useState(30);
@@ -146,6 +180,15 @@ export function CrmEventsPage() {
   const [loading, setLoading] = useState(true);
   const [stage, setStage] = useState("all");
   const [problemsOnly, setProblemsOnly] = useState(false);
+  // Which resend control is in flight, so both can be disabled while either one
+  // is: the two share the endpoint and a second press while the first is still
+  // running would report against a count that has already moved.
+  const [resending, setResending] = useState<"safe" | "whatsapp" | null>(null);
+  // What the last resend did, in words. Null until one has been pressed.
+  const [resendNote, setResendNote] = useState<string | null>(null);
+  // Whether the WhatsApp control is showing its confirmation. A press of the
+  // first button only ever gets here; nothing is sent until the second one.
+  const [confirmWhatsapp, setConfirmWhatsapp] = useState(false);
   // Which request is the latest. Changing the period twice quickly puts two
   // requests in flight, and the slower one must not overwrite the newer one's
   // numbers while the selector reads the newer period.
@@ -175,6 +218,67 @@ export function CrmEventsPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * One destination's failures, or two, put back in the queue.
+   *
+   * One request per destination, because the endpoint is per destination and the
+   * statement behind it writes one destination's columns -- which is the point:
+   * fixing BREVO_LIST_ID must not re-send anybody's WhatsApp welcome. The Meta
+   * and Brevo control simply asks for both.
+   *
+   * What happened is always reported, success or not, and the failure says how
+   * many went out BEFORE it failed rather than claiming nothing did: the first
+   * request can succeed and the second fail, and those rows are pending now.
+   * Then the page reloads, so the counts on screen are the ones after the action
+   * rather than the ones that justified it.
+   */
+  const resend = useCallback(
+    async (which: "safe" | "whatsapp", destinations: readonly string[]) => {
+      setResending(which);
+      setResendNote(null);
+      let requeued = 0;
+      let scrubbed = 0;
+      try {
+        for (const destination of destinations) {
+          const resp = await fetch(REQUEUE_URL, {
+            method: "POST",
+            headers: { ...authHeaders(), "Content-Type": "application/json" },
+            body: JSON.stringify({ destination }),
+          });
+          if (!resp.ok) throw new Error(String(resp.status));
+          const body: unknown = await resp.json();
+          const answer = isRecord(body) ? body : {};
+          requeued += Number(answer.requeued) || 0;
+          scrubbed += Number(answer.alreadyScrubbed) || 0;
+        }
+        setResendNote(
+          requeued === 0
+            ? "Nothing was left to resend."
+            : `${plural(requeued, "send")} queued; they go out within a minute.` +
+                (scrubbed > 0
+                  ? ` ${plural(scrubbed, "earlier failure")} had already been scrubbed and can never be resent.`
+                  : ""),
+        );
+      } catch {
+        // The server's message can name internal schema, so it is not shown.
+        setResendNote(
+          requeued === 0
+            ? "Could not resend. Nothing was queued."
+            : `Could not finish: ${plural(requeued, "send")} had been queued before it failed.`,
+        );
+      } finally {
+        setResending(null);
+        setConfirmWhatsapp(false);
+        void load();
+      }
+    },
+    [load],
+  );
+
+  const resendable = (key: string) => data?.requeue?.[key]?.resendable ?? 0;
+  const safeCount = SAFE_TO_REPEAT.reduce((n, key) => n + resendable(key), 0);
+  const whatsappCount = resendable("whatsapp");
 
   const rows = useMemo(() => {
     const all = data?.events ?? [];
@@ -320,6 +424,89 @@ export function CrmEventsPage() {
                   );
                 })}
               </div>
+            </section>
+
+            <section>
+              <h2 className={SECTION_TITLE}>Resend</h2>
+              <p className="mb-2 text-xs text-muted-foreground">
+                A destination whose send failed or was rejected keeps the client’s details so the cause can be fixed
+                and the send retried. These counts cover the whole table rather than the selected period, and they
+                leave out rows the 30-day scrub has already taken — those can never be resent.
+              </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div className={CARD}>
+                  <div className="mb-1 text-sm font-medium text-foreground">Meta and Brevo</div>
+                  <p className="mb-2 text-xs text-muted-foreground">
+                    Safe to repeat: Meta deduplicates on the event id, and the Brevo contact call is an upsert. A row
+                    that did go through is not counted or contacted twice.
+                  </p>
+                  <button
+                    type="button"
+                    data-testid="resend-safe"
+                    className={BUTTON}
+                    disabled={safeCount === 0 || resending !== null}
+                    onClick={() => void resend("safe", SAFE_TO_REPEAT)}
+                  >
+                    {resending === "safe"
+                      ? "Resending…"
+                      : safeCount === 0
+                        ? "Nothing to resend"
+                        : `Resend ${plural(safeCount, "failed Meta and Brevo send")}`}
+                  </button>
+                </div>
+
+                <div className={CARD}>
+                  <div className="mb-1 text-sm font-medium text-foreground">WhatsApp</div>
+                  {/* Visible text, not a tooltip: the one thing an operator has to
+                      read before pressing this is the one thing a tooltip hides. */}
+                  <p className="mb-2 text-xs text-amber-700 dark:text-amber-300">
+                    Resending may send a second welcome message. A failed WhatsApp row may already have reached the
+                    handset — DoubleTick can answer 2xx with a status we do not recognise, and that is recorded as
+                    rejected on purpose — and nothing deduplicates this message.
+                  </p>
+                  {confirmWhatsapp ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        data-testid="resend-whatsapp-confirm"
+                        className={`${BUTTON} border-amber-500 text-amber-800 dark:text-amber-200`}
+                        disabled={resending !== null}
+                        onClick={() => void resend("whatsapp", ["whatsapp"])}
+                      >
+                        {resending === "whatsapp"
+                          ? "Resending…"
+                          : `Yes, resend ${plural(whatsappCount, "welcome message")} — some may arrive twice`}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="resend-whatsapp-cancel"
+                        className={BUTTON}
+                        disabled={resending !== null}
+                        onClick={() => setConfirmWhatsapp(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="resend-whatsapp"
+                      className={BUTTON}
+                      disabled={whatsappCount === 0 || resending !== null}
+                      onClick={() => setConfirmWhatsapp(true)}
+                    >
+                      {whatsappCount === 0
+                        ? "Nothing to resend"
+                        : `Resend ${plural(whatsappCount, "failed WhatsApp welcome")}…`}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {resendNote ? (
+                <p role="status" data-testid="resend-note" className="mt-2 text-xs text-foreground">
+                  {resendNote}
+                </p>
+              ) : null}
             </section>
 
             <section>

@@ -1087,6 +1087,254 @@ describe("two requests in flight", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The resend controls. The page's one write, and the only thing on it that ends
+// in messages going out to clients -- so most of what is pinned here is what it
+// does NOT do: no request from the WhatsApp control's first press, no request
+// from a disabled control, and no resend of a destination the operator did not
+// name.
+// ---------------------------------------------------------------------------
+
+const REQUEUE_URL = "/api/crm-events/requeue";
+
+/** An overview with something resendable. Every number different, so a count
+ *  read from the wrong destination cannot hide behind an equal neighbour. */
+const RESENDABLE = {
+  ...DISTINCT,
+  requeue: {
+    meta: { resendable: 2, scrubbed: 9 },
+    whatsapp: { resendable: 4, scrubbed: 11 },
+    brevo: { resendable: 10, scrubbed: 28 },
+  },
+  events: [event(1, "row-a", "registered", ["failed", "rejected", "failed"])],
+};
+
+/** A fetch that answers the overview with `overview` and every requeue POST
+ *  with the next answer in `answers`, round-robin on the last one. */
+function installResendFetch(overview: unknown = RESENDABLE, answers: unknown[] = [{ requeued: 10, alreadyScrubbed: 28 }]) {
+  let i = 0;
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === REQUEUE_URL) {
+      const answer = answers[Math.min(i, answers.length - 1)];
+      i += 1;
+      if (answer instanceof Error) throw answer;
+      if (typeof answer === "number") return json({ error: "requeue_failed" }, answer);
+      return json({ destination: JSON.parse(String(init?.body ?? "{}")).destination, ...(answer as object) });
+    }
+    return json(overview);
+  });
+  globalThis.fetch = fn as unknown as typeof fetch;
+  return fn;
+}
+
+/** The destinations the page asked to requeue, in order. */
+const requeued = (fn: ReturnType<typeof installResendFetch>) =>
+  fn.mock.calls
+    .filter(([url]) => String(url) === REQUEUE_URL)
+    .map(([, init]) => JSON.parse(String((init as RequestInit)?.body ?? "{}")).destination);
+
+describe("the resend controls", () => {
+  it("offers Meta and Brevo together, with the count it is about to resend", async () => {
+    // One control for the two, because both are safe to repeat: Meta
+    // deduplicates on the event id and the Brevo call is an upsert. 2 + 10.
+    installResendFetch();
+    render(<CrmEventsPage />);
+    const button = await screen.findByTestId("resend-safe");
+    expect(button).toHaveTextContent("Resend 12 failed Meta and Brevo sends");
+    expect(button).toBeEnabled();
+  });
+
+  it("requeues Meta and Brevo, one request each, and nothing else", async () => {
+    // One request per destination, because the statement behind the endpoint
+    // writes one destination's columns -- which is the point: fixing
+    // BREVO_LIST_ID must not re-send anybody's WhatsApp welcome.
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    await waitFor(() => expect(requeued(fn)).toEqual(["meta", "brevo"]));
+    expect(requeued(fn)).not.toContain("whatsapp");
+    const [, init] = fn.mock.calls.find(([url]) => String(url) === REQUEUE_URL)!;
+    expect((init as RequestInit).method).toBe("POST");
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "Bearer test.session.jwt",
+      "Content-Type": "application/json",
+    });
+  });
+
+  it("says what happened, including the rows that can never be resent", async () => {
+    // The operator can see 28 + 10 failures on the Brevo card -- those counters
+    // count scrubbed rows -- and gets 10 resends. Saying so is what stops the
+    // shortfall being a guess.
+    installResendFetch(RESENDABLE, [
+      { requeued: 2, alreadyScrubbed: 9 },
+      { requeued: 10, alreadyScrubbed: 28 },
+    ]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    const note = await screen.findByTestId("resend-note");
+    expect(note).toHaveTextContent("12 sends queued");
+    expect(note).toHaveTextContent(/37 earlier failures had already been scrubbed/);
+  });
+
+  it("says so rather than going quiet when there is nothing to resend", async () => {
+    // A control that promises nothing must say so. Mysteriously inert is the one
+    // thing it may not be.
+    installResendFetch({ ...DISTINCT, requeue: { meta: { resendable: 0, scrubbed: 4 }, whatsapp: { resendable: 0, scrubbed: 0 }, brevo: { resendable: 0, scrubbed: 0 } } });
+    render(<CrmEventsPage />);
+    const safe = await screen.findByTestId("resend-safe");
+    expect(safe).toHaveTextContent("Nothing to resend");
+    expect(safe).toBeDisabled();
+    expect(screen.getByTestId("resend-whatsapp")).toHaveTextContent("Nothing to resend");
+    expect(screen.getByTestId("resend-whatsapp")).toBeDisabled();
+  });
+
+  it("reads zero from a response that carries no resendable counts at all", async () => {
+    // A server that predates the resend still has to render a page.
+    installResendFetch(DISTINCT);
+    render(<CrmEventsPage />);
+    expect(await screen.findByTestId("resend-safe")).toBeDisabled();
+    expect(screen.getByTestId("resend-whatsapp")).toBeDisabled();
+  });
+
+  it("disables a disabled control's request, not merely its appearance", async () => {
+    const fn = installResendFetch(DISTINCT);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp"));
+    await settle();
+    expect(requeued(fn)).toEqual([]);
+  });
+
+  it("disables both while either is in flight, and reports before enabling them again", async () => {
+    let release: (r: Response) => void = () => {};
+    const fn = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === REQUEUE_URL) return new Promise<Response>((r) => { release = r; });
+      return json(RESENDABLE);
+    });
+    globalThis.fetch = fn as unknown as typeof fetch;
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+
+    await waitFor(() => expect(screen.getByTestId("resend-safe")).toHaveTextContent("Resending…"));
+    expect(screen.getByTestId("resend-safe")).toBeDisabled();
+    expect(screen.getByTestId("resend-whatsapp")).toBeDisabled();
+
+    release(json({ requeued: 12, alreadyScrubbed: 0 }));
+    await settle();
+    release(json({ requeued: 0, alreadyScrubbed: 0 }));
+    await settle();
+    expect(screen.getByTestId("resend-note")).toHaveTextContent("12 sends queued");
+  });
+
+  it("reloads the page's data afterwards, so the counts are the ones after the action", async () => {
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("resend-safe");
+    expect(fn.mock.calls.filter(([url]) => String(url) !== REQUEUE_URL)).toHaveLength(1);
+
+    fireEvent.click(screen.getByTestId("resend-safe"));
+
+    await waitFor(() =>
+      expect(fn.mock.calls.filter(([url]) => String(url) !== REQUEUE_URL)).toHaveLength(2),
+    );
+  });
+
+  it("reports a failed resend without repeating the server's message", async () => {
+    installResendFetch(RESENDABLE, [500]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    const note = await screen.findByTestId("resend-note");
+    expect(note).toHaveTextContent(/could not resend/i);
+    expect(note).not.toHaveTextContent(/requeue_failed/);
+  });
+
+  it("does not claim nothing was queued when the first of the two succeeded", async () => {
+    // Meta's rows ARE pending now. "Nothing was queued" would have the operator
+    // press it again, and the sends are already on their way.
+    installResendFetch(RESENDABLE, [{ requeued: 2, alreadyScrubbed: 0 }, 500]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    const note = await screen.findByTestId("resend-note");
+    expect(note).toHaveTextContent(/could not finish/i);
+    expect(note).toHaveTextContent("2 sends had been queued");
+  });
+});
+
+describe("the WhatsApp control is a separate, warned, confirmed action", () => {
+  it("warns about the duplicate welcome in visible text, not in a tooltip", async () => {
+    // The whole reason WhatsApp is not on the control beside it. A `failed` row
+    // may already have reached the handset -- CUTOVER step 7's case, where
+    // DoubleTick answers 2xx with a status outside our allowlist -- and nothing
+    // deduplicates this message.
+    installResendFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("resend-whatsapp");
+    const warning = screen.getByText(/may send a second welcome message/i);
+    expect(warning).toBeVisible();
+    expect(warning.getAttribute("title")).toBeNull();
+    expect(warning).toHaveTextContent(/already have reached the handset/i);
+  });
+
+  it("is its own control, with its own count", async () => {
+    installResendFetch();
+    render(<CrmEventsPage />);
+    expect(await screen.findByTestId("resend-whatsapp")).toHaveTextContent("Resend 4 failed WhatsApp welcomes");
+  });
+
+  it("sends nothing on the first press: it asks first", async () => {
+    // The confirmation is the point of this control. One press is not consent to
+    // message four people a second time.
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    await settle();
+    expect(requeued(fn)).toEqual([]);
+    expect(screen.getByTestId("resend-whatsapp-confirm")).toHaveTextContent(
+      "Yes, resend 4 welcome messages — some may arrive twice",
+    );
+  });
+
+  it("requeues WhatsApp, and only WhatsApp, once it is confirmed", async () => {
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 11 }]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
+    await waitFor(() => expect(requeued(fn)).toEqual(["whatsapp"]));
+    expect(await screen.findByTestId("resend-note")).toHaveTextContent("4 sends queued");
+  });
+
+  it("sends nothing when the confirmation is cancelled, and offers itself again", async () => {
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp-cancel"));
+    await settle();
+    expect(requeued(fn)).toEqual([]);
+    expect(screen.getByTestId("resend-whatsapp")).toHaveTextContent("Resend 4 failed WhatsApp welcomes");
+  });
+
+  it("asks again the next time, rather than staying confirmed", async () => {
+    // A confirmation that sticks is not a confirmation.
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 0 }]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
+    await waitFor(() => expect(requeued(fn)).toEqual(["whatsapp"]));
+
+    await waitFor(() => expect(screen.queryByTestId("resend-whatsapp-confirm")).toBeNull());
+    expect(screen.getByTestId("resend-whatsapp")).toBeTruthy();
+  });
+
+  it("is never resent by the control beside it", async () => {
+    // The two destinations that are safe to repeat, and not the one that is not.
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    await waitFor(() => expect(requeued(fn)).toHaveLength(2));
+    expect(requeued(fn)).toEqual(["meta", "brevo"]);
+  });
+});
+
 describe("the controls", () => {
   it("show what they are set to, rather than snapping back after a change", async () => {
     installFetch({ ...DISTINCT, events: [event(1, "row-a", "registered", ["sent", "sent", "sent"])] });
