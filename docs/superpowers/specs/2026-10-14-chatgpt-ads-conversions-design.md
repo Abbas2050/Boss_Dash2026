@@ -45,6 +45,46 @@ Normalisation before hashing:
 | External id | Trim only. Case and punctuation preserved. |
 | Names | Lowercase; remove whitespace and ASCII punctuation; keep non-ASCII characters and accents. |
 
+**The event object's fields, verbatim from the reference.** This section
+originally omitted them, which caused three defects in the first build; they are
+pinned here now so nothing has to be inferred.
+
+| Field | Required | Notes |
+|---|---|---|
+| `id` | **yes** | Non-empty string. Reuse it on a retry. |
+| `type` | **yes** | **The event name goes here.** There is no `event_name` field on the event; the docs use that word only when describing the dedupe key. |
+| `timestamp_ms` | **yes** | Integer Unix timestamp in **milliseconds**. Meta's `event_time` is in *seconds* — do not share a helper. |
+| `data` | **yes** | Carries `type`, the data family. |
+| `custom_event_name` | when `type` is `custom` | |
+| `action_source` | depends | One of `web`, `mobile_app`, `offline`, `physical_store`, `phone_call`, `email`, `other`. Must be `mobile_app` for `app_installed` / `app_opened`. |
+| `source_url` | **required for web events**, i.e. when `action_source` is `web` | A URL with scheme and host. |
+| `oppref` | no | Opaque, passed unmodified. Event level, not inside `user`. |
+| `user` | no | The hashed-identifier lists. |
+| `opt_out` | no | |
+
+**`action_source` is `offline` (2026-10-14, user's call).** The brief specified
+`web` with `source_url` set to the register page, but that described the
+registration event — which the pixel owns and we do not send. The three stages
+we do send happen inside the CRM, with no browser and no page, so `offline` is
+what they are. It is the counterpart of the `system_generated` we already send
+Meta for these same events, and because `source_url` is required only for web
+events, nothing has to be invented.
+
+**The timestamp window: "within the last 7 days and no more than 10 minutes in
+the future."** This is a hard constraint on an architecture that retries from
+database columns, and it interacts with the resend action:
+
+- `timestamp_ms` comes from the row's `received_at`, so an ordinary send — about
+  a minute after signup — is well inside the window.
+- **A resend of a failure older than 7 days would be rejected**, since
+  `received_at` is what it is. The resend must therefore refuse an OpenAI row
+  whose `received_at` is outside the window, recording a reason that says so,
+  rather than issuing a request certain to fail. Re-stamping the event with the
+  current time is not an option: it would claim the conversion happened today,
+  and the row's whole purpose is to say when it happened.
+- The 10-minute future bound needs no handling, since `received_at` is written
+  by us on arrival, but a server with a badly skewed clock would trip it.
+
 **Not stated anywhere in the documentation:** the response shape, and any rate
 limit. Treat both as unknown rather than assumed.
 
@@ -166,6 +206,17 @@ on its own terms**, with its own tests pinning a known digest, and do not share
 the phone helper between the two senders. The email helper may be shared,
 because that rule genuinely is identical today — but say so in a comment, so a
 future divergence is noticed rather than inherited.
+
+## 7a. The resend action and the 7-day window
+
+`POST /api/crm-events/requeue` resets a failed destination to `pending` so the
+worker picks it up again. For Meta, WhatsApp and Brevo the age of the row does
+not matter. For OpenAI it does: a `received_at` older than 7 days makes the
+event unsendable by OpenAI's own rule.
+
+So the OpenAI step skips such a row with a reason naming the window, and the
+resendable count must not promise rows it cannot send. A button offering to
+resend forty and delivering none is the failure this is written down to avoid.
 
 ## 8. Deduplication and retries
 
