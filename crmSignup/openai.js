@@ -109,6 +109,38 @@ export function openaiDataType(eventName) {
 export const PIXEL_OWNED_STAGE = "registered";
 
 /**
+ * `received_at` as an integer Unix timestamp in MILLISECONDS, or null when the
+ * value is not a time at all.
+ *
+ * **This is deliberately not worker.js's `eventTimeSeconds`, and the two must
+ * never become one helper.** Meta's `event_time` is in seconds and that helper
+ * divides by 1000; OpenAI's `timestamp_ms` is in milliseconds and divides by
+ * nothing. The two fields are built from the same column on the same row, a
+ * factor of 1000 puts the event in 1970, and the symptom would not be an error
+ * -- it would be OpenAI refusing the event with nothing to say the units were
+ * wrong. So there is no division in this function at all, which is the one form
+ * of the rule a reader can check at a glance.
+ *
+ * One parse, so that everything reading this column reads it the same way.
+ */
+export function openaiTimestampMs(receivedAt) {
+  if (receivedAt === null || receivedAt === undefined || receivedAt === "") return null;
+  const ms =
+    receivedAt instanceof Date
+      ? receivedAt.getTime()
+      : typeof receivedAt === "number"
+        ? receivedAt
+        : Date.parse(String(receivedAt));
+  // NaN is what an invalid Date and an unparseable string both produce, and NaN
+  // in `timestamp_ms` serialises to null: a required field present and empty,
+  // which is the one shape worse than a missing one.
+  if (!Number.isFinite(ms)) return null;
+  // An integer because the field is documented as one, truncated rather than
+  // rounded so that a fractional millisecond cannot move the instant forward.
+  return Math.trunc(ms);
+}
+
+/**
  * Whether this event is ours to send, and if not, why not.
  *
  * The two configuration reasons come first on purpose, and in that order. With
@@ -218,6 +250,27 @@ export function openaiEventId({ crmClientId, stage } = {}) {
 }
 
 /**
+ * **`offline`, not `web` (2026-10-14, user's call).**
+ *
+ * The brief said `web` with `source_url` set to the register page, but that
+ * described the registration event -- which the website pixel owns and we do not
+ * send (see PIXEL_OWNED_STAGE). The stages we do send happen inside the CRM:
+ * no browser, no page, nobody on a URL. `offline` is what they are, and it is
+ * the counterpart of the `system_generated` meta.js already sends for these very
+ * same events.
+ *
+ * **This is also why no `source_url` appears anywhere in this module.** The
+ * reference requires one only for web events, i.e. when `action_source` is
+ * `web`, so there is nothing to invent -- and a plausible register-page URL on
+ * an event no browser produced would be a fact we made up and then reported.
+ *
+ * One value for every stage, so a constant rather than a column on the mapping.
+ * The one caveat, recorded for whoever adds a stage: `app_installed` and
+ * `app_opened` MUST be `mobile_app`, and no CRM stage maps to either today.
+ */
+const ACTION_SOURCE = "offline";
+
+/**
  * One event, shaped as the batch of one that it is.
  *
  * **`{ events: [ ... ] }` with exactly one element, deliberately.** Up to 1,000
@@ -230,18 +283,34 @@ export function openaiEventId({ crmClientId, stage } = {}) {
  * not appear in event monitoring -- so a clean validation is not evidence that
  * anything landed (spec section 2).
  *
- * Returns null for a stage with no mapping. The gate above already refuses one,
- * and this is the second half of that one test rather than a separate opinion:
- * an event with no name, or a family that is not the one its name requires, is
- * rejected outright, and "no payload" is a louder way to get that wrong than a
- * malformed one.
+ * **Returns null rather than a payload that is invalid by construction**, which
+ * is every case where a REQUIRED field has no value to carry: a stage with no
+ * mapping or no family, a client with no id, a row with no readable time. The
+ * gate above already refuses the first of those, and this is the second half of
+ * that one test rather than a separate opinion -- "no payload" is a louder way
+ * to get it wrong than a malformed one.
  */
-export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, validateOnly } = {}) {
+export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, receivedAt, validateOnly } = {}) {
   const mapped = openaiEventFor(stage);
   if (!mapped) return null;
 
   const type = openaiDataType(mapped.name);
   if (!type) return null;
+
+  // Required, and refused here rather than attached behind an `if`. openaiEventId
+  // is empty for a client with no id ON PURPOSE: ":verified" would be the same id
+  // for every such client and would merge different people's conversions into
+  // one. A required field behind a condition means a payload can be built that
+  // OpenAI must reject, so the invalid one is made unconstructable instead.
+  const id = openaiEventId({ crmClientId, stage });
+  if (!id) return null;
+
+  // Required, and in MILLISECONDS -- openaiTimestampMs says why that sentence is
+  // written there and not reused from the Meta step. Without it every event is
+  // rejected, so a row whose received_at is not a time has no event, rather than
+  // one carrying a null in a required field.
+  const timestampMs = openaiTimestampMs(receivedAt);
+  if (timestampMs === null) return null;
 
   // Hashed identifiers only: no names and no external ids (2026-10-14, user's
   // call). This matches what Meta already receives, and it is what lets OpenAI
@@ -254,9 +323,18 @@ export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, v
   const ph = hashPhone(phone);
   if (ph) user.phone_numbers_sha256 = [ph];
 
+  // The event object's own fields, in the reference's order. **The event name
+  // goes in `type`: there is no `event_name` field on an OpenAI event at all,
+  // and the documentation uses that phrase only when describing the dedupe key.
+  // `data.type` is the data FAMILY and is a different field that happens to
+  // share a name** -- which is precisely why the family is looked up from one
+  // table rather than written beside the name.
   const event = {
-    event_name: mapped.name,
+    id,
+    type: mapped.name,
+    timestamp_ms: timestampMs,
     data: { type },
+    action_source: ACTION_SOURCE,
     user,
   };
 
@@ -265,9 +343,6 @@ export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, v
   // lowercase letters, numbers, underscores or dashes, not reusing a built-in
   // name. A custom event without one is rejected.
   if (mapped.customEventName) event.custom_event_name = mapped.customEventName;
-
-  const id = openaiEventId({ crmClientId, stage });
-  if (id) event.id = id;
 
   // Passed through verbatim: OpenAI's click identifier, frozen in its own column
   // at this client's first event because `full_link` is scrubbed a minute later

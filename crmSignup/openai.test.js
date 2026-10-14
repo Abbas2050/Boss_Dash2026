@@ -23,6 +23,7 @@ import {
   openaiEventFor,
   openaiDataType,
   openaiEventId,
+  openaiTimestampMs,
   decideOpenaiSkip,
   hashEmail,
   hashPhone,
@@ -33,6 +34,14 @@ import {
 } from "./openai.js";
 
 const ALL_STAGES = ["lead", "registered", "verified", "live_account", "first_deposit"];
+
+// One instant, written two ways: the column as it reads and the milliseconds it
+// is. The literal is computed by hand rather than from Date.parse of the string
+// beside it, so a `timestamp_ms` built by dividing -- or by multiplying back up
+// from seconds -- fails here instead of agreeing with itself.
+const RECEIVED_AT = "2026-10-14T18:11:00.000Z";
+const RECEIVED_MS = 1792001460000;
+const RECEIVED_SECONDS = 1792001460;
 
 // sha256 digests computed independently with node's crypto, not read back out of
 // the implementation: a digest the code produced would pin nothing.
@@ -231,6 +240,34 @@ describe("decideOpenaiSkip", () => {
   });
 });
 
+describe("openaiTimestampMs", () => {
+  // The field is `timestamp_ms` and Meta's `event_time` is in seconds, one field
+  // apart on the same row. A factor of 1000 puts the event in 1970, which OpenAI
+  // reports as nothing at all -- it refuses the event for being outside the
+  // window -- so the units are pinned here rather than trusted.
+  it("reads the column as milliseconds, with no division anywhere", () => {
+    expect(openaiTimestampMs(RECEIVED_AT)).toBe(RECEIVED_MS);
+    expect(openaiTimestampMs(new Date(RECEIVED_AT))).toBe(RECEIVED_MS);
+    expect(openaiTimestampMs(RECEIVED_MS)).toBe(RECEIVED_MS);
+    // What worker.js's eventTimeSeconds would have produced, which is not this.
+    expect(openaiTimestampMs(RECEIVED_AT)).not.toBe(RECEIVED_SECONDS);
+    expect(openaiTimestampMs(RECEIVED_AT)).toBe(RECEIVED_SECONDS * 1000);
+  });
+
+  it("returns an integer, truncated rather than rounded up", () => {
+    expect(openaiTimestampMs(RECEIVED_MS + 0.9)).toBe(RECEIVED_MS);
+    expect(Number.isInteger(openaiTimestampMs(RECEIVED_AT))).toBe(true);
+  });
+
+  it("returns null for anything that is not a time, never NaN", () => {
+    // NaN in a required field serialises to null: present and empty, which is
+    // the one shape worse than missing.
+    for (const value of ["", "   ", "not a date", undefined, null, new Date("nonsense"), NaN, Infinity]) {
+      expect(openaiTimestampMs(value), String(value)).toBeNull();
+    }
+  });
+});
+
 describe("hashing", () => {
   it("normalises the email before hashing, not after", () => {
     expect(hashEmail("  Ali.Khan@Example.COM ")).toBe(hashEmail("ali.khan@example.com"));
@@ -383,6 +420,9 @@ describe("buildOpenaiPayload", () => {
     email: "ali.khan@example.com",
     phone: "+971507192185",
     oppref: "abc123XYZ",
+    // Required: `timestamp_ms` has no default and no fallback, and a payload
+    // built without one would be invalid by construction.
+    receivedAt: RECEIVED_AT,
   };
 
   it("sends exactly one event per request, in the batch envelope", () => {
@@ -394,16 +434,28 @@ describe("buildOpenaiPayload", () => {
     expect(payload.events).toHaveLength(1);
   });
 
-  it("uses the stage's event name and the family that name requires", () => {
+  it("puts the event name in `type`, where OpenAI's event object carries it", () => {
+    // **There is no `event_name` field on an OpenAI event.** The reference calls
+    // the field `type` and uses the phrase "event name" only when describing the
+    // dedupe key, so a payload with `event_name` names nothing and the event is
+    // refused. `data.type` is the data FAMILY -- a different field that happens
+    // to share a name, which is exactly how the two got confused.
     const event = buildOpenaiPayload(base).events[0];
-    expect(event.event_name).toBe("custom");
+    expect(event.type).toBe("custom");
     expect(event.data).toEqual({ type: "custom" });
+    expect("event_name" in event).toBe(false);
+    // The quotes are load-bearing: `custom_event_name` is a real field and
+    // carries the bare word, so only the quoted key can be looked for.
+    expect(JSON.stringify(buildOpenaiPayload(base))).not.toContain('"event_name"');
+    for (const stage of ALL_STAGES) {
+      expect("event_name" in buildOpenaiPayload({ ...base, stage }).events[0], stage).toBe(false);
+    }
   });
 
   it("gives each stage the right name and family pair", () => {
     const pairs = ALL_STAGES.map((stage) => {
       const event = buildOpenaiPayload({ ...base, stage }).events[0];
-      return [stage, `${event.event_name}/${event.data.type}`];
+      return [stage, `${event.type}/${event.data.type}`];
     });
     expect(Object.fromEntries(pairs)).toEqual({
       lead: "lead_created/customer_action",
@@ -492,7 +544,7 @@ describe("buildOpenaiPayload", () => {
     for (const oppref of ["", "   ", undefined, null]) {
       const event = buildOpenaiPayload({ ...base, oppref }).events[0];
       expect("oppref" in event, String(oppref)).toBe(false);
-      expect(event.event_name, String(oppref)).toBe("custom");
+      expect(event.type, String(oppref)).toBe("custom");
     }
   });
 
@@ -502,9 +554,105 @@ describe("buildOpenaiPayload", () => {
     expect(buildOpenaiPayload({ ...base, stage: "first_deposit" }).events[0].id).toBe("42:first_deposit");
   });
 
-  it("omits the id when there is no client id, rather than sharing one across clients", () => {
-    const event = buildOpenaiPayload({ ...base, crmClientId: "" }).events[0];
-    expect("id" in event).toBe(false);
+  it("builds nothing when there is no client id, rather than an event with no id", () => {
+    // **`id` is required**, so it cannot be attached behind a condition: that
+    // would make a payload invalid by construction merely unlikely. And the id
+    // is genuinely unavailable here rather than merely awkward -- openaiEventId
+    // returns "" on purpose, because ":verified" would be the SAME id for every
+    // client with no id and would merge different people's conversions into one.
+    // So the invalid payload is unconstructable, which is what this used to
+    // assert as an absent `id` on a payload that would have been refused.
+    for (const crmClientId of ["", "   ", undefined, null]) {
+      expect(buildOpenaiPayload({ ...base, crmClientId }), String(crmClientId)).toBeNull();
+    }
+  });
+
+  it("stamps timestamp_ms in milliseconds, which is required and is not Meta's units", () => {
+    // Without it every event is rejected. Meta's `event_time` is in SECONDS and
+    // is built from the same column by a helper that divides by 1000; this field
+    // divides by nothing, and the two are one field apart on the same row.
+    const event = buildOpenaiPayload(base).events[0];
+    expect(event.timestamp_ms).toBe(RECEIVED_MS);
+    expect(event.timestamp_ms).not.toBe(RECEIVED_SECONDS);
+    expect(Number.isInteger(event.timestamp_ms)).toBe(true);
+    // Thirteen digits, not ten: the shape of the mistake, independently of the
+    // instant chosen.
+    expect(String(event.timestamp_ms)).toHaveLength(13);
+  });
+
+  it("takes the timestamp from the row, never from the clock", () => {
+    // The row exists to say when the conversion happened. A resend must not
+    // re-stamp it with today, which is the thing the 7-day window tempts.
+    const event = buildOpenaiPayload({ ...base, receivedAt: new Date(RECEIVED_MS - 3 * 86400000) }).events[0];
+    expect(event.timestamp_ms).toBe(RECEIVED_MS - 3 * 86400000);
+    expect(buildOpenaiPayload(base).events[0].timestamp_ms).toBe(RECEIVED_MS);
+  });
+
+  it("carries timestamp_ms on every stage", () => {
+    for (const stage of ALL_STAGES) {
+      expect(buildOpenaiPayload({ ...base, stage }).events[0].timestamp_ms, stage).toBe(RECEIVED_MS);
+    }
+  });
+
+  it("builds nothing when received_at is not a time, rather than a null in a required field", () => {
+    for (const receivedAt of ["", "   ", "not a date", undefined, null, new Date("nonsense")]) {
+      expect(buildOpenaiPayload({ ...base, receivedAt }), String(receivedAt)).toBeNull();
+    }
+  });
+
+  it("sends action_source offline, because no browser and no page produced these", () => {
+    // 2026-10-14, user's call. The brief said `web`, but that described the
+    // registration event, which the pixel owns and we do not send. The stages we
+    // do send happen inside the CRM: the counterpart of the `system_generated`
+    // Meta already receives for these same events.
+    for (const stage of ALL_STAGES) {
+      expect(buildOpenaiPayload({ ...base, stage }).events[0].action_source, stage).toBe("offline");
+    }
+  });
+
+  it("uses one of the values OpenAI lists, and not web", () => {
+    const valid = ["web", "mobile_app", "offline", "physical_store", "phone_call", "email", "other"];
+    const { action_source } = buildOpenaiPayload(base).events[0];
+    expect(valid).toContain(action_source);
+    expect(action_source).not.toBe("web");
+  });
+
+  it("sends no source_url, which is required only for web events", () => {
+    // There is no URL to send: a plausible register-page URL on an event no
+    // browser produced would be a fact we made up and then reported. Since
+    // `action_source` is not `web`, the reference does not ask for one.
+    for (const stage of ALL_STAGES) {
+      const event = buildOpenaiPayload({ ...base, stage }).events[0];
+      expect("source_url" in event, stage).toBe(false);
+      expect(JSON.stringify(event), stage).not.toContain("source_url");
+      expect(JSON.stringify(event), stage).not.toContain("http");
+    }
+  });
+
+  it("emits exactly the event fields the reference defines, and no others", () => {
+    // The whole event object in one assertion, so a field invented later has to
+    // be defended here rather than appearing quietly. Every required field --
+    // `id`, `type`, `timestamp_ms`, `data` -- is present unconditionally.
+    expect(buildOpenaiPayload(base).events[0]).toEqual({
+      id: "42:verified",
+      type: "custom",
+      custom_event_name: "client_verified",
+      timestamp_ms: RECEIVED_MS,
+      data: { type: "custom" },
+      action_source: "offline",
+      oppref: "abc123XYZ",
+      user: { emails_sha256: [SHA_EMAIL], phone_numbers_sha256: [SHA_PHONE] },
+    });
+    // A built-in event, where the only difference is the absent custom name.
+    expect(buildOpenaiPayload({ ...base, stage: "first_deposit" }).events[0]).toEqual({
+      id: "42:first_deposit",
+      type: "order_created",
+      timestamp_ms: RECEIVED_MS,
+      data: { type: "contents" },
+      action_source: "offline",
+      oppref: "abc123XYZ",
+      user: { emails_sha256: [SHA_EMAIL], phone_numbers_sha256: [SHA_PHONE] },
+    });
   });
 
   it("puts validate_only at the top level, beside events and never inside one", () => {
@@ -778,7 +926,10 @@ describe("sendOpenaiEvent", () => {
   });
 
   it("sends the payload as JSON in the body", async () => {
-    const payload = { events: [{ event_name: "custom", id: "42:verified" }], validate_only: true };
+    const payload = {
+      events: [{ id: "42:verified", type: "custom", timestamp_ms: RECEIVED_MS }],
+      validate_only: true,
+    };
     const fetchImpl = ok();
     await sendOpenaiEvent({ fetchImpl, pixelId: "px_1", apiKey: "sk-test", payload });
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual(payload);
