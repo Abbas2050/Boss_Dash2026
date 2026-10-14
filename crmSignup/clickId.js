@@ -1,21 +1,31 @@
 /**
- * The Meta click identifier.
+ * The click identifiers that arrive inside the landing URL.
  *
  * The CRM derives its own ClickID by pulling `fbclid` out of the landing URL it
  * was given as `full_link`. We get the same `full_link` as a webhook parameter,
- * so we derive the same thing without a REST call.
+ * so we derive the same thing without a REST call. `oppref` is OpenAI's
+ * equivalent, and arrives the same way in the same string.
  *
- * Everything here fails quietly by design -- an organic signup has no fbclid,
- * and that is normal. What must NOT be quiet is a malformed result, so the
- * wrapping is tested rather than trusted: Meta accepts a bare fbclid and simply
- * never matches it.
+ * Everything here fails quietly by design -- an organic signup has neither, and
+ * that is normal. What must NOT be quiet is a malformed result, so the wrapping
+ * is tested rather than trusted: Meta accepts a bare fbclid and simply never
+ * matches it.
  */
 
 /** Meta's prefix and subdomain-index, both fixed for our use. */
 const FBC_PREFIX = "fb";
 const FBC_SUBDOMAIN_INDEX = "1";
 
-export function extractFbclid(fullLink) {
+/**
+ * One query parameter out of whatever `full_link` happens to be.
+ *
+ * Shared by both click identifiers below, because none of the ways this goes
+ * wrong belong to either platform: a fragment that hides a query string the
+ * server never saw, a value that will not decode, a `full_link` that is not a
+ * URL at all. One parser cannot drift from itself, and these cases are already
+ * pinned by test for `fbclid`.
+ */
+function queryParam(fullLink, name) {
   const raw = String(fullLink ?? "").trim();
   if (!raw) return "";
 
@@ -30,7 +40,7 @@ export function extractFbclid(fullLink) {
   for (const pair of query.split("&")) {
     const eq = pair.indexOf("=");
     if (eq < 0) continue;
-    if (pair.slice(0, eq) !== "fbclid") continue;
+    if (pair.slice(0, eq) !== name) continue;
     const value = pair.slice(eq + 1);
     try {
       return decodeURIComponent(value);
@@ -41,6 +51,32 @@ export function extractFbclid(fullLink) {
     }
   }
   return "";
+}
+
+export function extractFbclid(fullLink) {
+  return queryParam(fullLink, "fbclid");
+}
+
+/**
+ * OpenAI's click identifier, and it lives here rather than in openai.js
+ * because the parsing is not OpenAI's concern -- it is the landing URL's, and
+ * it is the identical parse `fbclid` already needs.
+ *
+ * **OpenAI's Conversions API does not capture it**, so without it a conversion
+ * cannot be attributed to the ad that produced it. It must be extracted at
+ * first sight and frozen in its own column, for the two reasons `fbc` is:
+ * `full_link` is scrubbed about a minute after signup, so parsing it on demand
+ * would work for a client's first event and fail silently for every later one;
+ * and the first deposit is a different row arriving weeks later, with its own
+ * `full_link`, which will normally be empty because that visit is not an ad
+ * click.
+ *
+ * Unlike `fbc` there is nothing to wrap: no `fb.1.<ms>.` prefix and no
+ * timestamp, so the value itself is the whole of what is frozen, and there is
+ * no buildOppref to get wrong.
+ */
+export function extractOppref(fullLink) {
+  return queryParam(fullLink, "oppref");
 }
 
 /** `fb.1.<timestamp_ms>.<fbclid>` -- milliseconds, not seconds. */

@@ -1,10 +1,11 @@
 // @vitest-environment node
 //
-// The click identifier Meta matches on. Every mistake in this file degrades
-// matching SILENTLY -- Meta accepts a malformed fbc and simply fails to match
-// it, with no error anywhere.
+// The click identifiers Meta and OpenAI match on. Every mistake in this file
+// degrades matching SILENTLY -- Meta accepts a malformed fbc and simply fails to
+// match it, with no error anywhere, and a missing oppref is indistinguishable
+// from an organic signup.
 import { describe, it, expect } from "vitest";
-import { extractFbclid, buildFbc, deriveFbc } from "./clickId.js";
+import { extractFbclid, extractOppref, buildFbc, deriveFbc } from "./clickId.js";
 
 describe("extractFbclid", () => {
   it("pulls fbclid out of a landing URL", () => {
@@ -53,6 +54,76 @@ describe("extractFbclid", () => {
     // The raw value is still the only attribution we have.
     expect(() => extractFbclid("https://x.com/p?fbclid=%E0%A4%A")).not.toThrow();
     expect(extractFbclid("https://x.com/p?fbclid=%E0%A4%A")).toBe("%E0%A4%A");
+  });
+});
+
+describe("extractOppref", () => {
+  it("pulls oppref out of a landing URL", () => {
+    expect(
+      extractOppref("https://skylinkscapital.com/en/?utm_source=chatgpt&oppref=abc123XYZ")
+    ).toBe("abc123XYZ");
+  });
+
+  it("finds it wherever it sits in the query string", () => {
+    expect(extractOppref("https://x.com/p?oppref=ABC")).toBe("ABC");
+    expect(extractOppref("https://x.com/p?a=1&oppref=ABC&b=2")).toBe("ABC");
+  });
+
+  it("returns empty when there is none, rather than guessing", () => {
+    // An organic signup has no oppref, and that is normal, not an error.
+    expect(extractOppref("https://skylinkscapital.com/en/")).toBe("");
+    expect(extractOppref("https://x.com/p?utm_source=google")).toBe("");
+    expect(extractOppref("")).toBe("");
+    expect(extractOppref(undefined)).toBe("");
+  });
+
+  it("does not take fbclid for an oppref, or the other way round", () => {
+    // The two arrive in the same string and are never the same value. Reading
+    // one as the other would attribute every ChatGPT conversion to a Meta click
+    // id OpenAI can never match, with nothing erroring.
+    expect(extractOppref("https://x.com/p?fbclid=META")).toBe("");
+    expect(extractFbclid("https://x.com/p?oppref=OPENAI")).toBe("");
+    const both = "https://x.com/p?fbclid=META&oppref=OPENAI";
+    expect(extractOppref(both)).toBe("OPENAI");
+    expect(extractFbclid(both)).toBe("META");
+  });
+
+  it("does not match a parameter that merely ends in oppref", () => {
+    // A prefix match would read `my_oppref` or `xoppref` as ours.
+    expect(extractOppref("https://x.com/p?my_oppref=ABC")).toBe("");
+    expect(extractOppref("https://x.com/p?opprefx=ABC")).toBe("");
+  });
+
+  it("does not throw on a value that is not a URL at all", () => {
+    // full_link is whatever the CRM stored; it is not guaranteed well-formed.
+    expect(() => extractOppref("not a url")).not.toThrow();
+    expect(extractOppref("not a url")).toBe("");
+  });
+
+  it("still finds it in a string that is only a query fragment", () => {
+    expect(extractOppref("?oppref=ABC")).toBe("ABC");
+  });
+
+  it("decodes a percent-encoded value", () => {
+    expect(extractOppref("https://x.com/p?oppref=A%2BB")).toBe("A+B");
+  });
+
+  it("ignores a fragment after the query", () => {
+    expect(extractOppref("https://x.com/p?oppref=ABC#frag")).toBe("ABC");
+    // The fragment starts before the query, so the query is not in the part the
+    // server sees. The fragment must be cut before the query is searched for.
+    expect(extractOppref("https://x.com/p#a?oppref=ABC")).toBe("");
+  });
+
+  it("keeps a malformed escape as-is rather than throwing", () => {
+    expect(() => extractOppref("https://x.com/p?oppref=%E0%A4%A")).not.toThrow();
+    expect(extractOppref("https://x.com/p?oppref=%E0%A4%A")).toBe("%E0%A4%A");
+  });
+
+  it("returns the value raw, with no wrapper of any kind", () => {
+    // Unlike fbc there is no fb.1.<ms>. prefix and no timestamp. Anything added
+    // here is a value OpenAI never matches.
+    expect(extractOppref("https://x.com/p?oppref=ABC")).toBe("ABC");
   });
 });
 
