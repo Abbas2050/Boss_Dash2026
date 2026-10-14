@@ -7,6 +7,7 @@ import { describe, it, expect, vi } from "vitest";
 import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   META_EVENT_NAMES,
+  decideMetaSkip,
   hashEmail,
   hashPhone,
   buildMetaPayload,
@@ -23,6 +24,44 @@ describe("event names", () => {
       live_account: "TradingAccountOpened",
       first_deposit: "Purchase",
     });
+  });
+});
+
+describe("decideMetaSkip", () => {
+  const ALL_STAGES = ["lead", "registered", "verified", "live_account", "first_deposit"];
+
+  it("skips every stage when there is no token", () => {
+    for (const stage of ALL_STAGES) {
+      expect(decideMetaSkip({ stage, accessToken: "" })).toEqual({ reason: "meta not configured" });
+    }
+  });
+
+  it("names the missing token before the stage, so a misconfiguration is not read as a design choice", () => {
+    // Both reasons are true for `registered` with no token. The configuration
+    // one is the actionable one.
+    expect(decideMetaSkip({ stage: "registered", accessToken: "   " })).toEqual({
+      reason: "meta not configured",
+    });
+  });
+
+  it("skips registered, because the website pixel still owns CompleteRegistration", () => {
+    // 2026-10-14, user's call: the WordPress plugin keeps firing the
+    // CompleteRegistration pixel event, so sending it from here too would
+    // book the same conversion twice. Deduplicating instead would need the
+    // browser's event_id carried through the CRM, which FXBO cannot do.
+    expect(decideMetaSkip({ stage: "registered", accessToken: "tok" })).toEqual({
+      reason: "registered is owned by the website pixel",
+    });
+  });
+
+  it("sends the other four stages, which no pixel fires", () => {
+    for (const stage of ALL_STAGES.filter((s) => s !== "registered")) {
+      expect(decideMetaSkip({ stage, accessToken: "tok" })).toBeNull();
+    }
+  });
+
+  it("still maps registered to an event name, so lifting the gate needs no second change", () => {
+    expect(META_EVENT_NAMES.registered).toBe("CompleteRegistration");
   });
 });
 

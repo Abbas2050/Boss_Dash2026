@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { maskEmail, maskPhone } from "./normalise.js";
-import { buildMetaPayload, sendMetaEvent } from "./meta.js";
+import { buildMetaPayload, sendMetaEvent, decideMetaSkip } from "./meta.js";
 import {
   decideWhatsappSkip,
   buildWhatsappPayload,
@@ -88,8 +88,11 @@ const eventTimeSeconds = (row) => Math.floor(new Date(row.received_at).getTime()
 async function runMetaStep(row, fields, deps, begin) {
   const { config, sendMeta, now, logger } = deps;
 
-  if (!str(config.metaAccessToken)) {
-    return { status: "skipped", detail: "meta not configured", attempts: Number(row.meta_attempts) || 0, nextAttemptAt: null };
+  // One decision for both reasons a Meta send is not ours to make: no token, or
+  // a stage the website pixel owns. A skip spends no attempt and sets no clock.
+  const skip = decideMetaSkip({ stage: fields.stage, accessToken: config.metaAccessToken });
+  if (skip) {
+    return { status: "skipped", detail: skip.reason, attempts: Number(row.meta_attempts) || 0, nextAttemptAt: null };
   }
 
   const payload = buildMetaPayload({

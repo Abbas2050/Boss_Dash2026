@@ -4,8 +4,9 @@ import { isTransientHttpStatus } from "./transientHttp.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
-/** One Meta event per funnel stage. One owner per stage: the website pixel no
- *  longer fires conversions, so nothing here can double-count. */
+/** One Meta event per funnel stage. `registered` is mapped but not sent -- see
+ *  decideMetaSkip. The mapping stays complete so that lifting the gate is one
+ *  change rather than two. */
 export const META_EVENT_NAMES = {
   lead: "Lead",
   registered: "CompleteRegistration",
@@ -13,6 +14,43 @@ export const META_EVENT_NAMES = {
   live_account: "TradingAccountOpened",
   first_deposit: "Purchase",
 };
+
+const text = (v) => String(v ?? "").trim();
+
+/**
+ * The stage whose conversion belongs to the website pixel, not to us.
+ *
+ * 2026-10-14, user's call: the WordPress plugin keeps firing the
+ * CompleteRegistration pixel event on the signup page, so sending the same
+ * event from here would book one registration as two conversions and inflate
+ * every cost-per-acquisition Meta reports.
+ *
+ * The usual answer -- fire both and let Meta deduplicate -- needs the browser's
+ * `event_id` carried through to the server, and nothing in the path can do
+ * that: the pixel's id lives in the page, while ours arrives from FXBO, which
+ * has no field holding it. So one owner per stage, and for this stage the owner
+ * is the pixel.
+ *
+ * The cost, stated rather than hidden: CompleteRegistration is only ever as
+ * complete as a browser pixel, so signups from ad-blocked or tracking-restricted
+ * browsers go unattributed for that step. The other four stages are server-side
+ * and unaffected, which is why they stay here.
+ */
+export const PIXEL_OWNED_STAGE = "registered";
+
+/**
+ * Whether this event is ours to send, and if not, why not.
+ *
+ * The configuration reason is checked first on purpose: with no token, both
+ * reasons are true for `registered`, and "meta not configured" is the one an
+ * operator can act on. Reading a missing token as a design choice is how a
+ * dead integration looks deliberate in the settings tab.
+ */
+export function decideMetaSkip({ stage, accessToken }) {
+  if (!text(accessToken)) return { reason: "meta not configured" };
+  if (stage === PIXEL_OWNED_STAGE) return { reason: `${PIXEL_OWNED_STAGE} is owned by the website pixel` };
+  return null;
+}
 
 /** Meta requires exactly these three values on a CRM event. */
 const ACTION_SOURCE = "system_generated";

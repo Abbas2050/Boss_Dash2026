@@ -237,13 +237,18 @@ within the hour, and Diagnostics reports anything Meta objects to.
 
 ## 9. Switch off the duplicate senders
 
-**Until this step is done, every website signup produces two WhatsApp messages
-and two Meta conversions.**
+**Until this step is done, every website signup produces two WhatsApp
+messages.**
 
 1. **The `slc-crm` WordPress plugin** (`D:\Signup\Signup 2.0\slc-crm`): remove
-   the DoubleTick send and the `CompleteRegistration` pixel event. Keep the
-   forms, the CRM record creation with `utmParams` and `full_link`, and the
-   pixel's `PageView` and `InitiateCheckout`.
+   **the DoubleTick send only**. Keep everything else -- the forms, the CRM
+   record creation with `utmParams` and `full_link`, and the whole pixel,
+   `CompleteRegistration` included.
+   The conversion is not duplicated, because this service deliberately does not
+   send Meta's `CompleteRegistration` (your call, 14 October). The pixel owns
+   that stage; we own the other four. The trade-off is that registration is only
+   ever counted as accurately as a browser pixel, so signups from ad-blocked or
+   tracking-restricted browsers go unattributed for that one step.
 2. **FXBO's own Meta integration**, once this is confirmed live.
 3. **The Lovable promo pages** must not add conversion events for either step.
 

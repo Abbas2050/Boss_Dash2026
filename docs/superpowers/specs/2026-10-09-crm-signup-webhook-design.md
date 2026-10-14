@@ -174,13 +174,40 @@ stored row stops *CRM retries*, not *a second independent sender*. The
 integration plan confirms the plugin's send is being removed. **It is a required
 step, not a follow-up.**
 
-**This becomes the only sender of Meta conversion events (2026-10-12).** Per the
-integration plan: the plugin drops `CompleteRegistration` and keeps only
-`PageView` and `InitiateCheckout`; the Lovable promo pages send no conversion
-events at all. One owner per stage, so there is no pixel/CAPI overlap and no
-`event_id` deduplication to build. If either of those pixels is later restored
-to firing a conversion, this assumption breaks silently and the funnel
-double-counts.
+**~~This becomes the only sender of Meta conversion events (2026-10-12).~~
+Superseded 2026-10-14 -- see the next entry.** The 12 October plan was that the
+plugin drops `CompleteRegistration` and keeps only `PageView` and
+`InitiateCheckout`, leaving this service the sole owner of every stage.
+
+**The website pixel keeps `CompleteRegistration`; we send the other four
+(2026-10-14, user's call).** The plugin is left alone apart from its DoubleTick
+send, so it goes on firing `CompleteRegistration` in the browser, and
+`decideMetaSkip` stops this service sending that stage. One owner per stage
+still holds -- the owner of `registered` is now the pixel rather than us.
+
+The usual alternative, firing both and letting Meta deduplicate on a shared
+`event_id`, is not available: the pixel's id exists only in the page, ours
+arrives from FXBO, and FXBO has no field that could carry the browser's value
+across. Building one would mean changing the plugin, adding a CRM field and a
+rule parameter -- more moving parts than the stage is worth.
+
+The cost, recorded rather than hidden: `CompleteRegistration` is only ever as
+complete as a browser pixel, so registrations from ad-blocked or
+tracking-restricted browsers go unattributed for that step. The other four
+stages are server-side and unaffected, which is the reason they stay here.
+`META_EVENT_NAMES` still maps `registered`, so lifting the gate later is one
+change rather than two.
+
+A consequence worth knowing when reading the settings tab: **no single event
+sends to all three destinations any more.** `registered` sends WhatsApp and
+Brevo with Meta recorded as `skipped`; every other stage sends Meta with the
+other two recorded `skipped`. A `registered` row still sitting at `pending` or
+`retrying` for Meta when this deploys becomes `skipped` on its next sweep, and
+its remaining Meta retries are abandoned.
+
+The Lovable promo pages still send no conversion events at all. If either pixel
+is later changed to fire a conversion for a stage we own, the assumption breaks
+silently and the funnel double-counts.
 
 **Brevo keeps the full attribute set (2026-10-12, user's call).** The
 integration plan says "first name, last name, email. Nothing else." That was put

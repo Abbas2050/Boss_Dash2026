@@ -13,14 +13,24 @@ Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 | Stage | Meta event | WhatsApp | Brevo |
 |---|---|---|---|
 | `lead` | `Lead` | no | no |
-| `registered` | `CompleteRegistration` | yes, to clients with a valid phone | yes |
+| `registered` | **not sent** -- the website pixel owns it | yes, to clients with a valid phone | yes |
 | `verified` | `Client_Verified` | no | no |
 | `live_account` | `TradingAccountOpened` | no | no |
 | `first_deposit` | `Purchase` | no | no |
 
+**No single event sends to all three.** `registered` sends WhatsApp and Brevo;
+every other stage sends Meta alone.
+
 A destination that does not apply is stored as `skipped` with its reason, so a
 processed row shows all three. FXBO has no trigger for `lead` yet (spec section
 11).
+
+`registered` is mapped to `CompleteRegistration` in `META_EVENT_NAMES` but
+deliberately not sent: the WordPress signup plugin keeps firing that event as a
+browser pixel, and sending it from here as well would book one registration as
+two conversions. See `decideMetaSkip` in `meta.js` for why deduplicating instead
+is not available to us. The mapping stays complete so that lifting the gate is
+one change rather than two.
 
 ## Routes
 
