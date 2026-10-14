@@ -57,6 +57,36 @@ export const SCRUBBABLE_STATUSES = ["sent", "skipped"];
 export const SCRUBBABLE = new Set(SCRUBBABLE_STATUSES);
 
 /**
+ * The statuses a bulk resend may put back to `pending` (2026-10-14, user's
+ * call).
+ *
+ * The third question, and it is not either of the two above: "may an operator
+ * ask for this one to be attempted again". Keeping the client data on a failure
+ * only made the resend possible; this is what the resend is allowed to touch.
+ *
+ * `rejected` is in deliberately. A rejection is the provider refusing the
+ * request, which sounds like the one thing not worth repeating -- but Brevo's
+ * 400 for an attribute that does not exist yet is a `rejected` that succeeds the
+ * moment the attribute is created, and that is the commonest reason anybody
+ * clicks this. The operator clicks after fixing something, and the system is in
+ * no position to second-guess which of the two they fixed.
+ *
+ * `sent` and `skipped` are out, and that is the direction that matters: a resend
+ * that picked up a `sent` row would deliver a second welcome to someone who
+ * already got one, which is the one message with nothing deduplicating it. So
+ * this list is strictly the complement of SCRUBBABLE within SETTLED, minus
+ * `invalid`.
+ *
+ * `invalid` is out as well, and for its own reason: an invalid row is invalid in
+ * all three columns because the payload could not be read or it was an FXBO test
+ * press. There is nothing to send from it, and the 7-day delete takes it whole.
+ */
+export const REQUEUEABLE_STATUSES = ["failed", "rejected"];
+
+/** The same list as a set, for the reader that counts what is resendable. */
+export const REQUEUEABLE = new Set(REQUEUEABLE_STATUSES);
+
+/**
  * The three statuses that are the whole difference between the two sets: a
  * destination that went wrong, and whose client data is therefore kept.
  *
@@ -87,6 +117,24 @@ for (const status of ["sent", "skipped"]) {
     throw new Error(
       `settled.js: '${status}' is a success or a deliberate skip and must be in BOTH lists -- dropped from ` +
         `SCRUBBABLE_STATUSES no row would ever scrub, dropped from SETTLED_STATUSES it would be sent again`
+    );
+  }
+  if (REQUEUEABLE.has(status)) {
+    throw new Error(
+      `settled.js: '${status}' must NOT be in REQUEUEABLE_STATUSES -- a bulk resend would deliver a second ` +
+        `WhatsApp welcome to a client who already received one, and nothing deduplicates that message`
+    );
+  }
+}
+
+for (const status of REQUEUEABLE_STATUSES) {
+  // Requeueing something the worker would have attempted anyway is not a resend,
+  // it is a race: the row is already claimable, and setting its attempt count
+  // back to 0 under a sweeper that is mid-send would hand it a fresh budget.
+  if (!SETTLED.has(status)) {
+    throw new Error(
+      `settled.js: '${status}' is requeueable but not in SETTLED_STATUSES -- only an action nothing will ` +
+        `attempt again needs an operator to ask for it`
     );
   }
 }

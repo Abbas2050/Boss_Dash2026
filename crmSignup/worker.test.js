@@ -14,7 +14,14 @@ import { planRetry, rowToFields, processSignupEvent } from "./worker.js";
 // same precondition the real statement does rather than a copy of it. SETTLED is
 // "do not attempt this action again"; SCRUBBABLE is "this row is safe to
 // forget", and the scrub is built from the second.
-import { SETTLED as SETTLED_SET, SCRUBBABLE as SCRUBBABLE_SET } from "./settled.js";
+// REQUEUEABLE is the third of them -- "an operator may ask for this one again"
+// -- read by the resend case at the end of this file for the same reason: so the
+// fake table applies the statuses the statement names rather than a copy of them.
+import {
+  SETTLED as SETTLED_SET,
+  SCRUBBABLE as SCRUBBABLE_SET,
+  REQUEUEABLE as REQUEUEABLE_SET,
+} from "./settled.js";
 
 describe("planRetry", () => {
   const now = new Date("2026-10-12T12:00:00Z");
@@ -951,6 +958,170 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     // thirty-day backstop with nothing said about why.
     const d = deps({ scrub: vi.fn(async () => { throw new Error("ECONNRESET"); }) });
     await expect(processSignupEvent(row(), d)).rejects.toThrow("ECONNRESET");
+  });
+});
+
+describe("the resend a kept row was kept for", () => {
+  // The other half of the retention decision, end to end: keeping a failed row's
+  // client data made the resend possible, and this is the resend. BREVO_LIST_ID
+  // is the concrete case -- it fails every row the moment it is wrong, the
+  // operator fixes the variable, presses the control on the settings tab, and the
+  // same rows send and then scrub.
+  //
+  // Four steps, each applied here the way the real one applies it:
+  // requeueFailedSends, the claim, the send, the scrub. store.sql.test.js is what
+  // pins each statement's text and its preconditions; what this case is for is
+  // that the four fit together. The status filters are built from the imported
+  // sets rather than written out, the way the split-claim case above builds its
+  // scrub predicate from SCRUBBABLE.
+  const NOW = new Date("2026-10-12T12:00:00Z");
+  const CLAIMABLE = ["pending", "retrying"];
+
+  /** The row as the table holds it after an unusable BREVO_LIST_ID: Meta skipped
+   *  the stage the website pixel owns, WhatsApp sent, Brevo failed terminally
+   *  without spending an attempt -- and the row still has its name, email and
+   *  phone, because `failed` is not scrubbable. */
+  const stored = (over = {}) => ({
+    meta_status: "skipped",
+    whatsapp_status: "sent",
+    brevo_status: "failed",
+    brevo_detail: "brevo not sent: BREVO_LIST_ID is unset, blank or not a positive number",
+    brevo_attempts: 0,
+    brevo_next_attempt_at: null,
+    scrubbed_at: null,
+    ...over,
+  });
+
+  /** requeueFailedSends: the two statuses it may touch, the scrubbed row it may
+   *  not, and the three columns it writes. Returns the rows it matched. */
+  const requeue = (table, action) => {
+    if (table.scrubbed_at !== null) return 0;
+    if (!REQUEUEABLE_SET.has(String(table[`${action}_status`]))) return 0;
+    table[`${action}_status`] = "pending";
+    table[`${action}_attempts`] = 0;
+    table[`${action}_next_attempt_at`] = null;
+    return 1;
+  };
+
+  /** One action's writer. A claiming write lands only while the action is still
+   *  unsent, which is what stops a second sweeper sending beside this one. */
+  const save = (table, action) =>
+    vi.fn(async (_id, outcome, claimAt) => {
+      if (claimAt && !CLAIMABLE.includes(String(table[`${action}_status`]))) return 0;
+      table[`${action}_status`] = outcome.status;
+      table[`${action}_detail`] = outcome.detail;
+      table[`${action}_attempts`] = outcome.attempts;
+      table[`${action}_next_attempt_at`] = outcome.nextAttemptAt ?? null;
+      return 1;
+    });
+
+  /** The worker, writing into that table. The scrub carries its own predicate,
+   *  as scrubSignupEvent does: all three scrubbable in the TABLE, and not
+   *  scrubbed yet. */
+  const against = (table, overrides = {}) =>
+    deps({
+      saveMeta: save(table, "meta"),
+      saveWhatsapp: save(table, "whatsapp"),
+      saveBrevo: save(table, "brevo"),
+      scrub: vi.fn(async (_id, at) => {
+        const scrubbable = ACTIONS.every((a) => SCRUBBABLE_SET.has(String(table[a.status])));
+        if (!scrubbable || table.scrubbed_at !== null) return 0;
+        table.scrubbed_at = at;
+        return 1;
+      }),
+      ...overrides,
+    });
+
+  it("requeues a Brevo failure, sends it on the next sweep, and scrubs the row afterwards", async () => {
+    const table = stored();
+
+    expect(requeue(table, "brevo")).toBe(1);
+    expect(table).toMatchObject({ brevo_status: "pending", brevo_attempts: 0, brevo_next_attempt_at: null });
+    // The detail is deliberately left saying why this row is here, until the
+    // claim replaces it with the in-flight note.
+    expect(table.brevo_detail).toMatch(/BREVO_LIST_ID/);
+
+    const d = against(table);
+    await processSignupEvent(row({ ...table }), d);
+
+    expect(d.upsertBrevo).toHaveBeenCalledTimes(1);
+    // One destination requeued is one destination sent. Meta was skipped at this
+    // stage and WhatsApp had already gone; both are settled, so neither is
+    // touched -- which is the whole reason the control is per destination.
+    expect(d.sendMeta).not.toHaveBeenCalled();
+    expect(d.sendWhatsapp).not.toHaveBeenCalled();
+    expect(lastSaved(d.saveBrevo)).toMatchObject({ status: "sent", attempts: 1 });
+    expect(table.brevo_status).toBe("sent");
+
+    // And now every destination has succeeded or been skipped, so the row is
+    // finally safe to forget -- which it was not while Brevo said `failed`.
+    expect(d.scrub).toHaveBeenCalledTimes(1);
+    expect(table.scrubbed_at).toEqual(NOW);
+  });
+
+  it("refuses a row the backstop already scrubbed, which nothing could ever settle", async () => {
+    // Thirty days on, the backstop took the client data and wrote `failed` with
+    // "not attempted" beside it. Requeued, that row would be claimed on every
+    // sweep, refused by the send guard, and sit at `pending` for the rest of the
+    // table's life -- and `pending` piling up is the one signal that means the
+    // dispatch worker is dead.
+    const table = stored({ scrubbed_at: new Date("2026-11-11T12:00:00Z") });
+
+    expect(requeue(table, "brevo")).toBe(0);
+    expect(table.brevo_status).toBe("failed");
+
+    // The other half of the guard, for whatever else ever hands the worker one:
+    // nothing is sent and nothing is written.
+    const d = against(table);
+    await processSignupEvent(row({ ...table, brevo_status: "pending" }), d);
+    expect(d.upsertBrevo).not.toHaveBeenCalled();
+    expect(d.saveBrevo).not.toHaveBeenCalled();
+    expect(d.scrub).not.toHaveBeenCalled();
+  });
+
+  it("hands the resend its retries back, which a row left at 3 of 3 does not have", async () => {
+    // Why the attempt count is reset. planRetry reads the stored count and the
+    // pre-send write that claims the row is computed from it, so at 3 of 3 that
+    // write stores `failed` with no clock BEFORE the request leaves: the tab
+    // shows a terminal failure while the request is in the air, and one transient
+    // 503 ends the resend there instead of retrying it five minutes later.
+    const flaky = {
+      upsertBrevo: vi.fn(async () => ({ status: "failed", retryable: true, detail: "http 503" })),
+    };
+
+    const reset = stored({ brevo_attempts: 3 });
+    requeue(reset, "brevo");
+    await processSignupEvent(row({ ...reset }), against(reset, flaky));
+    expect(reset).toMatchObject({ brevo_status: "retrying", brevo_attempts: 1 });
+    expect(reset.brevo_next_attempt_at).toEqual(new Date("2026-10-12T12:05:00Z"));
+
+    // The same row made claimable without the reset: one shot, terminal at once.
+    const unreset = stored({ brevo_status: "pending", brevo_attempts: 3 });
+    await processSignupEvent(row({ ...unreset }), against(unreset, flaky));
+    expect(unreset).toMatchObject({ brevo_status: "failed", brevo_attempts: 4 });
+    expect(unreset.brevo_next_attempt_at).toBeNull();
+  });
+
+  it("re-sends the frozen whatsapp_request_id rather than minting a fresh one", async () => {
+    // The id is frozen per row FOR the resend, not in spite of it. If DoubleTick
+    // honours a repeated messageId, reusing it means a welcome that genuinely
+    // never arrived still goes out -- DoubleTick never saw that id -- while one
+    // that did arrive is deduplicated. Both are what we want. A fresh id would
+    // guarantee the duplicate, which is the whole reason this control is separate
+    // and warned about.
+    const table = stored({
+      whatsapp_status: "rejected",
+      whatsapp_detail: "2xx with status QUEUED_UNKNOWN",
+      whatsapp_attempts: 1,
+      brevo_status: "sent",
+    });
+    expect(requeue(table, "whatsapp")).toBe(1);
+
+    const d = against(table, { newMessageId: () => "a-fresh-uuid" });
+    await processSignupEvent(row({ ...table, whatsapp_request_id: "req-7" }), d);
+
+    expect(d.sendWhatsapp).toHaveBeenCalledTimes(1);
+    expect(d.sendWhatsapp.mock.calls[0][0].payload.messages[0].messageId).toBe("req-7");
   });
 });
 

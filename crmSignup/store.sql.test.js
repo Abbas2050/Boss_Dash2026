@@ -26,13 +26,16 @@ import {
   scrubSignupEvent,
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
+  requeueFailedSends,
+  countResendableSends,
+  DESTINATIONS,
 } from "./store.js";
 // The two vocabularies the worker and these statements are built from, imported
 // so a test can prove each statement names every value in the one it belongs to
 // -- and none of the values in the other. The scrub is built from SCRUBBABLE
 // ("this row is safe to forget"); the backstop's settle statements are built
 // from SETTLED ("do not attempt this action again").
-import { SETTLED_STATUSES, SCRUBBABLE_STATUSES } from "./settled.js";
+import { SETTLED_STATUSES, SCRUBBABLE_STATUSES, REQUEUEABLE_STATUSES } from "./settled.js";
 // Imported for the one case that walks the whole leak path: Brevo's own 400,
 // through its own classifier, into the column.
 import { classifyBrevoOutcome } from "./brevo.js";
@@ -791,6 +794,205 @@ describe("scrubStaleSignupEvents", () => {
     // unsettled destination in them.
     db.state.respond = (sql) => [{ affectedRows: sql.includes("first_name = NULL") ? 2 : 9 }];
     expect(await scrubStaleSignupEvents(new Date(), new Date())).toBe(2);
+  });
+});
+
+describe("requeueFailedSends", () => {
+  it("puts one destination's failures back to pending, with the attempt count and the clock reset", async () => {
+    // The three things the resend is: claimable again, a fresh budget, and due
+    // now. Each is pinned on its own, because each has its own failure -- a
+    // status with no reset is a row that fails on its first attempt, and a reset
+    // with a clock still set is a row that waits out a five-minute delay the
+    // operator did not ask for.
+    db.state.respond = () => [{ affectedRows: 12 }];
+    const requeued = await requeueFailedSends("brevo");
+    const { sql, params } = db.state.calls[0];
+    expect(db.state.calls).toHaveLength(1);
+    expect(sql).toMatch(
+      /^\s*UPDATE signup_events\s+SET brevo_status = 'pending', brevo_attempts = 0, brevo_next_attempt_at = NULL\s+WHERE scrubbed_at IS NULL\s+AND brevo_status IN \('failed','rejected'\)\s*$/
+    );
+    // Nothing is bound: the statement names its destination's columns and its
+    // statuses, and the destination is refused before it reaches the SQL.
+    expect(params).toEqual([]);
+    expect(requeued).toBe(12);
+  });
+
+  it("writes only its own destination's three columns, never a sibling's", async () => {
+    // One control per destination, and the point of that is that fixing
+    // BREVO_LIST_ID does not re-send anybody's WhatsApp welcome.
+    for (const action of DESTINATIONS) {
+      db.state.calls.length = 0;
+      await requeueFailedSends(action);
+      const { sql } = db.state.calls[0];
+      for (const other of DESTINATIONS) {
+        if (other === action) continue;
+        expect(sql, `${action} touched ${other}`).not.toMatch(new RegExp(`\\b${other}_`));
+      }
+    }
+  });
+
+  it("refuses to requeue a scrubbed row, which would never settle again", async () => {
+    // A scrubbed row has no client data left. The send guard in worker.js refuses
+    // it, writes nothing, and claimDueEvents keeps handing it back: `pending` for
+    // the rest of the table's life. That is the one counter that means "the
+    // dispatch worker is dead", and one permanently stuck row makes it unusable
+    // -- the reason the thirty-day backstop settles what it scrubs.
+    await requeueFailedSends("meta");
+    expect(db.state.calls[0].sql).toMatch(/WHERE scrubbed_at IS NULL/);
+  });
+
+  it("names every requeueable status and neither of the two that must not be resent", async () => {
+    // `failed` and `rejected`, built from REQUEUEABLE_STATUSES so the statement
+    // and the reader that counts for the button cannot come to disagree.
+    // `rejected` is in deliberately: Brevo's 400 for an attribute that does not
+    // exist yet succeeds once the attribute is created, and the operator is
+    // clicking because they fixed something.
+    await requeueFailedSends("whatsapp");
+    const { sql } = db.state.calls[0];
+    const list = sql.split("whatsapp_status IN (")[1].split(")")[0].split(",");
+    expect(list).toEqual(REQUEUEABLE_STATUSES.map((status) => `'${status}'`));
+    // The literal too, not only the imported list: dropping `rejected` from both
+    // at once would otherwise agree with itself.
+    expect(sql).toContain("IN ('failed','rejected')");
+  });
+
+  it("can never touch a sent or a skipped row, whatever else is in the list", async () => {
+    // The direction that costs a client a second WhatsApp welcome, which is the
+    // one message with nothing deduplicating it. A `skipped` row is a deliberate
+    // decision not to send, and re-deciding it in bulk is not this button's job.
+    for (const action of DESTINATIONS) {
+      db.state.calls.length = 0;
+      await requeueFailedSends(action);
+      // The selection half only: `pending` is of course in the SET list, which
+      // is the whole idea.
+      const selected = db.state.calls[0].sql.split("WHERE")[1];
+      for (const status of ["sent", "skipped", "invalid", "pending", "retrying"]) {
+        expect(selected, `${action}/${status}`).not.toContain(`'${status}'`);
+      }
+    }
+  });
+
+  it("resets the attempt count, so the resend has its retries rather than one shot", async () => {
+    // planRetry reads the stored count. Left at 3 of 3, the pre-send write that
+    // claims the row stores `failed` with no clock BEFORE the request goes out:
+    // the tab shows a terminal failure while the request is in the air, and a
+    // transient 503 ends the resend instead of retrying it five minutes later.
+    await requeueFailedSends("meta");
+    expect(db.state.calls[0].sql).toMatch(/\bmeta_attempts = 0\b/);
+    expect(db.state.calls[0].sql).toMatch(/\bmeta_next_attempt_at = NULL\b/);
+  });
+
+  it("leaves the frozen whatsapp_request_id alone, and the detail that says why the row is here", async () => {
+    // The id is frozen per row for the resend's sake, not in spite of it. If
+    // DoubleTick honours a repeated messageId, reusing it means a message that
+    // genuinely never arrived still goes out (DoubleTick never saw that id) while
+    // one that did arrive is deduplicated -- both of which are what we want. A
+    // fresh id would guarantee the duplicate.
+    await requeueFailedSends("whatsapp");
+    const { sql } = db.state.calls[0];
+    expect(sql).not.toMatch(/whatsapp_request_id/);
+    expect(sql).not.toMatch(/whatsapp_message_id/);
+    expect(sql).not.toMatch(/whatsapp_detail/);
+  });
+
+  it("refuses an unknown destination before any statement runs, rather than building a column name from it", async () => {
+    // The destination is interpolated into column names. The route 400s an
+    // unknown one; this is the floor under that, for whatever calls the store
+    // next.
+    for (const bad of ["", "mailchimp", "meta_status", undefined, null, "META"]) {
+      await expect(requeueFailedSends(bad), JSON.stringify(bad)).rejects.toThrow(/unknown CRM events destination/);
+    }
+    expect(db.state.calls).toHaveLength(0);
+  });
+
+  it("reports a driver that gave no count as null rather than as nothing requeued", async () => {
+    db.state.respond = () => [{}];
+    expect(await requeueFailedSends("brevo")).toBeNull();
+  });
+});
+
+describe("countResendableSends", () => {
+  const counts = (over = {}) => [
+    [
+      {
+        meta_resendable: 1,
+        meta_scrubbed: 2,
+        whatsapp_resendable: 3,
+        whatsapp_scrubbed: 4,
+        brevo_resendable: 5,
+        brevo_scrubbed: 6,
+        ...over,
+      },
+    ],
+  ];
+
+  it("counts, per destination, what the requeue would match and what it no longer can", async () => {
+    // Every number different, so a column read into the wrong destination cannot
+    // hide behind an equal neighbour.
+    db.state.respond = () => counts();
+    expect(await countResendableSends()).toEqual({
+      meta: { resendable: 1, scrubbed: 2 },
+      whatsapp: { resendable: 3, scrubbed: 4 },
+      brevo: { resendable: 5, scrubbed: 6 },
+    });
+  });
+
+  it("asks for both halves in one statement, over the whole table and not a window", async () => {
+    // One statement, so the two numbers are one snapshot and add up: "12
+    // resendable, 28 already scrubbed" has to account for the 40 failures an
+    // operator can see on the destination card. And no `received_at` clause,
+    // because the resend is not windowed either -- the counters on the tab are,
+    // which is exactly why they cannot answer this.
+    db.state.respond = () => counts();
+    await countResendableSends();
+    expect(db.state.calls).toHaveLength(1);
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(/FROM signup_events\s*$/);
+    expect(sql).not.toMatch(/received_at/);
+    expect(params).toEqual([]);
+  });
+
+  it("counts a scrubbed row as not resendable, by the same predicate the requeue uses", async () => {
+    // A button that promises 40 and delivers 12 is worse than no button. The
+    // resendable half must therefore read `scrubbed_at IS NULL`, exactly as the
+    // UPDATE does, and the scrubbed half is what explains the shortfall.
+    db.state.respond = () => counts();
+    await countResendableSends();
+    const { sql } = db.state.calls[0];
+    for (const action of DESTINATIONS) {
+      expect(sql, action).toContain(
+        `COUNT(CASE WHEN ${action}_status IN ('failed','rejected') AND scrubbed_at IS NULL THEN 1 END) AS ${action}_resendable`
+      );
+      expect(sql, action).toContain(
+        `COUNT(CASE WHEN ${action}_status IN ('failed','rejected') AND scrubbed_at IS NOT NULL THEN 1 END) AS ${action}_scrubbed`
+      );
+    }
+  });
+
+  it("counts the same statuses the requeue requeues, and no others", async () => {
+    db.state.respond = () => counts();
+    await countResendableSends();
+    const { sql } = db.state.calls[0];
+    for (const [, list] of sql.matchAll(/_status IN \(([^)]*)\)/g)) {
+      expect(list.split(",")).toEqual(REQUEUEABLE_STATUSES.map((status) => `'${status}'`));
+    }
+    for (const status of ["sent", "skipped", "invalid", "pending", "retrying"]) {
+      expect(sql, status).not.toContain(`'${status}'`);
+    }
+  });
+
+  it("reads a string count as a number, and an empty result as zeroes", async () => {
+    // The page disables its control on a zero and prints the number beside it:
+    // "0" is truthy and "12" is not a number.
+    db.state.respond = () => counts({ meta_resendable: "7" });
+    expect((await countResendableSends()).meta).toEqual({ resendable: 7, scrubbed: 2 });
+
+    db.state.respond = () => [[]];
+    expect(await countResendableSends()).toEqual({
+      meta: { resendable: 0, scrubbed: 0 },
+      whatsapp: { resendable: 0, scrubbed: 0 },
+      brevo: { resendable: 0, scrubbed: 0 },
+    });
   });
 });
 

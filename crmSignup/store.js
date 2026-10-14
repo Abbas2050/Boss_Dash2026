@@ -1,6 +1,6 @@
 import mysql from "mysql2/promise";
 import { maskEmail, maskPhone } from "./normalise.js";
-import { SETTLED_STATUSES, SCRUBBABLE_STATUSES } from "./settled.js";
+import { SETTLED_STATUSES, SCRUBBABLE_STATUSES, REQUEUEABLE_STATUSES } from "./settled.js";
 
 const AUTH_DB_HOST = process.env.AUTH_DB_HOST;
 const AUTH_DB_PORT = Number(process.env.AUTH_DB_PORT || 3306);
@@ -444,6 +444,7 @@ function claimClause(action, claimAt) {
 // from, and settling on SCRUBBABLE overwrites a real refusal.
 const SETTLED_LIST = SETTLED_STATUSES.map((status) => `'${status}'`).join(",");
 const SCRUBBABLE_LIST = SCRUBBABLE_STATUSES.map((status) => `'${status}'`).join(",");
+const REQUEUEABLE_LIST = REQUEUEABLE_STATUSES.map((status) => `'${status}'`).join(",");
 
 /**
  * The precondition that makes a scrub correct whatever its caller believes.
@@ -698,8 +699,31 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
   return matchedRows(result);
 }
 
-/** The three destinations, in the order the tab shows them. */
-const DESTINATIONS = ["meta", "whatsapp", "brevo"];
+/**
+ * The three destinations, in the order the tab shows them.
+ *
+ * Exported because the requeue route validates its body parameter against this
+ * list: the destination is interpolated into a column name below, so the route
+ * and the statement have to agree about what a destination is, and two copies of
+ * three strings is exactly the kind of list that drifts.
+ */
+export const DESTINATIONS = ["meta", "whatsapp", "brevo"];
+
+/**
+ * The destination, or an error naming it.
+ *
+ * Every statement below builds column names by interpolation, so this is the one
+ * thing between a caller's string and the SQL. The route refuses an unknown
+ * destination too, with a 400; this is not a duplicate of that check but the
+ * floor under it, for whatever calls the store next.
+ */
+function requireDestination(destination) {
+  const name = String(destination ?? "");
+  if (!DESTINATIONS.includes(name)) {
+    throw new Error(`unknown CRM events destination '${name}'; expected one of ${DESTINATIONS.join(", ")}`);
+  }
+  return name;
+}
 
 /**
  * What an unsent destination is left saying when the backstop takes its data.
@@ -767,6 +791,110 @@ export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
     [at, receivedBefore]
   );
   return matchedRows(result);
+}
+
+/**
+ * One destination's failures, put back in the queue (2026-10-14, user's call).
+ *
+ * Bulk and per destination, because that is the shape of the problem: a wrong
+ * list id or a missing key breaks a window of signups, and the operator fixes
+ * the setting and then clears the backlog in one action. There is no per-row
+ * version.
+ *
+ * Three preconditions, each with its own reason, and all three in the statement
+ * rather than in the caller -- the same lesson as claimClause and
+ * scrubbableClause above:
+ *
+ *   `scrubbed_at IS NULL`. A scrubbed row has no name, no email and no phone
+ *   left, so requeueing one produces a row that is claimed on every sweep,
+ *   refused by the worker's send guard, and never settles. It would sit at
+ *   `pending` for ever -- and `pending` piling up is the one counter that means
+ *   "the dispatch worker is dead", which is the signal eba9cf1 went to some
+ *   length to keep usable.
+ *
+ *   The status filter, built from REQUEUEABLE and from neither of the other two
+ *   lists. `failed` and `rejected` only. A `sent` row must be untouchable by
+ *   this path: requeueing one re-sends a welcome to somebody who already got it.
+ *   `rejected` is in on purpose -- Brevo's 400 for an attribute that does not
+ *   exist yet is a rejection that succeeds once the attribute is created.
+ *
+ *   `<destination>_attempts = 0`. planRetry reads the stored count, so a row
+ *   left at 3 of 3 is written `failed` by the pre-send claim before its request
+ *   even leaves, and the resend gets one attempt with no retry behind it and a
+ *   terminal status in the column while the request is still in the air. The
+ *   clock goes to NULL for the matching reason: a row still carrying a
+ *   five-minute-old next_attempt_at is due anyway, but one whose last failure
+ *   set a clock in the future would wait it out, and the operator pressed the
+ *   button now.
+ *
+ * `<destination>_detail` is deliberately left alone. It still says why the row
+ * needs resending, which is worth reading in the second before the claim
+ * replaces it with the in-flight note, and the claim replaces it on every row
+ * that actually sends.
+ *
+ * `whatsapp_request_id` is NOT regenerated, and that is the point for WhatsApp.
+ * It is frozen per row at insert. If DoubleTick honours a repeated messageId,
+ * reusing it means a resend of a message that genuinely never arrived still goes
+ * out -- DoubleTick never saw that id -- while a resend of one that did arrive is
+ * deduplicated. Both are what we want. Minting a fresh id would guarantee the
+ * duplicate instead. (Same reasoning as the over-width id being cut rather than
+ * nulled, above: the worker reads the id back off the row on every attempt.)
+ *
+ * Returns how many rows it matched, so the caller can say what happened.
+ */
+export async function requeueFailedSends(destination) {
+  const action = requireDestination(destination);
+  const result = await run(
+    `UPDATE signup_events
+        SET ${action}_status = 'pending', ${action}_attempts = 0, ${action}_next_attempt_at = NULL
+      WHERE scrubbed_at IS NULL
+        AND ${action}_status IN (${REQUEUEABLE_LIST})`
+  );
+  return matchedRows(result);
+}
+
+/**
+ * How many rows each destination could resend, and how many it can no longer.
+ *
+ * The tab's per-destination counters cannot answer the first question: they are
+ * scoped to the selected period and they count scrubbed rows, which cannot be
+ * resent at all. A button promising 40 and delivering 12 is worse than no
+ * button.
+ *
+ * So `resendable` is what requeueFailedSends would match -- `failed` or
+ * `rejected`, not scrubbed -- over the whole table and not a window, because the
+ * action is not windowed either. `scrubbed` is the rest of the same set: rows
+ * whose send went wrong and whose client data the thirty-day backstop has since
+ * taken, which is the whole of the difference between the 40 an operator can see
+ * and the 12 they get. Both come out of ONE statement, so the two numbers are a
+ * single snapshot and are guaranteed to add up; read separately they would not.
+ *
+ * The retention index leads with `scrubbed_at`, so the resendable half is a
+ * handful of rows however large the table grows.
+ */
+export async function countResendableSends() {
+  const columns = DESTINATIONS.flatMap((action) => [
+    `COUNT(CASE WHEN ${action}_status IN (${REQUEUEABLE_LIST}) AND scrubbed_at IS NULL THEN 1 END) AS ${action}_resendable`,
+    `COUNT(CASE WHEN ${action}_status IN (${REQUEUEABLE_LIST}) AND scrubbed_at IS NOT NULL THEN 1 END) AS ${action}_scrubbed`,
+  ]);
+  const rows = await all(
+    `SELECT ${columns.join(", ")}
+       FROM signup_events`
+  );
+  const counts = rows[0] ?? {};
+  // COUNT never returns NULL, but an empty result set and a driver that hands
+  // back strings both have to read as numbers here: the page disables its
+  // control on a zero, and "0" is truthy.
+  const n = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+  };
+  return Object.fromEntries(
+    DESTINATIONS.map((action) => [
+      action,
+      { resendable: n(counts[`${action}_resendable`]), scrubbed: n(counts[`${action}_scrubbed`]) },
+    ])
+  );
 }
 
 /**
