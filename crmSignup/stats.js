@@ -126,11 +126,17 @@ export function summariseCrmEvents(rows, { now = new Date(), staleHours = STALE_
   };
 }
 
-/** One row for the table, with the two PII fields masked. */
+/** One row for the table, with the two PII fields masked.
+ *
+ *  `scrubbedAt` travels with them because masking and scrubbing look identical
+ *  from the page: both arrive as an empty string. The page has to tell an
+ *  operator "this row's client data is gone, as designed" apart from "this row
+ *  never had a phone number", and this column is the only thing that can. */
 export function toTableRow(row = {}) {
   const view = {
     id: row.id,
     receivedAt: row.received_at,
+    scrubbedAt: row.scrubbed_at ?? null,
     stage: String(row.stage ?? ""),
     crmClientId: String(row.crm_client_id ?? ""),
     name: [row.first_name, row.last_name].filter(Boolean).join(" "),

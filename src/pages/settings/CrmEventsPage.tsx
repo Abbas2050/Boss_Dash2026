@@ -38,6 +38,8 @@ type DestinationStatus = { status: string; detail: string | null; attempts: numb
 type EventRow = {
   id: number;
   receivedAt: string;
+  /** When the row's client fields were nulled, or null if they never were. */
+  scrubbedAt: string | null;
   stage: string;
   crmClientId: string;
   name: string;
@@ -99,6 +101,19 @@ function toneFor(status: string): string {
  *  fired is not stale, whatever else the payload claims. */
 function isQuiet(stage: StageHealth | undefined): boolean {
   return Boolean(stage && stage.everSeen && stage.stale);
+}
+
+/** Name, email and phone, which almost every row no longer holds.
+ *
+ *  The backend nulls them once Meta, WhatsApp and Brevo have all settled, which
+ *  is about a minute after signup, so an empty cell here is the normal case and
+ *  not a broken page. Saying so is the whole job of this: an operator reading
+ *  three blank columns concludes the feed is broken, and would be wrong. A row
+ *  that genuinely never carried the value reads as a dash instead, which is what
+ *  `scrubbedAt` is for. */
+function Personal({ value, scrubbedAt }: { value: string; scrubbedAt: string | null }) {
+  if (value) return <>{value}</>;
+  return <span className="text-muted-foreground">{scrubbedAt ? "scrubbed" : "—"}</span>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -335,6 +350,12 @@ export function CrmEventsPage() {
                 </label>
               </div>
 
+              <p className="mb-2 text-xs text-muted-foreground">
+                Name, email and phone are removed once Meta, WhatsApp and Brevo have all settled — about a minute
+                after signup — so most rows read “scrubbed”. FXBO holds the client record; this table holds the
+                statistics.
+              </p>
+
               {rows.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
                   {data.events.length === 0 ? "No events in this period." : "No events match these filters."}
@@ -362,9 +383,15 @@ export function CrmEventsPage() {
                           <td className="p-2 whitespace-nowrap">{formatDubaiInstant(row.receivedAt)}</td>
                           <td className="p-2">{STAGE_LABELS[row.stage] ?? row.stage}</td>
                           <td className="p-2">{row.crmClientId}</td>
-                          <td className="p-2">{row.name}</td>
-                          <td className="p-2">{row.email}</td>
-                          <td className="p-2">{row.phone}</td>
+                          <td className="p-2">
+                            <Personal value={row.name} scrubbedAt={row.scrubbedAt} />
+                          </td>
+                          <td className="p-2">
+                            <Personal value={row.email} scrubbedAt={row.scrubbedAt} />
+                          </td>
+                          <td className="p-2">
+                            <Personal value={row.phone} scrubbedAt={row.scrubbedAt} />
+                          </td>
                           <td className="p-2">{row.source}</td>
                           {DESTINATIONS.map(([key]) => {
                             const d = row[key];

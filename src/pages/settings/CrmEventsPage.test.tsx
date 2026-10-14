@@ -692,6 +692,82 @@ describe("the events table in detail", () => {
   });
 });
 
+// Almost every row this tab shows is scrubbed: the backend nulls the client's
+// name, email and phone once Meta, WhatsApp and Brevo have all settled, which is
+// about a minute after signup. Three blank columns on nearly every row is what an
+// operator reads as a broken page, so the page has to say what it is.
+describe("a scrubbed row", () => {
+  const SCRUBBED = {
+    id: 11,
+    receivedAt: "2026-10-13T20:30:00.000Z",
+    scrubbedAt: "2026-10-13T20:31:00.000Z",
+    stage: "registered",
+    crmClientId: "90010",
+    name: "",
+    email: "",
+    phone: "",
+    recordType: "client",
+    source: "SVG",
+    meta: { status: "skipped", detail: "the website pixel owns this stage", attempts: 0 },
+    whatsapp: { status: "sent", detail: "SENT", attempts: 1 },
+    brevo: { status: "sent", detail: "http 201", attempts: 1 },
+  };
+
+  it("says the client's fields were scrubbed, rather than leaving three cells blank", async () => {
+    installFetch({ ...DISTINCT, events: [SCRUBBED] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[3].textContent).toBe("scrubbed");
+    expect(cells[4].textContent).toBe("scrubbed");
+    expect(cells[5].textContent).toBe("scrubbed");
+  });
+
+  it("still shows every statistic the row was kept for", async () => {
+    // The whole point of the retention policy: the row goes on answering "did
+    // client 90010 get their welcome", and from which form, at which stage.
+    installFetch({ ...DISTINCT, events: [SCRUBBED] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[1].textContent).toBe("Registered");
+    expect(cells[2].textContent).toBe("90010");
+    expect(cells[6].textContent).toBe("SVG");
+    expect(cells[8].textContent).toBe("sentSENT");
+  });
+
+  it("says a dash, not scrubbed, for a row that simply never carried the value", async () => {
+    // A lead with no phone number is a WhatsApp skip, not a scrub. Reporting it
+    // as scrubbed would say data had been removed that was never there.
+    installFetch({ ...DISTINCT, events: [{ ...SCRUBBED, scrubbedAt: null, name: "Omar Haddad", phone: "" }] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[3].textContent).toBe("Omar Haddad");
+    expect(cells[5].textContent).toBe("—");
+  });
+
+  it("shows a value it still has, scrubbed_at or not", async () => {
+    // The column is read only to explain an EMPTY cell. A row carrying a name
+    // shows the name.
+    installFetch({ ...DISTINCT, events: [{ ...SCRUBBED, name: "Omar Haddad", email: "o***@mail.test" }] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[3].textContent).toBe("Omar Haddad");
+    expect(cells[4].textContent).toBe("o***@mail.test");
+    expect(cells[5].textContent).toBe("scrubbed");
+  });
+
+  it("explains the retention on the page, so a scrubbed table does not read as a fault", async () => {
+    installFetch({ ...DISTINCT, events: [SCRUBBED] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90010");
+    expect(screen.getByText(/Name, email and phone are removed once/i)).toBeInTheDocument();
+    expect(screen.getByText(/all settled/i)).toBeInTheDocument();
+  });
+});
+
 describe("filtering the table", () => {
   const MIXED = [
     event(1, "wa-rejected", "registered", ["sent", "rejected", "sent"]),

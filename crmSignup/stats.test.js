@@ -203,6 +203,35 @@ describe("toTableRow", () => {
     expect(view.meta.status).toBe("sent");
     expect(view.brevo.status).toBe("sent");
   });
+
+  it("carries scrubbed_at, so the page can tell a scrubbed row from one that never had the value", () => {
+    // Masking and scrubbing look identical from the page: both arrive as "".
+    // Almost every row the tab shows is scrubbed -- rows settle within a minute --
+    // so without this the page shows three blank columns and an operator reads
+    // that as a broken feed.
+    expect(toTableRow(row({ scrubbed_at: "2026-10-13T11:01:00Z" })).scrubbedAt).toBe("2026-10-13T11:01:00Z");
+  });
+
+  it("reports a row that was never scrubbed as null, not undefined", () => {
+    // The page branches on it, and JSON drops an undefined key altogether.
+    const view = toTableRow(row());
+    expect(view.scrubbedAt).toBeNull();
+    expect(JSON.parse(JSON.stringify(view))).toHaveProperty("scrubbedAt", null);
+  });
+
+  it("shows a scrubbed row's emptied fields as empty, not as the word null", () => {
+    // What the row actually looks like after the scrub: the client columns are
+    // NULL and only the statistics are left.
+    const view = toTableRow(
+      row({ first_name: null, last_name: null, email: null, phone: null, scrubbed_at: "2026-10-13T11:01:00Z" })
+    );
+    expect(view.name).toBe("");
+    expect(view.email).toBe("");
+    expect(view.phone).toBe("");
+    expect(view.crmClientId).toBe("88214");
+    expect(view.stage).toBe("registered");
+    expect(view.source).toBe("SVG");
+  });
 });
 
 describe("STALE_HOURS", () => {
