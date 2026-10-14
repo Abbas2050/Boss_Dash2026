@@ -5,9 +5,14 @@
 // attribute Brevo does not know returns 400, which this design treats as
 // permanent -- so a typo here means the contact silently never lands.
 import { describe, it, expect, vi } from "vitest";
+import { readFileSync } from "fs";
+import path from "path";
 import { describeSendTimeout, stalledBodyResponse } from "./sendTimeout.contract.js";
 import {
   decideBrevoSkip,
+  decideBrevoListIdFailure,
+  isUsableBrevoListId,
+  UNUSABLE_LIST_ID_DETAIL,
   buildBrevoContact,
   classifyBrevoOutcome,
   upsertBrevoContact,
@@ -70,6 +75,75 @@ describe("skip decisions", () => {
     // Decided 2026-10-09 and reaffirmed 2026-10-12: everyone lands in Brevo
     // with consent recorded as OPT_IN, and campaigns segment on it.
     expect(decideBrevoSkip({ stage: "registered", apiKey: "k", marketingConsent: false })).toBeNull();
+  });
+});
+
+// Until 2026-10-14 an unusable BREVO_LIST_ID failed OPEN: the contact was
+// created, joined no list, and the row recorded `sent`. Nobody would have found
+// out until they opened list 19 to run a campaign and found it short. It is a
+// failure at send time now, and the request is not made.
+describe("the list id", () => {
+  const USABLE = ["19", 19, " 19 ", "42", 1];
+  const UNUSABLE = [undefined, null, "", "   ", "nineteen", "19abc", "0", 0, "-1", -5, NaN, {}, [], "1,2"];
+
+  it("accepts a positive number, however it arrives", () => {
+    for (const listId of USABLE) expect(isUsableBrevoListId(listId), JSON.stringify(listId)).toBe(true);
+  });
+
+  it("refuses unset, blank, non-numeric and non-positive alike", () => {
+    for (const listId of UNUSABLE) expect(isUsableBrevoListId(listId), JSON.stringify(listId)).toBe(false);
+  });
+
+  it("is one test, so the payload cannot decide differently from the gate", () => {
+    // The gate and the payload builder disagreeing is exactly how a listless
+    // contact got created: one of them said the id was fine and the other left
+    // listIds out. Each usable id lands in the payload, and no unusable one does.
+    for (const listId of USABLE) {
+      expect(buildBrevoContact(FIELDS, { listId }).listIds, JSON.stringify(listId)).toEqual([Number(String(listId).trim())]);
+    }
+    for (const listId of UNUSABLE) {
+      expect("listIds" in buildBrevoContact(FIELDS, { listId }), JSON.stringify(listId)).toBe(false);
+    }
+  });
+
+  it("is not a reason to send when it is usable", () => {
+    for (const listId of USABLE) expect(decideBrevoListIdFailure({ listId }), JSON.stringify(listId)).toBeNull();
+    expect(decideBrevoListIdFailure({ listId: "19" })).toBeNull();
+  });
+
+  it("is a failure, not a rejection and not a skip, when it is not", () => {
+    // `rejected` means the provider refused this event, and Brevo never saw this
+    // one -- no request is made at all. `skipped` means a deliberate decision not
+    // to send, and this is a misconfiguration, not a decision. `failed` is the
+    // word the backstop already uses for a send that was never attempted, with
+    // the detail carrying the difference.
+    for (const listId of UNUSABLE) {
+      expect(decideBrevoListIdFailure({ listId }), JSON.stringify(listId)).toEqual({
+        status: "failed",
+        retryable: false,
+        detail: UNUSABLE_LIST_ID_DETAIL,
+      });
+    }
+    expect(decideBrevoListIdFailure()).toMatchObject({ status: "failed" });
+  });
+
+  it("is terminal, so the same wrong variable is not read three times five minutes apart", () => {
+    // A configuration error will not fix itself on a timer. Retryable, the row
+    // would spend its budget on three identical non-attempts and reach `failed`
+    // fifteen minutes later anyway.
+    expect(decideBrevoListIdFailure({ listId: "" }).retryable).toBe(false);
+  });
+
+  it("names the variable in the detail and never the value", () => {
+    // The commonest way this column goes wrong is a paste into the wrong line of
+    // .env, and the line above it is BREVO_API_KEY -- echoing the value would
+    // write the key into a column the settings tab prints.
+    expect(UNUSABLE_LIST_ID_DETAIL).toContain("BREVO_LIST_ID");
+    expect(UNUSABLE_LIST_ID_DETAIL).toMatch(/not sent/i);
+    for (const listId of ["xkeysib-SECRET-KEY", "nineteen"]) {
+      expect(decideBrevoListIdFailure({ listId }).detail, listId).not.toContain(listId);
+    }
+    expect(UNUSABLE_LIST_ID_DETAIL.length).toBeLessThanOrEqual(200);
   });
 });
 
@@ -325,5 +399,54 @@ describe("upsertBrevoContact when the response body times out", () => {
   it("still retries a 5xx whose body timed out, since the status decides", async () => {
     const r = await send(vi.fn(async () => stalledBodyResponse(503)));
     expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+  });
+});
+
+// The warning that catches a typo before a single signup arrives. Nothing else
+// reads server.js for Brevo's configuration: without this line an unusable
+// BREVO_LIST_ID is silent until the first registration fails, and the row that
+// says so is in a settings tab nobody has open at deploy time.
+describe("the boot-time warning in server.js", () => {
+  const SERVER = readFileSync(path.resolve("server.js"), "utf8");
+  const listen = SERVER.slice(SERVER.indexOf("server.listen(PORT"));
+  const warning = listen.match(/if \(process\.env\.BREVO_API_KEY && !isUsableBrevoListId\(process\.env\.BREVO_LIST_ID\)\) \{([\s\S]*?)\n  \}/);
+
+  it("warns when the key is set and the list id is not usable", () => {
+    // Both halves of the condition are the test. Dropping the line, inverting it,
+    // and warning on the key alone all pass every other test in this file.
+    expect(warning, "no boot-time check of BREVO_LIST_ID in the listen callback").not.toBeNull();
+    expect(warning[1]).toContain("console.error(");
+  });
+
+  it("warns only when the key is set, because with no key Brevo is off entirely", () => {
+    // Unset BREVO_API_KEY and Brevo is skipped as "brevo not configured", so a
+    // warning about its list would be noise on every boot of every install that
+    // does not use it. The key is the first half of the condition, and it is read
+    // for truthiness only -- never printed.
+    expect(listen).toMatch(/if \(process\.env\.BREVO_API_KEY &&/);
+    expect(warning[1]).not.toContain("BREVO_API_KEY}");
+    expect(warning[1]).not.toMatch(/\$\{[^}]*BREVO_API_KEY/);
+  });
+
+  it("asks the same question the send asks, so the warning and the gate cannot disagree", () => {
+    // A boot that says the list id is fine and a send that then fails on it would
+    // be worse than no warning at all.
+    expect(SERVER).toMatch(/import \{ isUsableBrevoListId \} from "\.\/crmSignup\/brevo\.js";/);
+    expect(warning[1]).not.toMatch(/Number\(|parseInt\(/);
+  });
+
+  it("names the variable and what will happen, in one line someone skimming a log can act on", () => {
+    expect(warning[1]).toContain("BREVO_LIST_ID");
+    expect(warning[1]).toMatch(/unset, blank or not a positive number/);
+    expect(warning[1]).toMatch(/recorded as failed/);
+    expect(warning[1]).toMatch(/Set BREVO_LIST_ID in \.env/);
+    expect(warning[1]).toContain("[crm-events]");
+  });
+
+  it("never prints a secret", () => {
+    // The whole .env block around this line is keys.
+    for (const secret of ["BREVO_API_KEY}", "META_CAPI_ACCESS_TOKEN", "WA_API_KEY", "CRM_WEBHOOK_SECRET"]) {
+      expect(warning[1], secret).not.toContain(secret);
+    }
   });
 });

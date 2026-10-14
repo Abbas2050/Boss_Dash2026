@@ -18,6 +18,57 @@ export function decideBrevoSkip({ stage, apiKey }) {
 }
 
 /**
+ * Whether `BREVO_LIST_ID` names a list Brevo can be asked for.
+ *
+ * One test, read by three places that must not disagree: the gate below, the
+ * payload builder, and the boot-time warning in server.js. A warning that
+ * disagreed with the gate would be worse than no warning.
+ *
+ * A positive finite number, which is what the API takes. `""`, `"  "`, unset and
+ * `"nineteen"` all fail it; so does `0` and `-1`.
+ */
+export function isUsableBrevoListId(listId) {
+  const list = Number(text(listId));
+  return Number.isFinite(list) && list > 0;
+}
+
+/**
+ * What the row says when the list id is unusable. It does NOT name the value.
+ *
+ * The commonest way this column goes wrong is a paste into the wrong line of
+ * .env, and the line above it is `BREVO_API_KEY` -- echoing the value here would
+ * write the key into a column the settings tab prints. The variable's name is
+ * the whole of what a person needs.
+ */
+export const UNUSABLE_LIST_ID_DETAIL = "not sent: BREVO_LIST_ID is unset, blank or not a positive number";
+
+/**
+ * The second reason not to call Brevo, and it is a failure rather than a skip.
+ *
+ * Until 2026-10-14 an unusable list id failed OPEN: the contact was created and
+ * joined no list, while the row recorded `sent`. Nobody would have found out
+ * until they opened list 19 to run a campaign and found it short. So this is
+ * decided before the request and the request is not made (2026-10-14, user's
+ * call).
+ *
+ * `failed`, not `rejected`: Brevo never saw this one, so no provider refused it,
+ * and `rejected` is reserved for the provider refusing (classifyBrevoOutcome
+ * below). Not `skipped` either -- a skip is a deliberate decision not to send,
+ * and this is a misconfiguration. It follows the backstop's precedent, where a
+ * send that was never attempted is `failed` with the detail carrying the
+ * difference.
+ *
+ * Terminal, not retryable: a wrong environment variable will not become right in
+ * five minutes, so three attempts would be three identical lines in the log and
+ * nothing else. The row keeps its client data instead (SCRUBBABLE in settled.js),
+ * which is what makes the resend possible once the variable is fixed.
+ */
+export function decideBrevoListIdFailure({ listId } = {}) {
+  if (isUsableBrevoListId(listId)) return null;
+  return { status: "failed", retryable: false, detail: UNUSABLE_LIST_ID_DETAIL };
+}
+
+/**
  * One contact, ready for POST /v3/contacts with updateEnabled.
  *
  * Two attributes are Brevo's own rather than ours: EXT_ID carries the CRM
@@ -58,8 +109,11 @@ export function buildBrevoContact(fields = {}, { listId } = {}) {
     attributes,
   };
 
-  const list = Number(listId);
-  if (Number.isFinite(list) && list > 0) contact.listIds = [list];
+  // The same test the gate above applies, so a contact can never be built
+  // listless by one of them disagreeing with the other. Nothing should reach here
+  // with an unusable id any more -- the step returns a failure first -- and this
+  // stays as the second half of that one test rather than as a separate opinion.
+  if (isUsableBrevoListId(listId)) contact.listIds = [Number(text(listId))];
 
   return contact;
 }

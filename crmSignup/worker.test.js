@@ -801,6 +801,33 @@ describe("the row is scrubbed once all three have succeeded or been skipped", ()
     }
   });
 
+  it("keeps a row whose Brevo send failed, and scrubs the same row once Brevo succeeds", async () => {
+    // The concrete case the decision was taken for, end to end. BREVO_LIST_ID is
+    // unusable, so Brevo fails terminally while Meta skips the stage the website
+    // pixel owns and WhatsApp sends: all three destinations settled, one of them
+    // failed, and the row keeps its name, email and phone -- the scrub, which is
+    // the only thing that nulls them, is not even attempted.
+    const failing = deps({ config: { ...deps().config, brevoListId: "" } });
+    await processSignupEvent(row(), failing);
+    expect(lastSaved(failing.saveMeta)).toMatchObject({ status: "skipped" });
+    expect(lastSaved(failing.saveWhatsapp)).toMatchObject({ status: "sent" });
+    expect(lastSaved(failing.saveBrevo)).toMatchObject({ status: "failed", nextAttemptAt: null });
+    expect(failing.scrub).not.toHaveBeenCalled();
+
+    // And once the variable is fixed and the row comes back claimable, the same
+    // row sends and now it scrubs. What resets a kept row to `pending` is its own
+    // task and is deliberately not built here, so the row is handed in that way.
+    const fixed = deps();
+    await processSignupEvent(
+      row({ meta_status: "skipped", whatsapp_status: "sent", brevo_status: "pending" }),
+      fixed
+    );
+    expect(fixed.upsertBrevo).toHaveBeenCalledTimes(1);
+    expect(lastSaved(fixed.saveBrevo)).toMatchObject({ status: "sent" });
+    expect(fixed.scrub).toHaveBeenCalledTimes(1);
+    expect(fixed.scrub).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
+  });
+
   it("scrubs a row settled across a mix of this sweep's outcomes and earlier ones", async () => {
     // Each action's status comes from its own place: the outcome if it ran, the
     // column if it did not. Reading only one of the two would leave half the
@@ -1407,6 +1434,11 @@ describe("the production wiring", () => {
     "CRM_SEND_TIMEOUT_MS",
   ];
   const SECRETS = { META_CAPI_ACCESS_TOKEN: "meta-secret", WA_API_KEY: "wa-secret", BREVO_API_KEY: "brevo-secret" };
+  // BREVO_LIST_ID is the fourth value with no working default. Since 2026-10-14 an
+  // unusable one is a terminal failure instead of a contact that joins no list, so
+  // a case that wants a real Brevo send has to set it; the case that proves the
+  // failure is the one that leaves it out.
+  const CONFIGURED = { ...SECRETS, BREVO_LIST_ID: "19" };
 
   let savedEnv;
   let fetchMock;
@@ -1455,9 +1487,9 @@ describe("the production wiring", () => {
   const bodyOf = ([, init]) => JSON.parse(init.body);
   const liveRow = (overrides = {}) => row({ phone: "+971501112233", ...overrides });
 
-  describe("with only the three secrets set", () => {
+  describe("with only the three secrets and the Brevo list set", () => {
     it("at registration, sends WhatsApp and Brevo to the real providers with the documented defaults, never calls Meta, and records each in its own column", async () => {
-      setEnv(SECRETS);
+      setEnv(CONFIGURED);
       store.claimDueEvents.mockResolvedValue([liveRow()]);
       await sweepOnce();
 
@@ -1479,7 +1511,9 @@ describe("the production wiring", () => {
 
       const [brevoCall] = fetched(BREVO_CONTACTS_URL);
       expect(brevoCall[1].headers["api-key"]).toBe("brevo-secret");
-      expect(bodyOf(brevoCall).listIds).toBeUndefined();
+      // The configured list, and the contact joins it. It used to be acceptable
+      // for this to be absent -- see the case below for what that costs.
+      expect(bodyOf(brevoCall).listIds).toEqual([19]);
 
       // Each save reaches its own column's writer: the pre-send write, then the outcome.
       for (const [writer, detail] of [
@@ -1583,6 +1617,62 @@ describe("the production wiring", () => {
     });
   });
 
+  // The failure this whole decision exists for (2026-10-14, user's call). Until
+  // today an unusable BREVO_LIST_ID failed OPEN: the contact was created, joined
+  // no list, and the row said `sent`. Nobody would have found out until they
+  // opened list 19 to run a campaign and found it short.
+  describe("with the three secrets but no usable BREVO_LIST_ID", () => {
+    for (const [label, value] of [
+      ["unset", undefined],
+      ["blank", "   "],
+      ["not a number", "nineteen"],
+      ["zero", "0"],
+    ]) {
+      it(`does not call Brevo at all when the list id is ${label}, and records a terminal failure`, async () => {
+        setEnv(SECRETS);
+        if (value !== undefined) setEnv({ BREVO_LIST_ID: value });
+        store.claimDueEvents.mockResolvedValue([liveRow()]);
+        await sweepOnce();
+
+        // Not one request. A contact created outside the list is worse than none:
+        // it looks like a success everywhere a person would check.
+        expect(fetched(BREVO_CONTACTS_URL)).toHaveLength(0);
+        // One write, the failure, with no pre-send claim ahead of it -- nothing was
+        // attempted, so no attempt is spent -- and no clock, because a wrong
+        // environment variable will not be right in five minutes.
+        expect(store.updateBrevoStatus.mock.calls).toEqual([
+          [
+            7,
+            {
+              status: "failed",
+              detail: "not sent: BREVO_LIST_ID is unset, blank or not a positive number",
+              attempts: 0,
+              nextAttemptAt: null,
+            },
+          ],
+        ]);
+        // WhatsApp still sends: the three destinations are independent.
+        expect(fetched(DOUBLETICK_TEMPLATE_URL)).toHaveLength(1);
+        // And the row keeps its client data, which is what makes the resend
+        // possible once the variable is fixed.
+        expect(store.scrubSignupEvent).not.toHaveBeenCalled();
+      });
+    }
+
+    it("says in the log what is wrong, without naming the value or any client", async () => {
+      setEnv(SECRETS);
+      store.claimDueEvents.mockResolvedValue([liveRow()]);
+      await sweepOnce();
+      const said = spies.warn.mock.calls.map(([line]) => line).join("\n");
+      expect(said).toContain("BREVO_LIST_ID");
+      // The commonest way this column goes wrong is a paste from the line above
+      // it in .env, which is the API key.
+      expect(said).not.toContain("brevo-secret");
+      expect(said).not.toContain("ali@example.com");
+      expect(said).not.toContain("+971501112233");
+    });
+  });
+
   it("reads every setting from its own environment variable", async () => {
     setEnv({
       ...SECRETS,
@@ -1616,7 +1706,7 @@ describe("the production wiring", () => {
   });
 
   it("reads SKIP_SOURCES, so an excluded source gets no WhatsApp but still gets the rest", async () => {
-    setEnv({ ...SECRETS, SKIP_SOURCES: "Other-Form, svg" });
+    setEnv({ ...CONFIGURED, SKIP_SOURCES: "Other-Form, svg" });
     // Two events from the excluded source, since no one stage reaches all three
     // destinations: registration is where WhatsApp and Brevo send, and a Meta
     // stage is where Meta does.
@@ -1695,7 +1785,7 @@ describe("the production wiring", () => {
     });
 
     it("carries on with the next row when one row's write fails, and says which row", async () => {
-      setEnv(SECRETS);
+      setEnv(CONFIGURED);
       // Fails every write for row 11 and none for the rest. (A single failure would be
       // absorbed: the pre-send write is inside the step, and its retry write succeeds.)
       store.updateMetaStatus.mockImplementation(async (id) => {

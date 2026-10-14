@@ -7,7 +7,12 @@ import {
   sendWhatsappTemplate,
   parseSkipSources,
 } from "./whatsapp.js";
-import { decideBrevoSkip, buildBrevoContact, upsertBrevoContact } from "./brevo.js";
+import {
+  decideBrevoSkip,
+  decideBrevoListIdFailure,
+  buildBrevoContact,
+  upsertBrevoContact,
+} from "./brevo.js";
 // Two sets, two questions, and reading one for the other is silent in opposite
 // directions (settled.js spells both out). SETTLED is "do not attempt this
 // action again"; SCRUBBABLE is "this row is safe to forget".
@@ -225,6 +230,24 @@ async function runBrevoStep(row, fields, deps, begin) {
     return {
       status: "skipped",
       detail: skip.reason,
+      attempts: Number(row.brevo_attempts) || 0,
+      nextAttemptAt: null,
+    };
+  }
+
+  // Before the payload and before the claim, because the point is that no request
+  // is made: an unusable BREVO_LIST_ID used to create the contact in no list
+  // while the row recorded `sent`, and the shortfall only showed up in a campaign
+  // weeks later. Terminal, so no attempt is spent and no clock is set -- the
+  // variable will not be right in five minutes. The row keeps its client data
+  // (`failed` is not scrubbable), which is what the resend will need.
+  const badListId = decideBrevoListIdFailure({ listId: config.brevoListId });
+  if (badListId) {
+    // No client data in this line: the problem is entirely in the environment.
+    logger.warn?.(`[crm-events] brevo ${badListId.status} for row ${row.id}: ${badListId.detail}`);
+    return {
+      status: badListId.status,
+      detail: badListId.detail,
       attempts: Number(row.brevo_attempts) || 0,
       nextAttemptAt: null,
     };

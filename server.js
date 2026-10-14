@@ -21,6 +21,9 @@ import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.j
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
 import { initCrmSignupStore, findExistingFbc, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
+// The one test for a usable BREVO_LIST_ID, so the boot-time warning below and the
+// send-time gate cannot come to disagree about what "usable" means.
+import { isUsableBrevoListId } from "./crmSignup/brevo.js";
 import oauthRouter from "./oauth/router.js";
 import { checkAllBalances } from './wallet/walletMonitor.js';
 import { notifyIfTotalChanged } from './wallet/scheduler.js';
@@ -1408,6 +1411,21 @@ server.listen(PORT, () => {
     console.error(
       '[crm-events] CRM_WEBHOOK_SECRET is not set or is blank. Every CRM webhook to POST /api/crm-events ' +
         'will be rejected with 401 until it is set. Set CRM_WEBHOOK_SECRET in .env and restart.',
+    );
+  }
+  // Only when the key is set: with no BREVO_API_KEY Brevo is switched off
+  // entirely and recorded as "brevo not configured", so a warning about its list
+  // would be noise on every boot of every install that does not use it. With the
+  // key set, an unusable list id now fails every registration's Brevo send
+  // instead of quietly creating a contact in no list -- and this line is what
+  // catches the typo before a single signup arrives, rather than in a campaign
+  // weeks later. Never prints the key, and never prints the list value either:
+  // the commonest way this goes wrong is a paste into the wrong line of .env.
+  if (process.env.BREVO_API_KEY && !isUsableBrevoListId(process.env.BREVO_LIST_ID)) {
+    console.error(
+      '[crm-events] BREVO_API_KEY is set but BREVO_LIST_ID is unset, blank or not a positive number. ' +
+        'Every Brevo contact at the "registered" stage will be recorded as failed and nothing will be sent ' +
+        'to Brevo until it is fixed. Set BREVO_LIST_ID in .env (19 is the "All Clients" list) and restart.',
     );
   }
   initCrmSignupStore()
