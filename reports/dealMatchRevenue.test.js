@@ -775,15 +775,23 @@ describe("per-million figures in brackets beside the notional", () => {
     expect(html).toContain('<span class="money-neg" style="color:#fca5a5;font-weight:700">-$11.67</span>');
   });
 
-  it("says in the section subtitle which LP figure the bracket divides", () => {
+  it("explains under the table which LP figure the bracket divides", () => {
     // Without it a reader who divides the LP Comm column by Notional gets a
-    // different answer and concludes the report is broken. It goes in the
-    // always-rendered subtitle, not the paragraph below it, which appears only
-    // when whole-run revenueStats do.
+    // different answer -- about 8% apart on real data -- and concludes the
+    // report is broken. It sits under the table rather than in the subtitle at
+    // the user's request (2026-10-15): it is read at the point the question
+    // occurs, which is after looking at the numbers, not before.
+    //
+    // Asserted on both branches, because the note must not depend on whole-run
+    // revenueStats being present the way the paragraph above the table does.
     for (const stats of [STATS, null]) {
-      expect(render({ revenueStats: stats })).toContain(
-        "the weighted per-million rate Net Revenue is built from, not the LP Comm column over notional",
-      );
+      const html = render({ revenueStats: stats });
+      expect(html).toContain("LP per M is the\n            weighted per-million rate the liquidity provider charges");
+      expect(html).toContain("coverage-attributed");
+      // And it is genuinely below the table, not merely present somewhere.
+      expect(html.indexOf("LP per M is the")).toBeGreaterThan(html.indexOf("TOTAL (listed clients)"));
+      // The subtitle points at it rather than repeating it.
+      expect(html).toContain("the bracketed per-million figures are explained under the table");
     }
   });
 

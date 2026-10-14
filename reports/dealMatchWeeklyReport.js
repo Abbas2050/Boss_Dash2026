@@ -1518,7 +1518,7 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
                 error in the report rather than as two different real costs.
                 In the always-rendered subtitle, not the paragraph below it:
                 that paragraph only appears when whole-run revenueStats do. */ ""}
-          <p class="section-title" style="margin-top:18px;">Client revenue<span style="font-weight:500;letter-spacing:0;text-transform:none;color:#64748b;font-size:11px;"> &mdash; per client, net of that client's own withdrawn rebate; bracketed per-million figures divide the unrounded row, and their LP is the weighted per-million rate Net Revenue is built from, not the LP Comm column over notional</span></p>
+          <p class="section-title" style="margin-top:18px;">Client revenue<span style="font-weight:500;letter-spacing:0;text-transform:none;color:#64748b;font-size:11px;"> &mdash; per client, net of that client's own withdrawn rebate; the bracketed per-million figures are explained under the table</span></p>
           ${
             revenueStats
               ? `<p style="font-size:11px;color:#64748b;margin:0 0 10px;">
@@ -1569,6 +1569,25 @@ export function buildEmailHtml({ fromYmd, toYmd, rows, volume, volumeStats = nul
             </tbody>
           </table>
           </div>
+
+          ${/* Under the table rather than in the section subtitle, at the user's
+                request (2026-10-15). It answers the one question this table
+                invites: the bracketed LP figure does NOT equal the LP Comm
+                column divided by Notional, and on real data the two sit about
+                8% apart. DealMatch/Run publishes two LP costs; the column shows
+                the coverage-attributed one and the bracket shows the weighted
+                per-million rate, which is the one Net Revenue is actually built
+                from (docs/dealing-reporting.md section 5). Without this note the
+                gap reads as an arithmetic error on the same screen as the
+                numbers it contradicts. */ ""}
+          <p style="font-size:11px;color:#64748b;margin:0 0 10px;">
+            The bracketed figures divide the <em>unrounded</em> row, so adding up
+            the printed ones can differ by a cent or two. <strong>LP per M is the
+            weighted per-million rate the liquidity provider charges</strong> &mdash;
+            the figure Net Revenue is built from &mdash; so it will not match the
+            LP Comm column divided by Notional, which is a different, coverage-attributed
+            cost. The two normally sit a few percent apart; that is expected, not an error.
+          </p>
 
           ${charts ? chartImg(charts, "top10-net-revenue.png", "Top 10 clients by net revenue") : buildBarChart(
             "Top 10 Clients by Net Revenue",
