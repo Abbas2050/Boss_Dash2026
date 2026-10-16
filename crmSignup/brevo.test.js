@@ -396,9 +396,10 @@ describe("the contact id", () => {
       const r = classifyBrevoOutcome({ httpStatus: 201, body: { id: 4821 } });
       expect(r.status).toBe("sent");
       expect(r.contactId).toBe("4821");
-      // In the detail too, so the row says what happened even where only the
-      // detail is read -- the log line, a SELECT, an operator on a phone.
-      expect(r.detail).toBe("http 201 contact 4821");
+      // NOT in the detail as well. The id has a column of its own and the tab
+      // prints both, so repeating it would put the same six characters twice in
+      // one cell. The detail's job on a success is the transport fact.
+      expect(r.detail).toBe("http 201");
     });
 
     it("treats a 2xx with no id as a send, not a failure, and records what came back", () => {
@@ -437,7 +438,7 @@ describe("the contact id", () => {
       expect(r).toEqual({
         status: "sent",
         retryable: false,
-        detail: "http 201 contact 4821",
+        detail: "http 201",
         contactId: "4821",
       });
     });

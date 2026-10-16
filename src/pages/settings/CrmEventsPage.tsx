@@ -64,7 +64,27 @@ const DESTINATION_STATUSES = ["pending", "sent", "skipped", "retrying", "failed"
 
 type Counts = Record<string, number>;
 
-type DestinationStatus = { status: string; detail: string | null; attempts: number };
+/** What DoubleTick later said became of one message.
+ *
+ *  `status` is their word, verbatim and never rewritten here: the exact string
+ *  WhatsApp's read receipt arrives as is NOT documented, so an unexpected value
+ *  has to be visible on this page rather than folded into a word of ours. All
+ *  three are null until their webhook arrives, which is the ordinary state for
+ *  the first minute or two after a signup. */
+type Delivery = { status: string | null; at: string | null; detail: string | null };
+
+type DestinationStatus = {
+  status: string;
+  detail: string | null;
+  attempts: number;
+  /** WhatsApp's alone. Optional because a response from a server that predates
+   *  the status webhook must still render the rest of the page. */
+  delivery?: Delivery;
+  /** Brevo's alone: the id of the contact it created, which is the one piece of
+   *  proof in that exchange that a person can open. Null on an update -- Brevo
+   *  mints an id only when it creates -- and the detail says so. */
+  contactId?: string | null;
+};
 
 type EventRow = {
   id: number;
@@ -148,6 +168,161 @@ function toneFor(status: string): string {
   if (status === "sent") return "text-emerald-600 dark:text-emerald-400";
   if (PROBLEM.has(status)) return "text-red-600 dark:text-red-400";
   return "text-muted-foreground";
+}
+
+/**
+ * The symbol each row shows per destination, and why there are four of them.
+ *
+ * The ask was "tick or cross -- tick means sent, cross means some error". Two
+ * symbols would mislead every day: Meta and ChatGPT Ads are `skipped` on EVERY
+ * registration by design, so a binary reading paints a red cross on every row
+ * of the commonest case, and a dashboard with a permanent red column is a
+ * dashboard nobody reads. `pending` and `retrying` are the other half: a send
+ * still in the air is neither a success nor a fault, and calling it either is
+ * wrong within the minute.
+ *
+ *   OK      a send that succeeded, or -- for WhatsApp -- one DoubleTick has
+ *           since reported delivered or read
+ *   BAD     failed, rejected or invalid, and a WhatsApp message DoubleTick
+ *           reports as not delivered
+ *   NONE    skipped: deliberately not sent, which is not a fault
+ *   WAITING pending or retrying: on its way, nothing to conclude yet
+ *   UNKNOWN a status this page has never heard of. Not silently a tick and not
+ *           silently a cross; the word beside it is the whole point.
+ */
+const MARKS = {
+  ok: { symbol: "✓", tone: "text-emerald-600 dark:text-emerald-400" },
+  bad: { symbol: "✗", tone: "text-red-600 dark:text-red-400" },
+  none: { symbol: "–", tone: "text-muted-foreground" },
+  waiting: { symbol: "⋯", tone: "text-muted-foreground" },
+  unknown: { symbol: "?", tone: "text-amber-700 dark:text-amber-300" },
+} as const;
+
+type MarkState = keyof typeof MARKS;
+
+/** Every status the backend records, mapped to its symbol. All seven are here;
+ *  a status missing from this map reads as `unknown` and shows its own word,
+ *  rather than defaulting into whichever state was convenient. */
+const STATE_OF: Record<string, MarkState> = {
+  sent: "ok",
+  failed: "bad",
+  rejected: "bad",
+  invalid: "bad",
+  skipped: "none",
+  pending: "waiting",
+  retrying: "waiting",
+};
+
+/**
+ * What DoubleTick's own report changes about the symbol, and what it does not.
+ *
+ * This is the whole point of the status webhook: `sent` means DoubleTick
+ * accepted the request and `ENQUEUED` is their queue, so a row that has since
+ * been reported delivered or read should say so -- that is the only reading that
+ * involves a handset. A report of failure moves the other way, because a tick on
+ * a message DoubleTick says failed is exactly the lie this work removes.
+ *
+ * **`SENT` is deliberately absent**: it adds nothing we did not already have.
+ *
+ * **And this map is not an allowlist.** The exact string WhatsApp's read receipt
+ * arrives as is not documented. A value that is not in here leaves the symbol
+ * alone AND is printed verbatim under it, so the real one is visible the first
+ * time it arrives instead of being dropped. Keying the display off a guessed
+ * "READ" and nothing else is the mistake this shape exists to make impossible.
+ */
+const DELIVERY_REPORTS: Record<string, { word: string; state: MarkState }> = {
+  DELIVERED: { word: "delivered", state: "ok" },
+  READ: { word: "read", state: "ok" },
+  FAILED: { word: "not delivered", state: "bad" },
+};
+
+/**
+ * One destination's symbol and the word beside it.
+ *
+ * The word is never dropped in favour of the symbol. A cross with no reason is a
+ * thing an operator has to come and ask about, and the reason is the useful half
+ * -- so the symbol leads and the word follows it, both as text, on every row.
+ */
+function markOf(d: DestinationStatus | undefined, destination: string): { state: MarkState; word: string } {
+  const status = d?.status ?? "";
+  const ours: { state: MarkState; word: string } = {
+    state: STATE_OF[status] ?? "unknown",
+    word: status || "not reported",
+  };
+  if (destination !== "whatsapp") return ours;
+
+  const reported = DELIVERY_REPORTS[(d?.delivery?.status ?? "").trim().toUpperCase()];
+  // Only ever on top of a send. A report about a row we never sent would be a
+  // row whose frozen id somebody else is using, and the status we recorded is
+  // the one to show.
+  if (!reported || status !== "sent") return ours;
+  return reported;
+}
+
+/**
+ * The muted lines under the symbol: the proof, our own word when the symbol no
+ * longer shows it, and the details.
+ *
+ * All of it is text in the cell rather than a `title`. This dashboard is read on
+ * a phone, where there is no hover and a long-press is a text selection -- a
+ * tooltip is the same as deleting the reason.
+ */
+function notesFor(d: DestinationStatus | undefined, destination: string, word: string): string[] {
+  const notes: string[] = [];
+  const status = d?.status ?? "";
+
+  if (destination === "whatsapp") {
+    const reported = d?.delivery?.status;
+    if (reported) {
+      // Verbatim, with their name on it, so an unrecognised value is readable
+      // and attributable rather than mistaken for one of ours.
+      const at = d?.delivery?.at ? ` at ${formatDubaiInstant(d.delivery.at)} Dubai` : "";
+      notes.push(`DoubleTick reported ${reported}${at}`);
+    } else if (status === "sent") {
+      // The honest gap. Without this an operator reads the tick as a handset,
+      // which is the misreading the whole webhook was added to stop.
+      notes.push("no delivery report yet");
+    }
+  }
+
+  if (destination === "brevo" && d?.contactId) {
+    // The proof. `http 201` says the request was accepted; this names a contact
+    // in Brevo that can be opened.
+    notes.push(`contact ${d.contactId}`);
+  }
+
+  // Our own status, whenever the symbol's word has replaced it. Both facts
+  // matter and they are different facts: what DoubleTick answered our request,
+  // and what DoubleTick later said became of the message.
+  if (status && word !== status) notes.push(`we recorded ${status}`);
+
+  if (d?.detail) notes.push(d.detail);
+  if (destination === "whatsapp" && d?.delivery?.detail) notes.push(d.delivery.detail);
+
+  return notes;
+}
+
+/** One cell of the events table: the symbol, its word, and everything under it. */
+function DestinationCell({ d, destination }: { d: DestinationStatus | undefined; destination: string }) {
+  const { state, word } = markOf(d, destination);
+  const mark = MARKS[state];
+  return (
+    <>
+      <div className="flex items-baseline gap-1">
+        {/* Hidden from screen readers, which read the word beside it: the symbol
+            is a second rendering of the same fact, not an extra one. */}
+        <span aria-hidden="true" className={`font-semibold ${mark.tone}`}>
+          {mark.symbol}
+        </span>
+        <span className={`font-medium ${mark.tone}`}>{word}</span>
+      </div>
+      {notesFor(d, destination, word).map((note) => (
+        <div key={note} className="text-[11px] text-muted-foreground">
+          {note}
+        </div>
+      ))}
+    </>
+  );
 }
 
 /** A stage warns only when it fired and then stopped. A stage that has never
@@ -611,6 +786,32 @@ export function CrmEventsPage() {
                 </label>
               </div>
 
+              {/* The symbols, said once in text rather than in a tooltip on each
+                  of them: this page is read on a phone, where there is no hover.
+                  Four and not two, which is the one place this deliberately does
+                  not do what was asked -- a cross on `skipped` would paint a red
+                  mark on every row of the commonest case, since Meta and ChatGPT
+                  Ads are skipped on every registration by design. */}
+              <p className="mb-2 text-xs text-muted-foreground">
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">{"✓"}</span> sent
+                {" · "}
+                <span className="font-semibold text-red-600 dark:text-red-400">{"✗"}</span> failed, rejected or
+                invalid
+                {" · "}
+                <span className="font-semibold">{"–"}</span> deliberately not sent — Meta and ChatGPT Ads
+                skip every registration, which is not a fault
+                {" · "}
+                <span className="font-semibold">{"⋯"}</span> still going out. The word and the reason are beside
+                every symbol, because the reason is the useful part.
+              </p>
+              <p className="mb-2 text-xs text-muted-foreground">
+                <span className="font-medium">WhatsApp shows the best we actually know.</span> A 2xx from DoubleTick
+                means the request was accepted and <span className="font-medium">ENQUEUED</span> is their queue, not a
+                handset — so a tick there says delivered or read only once DoubleTick’s status webhook has said
+                so, and a row still waiting for that report says it plainly. Their word is printed as it arrives, since
+                the exact string for a read receipt is not documented. Brevo shows the id of the contact it created,
+                which is a record that can be opened; an update returns no id and says so.
+              </p>
               <p className="mb-2 text-xs text-muted-foreground">
                 Name, email and phone are removed once Meta, WhatsApp, Brevo and ChatGPT Ads have all succeeded or
                 been skipped —
@@ -658,16 +859,11 @@ export function CrmEventsPage() {
                             <Personal value={row.phone} scrubbedAt={row.scrubbedAt} />
                           </td>
                           <td className="p-2">{row.source}</td>
-                          {DESTINATIONS.map(([key]) => {
-                            const d = row[key];
-                            const status = d?.status ?? "—";
-                            return (
-                              <td key={key} className="p-2">
-                                <span className={`font-medium ${toneFor(status)}`}>{status}</span>
-                                {d?.detail ? <div className="text-[11px] text-muted-foreground">{d.detail}</div> : null}
-                              </td>
-                            );
-                          })}
+                          {DESTINATIONS.map(([key]) => (
+                            <td key={key} data-testid={`cell-${key}-${row.id}`} className="p-2">
+                              <DestinationCell d={row[key]} destination={key} />
+                            </td>
+                          ))}
                         </tr>
                       ))}
                     </tbody>

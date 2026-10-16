@@ -1956,7 +1956,7 @@ describe("the production wiring", () => {
       // Each save reaches its own column's writer: the pre-send write, then the outcome.
       for (const [writer, detail] of [
         [store.updateWhatsappStatus, "SENT"],
-        [store.updateBrevoStatus, "http 201 contact 4821"],
+        [store.updateBrevoStatus, "http 201"],
       ]) {
         expect(writer).toHaveBeenCalledTimes(2);
         // The claim carries the sweeper's own clock; the outcome write does not.

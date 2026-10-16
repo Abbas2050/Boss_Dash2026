@@ -179,6 +179,17 @@ export function readBrevoContactId(body) {
  */
 const NO_CONTACT_ID_DETAIL = "no contact id (an update returns none)";
 
+/**
+ * The id is NOT repeated in the detail of a success.
+ *
+ * It has a column of its own, and the settings tab prints both -- so naming it
+ * here would put the same six characters twice in one cell of the page this was
+ * built for. The detail's job on a success is the transport fact (`http 201`),
+ * and `brevo_contact_id` is the proof beside it. The ABSENCE of an id is a
+ * different matter and does belong here: nothing else on the row could say
+ * whether Brevo sent none or we failed to read one.
+ */
+
 export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) {
   if (transportError) {
     return {
@@ -201,7 +212,7 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
     return {
       status: "sent",
       retryable: false,
-      detail: contactId ? `http ${code} contact ${contactId}` : `http ${code} ${NO_CONTACT_ID_DETAIL}`,
+      detail: contactId ? `http ${code}` : `http ${code} ${NO_CONTACT_ID_DETAIL}`,
       contactId,
     };
   }

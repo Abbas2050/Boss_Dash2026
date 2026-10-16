@@ -629,10 +629,14 @@ describe("the events table in detail", () => {
       "o***@mail.test",
       "+966***44",
       "KSA",
-      "senthttp 200",
-      "retryinghttp 503 upstream",
-      "invalidno email address",
-      "rejectedhttp 400 unknown field",
+      // The symbol leads and the word follows it, both as text, with the reason
+      // under them. Nothing is behind a hover: this page is read on a phone.
+      "✓senthttp 200",
+      // `retrying` is neither a success nor a fault -- it is still going out --
+      // so it is the waiting symbol and not a cross.
+      "⋯retryinghttp 503 upstream",
+      "✗invalidno email address",
+      "✗rejectedhttp 400 unknown field",
     ]);
   });
 
@@ -668,7 +672,10 @@ describe("the events table in detail", () => {
     await screen.findByText("90002");
     const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
     expect(cells[1].textContent).toBe("mystery");
-    expect(cells[7].textContent).toBe("skipped");
+    // A dash, not a cross. Meta and ChatGPT Ads are skipped on EVERY
+    // registration by design, so a cross here would paint the commonest row red
+    // every day -- and a dashboard with a permanent red column stops being read.
+    expect(cells[7].textContent).toBe("–skipped");
   });
 
   it("colours a status by what it means", async () => {
@@ -677,7 +684,11 @@ describe("the events table in detail", () => {
     await screen.findByText("90001");
     const [first, second] = screen.getAllByRole("row").slice(1);
     expect(within(within(first).getAllByRole("cell")[7]).getByText("sent").className).toMatch(/emerald/);
-    expect(within(within(first).getAllByRole("cell")[8]).getByText("retrying").className).toMatch(/red/);
+    // Muted, where the destination CARD still shows `retrying` in red. The two
+    // answer different questions: a pile of retrying rows on a card does need
+    // attention, while one row mid-retry is simply not finished, and colouring
+    // it as a fault would be wrong within the minute.
+    expect(within(within(first).getAllByRole("cell")[8]).getByText("retrying").className).toMatch(/muted/);
     expect(within(within(second).getAllByRole("cell")[7]).getByText("skipped").className).toMatch(/muted/);
   });
 
@@ -692,10 +703,13 @@ describe("the events table in detail", () => {
     const [first, second] = screen.getAllByRole("row").slice(1);
     const cells = within(first).getAllByRole("cell");
     expect(cells[2].textContent).toBe("90001");
-    expect(cells[7].textContent).toBe("senthttp 200");
-    expect(cells[8].textContent).toBe("—");
-    expect(cells[9].textContent).toBe("invalidno email address");
-    expect(within(second).getAllByRole("cell")[8].textContent).toBe("retryinghttp 503 upstream");
+    expect(cells[7].textContent).toBe("✓senthttp 200");
+    // Deliberately NOT a dash any more: the dash now means "deliberately not
+    // sent", and a destination the row does not even carry is not that. It reads
+    // as the unknown state and says so in words.
+    expect(cells[8].textContent).toBe("?not reported");
+    expect(cells[9].textContent).toBe("✗invalidno email address");
+    expect(within(second).getAllByRole("cell")[8].textContent).toBe("⋯retryinghttp 503 upstream");
   });
 
   it("still filters to problems when a row is missing a destination object", async () => {
@@ -757,7 +771,7 @@ describe("a scrubbed row", () => {
     expect(cells[1].textContent).toBe("Registered");
     expect(cells[2].textContent).toBe("90010");
     expect(cells[6].textContent).toBe("SVG");
-    expect(cells[8].textContent).toBe("sentSENT");
+    expect(cells[8].textContent).toBe("✓sentno delivery report yetSENT");
   });
 
   it("says a dash, not scrubbed, for a row that simply never carried the value", async () => {
@@ -825,10 +839,10 @@ describe("a scrubbed row", () => {
     expect(cells[4].textContent).toBe("scrubbed");
     expect(cells[5].textContent).toBe("scrubbed");
     // Status and reason together, in the destination's own cell.
-    expect(cells[7].textContent).toBe("failednot attempted: the client data this send needed was scrubbed");
-    expect(cells[8].textContent).toBe("failednot attempted: the client data this send needed was scrubbed");
+    expect(cells[7].textContent).toBe("✗failednot attempted: the client data this send needed was scrubbed");
+    expect(cells[8].textContent).toBe("✗failednot attempted: the client data this send needed was scrubbed");
     // A destination that did settle keeps its own word for it.
-    expect(cells[9].textContent).toBe("senthttp 201");
+    expect(cells[9].textContent).toBe("✓senthttp 201");
   });
 });
 
@@ -1504,5 +1518,243 @@ describe("the controls", () => {
     fireEvent.click(problems);
 
     await waitFor(() => expect([period.value, stage.value, problems.checked]).toEqual(["90", "verified", true]));
+  });
+});
+
+// The reason this page was changed. A real client (CRM id 14520) registered and
+// the tab read `WhatsApp sent -- ENQUEUED`, `Brevo sent -- http 201`. Neither
+// proves anything landed: ENQUEUED is DoubleTick's queue and 201 is an HTTP
+// code. The ask was "just tick or cross"; four symbols is where that was
+// overruled, and every test here is one half of the argument for it.
+describe("the symbol per destination", () => {
+  /** One row, with each destination's status and whatever proof it carries. */
+  function marked(over: Record<string, unknown> = {}) {
+    return {
+      ...event(1, "77001", "registered", ["sent", "sent", "sent", "skipped"]),
+      ...over,
+    };
+  }
+
+  const show = async (row: Record<string, unknown>) => {
+    installFetch({ ...DISTINCT, events: [row] });
+    render(<CrmEventsPage />);
+    await screen.findByText("77001");
+  };
+
+  const cell = (key: string) => screen.getByTestId(`cell-${key}-1`);
+
+  it("ticks a send that succeeded", async () => {
+    await show(marked());
+    expect(cell("meta")).toHaveTextContent("✓");
+    expect(cell("meta")).toHaveTextContent("sent");
+  });
+
+  it("crosses failed, rejected and invalid, which are the three things that are wrong", async () => {
+    for (const status of ["failed", "rejected", "invalid"]) {
+      cleanup();
+      await show(marked({ meta: { status, detail: "http 400 nope", attempts: 3 } }));
+      expect(cell("meta"), status).toHaveTextContent("✗");
+      expect(cell("meta"), status).toHaveTextContent(status);
+    }
+  });
+
+  it("does NOT cross a skip, which is the whole reason there are four symbols", async () => {
+    // Meta and ChatGPT Ads are skipped on every registration by design -- the
+    // website pixel owns that conversion. A binary tick-or-cross would put a red
+    // mark on the commonest row of every day, and a dashboard with a permanent
+    // red column is one people stop reading.
+    await show(
+      marked({ openai: { status: "skipped", detail: "registered is owned by the website pixel", attempts: 0 } }),
+    );
+    expect(cell("openai")).toHaveTextContent("–");
+    expect(cell("openai")).not.toHaveTextContent("✗");
+    // And the reason is right there, which is what makes the dash readable.
+    expect(cell("openai")).toHaveTextContent("registered is owned by the website pixel");
+  });
+
+  it("shows a send still going out as neither, since there is nothing to conclude yet", async () => {
+    for (const status of ["pending", "retrying"]) {
+      cleanup();
+      await show(marked({ brevo: { status, detail: "http 503", attempts: 1 } }));
+      expect(cell("brevo"), status).toHaveTextContent("⋯");
+      expect(cell("brevo"), status).not.toHaveTextContent("✓");
+      expect(cell("brevo"), status).not.toHaveTextContent("✗");
+    }
+  });
+
+  it("shows a status it has never heard of as unknown, rather than guessing a tick or a cross", async () => {
+    // The backend's vocabulary is seven words. An eighth added later must not
+    // default into whichever branch was convenient.
+    await show(marked({ brevo: { status: "quarantined", detail: "something new", attempts: 0 } }));
+    expect(cell("brevo")).toHaveTextContent("?");
+    expect(cell("brevo")).toHaveTextContent("quarantined");
+  });
+
+  it("keeps the status word and the reason as text beside the symbol, not behind it", async () => {
+    // The reason is the useful half when something is wrong, and this dashboard
+    // is read on a phone -- where there is no hover and a long-press selects
+    // text. A `title` attribute would be the same as deleting it.
+    await show(marked({ meta: { status: "failed", detail: "http 400 Invalid parameter", attempts: 3 } }));
+    expect(cell("meta")).toHaveTextContent("failed");
+    expect(cell("meta")).toHaveTextContent("http 400 Invalid parameter");
+    expect(cell("meta").getAttribute("title")).toBeNull();
+    expect(within(cell("meta")).queryByTitle(/http 400/)).toBeNull();
+  });
+
+  it("explains the four symbols in text, once, above the table", async () => {
+    await show(marked());
+    const legend = screen.getByText(/the word and the reason are beside/i);
+    expect(legend).toHaveTextContent("✓");
+    expect(legend).toHaveTextContent("✗");
+    expect(legend).toHaveTextContent("–");
+    expect(legend).toHaveTextContent("⋯");
+    // The dash is the one that needs explaining, because it is the commonest.
+    expect(legend).toHaveTextContent(/not a fault/i);
+  });
+});
+
+describe("WhatsApp's symbol shows the best we actually know", () => {
+  function waRow(whatsapp: Record<string, unknown>) {
+    return { ...event(1, "77002", "registered", ["sent", "sent", "sent", "skipped"]), whatsapp };
+  }
+
+  const show = async (whatsapp: Record<string, unknown>) => {
+    installFetch({ ...DISTINCT, events: [waRow(whatsapp)] });
+    render(<CrmEventsPage />);
+    await screen.findByText("77002");
+    return screen.getByTestId("cell-whatsapp-1");
+  };
+
+  const delivery = (status: string | null, extra: Record<string, unknown> = {}) => ({
+    status: "sent",
+    detail: "ENQUEUED",
+    attempts: 1,
+    delivery: { status, at: "2026-10-13T11:02:00.000Z", detail: null, ...extra },
+  });
+
+  it("says delivered once DoubleTick has reported it, which is the entire point", async () => {
+    const td = await show(delivery("DELIVERED"));
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("delivered");
+    // Both facts stay: what DoubleTick answered our request, and what DoubleTick
+    // later said became of the message.
+    expect(td).toHaveTextContent("we recorded sent");
+    expect(td).toHaveTextContent("ENQUEUED");
+    expect(td).toHaveTextContent(/DoubleTick reported DELIVERED/);
+  });
+
+  it("says read when that arrives", async () => {
+    const td = await show(delivery("READ"));
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("read");
+  });
+
+  it("reads DELIVERED and READ case-insensitively", async () => {
+    for (const value of ["delivered", "Delivered", "read", "Read"]) {
+      cleanup();
+      const td = await show(delivery(value));
+      expect(td, value).toHaveTextContent("✓");
+      expect(td, value).toHaveTextContent(value.toLowerCase());
+    }
+  });
+
+  it("keeps an undocumented status readable rather than dropping it", async () => {
+    // WhatsApp's read receipt exists but its exact string is NOT documented
+    // anywhere. A page that only recognised "READ" would show the real one as
+    // nothing at all -- the SENT/ENQUEUED trap, one step along. So an
+    // unrecognised value leaves the symbol alone AND prints verbatim.
+    const td = await show(delivery("SeenByRecipient"));
+    expect(td).toHaveTextContent(/DoubleTick reported SeenByRecipient/);
+    // Still the tick our own `sent` earned, not an upgrade and not a downgrade:
+    // we do not know what their word means.
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("sent");
+  });
+
+  it("crosses a message DoubleTick reports as failed, however we recorded the send", async () => {
+    // A tick on a message the provider says failed is exactly the lie the status
+    // webhook was added to remove.
+    const td = await show(delivery("FAILED", { detail: "not a WhatsApp number" }));
+    expect(td).toHaveTextContent("✗");
+    expect(td).toHaveTextContent("not delivered");
+    expect(td).toHaveTextContent("we recorded sent");
+    expect(td).toHaveTextContent("not a WhatsApp number");
+  });
+
+  it("says plainly that no report has arrived, instead of letting the tick imply a handset", async () => {
+    // The ordinary state for the first minutes after a signup. Without this line
+    // an operator reads the tick as "it arrived", which is the misreading the
+    // whole webhook exists to end.
+    const td = await show(delivery(null));
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("no delivery report yet");
+  });
+
+  it("shows the Dubai time the status was reported, like every other instant here", async () => {
+    const td = await show(delivery("DELIVERED"));
+    expect(td).toHaveTextContent(/15:02/);
+    expect(td).toHaveTextContent(/Dubai/);
+  });
+
+  it("ignores a report on a row we did not send, and shows the status we recorded", async () => {
+    // A delivery report against a row whose own send was skipped or failed means
+    // somebody else is using that frozen id. Our own record is the one to show.
+    const td = await show({
+      status: "skipped",
+      detail: "invalid phone number",
+      attempts: 0,
+      delivery: { status: "DELIVERED", at: null, detail: null },
+    });
+    expect(td).toHaveTextContent("–");
+    expect(td).toHaveTextContent("skipped");
+    expect(td).toHaveTextContent("invalid phone number");
+  });
+
+  it("renders a response from a server that predates the webhook, with no delivery field at all", async () => {
+    const td = await show({ status: "sent", detail: "ENQUEUED", attempts: 1 });
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("sent");
+    expect(td).toHaveTextContent("no delivery report yet");
+  });
+});
+
+describe("Brevo's contact id", () => {
+  const show = async (brevo: Record<string, unknown>) => {
+    installFetch({
+      ...DISTINCT,
+      events: [{ ...event(1, "77003", "registered", ["sent", "sent", "sent", "skipped"]), brevo }],
+    });
+    render(<CrmEventsPage />);
+    await screen.findByText("77003");
+    return screen.getByTestId("cell-brevo-1");
+  };
+
+  it("shows the id, which is the one thing in that exchange a person can open", async () => {
+    const td = await show({ status: "sent", detail: "http 201", attempts: 1, contactId: "4821" });
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("contact 4821");
+    // The transport fact stays beside it rather than being replaced by it.
+    expect(td).toHaveTextContent("http 201");
+  });
+
+  it("says why there is no id, rather than leaving the proof column blank", async () => {
+    // Brevo mints an id only when it CREATES, so a returning client's update
+    // legitimately returns none. An empty cell has to be tellable from a proof
+    // we failed to read.
+    const td = await show({
+      status: "sent",
+      detail: "http 204 no contact id (an update returns none)",
+      attempts: 1,
+      contactId: null,
+    });
+    expect(td).toHaveTextContent("✓");
+    expect(td).toHaveTextContent("an update returns none");
+    expect(td).not.toHaveTextContent("contact 4821");
+  });
+
+  it("shows no contact line on a row that never sent", async () => {
+    const td = await show({ status: "skipped", detail: "lead, not client", attempts: 0, contactId: null });
+    expect(td).toHaveTextContent("–");
+    expect(td).not.toHaveTextContent(/contact \d/);
   });
 });
