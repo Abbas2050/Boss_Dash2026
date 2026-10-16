@@ -316,8 +316,12 @@ function DestinationCell({ d, destination }: { d: DestinationStatus | undefined;
         </span>
         <span className={`font-medium ${mark.tone}`}>{word}</span>
       </div>
-      {notesFor(d, destination, word).map((note) => (
-        <div key={note} className="text-[11px] text-muted-foreground">
+      {/* Keyed by position, because two notes can legitimately read the same:
+          DoubleTick's failMessage and our own detail are different columns that
+          may carry identical text, and React warns on a duplicate key. The list
+          is rebuilt whole on every render, so a positional key costs nothing. */}
+      {notesFor(d, destination, word).map((note, i) => (
+        <div key={`${i}-${note}`} className="text-[11px] text-muted-foreground">
           {note}
         </div>
       ))}
