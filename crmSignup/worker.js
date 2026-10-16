@@ -281,6 +281,11 @@ async function runBrevoStep(row, fields, deps, begin) {
     return {
       status: "skipped",
       detail: skip.reason,
+      // No request, so no contact and no id. Explicitly null on every path out
+      // of this step: the writer COALESCEs, so a null never erases an id a
+      // previous send recorded, and `undefined` would read as the same null
+      // without anyone having decided it.
+      contactId: null,
       attempts: Number(row.brevo_attempts) || 0,
       nextAttemptAt: null,
     };
@@ -299,6 +304,7 @@ async function runBrevoStep(row, fields, deps, begin) {
     return {
       status: badListId.status,
       detail: badListId.detail,
+      contactId: null,
       attempts: Number(row.brevo_attempts) || 0,
       nextAttemptAt: null,
     };
@@ -320,7 +326,11 @@ async function runBrevoStep(row, fields, deps, begin) {
     logger.warn?.(`[crm-events] brevo ${plan.status} for ${maskEmail(fields.email)}: ${outcome.detail}`);
   }
 
-  return { ...plan, detail: outcome.detail };
+  // The id travels with the plan, and `plan` cannot carry it: planRetry knows
+  // about attempts and clocks, not about what the provider said. A 2xx that
+  // returned no id is still a send (the contact was an update, not a create) and
+  // the detail says so, so this is null on a success as often as not.
+  return { ...plan, detail: outcome.detail, contactId: outcome.contactId ?? null };
 }
 
 async function runOpenaiStep(row, fields, deps, begin) {

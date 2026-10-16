@@ -256,6 +256,77 @@ describe("toTableRow", () => {
     expect(view.openai.attempts).toBe(2);
   });
 
+  // The reason this work exists: "WhatsApp sent -- ENQUEUED" and "Brevo sent --
+  // http 201" prove nothing landed. ENQUEUED is DoubleTick's queue and 201 is an
+  // HTTP code; these two fields are the only things on the row that a person can
+  // point at.
+  describe("the delivery proof", () => {
+    it("carries DoubleTick's own report beside the status, not instead of it", () => {
+      // Both are wanted. `whatsapp_status` says what DoubleTick answered our
+      // request; `delivery` says what DoubleTick later said became of the
+      // message. Replacing one with the other would lose the distinction the
+      // user objected to being unable to see.
+      const view = toTableRow(
+        row({
+          whatsapp_status: "sent",
+          whatsapp_detail: "ENQUEUED",
+          whatsapp_delivery_status: "DELIVERED",
+          whatsapp_delivery_at: "2026-10-13T11:02:00Z",
+        })
+      );
+      expect(view.whatsapp.status).toBe("sent");
+      expect(view.whatsapp.detail).toBe("ENQUEUED");
+      expect(view.whatsapp.delivery).toEqual({
+        status: "DELIVERED",
+        at: "2026-10-13T11:02:00Z",
+        detail: null,
+      });
+    });
+
+    it("passes an unrecognised delivery status through verbatim", () => {
+      // The read status string is not documented. Nothing here maps a value to a
+      // word of ours, so the one that finally arrives is visible rather than
+      // dropped -- the SENT/ENQUEUED lesson, one step along.
+      expect(toTableRow(row({ whatsapp_delivery_status: "SeenByRecipient" })).whatsapp.delivery.status).toBe(
+        "SeenByRecipient"
+      );
+    });
+
+    it("reports no report as null, not as an empty string", () => {
+      // The page branches on it, and it has to tell "nothing has come back yet"
+      // apart from "a status arrived and it was blank".
+      const view = toTableRow(row());
+      expect(view.whatsapp.delivery).toEqual({ status: null, at: null, detail: null });
+      expect(view.brevo.contactId).toBeNull();
+    });
+
+    it("carries the failure message DoubleTick sends with a FAILED status", () => {
+      const view = toTableRow(
+        row({ whatsapp_delivery_status: "FAILED", whatsapp_delivery_detail: "not a WhatsApp number" })
+      );
+      expect(view.whatsapp.delivery.detail).toBe("not a WhatsApp number");
+    });
+
+    it("carries the Brevo contact id, as the string it is stored as", () => {
+      // Shown, never used for arithmetic: an id past 2^53 would lose precision
+      // as a number, and nothing adds up contact ids.
+      expect(toTableRow(row({ brevo_contact_id: 4821 })).brevo.contactId).toBe("4821");
+      expect(toTableRow(row({ brevo_contact_id: "4821" })).brevo.contactId).toBe("4821");
+    });
+
+    it("gives the proof to the destination it belongs to and to no other", () => {
+      // A contact id under WhatsApp, or a delivery report under Brevo, would be
+      // a column claiming evidence that destination never had.
+      const view = toTableRow(
+        row({ brevo_contact_id: "4821", whatsapp_delivery_status: "DELIVERED" })
+      );
+      expect(view.whatsapp.contactId).toBeUndefined();
+      expect(view.brevo.delivery).toBeUndefined();
+      expect(view.meta.delivery).toBeUndefined();
+      expect(view.openai.contactId).toBeUndefined();
+    });
+  });
+
   it("keeps the stage, the id and all three statuses with their reasons", () => {
     // Two different skip reasons on one row, because one column showing the
     // other's detail would pass with a single reason. "lead, not client" is
@@ -271,8 +342,20 @@ describe("toTableRow", () => {
     );
     expect(view.stage).toBe("registered");
     expect(view.crmClientId).toBe("88214");
-    expect(view.whatsapp).toEqual({ status: "skipped", detail: "invalid phone number", attempts: 1 });
-    expect(view.brevo).toEqual({ status: "skipped", detail: "lead, not client", attempts: 1 });
+    expect(view.whatsapp).toEqual({
+      status: "skipped",
+      detail: "invalid phone number",
+      attempts: 1,
+      // Delivery proof rides alongside the status, never in place of it. A row
+      // nothing was sent for has no report, and null says so.
+      delivery: { status: null, at: null, detail: null },
+    });
+    expect(view.brevo).toEqual({
+      status: "skipped",
+      detail: "lead, not client",
+      attempts: 1,
+      contactId: null,
+    });
     expect(view.meta.status).toBe("sent");
   });
 

@@ -56,8 +56,12 @@ export const SIGNUP_EVENTS_SCHEMA = `
     whatsapp_detail TEXT NULL,
     whatsapp_attempts INT NOT NULL DEFAULT 0,
     whatsapp_next_attempt_at DATETIME NULL,
+    whatsapp_delivery_status VARCHAR(32) NULL,
+    whatsapp_delivery_at DATETIME NULL,
+    whatsapp_delivery_detail TEXT NULL,
     brevo_status VARCHAR(16) NOT NULL DEFAULT 'pending',
     brevo_detail TEXT NULL,
+    brevo_contact_id VARCHAR(64) NULL,
     brevo_attempts INT NOT NULL DEFAULT 0,
     brevo_next_attempt_at DATETIME NULL,
     openai_status VARCHAR(16) NOT NULL DEFAULT 'pending',
@@ -70,7 +74,8 @@ export const SIGNUP_EVENTS_SCHEMA = `
     scrubbed_at DATETIME NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uq_signup_events_client_stage (crm_client_id, stage),
-    KEY idx_signup_events_retention (scrubbed_at, received_at)
+    KEY idx_signup_events_retention (scrubbed_at, received_at),
+    KEY idx_signup_events_whatsapp_request (whatsapp_request_id)
   )
 `;
 
@@ -85,6 +90,32 @@ export const SIGNUP_EVENTS_SCHEMA = `
  * received_at range inside the index, so the backstop never reads a scrubbed row.
  */
 const RETENTION_INDEX = "idx_signup_events_retention";
+
+/**
+ * The index the delivery webhook reads, and the reason it is not optional.
+ *
+ * `recordWhatsappDelivery` matches a row by `whatsapp_request_id` and nothing
+ * else -- that lookup is the whole security model of an endpoint with no shared
+ * secret, so it cannot be made cheaper by adding another column to the WHERE.
+ * Without this index each status update is a full scan, and there are several per
+ * message (sent, delivered, read), so the cost grows with the table on the one
+ * path a third party can call as often as it likes.
+ *
+ * Not UNIQUE, deliberately. The id is a UUID v4 and collisions are not the
+ * concern; a UNIQUE key here would instead make the INSERT fail for the second
+ * row whose id came back over-width and was stored NULL -- MySQL counts NULLs as
+ * distinct, so it would not, but relying on that to protect the insert path is a
+ * subtlety this index does not need to carry.
+ */
+const WHATSAPP_REQUEST_INDEX = "idx_signup_events_whatsapp_request";
+
+/** Each index the table needs, with the column list to create it on. Guarded the
+ *  same way the columns are: a table someone created before one of these existed
+ *  gets it on the next boot. */
+const ADDED_INDEXES = [
+  [RETENTION_INDEX, "(scrubbed_at, received_at)"],
+  [WHATSAPP_REQUEST_INDEX, "(whatsapp_request_id)"],
+];
 
 /**
  * What was added after the table's first version.
@@ -113,6 +144,28 @@ export const SIGNUP_EVENTS_ADDED_COLUMNS = [
   ["openai_detail", `ALTER TABLE signup_events ADD COLUMN openai_detail TEXT NULL`],
   ["openai_attempts", `ALTER TABLE signup_events ADD COLUMN openai_attempts INT NOT NULL DEFAULT 0`],
   ["openai_next_attempt_at", `ALTER TABLE signup_events ADD COLUMN openai_next_attempt_at DATETIME NULL`],
+  // Delivery proof, added 2026-10-16. Neither provider's own status column says
+  // anything landed: `ENQUEUED` is DoubleTick's queue and `http 201` is a
+  // transport code. These four are what can be pointed at.
+  //
+  // All four are NULL-able with no default, which is the opposite of the choice
+  // the openai_* columns above had to make. Those hold words the claim, the
+  // scrub and the resend read in SQL, so a NULL would be in no status list and
+  // the row would never be claimed or scrubbed. Nothing reads these in a
+  // predicate: they are evidence, written once by whoever learns the fact, and
+  // NULL is the honest value for "nobody has told us yet".
+  //
+  // `brevo_contact_id` is the id of the contact Brevo created. It is proof that
+  // the record exists, and it is NOT client data -- it names a row in Brevo, not
+  // a person -- so it stays out of SCRUB_COLUMNS and survives, which is most of
+  // the point of storing it rather than only logging it.
+  [
+    "whatsapp_delivery_status",
+    `ALTER TABLE signup_events ADD COLUMN whatsapp_delivery_status VARCHAR(32) NULL`,
+  ],
+  ["whatsapp_delivery_at", `ALTER TABLE signup_events ADD COLUMN whatsapp_delivery_at DATETIME NULL`],
+  ["whatsapp_delivery_detail", `ALTER TABLE signup_events ADD COLUMN whatsapp_delivery_detail TEXT NULL`],
+  ["brevo_contact_id", `ALTER TABLE signup_events ADD COLUMN brevo_contact_id VARCHAR(64) NULL`],
 ];
 
 /** Exported so a test can pin each parameter to its column by name rather
@@ -317,13 +370,15 @@ async function addWhatIsMissing() {
   }
   // Guarded the same way rather than with `CREATE INDEX IF NOT EXISTS`, which
   // MySQL 8 does not accept -- it is MariaDB syntax, and this host is MySQL.
-  const rows = await all(
-    `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'signup_events' AND INDEX_NAME = ?`,
-    [RETENTION_INDEX]
-  );
-  if (counted(rows) === 0) {
-    await run(`ALTER TABLE signup_events ADD KEY ${RETENTION_INDEX} (scrubbed_at, received_at)`);
+  for (const [index, columns] of ADDED_INDEXES) {
+    const rows = await all(
+      `SELECT COUNT(*) AS cnt FROM information_schema.STATISTICS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'signup_events' AND INDEX_NAME = ?`,
+      [index]
+    );
+    if (counted(rows) === 0) {
+      await run(`ALTER TABLE signup_events ADD KEY ${index} ${columns}`);
+    }
   }
 }
 
@@ -635,15 +690,37 @@ export async function updateWhatsappStatus(id, { status, messageId, detail, atte
   return matchedRows(result);
 }
 
-export async function updateBrevoStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+/**
+ * Brevo's, plus the one column that is evidence rather than status.
+ *
+ * `brevo_contact_id` is written through COALESCE, so a NULL never erases an id
+ * already there. That matters because this writer runs twice per send: the
+ * pre-send claim writes `retrying` with no id (it cannot have one yet, the
+ * request has not gone out), and the outcome writes the id after. Written
+ * plainly, a later claim -- a resend, a sweep that found the row due again --
+ * would null the proof of a contact that exists, and nothing would ever put it
+ * back: Brevo only returns an id when it CREATES, and the second call updates.
+ *
+ * It is also why the id travels on this writer rather than on one of its own. It
+ * is Brevo's own column, settled by the same exchange that settles the status,
+ * and a second statement would be a second thing to lose.
+ */
+export async function updateBrevoStatus(id, { status, detail, contactId, attempts, nextAttemptAt }, claimAt = null) {
   const claim = claimClause("brevo", claimAt);
   const result = await run(
     `UPDATE signup_events
-        SET brevo_status = ?, brevo_detail = ?, brevo_attempts = ?, brevo_next_attempt_at = ?
+        SET brevo_status = ?, brevo_detail = ?,
+            brevo_contact_id = COALESCE(?, brevo_contact_id),
+            brevo_attempts = ?, brevo_next_attempt_at = ?
       WHERE id = ?${claim.sql}`,
     [
       String(status),
       detailFor(detail),
+      // Cut rather than NULLed if it is somehow over-width, unlike fbc: an id
+      // read back from this column is read by a person opening Brevo, not sent
+      // anywhere, so a visible partial beats no evidence at all. Nothing can
+      // act on it wrongly.
+      str(contactId, "brevo_contact_id"),
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,
@@ -670,6 +747,55 @@ export async function updateOpenaiStatus(id, { status, detail, attempts, nextAtt
       id,
       ...claim.params,
     ]
+  );
+  return matchedRows(result);
+}
+
+/**
+ * What DoubleTick says became of one message, matched on the id we froze.
+ *
+ * The whole of what the status webhook may do, and deliberately the only thing
+ * it can: three columns, one row, matched on `whatsapp_request_id`.
+ *
+ * **`whatsapp_request_id` IS the capability.** The endpoint that calls this
+ * carries no shared secret (whatsappStatusRoute.js says why), and what makes
+ * that safe is this WHERE clause. The id is a UUID v4 we generate at insert and
+ * never change, so without guessing one there is no row to reach -- and the
+ * worst a guess could do is the three columns below. It cannot send anything, it
+ * cannot requeue anything, and it cannot touch a status the worker reads: the
+ * claim, the scrub precondition, the backstop and the resend all read
+ * `whatsapp_status`, which is not in this statement.
+ *
+ * **No `scrubbed_at IS NULL` precondition, unlike every other write here.** A
+ * status update arrives minutes after the send, by which time the row is
+ * normally scrubbed -- the settle path runs about a minute after signup. Adding
+ * that clause would therefore throw away nearly every delivery report we ever
+ * receive. It is sound because none of these three columns is client data: a
+ * status word, an instant, and the provider's own failure message, which goes
+ * through the same masking as every other detail on its way in.
+ *
+ * `status` is stored VERBATIM (cut to its column, not rewritten). The read
+ * status string is not documented, so a value we do not recognise has to reach
+ * the tab as itself rather than be dropped into an "unknown" bucket that hides
+ * what arrived.
+ *
+ * Returns how many rows matched. **Zero is the answer to an open question**, not
+ * an error: DoubleTick's documentation does not say whether `messageId` on this
+ * event is the one we supplied or one they generate, so a status that matches no
+ * row is the evidence that it is theirs. The caller reports it; nothing here
+ * treats it as a failure.
+ */
+export async function recordWhatsappDelivery(messageId, { status, at, detail } = {}) {
+  const id = String(messageId ?? "");
+  // No statement at all for an empty id. `whatsapp_request_id` is NULL on a row
+  // whose id was over-width, and `= ''` would not match it -- but a bodyless or
+  // malformed webhook must not get as far as asking.
+  if (!id) return 0;
+  const result = await run(
+    `UPDATE signup_events
+        SET whatsapp_delivery_status = ?, whatsapp_delivery_at = ?, whatsapp_delivery_detail = ?
+      WHERE whatsapp_request_id = ?`,
+    [fit(String(status ?? ""), "whatsapp_delivery_status"), at ?? null, detailFor(detail), id]
   );
   return matchedRows(result);
 }
@@ -703,6 +829,24 @@ export async function updateOpenaiStatus(id, { status, detail, attempts, nextAtt
  *
  *   `crm_client_id` stays. It is the dedupe key; without it FXBO's redeliveries
  *   insert again and send a second welcome.
+ *
+ * And two more since 2026-10-16, which is most of the reason they are columns at
+ * all rather than log lines:
+ *
+ *   `brevo_contact_id` stays. It is the id of a contact in Brevo, not a fact
+ *   about a person, and it is the only positive proof this table holds that the
+ *   record exists -- `http 201` is a transport code. Scrubbing it would leave
+ *   the proof alive for about a minute, which is no proof at all: the question
+ *   "did client 48217's contact really get created" is asked days later. Brevo
+ *   mints the id only when it creates, so once lost it cannot be re-read.
+ *
+ *   `whatsapp_delivery_status`, `_at` and `_detail` stay, for the same reason
+ *   and one more: the report usually ARRIVES after the scrub. DoubleTick's
+ *   webhook is minutes behind a send that settles in about one, so a scrub that
+ *   took these would be nulling a column that is about to be written again.
+ *   `_detail` is DoubleTick's `failMessage`, which goes through redactDetail on
+ *   the way in exactly as the other `*_detail` columns do, so it is subject to
+ *   the same masking rather than exempt from it.
  *
  * `entity`, `source` and the three `utm_*` columns stay too: they are segmentation,
  * not identity, and they are the statistics worth keeping. `full_link` and
@@ -959,6 +1103,16 @@ export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
  * replaces it with the in-flight note, and the claim replaces it on every row
  * that actually sends.
  *
+ * **So are the delivery-proof columns, and that is a decision (2026-10-16).**
+ * `whatsapp_delivery_*` records what DoubleTick told us about one frozen
+ * `messageId`, and a resend reuses that same id -- so the report still describes
+ * the message this row is about, and clearing it would destroy the only evidence
+ * we have of it. `brevo_contact_id` is left for the stronger version of the same
+ * reason: Brevo mints an id only when it creates, so a resend that updates the
+ * existing contact returns none, and a requeue that cleared the column would
+ * lose the proof for good. Both are evidence, not state; nothing re-derives
+ * them.
+ *
  * `whatsapp_request_id` is NOT regenerated, and that is the point for WhatsApp.
  * It is frozen per row at insert. If DoubleTick honours a repeated messageId,
  * reusing it means a resend of a message that genuinely never arrived still goes
@@ -1073,13 +1227,21 @@ export async function countResendableSends(now = new Date()) {
  * the list is enumerated here rather than built from DESTINATIONS, because the
  * other statements that interpolate column names all write them, and a read
  * cannot borrow their guard.
+ *
+ * **The four delivery-proof columns are read for the same reason, and failing to
+ * read one costs more here than anywhere else.** They exist only to be looked
+ * at: nothing sends from them, retries on them or scrubs them, so a column
+ * missing from this list is a column whose whole purpose is gone, silently --
+ * the tab falls back to `ENQUEUED` and `http 201`, which is the reading this
+ * work was done to replace.
  */
 export async function listEventsSince(since, cap = 2000) {
   return all(
     `SELECT id, crm_client_id, stage, first_name, last_name, email, phone, record_type, source,
             meta_status, meta_detail, meta_attempts,
             whatsapp_status, whatsapp_detail, whatsapp_attempts,
-            brevo_status, brevo_detail, brevo_attempts,
+            whatsapp_delivery_status, whatsapp_delivery_at, whatsapp_delivery_detail,
+            brevo_status, brevo_detail, brevo_contact_id, brevo_attempts,
             openai_status, openai_detail, openai_attempts, received_at, scrubbed_at
        FROM signup_events
       WHERE received_at >= ?

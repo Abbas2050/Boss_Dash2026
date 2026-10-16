@@ -1348,6 +1348,10 @@ describe("the four actions keep separate counters, budgets and failures", () => 
       attempts: 1,
       nextAttemptAt: IN_FIVE_MINUTES,
       detail: "brevo-reason",
+      // Nothing was created, so there is no id to keep. Null rather than
+      // absent on every path out of the step: the writer COALESCEs, so a null
+      // never erases an id an earlier send recorded.
+      contactId: null,
     });
   });
 
@@ -1361,7 +1365,13 @@ describe("the four actions keep separate counters, budgets and failures", () => 
       detail: "SENT",
       messageId: "m-1",
     });
-    expect(lastSaved(d.saveBrevo)).toEqual({ status: "sent", attempts: 2, nextAttemptAt: null, detail: "http 201" });
+    expect(lastSaved(d.saveBrevo)).toEqual({
+      status: "sent",
+      attempts: 2,
+      nextAttemptAt: null,
+      detail: "http 201",
+      contactId: null,
+    });
   });
 
   for (const [thrower, budget] of [
@@ -1437,7 +1447,12 @@ describe("an action that does not apply records why, spends no attempt and sends
       // nothing was attempted. The count is the row's, untouched.
       expect(d[action.save]).toHaveBeenCalledTimes(1);
       const expected = { status: "skipped", detail: why, attempts: 1, nextAttemptAt: null };
-      expect(lastSaved(d[action.save])).toEqual(action.name === "whatsapp" ? { ...expected, messageId: null } : expected);
+      // Two destinations carry one extra field out of every path, and it is
+      // null here because a skip sends nothing: WhatsApp's provider message id,
+      // and Brevo's contact id. Explicit rather than absent, so the writer
+      // cannot read `undefined` off one branch and a value off another.
+      const extra = { whatsapp: { messageId: null }, brevo: { contactId: null } }[action.name] ?? {};
+      expect(lastSaved(d[action.save])).toEqual({ ...expected, ...extra });
     });
   }
 });
@@ -1877,7 +1892,10 @@ describe("the production wiring", () => {
       if (u === DOUBLETICK_TEMPLATE_URL) {
         return { status: 200, json: async () => ({ messages: [{ status: "SENT", messageId: "wamid-live" }] }) };
       }
-      if (u === BREVO_CONTACTS_URL) return { status: 201, json: async () => ({ id: 1 }) };
+      // The id is the only thing in Brevo's answer that is PROOF -- `http 201`
+      // says the request was accepted, not that a contact exists. A distinctive
+      // number, so a column wired to the wrong value cannot pass by matching 1.
+      if (u === BREVO_CONTACTS_URL) return { status: 201, json: async () => ({ id: 4821 }) };
       // OpenAI documents no response shape at all, so a 200 with an empty object
       // is the most honest fake there is.
       if (u.startsWith(OPENAI_EVENTS_URL)) return { status: 200, json: async () => ({}) };
@@ -1938,7 +1956,7 @@ describe("the production wiring", () => {
       // Each save reaches its own column's writer: the pre-send write, then the outcome.
       for (const [writer, detail] of [
         [store.updateWhatsappStatus, "SENT"],
-        [store.updateBrevoStatus, "http 201"],
+        [store.updateBrevoStatus, "http 201 contact 4821"],
       ]) {
         expect(writer).toHaveBeenCalledTimes(2);
         // The claim carries the sweeper's own clock; the outcome write does not.
@@ -1950,6 +1968,10 @@ describe("the production wiring", () => {
         expect(writer.mock.calls[1]).toEqual([7, expect.objectContaining({ status: "sent", attempts: 1, detail })]);
       }
       expect(store.updateWhatsappStatus.mock.calls[1][1].messageId).toBe("wamid-live");
+      // The whole of Part 1, end to end: Brevo's own response body, through the
+      // classifier, into the column the tab reads. Without this the tab says
+      // "Brevo sent -- http 201", which is the reading that prompted the work.
+      expect(store.updateBrevoStatus.mock.calls[1][1].contactId).toBe("4821");
 
       // Meta's column is not left blank: one write, the skip, with no pre-send
       // write ahead of it and no clock on it.
@@ -2072,6 +2094,8 @@ describe("the production wiring", () => {
             {
               status: "failed",
               detail: "not sent: BREVO_LIST_ID is unset, blank or not a positive number",
+              // No request was made, so there is no contact and no id to show.
+              contactId: null,
               attempts: 0,
               nextAttemptAt: null,
             },

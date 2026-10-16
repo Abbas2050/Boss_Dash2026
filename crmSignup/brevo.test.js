@@ -15,6 +15,7 @@ import {
   UNUSABLE_LIST_ID_DETAIL,
   buildBrevoContact,
   classifyBrevoOutcome,
+  readBrevoContactId,
   upsertBrevoContact,
 } from "./brevo.js";
 
@@ -299,6 +300,9 @@ describe("classifyBrevoOutcome", () => {
       status: "failed",
       retryable: true,
       detail: "http 408",
+      // Nothing was created, so there is no id to keep. Explicitly null on
+      // every path, so the writer cannot read `undefined` off one of them.
+      contactId: null,
     });
   });
 
@@ -357,6 +361,99 @@ describe("classifyBrevoOutcome", () => {
       expect(r.retryable, String(httpStatus)).toBe(false);
       expect(r.status, String(httpStatus)).toBe("rejected");
     }
+  });
+});
+
+// The one thing in this exchange that is PROOF. `http 201` says the request was
+// accepted; the contact id names a row in Brevo that somebody can open. Added
+// 2026-10-16, because the settings tab was reporting "Brevo sent -- http 201"
+// and the user's objection was fair: that is not evidence a contact exists.
+describe("the contact id", () => {
+  describe("readBrevoContactId", () => {
+    it("reads the number Brevo returns, as a string", () => {
+      // Stored and shown as text, never arithmetic. A JavaScript number would
+      // lose precision on an id past 2^53, and nothing adds up ids.
+      expect(readBrevoContactId({ id: 4821 })).toBe("4821");
+    });
+
+    it("takes a string id verbatim, because an identifier is not ours to reformat", () => {
+      expect(readBrevoContactId({ id: "4821" })).toBe("4821");
+      expect(readBrevoContactId({ id: "  4821  " })).toBe("4821");
+    });
+
+    it("refuses anything that is not an id, rather than coercing it", () => {
+      // String({}) is "[object Object]" and String(true) is "true". Either would
+      // be stored as the proof and printed on the tab as though it meant
+      // something.
+      for (const body of [undefined, null, {}, { id: null }, { id: "" }, { id: "  " }, { id: true }, { id: {} }, { id: [4821] }, { id: NaN }]) {
+        expect(readBrevoContactId(body), JSON.stringify(body) ?? String(body)).toBeNull();
+      }
+    });
+  });
+
+  describe("classifyBrevoOutcome", () => {
+    it("keeps the id a 2xx carried, and names it in the detail", () => {
+      const r = classifyBrevoOutcome({ httpStatus: 201, body: { id: 4821 } });
+      expect(r.status).toBe("sent");
+      expect(r.contactId).toBe("4821");
+      // In the detail too, so the row says what happened even where only the
+      // detail is read -- the log line, a SELECT, an operator on a phone.
+      expect(r.detail).toBe("http 201 contact 4821");
+    });
+
+    it("treats a 2xx with no id as a send, not a failure, and records what came back", () => {
+      // `updateEnabled: true` makes this an upsert, and Brevo mints an id only
+      // when it CREATES. A repeat registration updates the existing contact and
+      // returns nothing -- the one case where the contact is certainly there. A
+      // failure here would turn every returning client into a red row and a
+      // resend offer.
+      for (const body of [null, {}, { id: null }, { code: "ok" }]) {
+        const r = classifyBrevoOutcome({ httpStatus: 204, body });
+        expect(r.status, JSON.stringify(body)).toBe("sent");
+        expect(r.retryable, JSON.stringify(body)).toBe(false);
+        expect(r.contactId, JSON.stringify(body)).toBeNull();
+        // Said, not left blank: an empty proof column has to be tellable from a
+        // proof we failed to read.
+        expect(r.detail, JSON.stringify(body)).toBe("http 204 no contact id (an update returns none)");
+      }
+    });
+
+    it("never reads an id off a response that is not a 2xx", () => {
+      // Brevo's 409 for a duplicate names the existing contact's id in its
+      // message body. Reading one from a refusal would record proof of a
+      // contact this call did not make, beside a `rejected` status.
+      for (const httpStatus of [400, 409, 429, 500]) {
+        expect(classifyBrevoOutcome({ httpStatus, body: { id: 4821 } }).contactId, String(httpStatus)).toBeNull();
+      }
+    });
+  });
+
+  describe("upsertBrevoContact", () => {
+    it("carries the id out of the real response body", async () => {
+      // The whole path: Brevo's own 201 shape, through the sender, to the
+      // outcome the worker writes.
+      const fetchImpl = vi.fn(async () => ({ ok: true, status: 201, json: async () => ({ id: 4821 }) }));
+      const r = await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: { email: "a@b.c" } });
+      expect(r).toEqual({
+        status: "sent",
+        retryable: false,
+        detail: "http 201 contact 4821",
+        contactId: "4821",
+      });
+    });
+
+    it("is still a send when the 204 of an update carries no body at all", async () => {
+      const fetchImpl = vi.fn(async () => ({
+        ok: true,
+        status: 204,
+        json: async () => {
+          throw new Error("Unexpected end of JSON input");
+        },
+      }));
+      const r = await upsertBrevoContact({ fetchImpl, apiKey: "k", contact: { email: "a@b.c" } });
+      expect(r.status).toBe("sent");
+      expect(r.contactId).toBeNull();
+    });
   });
 });
 
@@ -437,12 +534,19 @@ describe("upsertBrevoContact when the response body times out", () => {
     // The upsert is idempotent and nothing in the body is needed, so there is
     // nothing to retry.
     const r = await send(vi.fn(async () => stalledBodyResponse(201)));
-    expect(r).toEqual({ status: "sent", retryable: false, detail: "http 201" });
+    // No id either, because the body never arrived -- and the detail says so
+    // rather than leaving the proof column blank with nothing to explain it.
+    expect(r).toEqual({
+      status: "sent",
+      retryable: false,
+      detail: "http 201 no contact id (an update returns none)",
+      contactId: null,
+    });
   });
 
   it("still retries a 5xx whose body timed out, since the status decides", async () => {
     const r = await send(vi.fn(async () => stalledBodyResponse(503)));
-    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503" });
+    expect(r).toEqual({ status: "failed", retryable: true, detail: "http 503", contactId: null });
   });
 });
 

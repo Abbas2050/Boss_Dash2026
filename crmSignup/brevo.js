@@ -145,12 +145,47 @@ export function buildBrevoContact(fields = {}, { listId } = {}) {
   return contact;
 }
 
+/**
+ * The id Brevo gives the contact it created, or null.
+ *
+ * This is the only thing in the exchange that is *proof*. `http 201` is a
+ * transport fact: it says the request was accepted, not that a contact exists
+ * that anybody can point at. The id is a row in Brevo that can be opened.
+ *
+ * It is read only from a 2xx, and only off `id`. Brevo returns a number; a
+ * string is accepted verbatim because an identifier is not ours to reformat, and
+ * a boolean, an object or an array is not an id at all -- coercing one would
+ * store "true" or "[object Object]" as the proof.
+ */
+export function readBrevoContactId(body) {
+  const id = body?.id;
+  if (typeof id === "number") return Number.isFinite(id) ? String(id) : null;
+  if (typeof id === "string" && id.trim()) return id.trim();
+  return null;
+}
+
+/**
+ * What a 2xx that carried no id says, and why that is not a failure.
+ *
+ * `POST /v3/contacts` with `updateEnabled: true` is an upsert, and Brevo only
+ * mints an id when it *creates*. An existing contact comes back with nothing to
+ * read -- a 204, or a 2xx whose body the send timeout cut off. Treating that as
+ * a failure would turn every repeat registration into a red row and a resend
+ * offer, for the one case where the contact is certainly there.
+ *
+ * So the detail says what came back instead of leaving the column blank: an
+ * operator looking at an empty proof column has to be able to tell "Brevo sent
+ * no id" from "we failed to read one".
+ */
+const NO_CONTACT_ID_DETAIL = "no contact id (an update returns none)";
+
 export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) {
   if (transportError) {
     return {
       status: "failed",
       retryable: true,
       detail: `transport: ${String(transportError?.message || transportError).slice(0, 200)}`,
+      contactId: null,
     };
   }
 
@@ -158,11 +193,17 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
 
   // The rule all three senders share, written once in transientHttp.js.
   if (isTransientHttpStatus(code)) {
-    return { status: "failed", retryable: true, detail: `http ${code}` };
+    return { status: "failed", retryable: true, detail: `http ${code}`, contactId: null };
   }
 
   if (code >= 200 && code < 300) {
-    return { status: "sent", retryable: false, detail: `http ${code}` };
+    const contactId = readBrevoContactId(body);
+    return {
+      status: "sent",
+      retryable: false,
+      detail: contactId ? `http ${code} contact ${contactId}` : `http ${code} ${NO_CONTACT_ID_DETAIL}`,
+      contactId,
+    };
   }
 
   const reason = [body?.code, body?.message].filter(Boolean).join(": ").slice(0, 200);
@@ -175,6 +216,10 @@ export function classifyBrevoOutcome({ transportError, httpStatus, body } = {}) 
     status: "rejected",
     retryable: false,
     detail: reason ? `http ${code} ${reason}` : `http ${code}`,
+    // A refusal created nothing, so there is no id to keep. Explicitly null
+    // rather than absent, so every outcome has the same shape and the writer
+    // below cannot read `undefined` off one of them.
+    contactId: null,
   };
 }
 

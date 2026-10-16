@@ -20,6 +20,11 @@ const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected"
  * absent, its column on every row is absent, and the one page built to reveal a
  * broken pipeline reports a healthy three-destination system. openai is pinned
  * by test here for that reason and no other.
+ *
+ * Two of the four are no longer silent to remove, and that is an improvement
+ * rather than a new rule to remember: `toTableRow` attaches the delivery proof
+ * to `whatsapp` and the contact id to `brevo` after this loop has built them, so
+ * dropping either name here throws instead of quietly emptying a column.
  */
 const DESTINATIONS = [
   ["meta", "meta_status", "meta_detail", "meta_attempts"],
@@ -170,6 +175,30 @@ export function toTableRow(row = {}) {
       attempts: Number(row[attemptsColumn]) || 0,
     };
   }
+
+  // The two pieces of delivery PROOF, added beside the statuses rather than
+  // folded into the DESTINATIONS tuple above. That tuple is "the three columns
+  // every destination has"; these belong to one destination each, and widening
+  // it to five would mean three nulls per row for the destinations that have
+  // neither.
+  //
+  // Neither is a status and neither replaces one. `whatsapp_status` still says
+  // what DoubleTick answered our request; this says what DoubleTick later said
+  // became of the message, which is the only one of the two a handset is
+  // involved in.
+  view.whatsapp.delivery = {
+    // Verbatim. The read status string is undocumented, so an unrecognised value
+    // has to survive all the way to the page -- nothing here maps it to a word
+    // of ours, and nothing drops it.
+    status: row.whatsapp_delivery_status ? String(row.whatsapp_delivery_status) : null,
+    at: row.whatsapp_delivery_at ?? null,
+    detail: row.whatsapp_delivery_detail ?? null,
+  };
+  // The id of the contact Brevo created, which is the one thing in that exchange
+  // that can be opened and looked at. Null is ordinary and not a fault: Brevo
+  // mints an id only when it creates, so a repeat registration updates the
+  // existing contact and returns none, and the row's detail says so.
+  view.brevo.contactId = row.brevo_contact_id ? String(row.brevo_contact_id) : null;
 
   return view;
 }

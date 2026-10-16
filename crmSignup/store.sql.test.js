@@ -27,6 +27,7 @@ import {
   scrubSignupEvent,
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
+  recordWhatsappDelivery,
   requeueFailedSends,
   countResendableSends,
   DESTINATIONS,
@@ -122,7 +123,7 @@ describe("initCrmSignupStore", () => {
     expect(ddlCalls[0].sql).toBe(SIGNUP_EVENTS_SCHEMA);
   });
 
-  it("adds each later column, and the retention index, behind its own information_schema check", () => {
+  it("adds each later column, and each index, behind its own information_schema check", () => {
     // The table has never been deployed, so a new install gets all three from the
     // CREATE above and the guards find them present. A table someone created
     // while testing predates them: a missing scrubbed_at leaves the scrub nowhere
@@ -140,12 +141,21 @@ describe("initCrmSignupStore", () => {
       expect(ddlCalls[i + 1].sql, column).toBe(statement);
       i += 2;
     }
-    expect(ddlCalls[i].sql).toMatch(/information_schema\.STATISTICS/i);
-    expect(ddlCalls[i].params).toEqual(["idx_signup_events_retention"]);
-    expect(ddlCalls[i + 1].sql).toBe(
-      "ALTER TABLE signup_events ADD KEY idx_signup_events_retention (scrubbed_at, received_at)"
-    );
-    expect(ddlCalls).toHaveLength(i + 2);
+    // Both indexes, each behind its own check. The second one is not a
+    // performance nicety: recordWhatsappDelivery matches a row by
+    // whatsapp_request_id and nothing else -- that lookup IS the security model
+    // of an endpoint with no shared secret, so it cannot be narrowed with
+    // another column, and there are several status updates per message.
+    for (const [index, columns] of [
+      ["idx_signup_events_retention", "(scrubbed_at, received_at)"],
+      ["idx_signup_events_whatsapp_request", "(whatsapp_request_id)"],
+    ]) {
+      expect(ddlCalls[i].sql, index).toMatch(/information_schema\.STATISTICS/i);
+      expect(ddlCalls[i].params, index).toEqual([index]);
+      expect(ddlCalls[i + 1].sql, index).toBe(`ALTER TABLE signup_events ADD KEY ${index} ${columns}`);
+      i += 2;
+    }
+    expect(ddlCalls).toHaveLength(i);
   });
 
   it("adds nothing when information_schema says all three are already there", async () => {
@@ -161,8 +171,8 @@ describe("initCrmSignupStore", () => {
     await fresh.initCrmSignupStore();
     const sql = db.state.calls.map((c) => c.sql);
     expect(sql.filter((s) => /ALTER TABLE/i.test(s))).toEqual([]);
-    // Still asked, once per column plus once for the index.
-    expect(sql.filter((s) => /information_schema/i.test(s))).toHaveLength(SIGNUP_EVENTS_ADDED_COLUMNS.length + 1);
+    // Still asked, once per column plus once per index.
+    expect(sql.filter((s) => /information_schema/i.test(s))).toHaveLength(SIGNUP_EVENTS_ADDED_COLUMNS.length + 2);
   });
 });
 
@@ -375,14 +385,28 @@ describe("the four action writers", () => {
     expect(params).toEqual(["sent", "msg-1", "ok", 1, null, 7]);
   });
 
-  it("updateBrevoStatus writes only the brevo columns", async () => {
-    await updateBrevoStatus(7, { status: "sent", detail: "", attempts: 0, nextAttemptAt: null });
+  it("updateBrevoStatus writes only the brevo columns, the contact id among them", async () => {
+    await updateBrevoStatus(7, { status: "sent", detail: "", contactId: "4821", attempts: 0, nextAttemptAt: null });
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(
-      /SET brevo_status = \?, brevo_detail = \?, brevo_attempts = \?, brevo_next_attempt_at = \?\s+WHERE id = \?/
+      /SET brevo_status = \?, brevo_detail = \?,\s*brevo_contact_id = COALESCE\(\?, brevo_contact_id\),\s*brevo_attempts = \?, brevo_next_attempt_at = \?\s+WHERE id = \?/
     );
     expect(sql).not.toMatch(/meta_|whatsapp/);
-    expect(params).toEqual(["sent", null, 0, null, 7]);
+    expect(params).toEqual(["sent", null, "4821", 0, null, 7]);
+  });
+
+  it("updateBrevoStatus never erases a contact id it was not given", async () => {
+    // COALESCE, not a plain assignment, and the reason is this writer running
+    // twice per send: the pre-send claim writes `retrying` with no id -- it
+    // cannot have one, the request has not gone out -- and the outcome writes
+    // the id after. Written plainly, a later claim (a resend, a sweep that found
+    // the row due again) would null the proof of a contact that exists, and
+    // nothing would put it back: Brevo mints an id only when it CREATES, so the
+    // second call updates and returns none.
+    await updateBrevoStatus(7, { status: "retrying", detail: "in flight", attempts: 1 });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toContain("brevo_contact_id = COALESCE(?, brevo_contact_id)");
+    expect(params[2]).toBeNull();
   });
 
   it("updateOpenaiStatus writes only the openai columns", async () => {
@@ -412,9 +436,9 @@ describe("the four action writers", () => {
     expect(db.state.calls[1].params).toEqual(["failed", null, null, 2, null, 7]);
   });
 
-  it("updateBrevoStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
+  it("updateBrevoStatus defaults a missing attempt count to 0, and a missing detail, id and clock to NULL", async () => {
     await updateBrevoStatus(7, { status: "failed" });
-    expect(db.state.calls[0].params).toEqual(["failed", null, 0, null, 7]);
+    expect(db.state.calls[0].params).toEqual(["failed", null, null, 0, null, 7]);
   });
 
   it("updateOpenaiStatus defaults a missing attempt count to 0, and a missing detail and clock to NULL", async () => {
@@ -594,6 +618,134 @@ describe("whatsapp_message_id at its width boundary", () => {
   });
 });
 
+// The one statement an unauthenticated caller can reach. Everything about it is
+// a security property, not a convenience, so each clause has its own test: the
+// endpoint behind it carries no shared secret (verified 2026-10-16: DoubleTick's
+// webhook has none to send), and what stands in for one is this WHERE clause
+// matching a frozen UUID v4.
+describe("recordWhatsappDelivery", () => {
+  const AT = new Date("2026-10-16T09:05:00Z");
+  const ID = "6d0c7f2e-0d3a-4a6f-9b3e-1f2c3d4e5f60";
+
+  it("matches the frozen request id, and nothing else", async () => {
+    await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT, detail: null });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(/WHERE whatsapp_request_id = \?/);
+    expect(params.at(-1)).toBe(ID);
+    // Not by row id, not by phone, not by client id. The frozen UUID is the
+    // capability: an endpoint with no secret can reach exactly the row whose id
+    // the caller already knows, and nothing lets it widen that to a set.
+    expect(sql).not.toMatch(/WHERE id = |crm_client_id|phone|email/);
+  });
+
+  it("writes the three delivery columns and no others", async () => {
+    await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT, detail: null });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /SET whatsapp_delivery_status = \?, whatsapp_delivery_at = \?, whatsapp_delivery_detail = \?/
+    );
+    expect(params).toEqual(["DELIVERED", AT, null, ID]);
+  });
+
+  it("never writes a status, an attempt count or a clock the worker reads", async () => {
+    // This is the whole of why the endpoint is safe without a secret. The claim,
+    // the scrub precondition, the backstop and the resend all read
+    // `whatsapp_status`; a guessed id that could write it could make the worker
+    // send a second welcome, or make a row scrubbable before its send happened.
+    await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT, detail: null });
+    const { sql } = db.state.calls[0];
+    for (const column of [
+      "whatsapp_status",
+      "whatsapp_attempts",
+      "whatsapp_next_attempt_at",
+      "whatsapp_message_id",
+      "meta_status",
+      "brevo_status",
+      "openai_status",
+      "scrubbed_at",
+    ]) {
+      expect(sql, column).not.toMatch(new RegExp(`\b${column}\s*=`));
+    }
+  });
+
+  it("writes no client column, and cannot: the statement names none", async () => {
+    await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT, detail: null });
+    const { sql } = db.state.calls[0];
+    for (const column of SCRUB_COLUMNS) {
+      expect(sql, column).not.toMatch(new RegExp(`\b${column}\b`));
+    }
+  });
+
+  it("does not require an unscrubbed row, unlike every other write here", async () => {
+    // A delivery report arrives minutes after the send, and the settle path
+    // scrubs about a minute after signup -- so `scrubbed_at IS NULL` would throw
+    // away nearly every report we ever get. It is sound because none of the
+    // three columns is client data: a status word, an instant, and a provider
+    // message that goes through the same masking as every other detail.
+    await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT, detail: null });
+    expect(db.state.calls[0].sql).not.toMatch(/scrubbed_at/);
+  });
+
+  it("stores the status verbatim, because the read string is undocumented", async () => {
+    // Case is preserved and nothing is mapped to a word of ours. An unexpected
+    // value has to reach the tab as itself; folding it into an "unknown" bucket
+    // here would hide the one delivery that reveals what WhatsApp's read receipt
+    // is actually called.
+    await recordWhatsappDelivery(ID, { status: "SeenByRecipient", at: AT, detail: null });
+    expect(db.state.calls[0].params[0]).toBe("SeenByRecipient");
+  });
+
+  it("cuts a status to its column rather than failing the write", async () => {
+    // MySQL would reject the whole row for an over-width value, which would
+    // throw away a real report over a value nobody will ever act on.
+    await recordWhatsappDelivery(ID, { status: "S".repeat(40), at: AT, detail: null });
+    expect(db.state.calls[0].params[0]).toHaveLength(32);
+  });
+
+  it("masks the provider's failure message on the way in", async () => {
+    // DoubleTick's failMessage is their own text and a provider quotes back what
+    // we sent it, so this column is subject to spec section 13 exactly as the
+    // other *_detail columns are -- and the tab prints it.
+    await recordWhatsappDelivery(ID, { status: "FAILED", at: AT, detail: "971507192185 is not on WhatsApp" });
+    const detail = String(db.state.calls[0].params[2]);
+    expect(detail).not.toContain("971507192185");
+    expect(detail).toContain("***");
+  });
+
+  it("runs no statement at all for an empty id", async () => {
+    // A bodyless or malformed webhook must not get as far as asking, and `= ''`
+    // would otherwise be a predicate over every row whose id was stored NULL.
+    for (const id of [undefined, null, ""]) {
+      expect(await recordWhatsappDelivery(id, { status: "DELIVERED", at: AT }), String(id)).toBe(0);
+    }
+    expect(db.state.calls).toHaveLength(0);
+  });
+
+  it("still asks about an id of zero-as-text, which is a value and not an absence", async () => {
+    // Whether DoubleTick's own ids are numeric is the unverified half of the
+    // design, so a short numeric id has to reach the statement. Only an empty
+    // one is nothing to ask about.
+    await recordWhatsappDelivery("0", { status: "DELIVERED", at: AT });
+    expect(db.state.calls[0].params.at(-1)).toBe("0");
+  });
+
+  it("reports how many rows matched, so zero can be acted on", async () => {
+    // Zero is the answer to an open question, not an error: DoubleTick does not
+    // document whether `messageId` on this event is the id we supplied or one
+    // they generate, so a status matching no row is the evidence that it is
+    // theirs. The route logs it.
+    db.state.respond = () => [{ affectedRows: 0 }];
+    expect(await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT })).toBe(0);
+    db.state.respond = () => [{ affectedRows: 1 }];
+    expect(await recordWhatsappDelivery(ID, { status: "DELIVERED", at: AT })).toBe(1);
+  });
+
+  it("writes NULL for a missing instant rather than the word undefined", async () => {
+    await recordWhatsappDelivery(ID, { status: "DELIVERED" });
+    expect(db.state.calls[0].params[1]).toBeNull();
+  });
+});
+
 describe("listEventsSince", () => {
   it("selects newest first, capped, from the cutoff", async () => {
     const since = new Date("2026-09-13T00:00:00Z");
@@ -615,6 +767,23 @@ describe("listEventsSince", () => {
       for (const suffix of ["status", "detail", "attempts"]) {
         expect(sql, `${action}_${suffix}`).toMatch(new RegExp(`\\b${action}_${suffix}\\b`));
       }
+    }
+  });
+
+  it("reads the delivery proof, which exists only to be looked at", async () => {
+    // These four are the whole of Part 1 and Part 2. Nothing sends from them,
+    // retries on them or scrubs them, so a column missing from this select list
+    // is a column whose entire purpose is gone -- silently. The tab falls back
+    // to "ENQUEUED" and "http 201", which is the reading this work replaced.
+    await listEventsSince(new Date("2026-09-13T00:00:00Z"));
+    const { sql } = db.state.calls[0];
+    for (const column of [
+      "whatsapp_delivery_status",
+      "whatsapp_delivery_at",
+      "whatsapp_delivery_detail",
+      "brevo_contact_id",
+    ]) {
+      expect(sql, column).toMatch(new RegExp(`\\b${column}\\b`));
     }
   });
 
@@ -655,6 +824,22 @@ describe("scrubSignupEvent", () => {
       "fxbo_unique_id",
       "whatsapp_request_id",
       "received_at",
+      // The delivery proof, 2026-10-16, and its surviving is load-bearing.
+      //
+      // `brevo_contact_id` names a row in Brevo, not a person, and it is the
+      // only positive evidence this table holds that the contact exists. The
+      // question "did client 48217's contact really get created" is asked days
+      // later, and Brevo mints an id only when it CREATES, so a scrubbed one
+      // can never be re-read. Proof alive for a minute is no proof.
+      //
+      // The three whatsapp_delivery_* columns are usually written AFTER the
+      // scrub: DoubleTick's webhook is minutes behind a send that settles in
+      // about one. Scrubbing them would null a column that is about to be
+      // written again, and leave the tab unable to say whether anything landed.
+      "brevo_contact_id",
+      "whatsapp_delivery_status",
+      "whatsapp_delivery_at",
+      "whatsapp_delivery_detail",
     ]) {
       expect(sql, column).not.toMatch(new RegExp(`\\b${column} = NULL\\b`));
     }
