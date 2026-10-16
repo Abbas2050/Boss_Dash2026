@@ -349,6 +349,11 @@ requests are not monitored.
 2. **WhatsApp:** one real registration, and the message **arrives on a
    handset** — not merely a 200 from us, and not merely a 2xx from DoubleTick.
    Then check that row's `whatsapp_status` reads `sent`.
+   **`sent` is still not proof it arrived** — it means DoubleTick accepted the
+   request, and `ENQUEUED` is their queue. Step 7b registers the webhook that
+   answers the real question, and after that the row also carries
+   `whatsapp_delivery_status`. Until it does, the tab says `no delivery report
+   yet` rather than letting a tick imply a handset.
    A `rejected` row beside a message that visibly arrived means DoubleTick
    returned a success value outside our allowlist of `SENT` / `ENQUEUED`. The
    detail column names it and it needs adding. This is the designed way to
@@ -385,6 +390,85 @@ requests are not monitored.
    get one; without it the conversion is still sent, simply unattributed. The
    first deposit is the row that matters, because it arrives weeks later with
    its own `full_link`, which will be empty.
+
+## 7b. Register DoubleTick's delivery-status webhook
+
+*DoubleTick → **Settings → Webhooks → New Webhook**.* There is no API for this;
+it is a form in their UI, and it is the only way a delivery status ever reaches
+us — verified against their documentation on 16 October, **DoubleTick has no
+endpoint to query a message's status.**
+
+| Field | Value |
+|---|---|
+| URL | `https://app.skylinkscapital.com/api/crm-events/whatsapp-status` |
+| Event | `MESSAGE_STATUS_UPDATE` |
+
+**Do not add a secret, a token or a query string.** There is nowhere to put one
+that would mean anything: their webhook sends no signature and no secret header,
+so the endpoint checks none. What protects it is the `whatsapp_request_id` on
+each row — a UUID v4 we generate and freeze — which is the only thing the one
+statement behind the route matches on. Guessing a v4 UUID buys the three
+delivery columns of one row, and the endpoint answers `200 {"ok":true}` to
+everything, so it cannot be used to find one. A secret in the URL would be
+worse than none: the existing `hook.php` mirrors do that and theirs is readable
+in the CRM's own webhook log. `crmSignup/README.md`, "Proving a message
+arrived", has the whole argument.
+
+### Then watch the log for the two things the documentation does not settle
+
+Both are answered by the first real message, in the iisnode stdout log from
+step 2. Neither is guessed at anywhere in the code.
+
+**1. Whether `messageId` is the id we sent.** Their docs do not say whether the
+id on this event is the one we supplied or one they generate. One of these two
+lines appears:
+
+```
+[crm-events] whatsapp status matched the id we froze (id=6d0c7f2e…, status="DELIVERED"): DoubleTick echoes our messageId…
+```
+
+```
+[crm-events] whatsapp status for an id we never issued: id=a41b9c02… status="DELIVERED" unmatched=1 since this worker started…
+```
+
+The first is the good answer, logged **once** and then never again. The second
+carries a running count, which is the point of it: once is a shape surprise,
+every time means their id is theirs and **nothing will ever match**. If every
+status reads that way, the delivery columns stay empty for ever and the endpoint
+has to be keyed on their id instead — which needs their id recorded at send time
+(`whatsapp_message_id` already holds it, from `messages[0].messageId`), so the
+fix is a change to the WHERE clause in `recordWhatsappDelivery` and not a new
+design. Do not chase it until the log says so.
+
+**2. What WhatsApp's read receipt is actually called.** `DELIVERED` and `FAILED`
+are in DoubleTick's samples. **A read status exists but its exact string is
+documented nowhere** — it is described in prose only. So nothing guesses: the
+status is stored verbatim, the tab prints an unrecognised value as it arrived,
+and this line names it:
+
+```
+[crm-events] whatsapp delivery status not recognised: "SeenByRecipient". It is stored and shown as it arrived…
+```
+
+If that is WhatsApp's read receipt, add the literal to `RECOGNISED` in
+`crmSignup/whatsappStatus.js` so the tab reads it as one. Until then the row is
+still correct — it shows DoubleTick's own word — it simply does not upgrade the
+symbol to a tick. **Nothing is lost by waiting**, which is the whole reason the
+value is stored rather than matched against a guess.
+
+### What the tab then shows
+
+A `registered` row's WhatsApp cell goes `✓ sent` / `no delivery report yet`,
+then `✓ delivered`, then `✓ read`, keeping `we recorded sent` and `ENQUEUED`
+under it. A message DoubleTick reports as `FAILED` reads `✗ not delivered` with
+their `failMessage` beneath — **and that row must not be resent from the tab
+without reading step 7 case 2 first**: a resend reuses the frozen id and may
+send a second welcome.
+
+Brevo's cell shows `contact <id>` from the same deploy, with no setup at all:
+the id comes out of the create call's own response. A cell reading
+`an update returns none` is not a fault — Brevo mints an id only when it
+creates, so a returning client's contact was updated.
 
 ## 8. Unset the test event code and go live
 

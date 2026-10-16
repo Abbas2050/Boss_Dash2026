@@ -55,6 +55,8 @@ one change rather than two.
 | `GET /api/crm-events/overview` | `authRequired` + `adminOnly` (`canManageUsers`, otherwise 403). Takes `?days=` (1 to 90, default 30). Feeds the settings tab, whose menu entry (`/settings/crm-events`, `admin` group) requires `Settings` + `Auth:ManageUsers`. A per-page `Settings:crm-events` access chip also opens the tab, but does not satisfy the endpoint's gate. |
 | `POST /api/crm-events/requeue` | `authRequired` + `adminOnly`, the same pair. Body `{"destination": "meta" \| "whatsapp" \| "brevo" \| "openai"}`; an unknown one is a 400 and is never defaulted. Puts that destination's `failed` and `rejected` rows back to `pending`, logs who asked, kicks the worker, and answers `{destination, requeued, alreadyScrubbed, expired}`. `expired` is OpenAI's alone and is a literal `0` for the other three: it is the failures still holding their client data that OpenAI refuses on their age. Together the three numbers account for every failure a destination has, which is the whole of the difference between what a card shows and what a press delivers. See "Resending a failure" below. |
 
+| `POST /api/crm-events/whatsapp-status` | **None, deliberately.** DoubleTick's `MESSAGE_STATUS_UPDATE` webhook carries no signature and no secret header, and there is no endpoint to ask a message's status instead (verified 2026-10-16). The capability is the `whatsapp_request_id` on the row -- a UUID v4 we generate at insert and freeze -- which the one statement behind this route matches on exactly. Guessing a v4 UUID buys the three `whatsapp_delivery_*` columns of one row: marking one message delivered, read or failed. It sends nothing, requeues nothing, writes no status the worker reads, and answers `200 {"ok":true}` to everything, so it cannot be used to discover which ids exist. On `PUBLIC_API_ROUTES`, which is now **full at six**. See "Proving a message arrived" below. |
+
 The stage is a **body parameter**, not a path segment, and all five rules post
 to the one path. `auth/requireSession.js` matches its allow-list against actual
 request paths, so a `:stage` pattern would never match; and the list is capped
@@ -231,11 +233,13 @@ Everything else stays, because it is the statistics the table exists for:
 `crm_client_id`, `stage`, `fxbo_unique_id`, `record_type`, `is_lead_raw`,
 `marketing_consent`, `is_ib`, `entity`, `source`, `language`, the three `utm_*`
 columns, `fbc`, `oppref`, `whatsapp_request_id`, every status / detail /
-attempts / clock column, `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
+attempts / clock column, the four delivery-proof columns (`brevo_contact_id`,
+`whatsapp_delivery_status`, `whatsapp_delivery_at`, `whatsapp_delivery_detail`
+-- see "Proving a message arrived"), `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
 columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
 
-**Four of those are load-bearing, not merely kept:**
+**Six of those are load-bearing, not merely kept:**
 
 - **`fbc` deliberately survives.** It is captured at signup and reused weeks
   later for the first-deposit conversion. Scrubbing it would send every later
@@ -254,6 +258,18 @@ funnel stage after the fact.
 - **`crm_client_id` deliberately survives.** It is half the dedupe key. Without
   it FXBO's redelivery of a stage no longer collides on
   `(crm_client_id, stage)`: it inserts a second row and sends a second welcome.
+- **The four delivery-proof columns deliberately survive (2026-10-16), and for
+  one of them the scrub would otherwise win the race.** None of them is client
+  data: `brevo_contact_id` names a row in Brevo, and the WhatsApp three are a
+  status word, an instant and DoubleTick's own failure message (masked on the
+  way in like every other detail). `brevo_contact_id` has to survive because the
+  question "did client 48217's contact really get created" is asked days later
+  and Brevo mints an id only when it *creates*, so a scrubbed one can never be
+  re-read. The `whatsapp_delivery_*` three are usually written **after** the
+  scrub -- DoubleTick's webhook is minutes behind a send that settles in about
+  one -- which is also why `recordWhatsappDelivery` is the one write in
+  `store.js` with no `scrubbed_at IS NULL` precondition. With one, nearly every
+  delivery report we ever receive would be thrown away.
 - **`is_lead_raw` deliberately survives, and since 2026-10-14 it is read at send
   time rather than only by a person.** Brevo's gate tests this literal, not
   `record_type` beside it. A requeued `failed` Brevo row is sent from the row,
@@ -344,6 +360,104 @@ email or phone, because neither is retained. `is_lead_raw` holds the raw
 test; `scrubbed_at` is what lets the settings tab tell a scrubbed row apart from
 one that never carried the value.
 
+## Proving a message arrived
+
+**A status and an HTTP code are not evidence.** The tab used to read
+`WhatsApp sent — ENQUEUED` and `Brevo sent — http 201` for a real client, and
+neither says anything landed: `ENQUEUED` is DoubleTick's own queue, and `201` is
+a transport code rather than a contact anybody can point at. Four columns exist
+to close that gap (2026-10-16), and none of them is a status — nothing sends from
+them, retries on them or scrubs them. They are evidence.
+
+**Brevo: `brevo_contact_id`.** The create call returns an `id`, which names a
+row in Brevo that can be opened. `classifyBrevoOutcome` reads it off a 2xx and
+only off a 2xx — Brevo's 409 for a duplicate quotes the existing contact's id in
+its message, and recording that beside a `rejected` would be proof of a contact
+this call did not make.
+
+**A 2xx with no id is not a failure.** `updateEnabled: true` makes the call an
+upsert and Brevo mints an id only when it *creates*, so a returning client's
+update legitimately returns none — exactly the case where the contact is
+certainly there. Turning that into a failure would offer a resend for every
+repeat registration. The detail says which of the two happened
+(`no contact id (an update returns none)`), because a blank proof column has to
+be tellable from a proof we failed to read. The id is *not* repeated in the
+detail of a success: it has a column of its own and the tab prints both.
+
+The column is written through `COALESCE`, and that is not decoration.
+`updateBrevoStatus` runs twice per send — the pre-send claim, which cannot know
+an id yet, and then the outcome. Written plainly, a later claim (a resend, a
+sweep that found the row due again) would null the proof of a contact that
+exists, and nothing would put it back.
+
+**WhatsApp: there is no equivalent, and no endpoint to ask.** Verified against
+DoubleTick's documentation on 2026-10-16: a message's status arrives **only** by
+their `MESSAGE_STATUS_UPDATE` webhook.
+
+- `https://learn.doubletick.io/webhooks-and-public-api/webhooks/how-to-use-message-status-update-webhook`
+- `https://docs.doubletick.io/reference/messaging-webhooks-1`
+
+The payload carries `messageId`, `status`, `statusTimestamp` and `failMessage`.
+`whatsappStatus.js` reads it, `whatsappStatusRoute.js` answers it, and
+`recordWhatsappDelivery` stores it. Registration is manual, in DoubleTick's UI —
+CUTOVER step 7b.
+
+**Why the endpoint takes no shared secret.** Their webhook has none to send: no
+signature, no secret header, nothing to verify. The alternatives were to refuse
+the feature or to invent a secret they cannot carry. What exists instead is
+already in the request — `whatsapp_request_id` is a UUID v4 we generate at
+insert and freeze, and the one statement behind the route matches on it exactly.
+**The id is the capability.** Guessing a v4 UUID reaches one row, and the worst
+possible effect is marking one message delivered, read or failed. The endpoint
+sends nothing, requeues nothing, and writes no column the worker reads — the
+claim, the scrub precondition, the backstop and the resend all read
+`whatsapp_status`, which is not in that statement.
+
+It answers `200 {"ok":true}` to everything: a known id, an unknown id, a body it
+could not read, a database that is down. Answering differently when a guess
+landed would make it an oracle for which ids exist, which is how a capability
+stops being one.
+
+**The secret is also not in the path or the query string, and that is the same
+decision twice.** The existing `hook.php` mirrors put theirs in the URL, where
+it is readable in the CRM's own webhook log and in every proxy log in between. A
+secret printed on every delivery is worse than none, because it looks like
+authentication. For the same reason the log lines here carry eight characters of
+the id and never the whole of it.
+
+**Two things their documentation does not settle, handled rather than guessed:**
+
+- **The read status string is undocumented.** It is described in prose; the exact
+  value is written down nowhere. So the status is stored **verbatim** and the
+  display is derived from it: `DELIVERED` and `READ` are matched
+  case-insensitively, `FAILED` moves the symbol the other way, and anything else
+  leaves the symbol alone and prints as itself. Nothing hardcodes a guess as the
+  only read value — an allowlist built on one would drop the real string
+  silently, which is the `SENT`/`ENQUEUED` trap above moved one step along. An
+  unrecognised value also gets a log line naming it, so it is found without
+  anyone opening the tab.
+- **Whether `messageId` is ours is unverified.** Their docs do not say whether
+  the id on this event is the one we supplied or one they generate. Nothing
+  guesses: `recordWhatsappDelivery` reports how many rows it matched, and a
+  status that matched **no** row is logged as
+  `whatsapp status for an id we never issued`, with a running count of how many
+  have done so since the worker started. Once is a shape surprise; every time is
+  the answer, and the line says so. The first id that *does* match is logged once
+  as `whatsapp status matched the id we froze`. One real message settles it
+  either way, in the iisnode stdout log that CUTOVER step 2 reads.
+
+**The tab shows four symbols, not two.** `✓` sent, `✗` failed/rejected/invalid,
+`–` skipped, `⋯` pending/retrying, plus `?` for a status the page has never
+heard of. A cross on `skipped` would be wrong and would mislead daily: Meta and
+ChatGPT Ads are skipped on **every** registration by design, and a dashboard
+with a permanent red column is one people stop reading. The symbol leads, the
+status word follows it, and the reason sits under both — all as text, never a
+`title`, because this page is read on a phone where there is no hover.
+WhatsApp's symbol shows the best known truth: a row DoubleTick has reported
+delivered or read says so, one it reports failed shows a cross however the send
+was recorded, and one still waiting says `no delivery report yet` rather than
+letting a tick imply a handset.
+
 ## Resending a failure
 
 Keeping a failed row's client data only made the resend possible. **Nothing in
@@ -376,6 +490,15 @@ repeating, but Brevo's 400 for an attribute that does not exist yet is a
 `rejected` that succeeds the moment the attribute is created. The operator is
 clicking because they fixed something, and the system does not try to guess
 which.
+
+**The delivery-proof columns are left alone by a requeue (2026-10-16).**
+`whatsapp_delivery_*` records what DoubleTick told us about one frozen
+`messageId`, and a resend reuses that same id — so the report still describes the
+message this row is about, and clearing it would destroy the only evidence of it.
+`brevo_contact_id` is left for the stronger version of the same reason: Brevo
+mints an id only when it creates, so a resend that updates the existing contact
+returns none, and a requeue that cleared the column would lose the proof for
+good. Both are evidence rather than state; nothing re-derives them.
 
 **`whatsapp_request_id` is not regenerated, and that is the point.** It is frozen
 per row at insert. If DoubleTick honours a repeated `messageId`, reusing it means
