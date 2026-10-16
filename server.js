@@ -20,7 +20,8 @@ import { startDocusignReconcileScheduler } from "./docusign/reconcile.js";
 import { makeCrmEventsHandler, readCrmWebhookSecret } from "./crmSignup/router.js";
 import { makeCrmEventsOverviewHandler } from "./crmSignup/overviewRoute.js";
 import { makeCrmEventsRequeueHandler } from "./crmSignup/requeueRoute.js";
-import { initCrmSignupStore, findExistingClickIds, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends } from "./crmSignup/store.js";
+import { makeWhatsappStatusHandler } from "./crmSignup/whatsappStatusRoute.js";
+import { initCrmSignupStore, findExistingClickIds, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends, recordWhatsappDelivery } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
 // The one test for a usable BREVO_LIST_ID, so the boot-time warning below and the
 // send-time gate cannot come to disagree about what "usable" means.
@@ -1341,6 +1342,20 @@ app.post('/api/crm-events/requeue', authRequired, adminOnly, makeCrmEventsRequeu
   requeue: requeueFailedSends,
   count: countResendableSends,
   kick: kickCrmEventsWorker,
+}));
+
+// DoubleTick's delivery reports. Public to the network (allow-listed in
+// auth/requireSession.js) and, unlike the two FXBO webhooks, carrying NO shared
+// secret -- their webhook has none to send, and the capability is the UUID v4
+// `whatsapp_request_id` the handler matches on instead. crmSignup/
+// whatsappStatusRoute.js has the full reasoning; the short version is that the
+// worst a guessed id can do is mark one message delivered, and the endpoint
+// answers the same three bytes to everything so it cannot be used to find one.
+// It is wired to recordWhatsappDelivery and to nothing else: no sender, no
+// requeue, no store read. Single-quoted path on purpose -- auth/
+// routeCoverage.test.js greps for it.
+app.post('/api/crm-events/whatsapp-status', makeWhatsappStatusHandler({
+  record: recordWhatsappDelivery,
 }));
 
 app.use("/oauth", oauthRouter);

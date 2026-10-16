@@ -9,11 +9,20 @@ import { describe, it, expect } from "vitest";
 import { PUBLIC_API_ROUTES, isPublicApiRoute } from "./requireSession.js";
 
 describe("allow-list", () => {
-  it("contains exactly the five routes that cannot carry a session", () => {
+  it("contains exactly the six routes that cannot carry a session", () => {
+    // Six is also the cap (routeCoverage.test.js), so this list is now full: a
+    // seventh entry has to displace one of these, which is the review the cap
+    // exists to force.
     expect([...PUBLIC_API_ROUTES].sort()).toEqual([
       "GET /api/docusign/health",
       "POST /api/auth/login",
       "POST /api/crm-events",
+      // DoubleTick's delivery reports, 2026-10-16. The one entry here that is
+      // exempt from auth altogether rather than from session auth: their
+      // webhook has no signature and no secret header to check. The capability
+      // is the frozen `whatsapp_request_id` the one statement behind it matches
+      // on -- crmSignup/whatsappStatusRoute.js has the argument.
+      "POST /api/crm-events/whatsapp-status",
       "POST /api/docusign/webhooks/connect",
       "POST /api/docusign/webhooks/fxbo/application-approved",
     ]);

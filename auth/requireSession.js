@@ -27,6 +27,24 @@ export const PUBLIC_API_ROUTES = new Set([
   // stages: the stage is a body parameter, because this list is matched
   // against actual request paths and is capped at six entries.
   "POST /api/crm-events",
+  // DoubleTick's MESSAGE_STATUS_UPDATE webhook, and the ONLY entry on this list
+  // that is exempt from auth altogether rather than from session auth: their
+  // webhook has no signature and no secret header to check, and there is no
+  // endpoint to ask a message's status instead.
+  //
+  // What stands in for a secret is the `whatsapp_request_id` on each row -- a
+  // UUID v4 we generate and freeze, which the one statement behind this route
+  // matches on exactly. Guessing one buys the three delivery columns of a single
+  // row; the route sends nothing, requeues nothing, writes no status the worker
+  // reads, and answers an identical body to a known and an unknown id so it
+  // cannot be used to discover which exist. crmSignup/whatsappStatusRoute.js
+  // carries the argument in full.
+  //
+  // **This is the sixth entry, and routeCoverage.test.js caps the list at six.**
+  // There is no room for a seventh: anything else that cannot carry a session
+  // has to make room by removing one, which is the review this cap exists to
+  // force.
+  "POST /api/crm-events/whatsapp-status",
 ]);
 
 const GUARDED_PREFIXES = ["/api", "/rest"];
