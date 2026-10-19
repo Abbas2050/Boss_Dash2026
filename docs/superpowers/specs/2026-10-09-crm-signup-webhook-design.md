@@ -321,8 +321,8 @@ One endpoint, five rules, one `stage` on each row.
 |---|---|---|---|---|
 | `lead` | (none yet, §11) | `Lead` | no | no |
 | `registered` | `Client registered` | `CompleteRegistration` | **yes**, lead or client | **yes**, clients only |
-| `verified` | `A client has been verified` | `Client_Verified` | no | no |
-| `live_account` | `Client opened new live account` | `TradingAccountOpened` | no | no |
+| `verified` | `A client has been verified` | `ApprovedApplication` | no | no |
+| `live_account` | `Client opened new live account` | `SubmitApplication` | no | no |
 | `first_deposit` | `First time deposit by client` | `Purchase` | no | no |
 
 Meta fires at every stage. WhatsApp and Brevo fire only at `registered`; at
@@ -452,12 +452,58 @@ The cost, recorded rather than hidden: until the real lead literal is in
 `LEAD_LITERALS`, every lead becomes a Brevo contact. That is the recoverable
 direction, which is the whole point of choosing it.
 
-**The verified stage sends a custom event, `Client_Verified` (2026-10-13,
-user's call).** Not the standard `SubmitApplication`. Nothing needs creating in
-Events Manager first — Meta registers an unrecognised `event_name` as a custom
-event the moment it arrives. The consequence to know: custom events do not get
-standard-event optimisation automatically, so optimising a campaign toward this
+**~~The verified stage sends a custom event, `Client_Verified` (2026-10-13,
+user's call). Not the standard `SubmitApplication`. `live_account` sends
+`TradingAccountOpened` alongside it.~~ SUPERSEDED 2026-10-19 — see the next
+entry.** The reason given was that nothing needs creating in Events Manager
+first, because Meta registers an unrecognised `event_name` as a custom event the
+moment it arrives, and the only stated consequence was that custom events do not
+get standard-event optimisation automatically, so optimising a campaign toward
 one means defining a **Custom Conversion** on it.
+
+**`verified` sends `ApprovedApplication` and `live_account` sends
+`SubmitApplication` (2026-10-19, user's call).** The 13 October decision rested
+on Meta *keeping* an unrecognised event name. It does not. Meta answers `200`
+with `events_received: 1` and then **discards** the event, with no diagnostic
+raised and nothing in Diagnostics "Previously detected" — so our rows read
+`sent` for conversions that do not exist. Read against the live dataset
+`692517170017822` over 16-19 October, a window spanning every event this service
+has ever sent: our side records **seven sent, all `http 200`** (API clients
+14520, 14521, 14522); Meta's side for the same window holds **PageView 912,
+Initiate checkout 18, Complete registration 8 and nothing else — zero of our
+seven**. Every standard name reaching that dataset lands; our two custom names
+never appear. The dataset has core setup on portfolio-wide, and the
+event-blocking page's own gate text refuses event names that include or are
+"based on health, financial, consumer report or otherwise sensitive
+information", which would indict `TradingAccountOpened` but says nothing about
+every custom name being dropped. (`Purchase` was failing over the same days for
+its own named reason — no value — so it is not evidence about names.)
+
+**The new pair is deliberately mixed, because the cause is unproven.**
+`SubmitApplication` is one of Meta's standard names and is the control, standard
+names being the ones that demonstrably arrive. `ApprovedApplication` is still a
+custom name but carries no financial term, and is the test. One test client then
+separates "all custom events are dropped under core setup" from "it was the name
+content", which is the open question; whichever of the two appears is the answer.
+`lead`, `registered` and `first_deposit` are untouched, and so is the `event_id`
+— it is `<crm_client_id>:<stage>`, keyed on the stage, so deduplication survives
+any rename. FXBO is untouched too: its rules send stage names, never Meta's.
+
+**The readable names come back as Custom Conversions, built on whichever
+underlying name survives.** The underlying `event_name` only has to pass Meta's
+review; it never has to be the words an operator reads in Ads Manager. A Custom
+Conversion is also what gives a custom event standard-event optimisation, which
+is the cost the 13 October entry already named.
+
+**An ownership risk on `SubmitApplication`, recorded rather than discovered
+later.** The belief is that the website already fires it on account-open; it
+does not — that name has never been received by any of the three Meta data
+sources, which is why it was free to take. Should the website ever start sending
+it, this stage gains a second owner and double-counts, which is exactly the
+state `Complete registration` is in today (Events Manager shows Integration
+**"Multiple"** on it). One owner per stage, and for this stage the CRM is the
+better owner: FXBO's rule fires on a confirmed account, while a website click is
+only intent.
 
 **~~`Purchase` carries no value or currency (2026-10-13, user's call).~~
 SUPERSEDED 2026-10-19 — see the next entry.** The reason given was that it
@@ -1146,8 +1192,11 @@ nothing and sends nothing; the same client at a *different* stage inserts a new
 row and reuses the stored `fbc`.
 
 **Acceptance:** Meta events first, with `META_TEST_EVENT_CODE` set — they appear
-under Test events within minutes and touch no real data. Check that
-`Client_Verified` shows up as a custom event. Then one real registration: the WhatsApp message **arrives on a handset**, not
+under Test events within minutes and touch no real data. Check which of the two
+renamed events shows up at all: `SubmitApplication` as a standard event and
+`ApprovedApplication` as a custom one, the 19 October experiment above — Test
+events is not the answer on its own, since the question is what the dataset
+*keeps*. Then one real registration: the WhatsApp message **arrives on a handset**, not
 merely a 2xx; the contact appears in Brevo list 19; re-posting the identical
 webhook sends no second message.
 

@@ -18,13 +18,44 @@ import {
 
 describe("event names", () => {
   it("maps every stage, and maps them to Meta's own vocabulary", () => {
+    // Written out in full rather than spot-checked: Meta accepts an event name
+    // it will not keep, so a name crossed between two stages is invisible on
+    // our side and arrives as the wrong conversion on theirs.
     expect(META_EVENT_NAMES).toEqual({
       lead: "Lead",
       registered: "CompleteRegistration",
-      verified: "Client_Verified",
-      live_account: "TradingAccountOpened",
+      verified: "ApprovedApplication",
+      live_account: "SubmitApplication",
       first_deposit: "Purchase",
     });
+  });
+
+  it("keeps the 19 October experiment mixed: one standard name and one custom one", () => {
+    // The point of the rename is the comparison, so the pair is pinned as a
+    // pair. `SubmitApplication` is one of Meta's standard names (the control);
+    // `ApprovedApplication` is custom (the test). Both sent under the old names
+    // were custom, both were discarded, and one of the two explanations --
+    // custom events dropped under core setup, or a financial term in the name
+    // -- is wrong. Making both standard, or both custom, answers nothing.
+    const STANDARD = new Set([
+      "Lead",
+      "CompleteRegistration",
+      "Purchase",
+      "SubmitApplication",
+      "InitiateCheckout",
+      "ViewContent",
+      "Contact",
+      "Schedule",
+      "StartTrial",
+      "Subscribe",
+      "AddPaymentInfo",
+      "Search",
+    ]);
+    expect(STANDARD.has(META_EVENT_NAMES.live_account)).toBe(true);
+    expect(STANDARD.has(META_EVENT_NAMES.verified)).toBe(false);
+    // And the custom one carries no financial term, which is what the gate text
+    // on the event-blocking page refuses.
+    expect(META_EVENT_NAMES.verified).not.toMatch(/trad|deposit|account|financ|invest/i);
   });
 });
 
@@ -128,7 +159,7 @@ describe("buildMetaPayload", () => {
 
   it("uses the stage's event name and the given time", () => {
     const event = buildMetaPayload(base).data[0];
-    expect(event.event_name).toBe("Client_Verified");
+    expect(event.event_name).toBe("ApprovedApplication");
     expect(event.event_time).toBe(1673035686);
   });
 

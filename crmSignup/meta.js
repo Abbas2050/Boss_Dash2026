@@ -10,14 +10,42 @@ import { isoCurrency } from "./depositValue.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
-/** One Meta event per funnel stage. `registered` is mapped but not sent -- see
- *  decideMetaSkip. The mapping stays complete so that lifting the gate is one
- *  change rather than two. */
+/**
+ * One Meta event per funnel stage. `registered` is mapped but not sent -- see
+ * decideMetaSkip. The mapping stays complete so that lifting the gate is one
+ * change rather than two.
+ *
+ * **`verified` and `live_account` are renamed here on 2026-10-19, superseding
+ * the 13 October choice of `Client_Verified` and `TradingAccountOpened`.** Meta
+ * answered `200` with `events_received: 1` for all seven events this service
+ * has ever sent and then discarded every one of them. Read against the live
+ * dataset over 16-19 October, which spans every send we have made: our side
+ * records seven sent and seven 200s, and Meta's side for the same window holds
+ * PageView, Initiate checkout and Complete registration -- standard names,
+ * every one of them arriving -- and none of ours. No diagnostic was raised for
+ * either name either, so Meta never said why.
+ *
+ * **The pair is deliberately mixed, because the cause is still unproven.** The
+ * dataset runs with core setup on, and the event-blocking page's own gate text
+ * refuses event names that are "based on health, financial, consumer report or
+ * otherwise sensitive information" -- which would indict `TradingAccountOpened`
+ * but says nothing about every custom name being dropped. So `SubmitApplication`
+ * is the control: a standard Meta name, and standard names demonstrably arrive.
+ * `ApprovedApplication` is the test: still a custom name, but carrying no
+ * financial term. One test client separates "custom events are dropped under
+ * core setup" from "it was the name content", and whichever of the two appears
+ * is the answer.
+ *
+ * `Purchase` was failing for its own named reason -- no value -- which is fixed
+ * and is not evidence about names. The readable labels operators want in Ads
+ * Manager come back as Custom Conversions built on whichever name survives; see
+ * README, "What each stage sends".
+ */
 export const META_EVENT_NAMES = {
   lead: "Lead",
   registered: "CompleteRegistration",
-  verified: "Client_Verified",
-  live_account: "TradingAccountOpened",
+  verified: "ApprovedApplication",
+  live_account: "SubmitApplication",
   first_deposit: "Purchase",
 };
 

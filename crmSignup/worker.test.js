@@ -250,6 +250,12 @@ describe("processSignupEvent", () => {
     await processSignupEvent(row({ stage: "verified" }), d);
     const first = d.sendMeta.mock.calls[0][0].payload.data[0].event_id;
     expect(first).toBe("88214:verified");
+    // Keyed on the client and the stage, never on the Meta event name. The two
+    // names changed on 2026-10-19 and may change again while that experiment
+    // runs; an id built from the name would make the same funnel event look
+    // like a new one on the day it is renamed, which is the one thing the id
+    // exists to prevent.
+    expect(first).not.toContain(META_EVENT_NAMES.verified);
 
     // The same funnel event, retried, must carry the identical id.
     await processSignupEvent(row({ stage: "verified", meta_status: "retrying", meta_attempts: 1 }), d);
@@ -630,7 +636,9 @@ describe("processSignupEvent", () => {
 import { beforeEach, afterEach } from "vitest";
 import { readFileSync } from "fs";
 import path from "path";
-import { hashEmail, hashPhone } from "./meta.js";
+// META_EVENT_NAMES is read far above, by the event-id case: that id is keyed on
+// the stage, and the assertion says so against the real name rather than a copy.
+import { hashEmail, hashPhone, META_EVENT_NAMES } from "./meta.js";
 import { maskEmail, maskPhone } from "./normalise.js";
 import { buildBrevoContact, BREVO_CONTACTS_URL } from "./brevo.js";
 import { DOUBLETICK_TEMPLATE_URL } from "./whatsapp.js";
@@ -1781,7 +1789,7 @@ describe("what each provider is handed", () => {
     expect(arg.payload.test_event_code).toBe("TEST4242");
     expect(event.user_data.em).toEqual([hashEmail("ali.khan@example.com")]);
     expect(event.user_data.ph).toEqual([hashPhone("+971501112233")]);
-    expect(event.event_name).toBe("Client_Verified");
+    expect(event.event_name).toBe("ApprovedApplication");
     expect(event.event_time).toBe(1791806400);
   });
 

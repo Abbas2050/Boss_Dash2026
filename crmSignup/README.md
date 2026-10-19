@@ -15,8 +15,8 @@ Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 |---|---|---|---|---|
 | `lead` | `Lead` | no | no | `lead_created` (`customer_action`) — blocked upstream, no FXBO trigger |
 | `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it |
-| `verified` | `Client_Verified` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
-| `live_account` | `TradingAccountOpened` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) |
+| `verified` | `ApprovedApplication` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
+| `live_account` | `SubmitApplication` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) |
 | `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) |
 
 **No single event sends to all four.** `registered` sends WhatsApp and Brevo;
@@ -48,6 +48,61 @@ browser pixel, and sending it from here as well would book one registration as
 two conversions. See `decideMetaSkip` in `meta.js` for why deduplicating instead
 is not available to us. The mapping stays complete so that lifting the gate is
 one change rather than two.
+
+**The two Meta names in the table are not the ChatGPT Ads names beside them, on
+purpose.** OpenAI keeps `client_verified` and `live_account_opened`: nothing on
+that platform restricts an event name, and renaming there would break the
+continuity of their reporting for no gain.
+
+### The 19 October event-name experiment
+
+**`verified` and `live_account` were renamed on 2026-10-19, superseding the 13
+October choice of `Client_Verified` and `TradingAccountOpened`.** Meta accepts
+our events and then discards them. Read against the live dataset
+`692517170017822` over 16-19 October, a window that spans every event this
+service has ever sent:
+
+- Our side: seven sent, all `http 200`, across three API clients.
+- Meta's side, same window: PageView 912, Initiate checkout 18, Complete
+  registration 8, and **nothing else**. Zero of our seven.
+
+Every **standard** name that reaches that dataset lands. Our two **custom**
+names never appear, and Meta raises no diagnostic for them either — Diagnostics
+"Previously detected" is empty, so Meta never said why. The dataset has core
+setup on (portfolio-wide), and the event-blocking page's own gate text reads:
+*"You can't share data (including in event names) that includes or is based on
+health, financial, consumer report or otherwise sensitive information."* That
+would indict `TradingAccountOpened` but says nothing about every custom name
+being dropped.
+
+`Purchase` was failing at the same time for a different and named reason — no
+value, diagnostic `s2s_invalid_purchase_event_actions`, fixed and deployed — so
+it is not evidence about names either way.
+
+**The new pair is deliberately mixed, because the cause is unproven.**
+`SubmitApplication` is one of Meta's standard names: the control, since standard
+names demonstrably arrive. `ApprovedApplication` is still a custom name but
+carries no financial term: the test. One test client then separates "all custom
+events are dropped under core setup" from "it was the name content", and
+whichever of the two appears is the answer.
+
+**The readable names come back as Custom Conversions, not as event names.** An
+operator who wants to read "Client verified" in Ads Manager gets it from a
+Custom Conversion defined on whichever underlying name survives. The underlying
+name only has to pass Meta's review; it never has to be the words a human reads,
+and a Custom Conversion is also what gives a custom event standard-event
+optimisation.
+
+**The ownership risk to watch on `SubmitApplication`.** The belief in the room
+is that the website already sends it on account-open. It does not: that name has
+never been received by any of the three Meta data sources, which is why it was
+free to take. But if the website ever starts sending it, this stage gets two
+owners and double-counts — exactly the shape `Complete registration` is in
+today, where Events Manager shows Integration **"Multiple"**. One owner per
+stage, and for this stage the CRM is the better owner: FXBO's rule fires on the
+confirmed account, while a website click is only intent. If the website side is
+ever wired for it, take it out there rather than here, or rename this stage
+again.
 
 ## Routes
 
