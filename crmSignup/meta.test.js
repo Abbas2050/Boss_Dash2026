@@ -11,6 +11,7 @@ import {
   hashEmail,
   hashPhone,
   buildMetaPayload,
+  metaValueFields,
   classifyMetaOutcome,
   sendMetaEvent,
 } from "./meta.js";
@@ -163,13 +164,83 @@ describe("buildMetaPayload", () => {
     expect("em" in user_data).toBe(false);
   });
 
-  it("never carries a value or a currency, at any stage", () => {
-    // Decided 2026-10-13: Meta learns that a deposit happened, not what it was
-    // worth. custom_data holds the two CRM constants and nothing else.
+  it("carries no value and no currency when the caller gives no deposit value", () => {
+    // Every stage but the first deposit, where there is no amount to send.
+    // custom_data then holds the two CRM constants and nothing else.
     for (const stage of ["registered", "verified", "live_account", "first_deposit"]) {
-      const { custom_data } = buildMetaPayload({ ...base, stage }).data[0];
-      expect(Object.keys(custom_data).sort(), stage).toEqual(["event_source", "lead_event_source"]);
+      for (const depositValue of [undefined, null]) {
+        const { custom_data } = buildMetaPayload({ ...base, stage, depositValue }).data[0];
+        expect(Object.keys(custom_data).sort(), stage).toEqual(["event_source", "lead_event_source"]);
+      }
     }
+  });
+
+  // $129.99, chosen because the decimal and the minor-unit integer differ. A
+  // round amount would pass with the two units crossed.
+  const DEPOSIT = { currency: "USD", valueDecimal: 129.99, amountMinor: 12999 };
+
+  it("sends the deposit's value and currency on the Purchase event", () => {
+    // Superseding the 13 October decision to send neither (2026-10-19): Meta
+    // answers 200 with events_received: 1 and then DISCARDS a Purchase with no
+    // value, so the conversion never existed. Diagnostic
+    // s2s_invalid_purchase_event_actions, raised 2026-10-16.
+    const { custom_data } = buildMetaPayload({ ...base, stage: "first_deposit", depositValue: DEPOSIT }).data[0];
+    expect(custom_data.value).toBe(129.99);
+    expect(custom_data.currency).toBe("USD");
+    expect(Object.keys(custom_data).sort()).toEqual(["currency", "event_source", "lead_event_source", "value"]);
+  });
+
+  it("puts the DECIMAL in value, never the minor-unit integer", () => {
+    // ChatGPT Ads wants this same deposit as the integer 12999. The two differ
+    // by a factor of a hundred and Meta would accept either without a word --
+    // the only symptom of a swap is somebody else's dashboard reporting the
+    // deposit a hundredfold.
+    const { custom_data } = buildMetaPayload({ ...base, stage: "first_deposit", depositValue: DEPOSIT }).data[0];
+    expect(custom_data.value).toBe(129.99);
+    expect(custom_data.value).not.toBe(12999);
+    expect(typeof custom_data.value).toBe("number");
+  });
+
+  it("sends both halves of the pair or neither, never one of them", () => {
+    // "All purchase events must contain a value parameter AND a currency
+    // parameter": a Purchase carrying one of them is the same defect in a new
+    // shape, and Meta reports it the same way -- by accepting and discarding.
+    const half = [
+      { currency: "USD", valueDecimal: null },
+      { currency: "USD", valueDecimal: 0 },
+      { currency: "USD", valueDecimal: "abc" },
+      { currency: "USD" },
+      { currency: "", valueDecimal: 129.99 },
+      { currency: "USDT", valueDecimal: 129.99 },
+      { currency: "US", valueDecimal: 129.99 },
+      { valueDecimal: 129.99 },
+      {},
+    ];
+    for (const depositValue of half) {
+      const { custom_data } = buildMetaPayload({ ...base, stage: "first_deposit", depositValue }).data[0];
+      const keys = Object.keys(custom_data).sort();
+      expect(keys, JSON.stringify(depositValue)).toEqual(["event_source", "lead_event_source"]);
+    }
+  });
+
+  it("uppercases the currency and keeps value a number", () => {
+    const { custom_data } = buildMetaPayload({
+      ...base,
+      stage: "first_deposit",
+      depositValue: { currency: " usd ", valueDecimal: 129.99 },
+    }).data[0];
+    expect(custom_data.currency).toBe("USD");
+    expect(JSON.stringify(custom_data)).toContain('"value":129.99');
+  });
+
+  it("builds both halves from one function, so neither can be attached alone", () => {
+    // The guard is structural rather than a pair of ifs at the call site: two
+    // conditions are what makes the half-filled event constructible.
+    expect(metaValueFields(DEPOSIT)).toEqual({ value: 129.99, currency: "USD" });
+    expect(metaValueFields({ currency: "USD" })).toEqual({});
+    expect(metaValueFields({ valueDecimal: 129.99 })).toEqual({});
+    expect(metaValueFields(null)).toEqual({});
+    expect(metaValueFields()).toEqual({});
   });
 
   it("includes a test event code only when one is configured", () => {

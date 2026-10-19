@@ -86,7 +86,36 @@ export function hashPhone(phone) {
   return digits ? sha256(digits) : "";
 }
 
-export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode }) {
+/**
+ * Meta's `value` and `currency`, or NEITHER of them.
+ *
+ * **Meta requires both or neither, and a `Purchase` carrying one of them is the
+ * same defect as a `Purchase` carrying none.** Diagnostic
+ * `s2s_invalid_purchase_event_actions`, raised 2026-10-16, is explicit: "All
+ * purchase events must contain a value parameter and a currency parameter."
+ * Meta still answers 200 with `events_received: 1` and then discards the event,
+ * so the row would read `sent` for a conversion that does not exist.
+ *
+ * So the pair is attached by one function that can only ever return both or
+ * neither. Attaching them from two `if`s at the call site is what makes the
+ * half-filled version constructible, and nothing downstream would complain
+ * about it.
+ *
+ * **`valueDecimal`, not `amountMinor`.** Meta's `value` is a decimal in the
+ * major unit: $129.99 is `129.99`. ChatGPT Ads wants the same deposit as the
+ * integer `12999`. `depositValue.js` carries both under names that say which is
+ * which, because the two are a hundred apart and either would be accepted here
+ * without comment.
+ */
+export function metaValueFields(depositValue) {
+  const currency = String(depositValue?.currency ?? "").trim().toUpperCase();
+  const value = Number(depositValue?.valueDecimal);
+  if (!/^[A-Z]{3}$/.test(currency)) return {};
+  if (!Number.isFinite(value) || !(value > 0)) return {};
+  return { value, currency };
+}
+
+export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode, depositValue }) {
   const user_data = {};
 
   const em = hashEmail(email);
@@ -100,11 +129,14 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
   const click = String(fbc ?? "").trim();
   if (click) user_data.fbc = click;
 
-  // The two CRM constants and nothing else. A deposit reports that it
-  // happened, not what it was worth (decided 2026-10-13).
+  // The two CRM constants, plus the deposit's value and currency on the one
+  // stage that has them (2026-10-19, superseding the 13 October decision to
+  // send neither -- metaValueFields says why there is no third option).
+  // Every other stage passes no depositValue and carries no pair.
   const custom_data = {
     event_source: EVENT_SOURCE,
     lead_event_source: LEAD_EVENT_SOURCE,
+    ...metaValueFields(depositValue),
   };
 
   const event = {

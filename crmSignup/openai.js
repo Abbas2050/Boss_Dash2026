@@ -56,10 +56,10 @@ export const OPENAI_EVENTS = {
   registered: { name: "registration_completed" },
   verified: { name: "custom", customEventName: "client_verified" },
   live_account: { name: "custom", customEventName: "live_account_opened" },
-  // No amount and no currency, mirroring the 13 October decision for Meta's
-  // Purchase: OpenAI learns that a deposit happened, not what it was worth.
-  // Both fields are optional and `currency` is required only beside an
-  // `amount`, so the event is valid without the pair (spec section 6).
+  // Carries the deposit's amount and currency since 2026-10-19, in the
+  // `contents` family's own fields -- see openaiAmountFields. Both are optional
+  // here, unlike Meta, where their absence makes the event disappear; they are
+  // sent anyway so the two platforms report the same deposit as the same money.
   first_deposit: { name: "order_created" },
 };
 
@@ -321,6 +321,41 @@ export function openaiEventId({ crmClientId, stage } = {}) {
  */
 const ACTION_SOURCE = "offline";
 
+/** The one data family whose events describe money. `amount` and `currency`
+ *  belong to it and to no other: `data.type` chooses the family, and the family
+ *  decides which fields the event may carry. Taken from the one table that
+ *  already owns that mapping rather than from a stage list beside it. */
+const MONEY_FAMILY = "contents";
+
+/**
+ * OpenAI's `amount` and `currency`, or NEITHER of them.
+ *
+ * **`amountMinor`, not `valueDecimal`, and that is the whole reason this is a
+ * function and not two lines at the call site.** OpenAI's `amount` is an
+ * INTEGER IN THE CURRENCY'S MINOR UNIT -- $129.99 is `12999` -- while Meta's
+ * `value` is the decimal `129.99` for the same deposit. The two differ by a
+ * factor of a hundred for most currencies and by one or a thousand for the
+ * rest, and **both platforms would accept either number without a word**: the
+ * only symptom of a swap is a deposit reported as a hundred times, or a
+ * hundredth of, what it was, in somebody else's dashboard.
+ *
+ * So the unit is carried by the field name, `Number.isInteger` refuses a
+ * decimal that reached here by mistake, and `openai.test.js` pins the pair with
+ * a value where the two forms genuinely differ. A test using a round number
+ * would pass with the units crossed.
+ *
+ * `currency` is required whenever `amount` is present, so the pair is attached
+ * together or not at all -- the same rule Meta states outright, honoured here
+ * before OpenAI has to.
+ */
+export function openaiAmountFields(depositValue) {
+  const currency = String(depositValue?.currency ?? "").trim().toUpperCase();
+  const amount = Number(depositValue?.amountMinor);
+  if (!/^[A-Z]{3}$/.test(currency)) return {};
+  if (!Number.isInteger(amount) || !(amount > 0)) return {};
+  return { amount, currency };
+}
+
 /**
  * One event, shaped as the batch of one that it is.
  *
@@ -343,7 +378,16 @@ const ACTION_SOURCE = "offline";
  * readable time is one OpenAI will accept: the window is a decision about a row,
  * and decideOpenaiSkip makes it, with a reason that lands in the row.
  */
-export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, receivedAt, validateOnly } = {}) {
+export function buildOpenaiPayload({
+  stage,
+  crmClientId,
+  email,
+  phone,
+  oppref,
+  receivedAt,
+  validateOnly,
+  depositValue,
+} = {}) {
   const mapped = openaiEventFor(stage);
   if (!mapped) return null;
 
@@ -382,11 +426,20 @@ export function buildOpenaiPayload({ stage, crmClientId, email, phone, oppref, r
   // `data.type` is the data FAMILY and is a different field that happens to
   // share a name** -- which is precisely why the family is looked up from one
   // table rather than written beside the name.
+  // `amount` and `currency` sit INSIDE `data`, beside the family that admits
+  // them. The reference's event-level field list is quoted in full in the
+  // ChatGPT Ads design (section 2) and neither field appears in it, so `data`
+  // is where the family's own payload goes -- inferred from that table rather
+  // than read from a line of documentation that says so. Recorded as an
+  // inference in the spec, because it is the one thing here nobody verified.
+  const data = { type };
+  if (type === MONEY_FAMILY) Object.assign(data, openaiAmountFields(depositValue));
+
   const event = {
     id,
     type: mapped.name,
     timestamp_ms: timestampMs,
-    data: { type },
+    data,
     action_source: ACTION_SOURCE,
     user,
   };

@@ -32,6 +32,7 @@ import {
   hashEmail,
   hashPhone,
   buildOpenaiPayload,
+  openaiAmountFields,
   readOpenaiError,
   classifyOpenaiOutcome,
   sendOpenaiEvent,
@@ -789,18 +790,91 @@ describe("buildOpenaiPayload", () => {
     }
   });
 
-  it("never carries an amount or a currency, at any stage", () => {
-    // Decided 2026-10-14, mirroring Meta's Purchase: OpenAI learns that a
-    // deposit happened, not what it was worth, so there is no return-on-ad-spend
-    // on either platform. Both fields are optional and currency is required only
-    // beside an amount, so the event is valid without the pair.
+  it("carries no amount and no currency when the caller gives no deposit value", () => {
+    // Both are optional here, unlike Meta, where their absence makes the event
+    // disappear. So an event built without one is valid and simply unpriced.
     for (const stage of ALL_STAGES) {
-      const serialised = JSON.stringify(buildOpenaiPayload({ ...base, stage }));
-      expect(serialised, stage).not.toContain("amount");
-      expect(serialised, stage).not.toContain("currency");
+      for (const depositValue of [undefined, null]) {
+        const serialised = JSON.stringify(buildOpenaiPayload({ ...base, stage, depositValue }));
+        expect(serialised, stage).not.toContain("amount");
+        expect(serialised, stage).not.toContain("currency");
+      }
     }
     const { data } = buildOpenaiPayload({ ...base, stage: "first_deposit" }).events[0];
     expect(Object.keys(data)).toEqual(["type"]);
+  });
+
+  // $129.99: the decimal and the minor-unit integer differ, which is the only
+  // way a test can tell the two units apart.
+  const DEPOSIT = { currency: "USD", valueDecimal: 129.99, amountMinor: 12999 };
+
+  it("carries the deposit's amount and currency inside data, on order_created", () => {
+    // 2026-10-19. The fields sit in `data` beside the family that admits them:
+    // the reference's event-level field list (ChatGPT Ads design, section 2) is
+    // quoted in full there and names neither, so `data` is where the family's
+    // own payload goes. Inferred from that table, not read from a sentence.
+    const { data } = buildOpenaiPayload({ ...base, stage: "first_deposit", depositValue: DEPOSIT }).events[0];
+    expect(data).toEqual({ type: "contents", amount: 12999, currency: "USD" });
+  });
+
+  it("puts the MINOR-UNIT INTEGER in amount, never the decimal", () => {
+    // Meta wants the same deposit as the decimal 129.99. Both platforms would
+    // accept either number without complaint, so the only symptom of a swap is
+    // a deposit reported as a hundredth of, or a hundred times, what it was.
+    const { data } = buildOpenaiPayload({ ...base, stage: "first_deposit", depositValue: DEPOSIT }).events[0];
+    expect(data.amount).toBe(12999);
+    expect(data.amount).not.toBe(129.99);
+    expect(Number.isInteger(data.amount)).toBe(true);
+  });
+
+  it("refuses a decimal that reached amount by mistake", () => {
+    // The structural half of the rule above: a value in the wrong unit is not
+    // sent in the right field, it is not sent at all.
+    const { data } = buildOpenaiPayload({
+      ...base,
+      stage: "first_deposit",
+      depositValue: { currency: "USD", amountMinor: 129.99 },
+    }).events[0];
+    expect(data).toEqual({ type: "contents" });
+  });
+
+  it("sends both halves of the pair or neither, never one of them", () => {
+    // `currency` is required whenever `amount` is present, so the pair is
+    // attached together -- the rule Meta states outright, honoured here before
+    // OpenAI has to.
+    const half = [
+      { currency: "USD", amountMinor: null },
+      { currency: "USD", amountMinor: 0 },
+      { currency: "USD", amountMinor: "abc" },
+      { currency: "USD" },
+      { currency: "", amountMinor: 12999 },
+      { currency: "USDT", amountMinor: 12999 },
+      { amountMinor: 12999 },
+      {},
+    ];
+    for (const depositValue of half) {
+      const { data } = buildOpenaiPayload({ ...base, stage: "first_deposit", depositValue }).events[0];
+      expect(Object.keys(data).sort(), JSON.stringify(depositValue)).toEqual(["type"]);
+    }
+  });
+
+  it("puts the pair only in the contents family, whatever the caller passes", () => {
+    // `data.type` chooses the family and the family decides which fields the
+    // event may carry. `amount` on a customer_action or a custom event is a
+    // field that family has no place for.
+    for (const stage of ["lead", "verified", "live_account"]) {
+      const { data } = buildOpenaiPayload({ ...base, stage, depositValue: DEPOSIT }).events[0];
+      expect(Object.keys(data).sort(), stage).toEqual(["type"]);
+    }
+  });
+
+  it("builds both halves from one function, so neither can be attached alone", () => {
+    expect(openaiAmountFields(DEPOSIT)).toEqual({ amount: 12999, currency: "USD" });
+    expect(openaiAmountFields({ currency: "USD" })).toEqual({});
+    expect(openaiAmountFields({ amountMinor: 12999 })).toEqual({});
+    expect(openaiAmountFields({ currency: " usd ", amountMinor: 12999 })).toEqual({ amount: 12999, currency: "USD" });
+    expect(openaiAmountFields(null)).toEqual({});
+    expect(openaiAmountFields()).toEqual({});
   });
 
   it("builds nothing for a stage the taxonomy has no event for", () => {
