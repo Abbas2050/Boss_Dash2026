@@ -41,6 +41,17 @@ Five of these will cost you an afternoon if you get them wrong:
   it, that one stage's Meta and ChatGPT Ads sends record `failed` naming the
   variable. `failed` keeps the client data, so the resend controls recover them
   once it is right. Nothing else in this feature reads it.
+- **A crypto first deposit converts only if it was in a USD-pegged
+  stablecoin.** `USDT`, `USDC`, `PAX`, `TUSD` and their chain-suffixed forms
+  settle as USD at par, so those deposits convert normally. **A `BTC` or `ETH`
+  deposit does not**: the row records `failed` naming the code, because pricing
+  it needs a live rate this service does not have and a wrong rate would hand
+  Meta a bid signal wrong by orders of magnitude. That is deliberate and is not
+  a misconfiguration to chase — if you see it on the settings tab, the deposit
+  is real and the conversion is simply not sendable. The same applies to any
+  currency missing from `REPORTABLE_CURRENCIES` in `crmSignup/depositValue.js`;
+  that one *is* a one-line fix, and the detail names the code so you can tell
+  the two cases apart.
 
 - **`BREVO_LIST_ID` has no default.** Unset, blank or not a positive number and
   Brevo is not called at all: the row records `failed` with a detail naming the

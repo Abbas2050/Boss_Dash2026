@@ -106,6 +106,13 @@ export function hashPhone(phone) {
  * integer `12999`. `depositValue.js` carries both under names that say which is
  * which, because the two are a hundred apart and either would be accepted here
  * without comment.
+ *
+ * The three-letter test is the last-ditch half of "both or neither", **not the
+ * authority on which currencies exist**. That is `settlementCurrency` in
+ * `depositValue.js`, which holds an allowlist, because a shape test cannot tell
+ * `BRL` from `BTC` and every major crypto ticker is three letters. Nothing but
+ * a settled code should reach here; this only makes sure a blank one takes the
+ * value with it.
  */
 export function metaValueFields(depositValue) {
   const currency = String(depositValue?.currency ?? "").trim().toUpperCase();

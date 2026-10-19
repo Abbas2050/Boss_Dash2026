@@ -115,8 +115,73 @@ Five things in that one call that look like style and are not:
   client under a "first ever deposit" heading in the weekly summary
   (`reports/summaryCore.js` says so). The stage already tells us this is the
   first deposit.
-- **The minor-unit digits come from a table.** ISO 4217 gives JPY zero and KWD
-  three; assuming two is a hundredfold error, not a rounding one.
+- **The minor-unit digits come from a table, and are read from the *settled*
+  currency.** ISO 4217 gives JPY zero and KWD three; assuming two is a
+  hundredfold error, not a rounding one. And a USDT deposit settles as USD, so
+  it scales by USD's two places — USDT is 6-decimal on chain, and scaling by
+  the ticker's own precision would turn $100 into $1,000,000. `minorUnitDigits`
+  returns `null` for a code that has not been settled, so getting that order
+  wrong is loud rather than plausible.
+- **Which currencies are reportable is an allowlist, not a `/^[A-Z]{3}$/`
+  test.** See below — this is the one thing in this section that was wrong in
+  the first version of it.
+
+### Crypto: pegged stablecoins map, non-pegged crypto deliberately does not
+
+Skylinks takes crypto deposits, so this path is live rather than theoretical.
+
+**USD-pegged stablecoins settle as `USD` at par.** `USDT` (and `USDTTRC20`,
+`USDTBEP20`, `USDTPOL`, `USDTSOL`, `USDTAVAX`), `USDC` (and `USDCSOL`,
+`USDCPOL`, `USDCBASE`, `USDCAVAX`), `PAX`, `TUSD` — thirteen codes, hard-coded
+in `USD_PEGGED_CURRENCIES`. **There is no rate anywhere in the module**: the
+amount is carried across untouched and only the code is rewritten, because a
+pegged token is issued against a dollar and valuing it at par is a statement
+about its issuance rather than an exchange-rate lookup.
+
+**The peg is an accepted assumption, not an implicit one.** A material depeg
+would quietly misreport deposit value, and nothing in the code would notice,
+because there is no rate to disagree with. At a stablecoin's ordinary drift
+(fractions of a cent) that is far below anything an ad platform optimises on,
+and `wallet/cryptoRates.js` already accepts the identical error for the
+identical reason on the treasury side. A sustained depeg is an operational
+event: the fix is to remove the coin from the list, which makes its deposits
+`failed` and visible rather than silently mispriced.
+
+**`BTC`, `ETH`, `XRP`, `LTC` and everything else non-pegged stay unreportable**
+— a permanent `failed` naming the code. Converting them needs a live rate this
+module does not have, and a wrong rate does not give a slightly-off conversion;
+it hands Meta a bid signal wrong by orders of magnitude, which is worse than the
+conversion lost by sending nothing.
+
+**That list is hard-coded and reads nothing from the environment,** for the same
+reason `statuses: ["approved"]` does, only sharper: a variable that let someone
+add `BTC` at 1:1 would report a 0.4 BTC deposit as $0.40 of revenue, and it
+would be one typo away at all times. A test pins the membership exactly.
+
+**It is enumerated, never pattern-matched.** `code.includes("USD")` would value
+any future ticker containing those three letters at par, whatever it actually
+is. `wallet/pspClients.js` carries that same warning on
+`DOLLAR_DENOMINATED_CURRENCIES`, which answers the neighbouring question for PSP
+wallet holdings and reached the same conclusion about the same tokens. Our list
+is its dollar-pegged half; a test asserts the subset, so the two cannot drift
+apart silently. It is a second copy rather than an import only because that
+module pulls in `googleapis`, the Sheets reader and the live rate feed, and the
+webhook's send path must not depend on any of them.
+
+**Which currencies are reportable at all is an allowlist
+(`REPORTABLE_CURRENCIES`), and that is a correction rather than a refinement.**
+The first version of this feature tested `/^[A-Z]{3}$/` and shipped a real
+defect: **every major non-pegged crypto ticker is exactly three letters**, so a
+0.4 BTC deposit passed, went out as `value: 0.4, currency: "BTC"`, and reported
+a five-figure deposit as forty cents of revenue — with Meta silently ignoring
+the currency it could not read. `BRL` sits next to `BTC`, `ETB` next to `ETH`;
+no pattern can separate them, which is why this is a list. Omissions from it
+cost a visible `failed` naming the code and are a one-line fix; that is the
+direction it is built to fail in.
+
+The long allowlist carries the length and the short `MINOR_UNIT_DIGITS` table
+carries the risk: a typo in the first refuses a deposit and says so, a typo in
+the second silently misreports a real one by a factor of ten or a hundred.
 
 **A failed lookup is never `sent`, and never `skipped`.** `sent` would be the
 exact lie this change removes; `skipped` is final and nothing decided it. The
@@ -148,7 +213,18 @@ one answer. It reuses `sendTimeout.js` for its bound (`CRM_SEND_TIMEOUT_MS`),
 never throws, and a failure takes neither the worker nor the other destinations
 with it.
 
-## Ten things that are easy to get wrong
+## Eleven things that are easy to get wrong
+
+**A three-letter shape test cannot tell a currency from a coin, and the
+failure is silent.** `BTC`, `ETH`, `XRP`, `LTC`, `ADA`, `SOL`, `TRX`, `BNB` are
+all exactly three letters, and so are `BRL`, `ETB`, `XCD`, `LSL`, `AED`, `SOS`,
+`TRY`, `BND`. A pattern accepts both; only a list separates them. Meta then
+ignores the currency it cannot read and the deposit is reported at its crypto
+face value, so a 0.4 BTC deposit books as 0.40. This repository had already
+learned it once — `wallet/pspClients.js` says *"this is an ALLOWLIST rather than
+a pattern, and that is the whole point of it"* — and the first version of this
+feature made the mistake anyway.
+
 
 **Meta's `value` and ChatGPT Ads' `amount` are the same deposit in different
 units, and no test you would naturally write could tell.** Meta wants the

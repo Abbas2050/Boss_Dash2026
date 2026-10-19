@@ -9,16 +9,31 @@
 // units and the reasons a lookup produces no value are pinned by test rather
 // than by care.
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "fs";
+import path from "path";
 import { DEFAULT_SEND_TIMEOUT_MS, SEND_TIMEOUT_ENV } from "./sendTimeout.js";
 import { timeoutError } from "./sendTimeout.contract.js";
+// The treasury side's answer to the neighbouring question -- "may this PSP
+// holding be counted as dollars" -- imported ONLY to be compared against. The
+// two lists must not drift, and this module deliberately keeps its own copy
+// rather than importing that one, because pspClients.js pulls in googleapis,
+// the Google Sheets reader and the live rate feed (548 ms at import), and the
+// CRM webhook's send path must not depend on any of them. This import is the
+// alarm that rings if either list is edited alone.
+import { DOLLAR_DENOMINATED_CURRENCIES } from "../wallet/pspClients.js";
 import {
   DEPOSIT_VALUE_STAGE,
   DEPOSIT_TYPE,
   DEPOSIT_STATUSES,
   DEPOSIT_LOOKUP_LIMIT,
   DEFAULT_MINOR_UNIT_DIGITS,
+  MINOR_UNIT_DIGITS,
+  REPORTABLE_CURRENCIES,
+  USD_PEGGED_CURRENCIES,
+  PEGGED_SETTLEMENT_CURRENCY,
   isDepositType,
   isoCurrency,
+  settlementCurrency,
   minorUnitDigits,
   toMinorUnits,
   pickFirstDeposit,
@@ -124,10 +139,29 @@ describe("minor units", () => {
     expect(toMinorUnits(12.345, "KWD")).toBe(12345);
   });
 
-  it("defaults to two digits for a code it has never heard of", () => {
+  it("defaults to two digits for a reportable currency not in the exceptions table", () => {
     expect(DEFAULT_MINOR_UNIT_DIGITS).toBe(2);
-    expect(minorUnitDigits("ZZZ")).toBe(2);
-    expect(minorUnitDigits("")).toBe(2);
+    expect(minorUnitDigits("AED")).toBe(2);
+    expect(minorUnitDigits("BRL")).toBe(2);
+  });
+
+  it("has no digits at all for a code that has not been settled", () => {
+    // The guard the whole ordering rests on. A raw ticker reaching the digit
+    // lookup means the mapping was skipped, and a DEFAULT of two would make
+    // that mistake produce a perfectly plausible number.
+    for (const unsettled of ["USDT", "USDCPOL", "BTC", "ZZZ", "BTC24", "", "  ", null, undefined, 840]) {
+      expect(minorUnitDigits(unsettled), String(unsettled)).toBeNull();
+    }
+  });
+
+  it("scales nothing by an unsettled code, so the wrong order cannot look right", () => {
+    // **USDT is 6-decimal on chain; its settled form, USD, is 2.** Scaling by
+    // the ticker's own precision turns a $100 deposit into 100000000 minor
+    // units -- a hundredfold overstatement, in the direction that tells Meta to
+    // bid harder. So an unsettled code yields nothing a scale can be built
+    // from, and the caller reports a deposit it could not price.
+    expect(toMinorUnits(100, "USDT")).toBe(0);
+    expect(toMinorUnits(100, settlementCurrency("USDT"))).toBe(10000);
   });
 
   it("takes the magnitude, because direction comes from the type", () => {
@@ -135,14 +169,202 @@ describe("minor units", () => {
   });
 });
 
+describe("USD-pegged stablecoins", () => {
+  it("settles every pegged ticker as USD", () => {
+    expect(PEGGED_SETTLEMENT_CURRENCY).toBe("USD");
+    for (const code of USD_PEGGED_CURRENCIES) {
+      expect(settlementCurrency(code), code).toBe("USD");
+      expect(settlementCurrency(code.toLowerCase()), code).toBe("USD");
+      expect(settlementCurrency(` ${code} `), code).toBe("USD");
+    }
+  });
+
+  it("maps at par, carrying the amount across untouched", () => {
+    // **There is no rate anywhere in this module, and that is the point.** A
+    // pegged token is issued against a dollar, so valuing it at par is a
+    // statement about its issuance rather than an exchange-rate lookup. These
+    // two rows must produce identical numbers, which no injected rate but 1.0
+    // can satisfy.
+    const pegged = depositValueFrom(deposit({ processedCurrency: "USDT" })).value;
+    const dollars = depositValueFrom(deposit({ processedCurrency: "USD" })).value;
+    expect(pegged).toEqual(dollars);
+    expect(pegged).toEqual({ currency: "USD", amountMinor: 12999, valueDecimal: 129.99 });
+  });
+
+  it("prices a pegged deposit by USD's two digits, not by the token's own precision", () => {
+    // The end-to-end form of the ordering test above: $100 of USDT is 10000
+    // minor units, never 100000000.
+    const { value } = depositValueFrom(
+      deposit({ processedAmount: 100, processedCurrency: "USDTTRC20", requestedAmount: 100 })
+    );
+    expect(value).toEqual({ currency: "USD", amountMinor: 10000, valueDecimal: 100 });
+  });
+
+  it("holds exactly the pegged tickers, so a coin is only ever added on purpose", () => {
+    expect([...USD_PEGGED_CURRENCIES].sort()).toEqual([
+      "PAX",
+      "TUSD",
+      "USDC",
+      "USDCAVAX",
+      "USDCBASE",
+      "USDCPOL",
+      "USDCSOL",
+      "USDT",
+      "USDTAVAX",
+      "USDTBEP20",
+      "USDTPOL",
+      "USDTSOL",
+      "USDTTRC20",
+    ]);
+  });
+
+  it("never maps non-pegged crypto, which needs a live rate this module does not have", () => {
+    // A wrong rate does not produce a slightly-off conversion -- it hands Meta
+    // a bid signal wrong by orders of magnitude, which is worse than the
+    // conversion lost by sending nothing. So these stay unreportable.
+    for (const code of ["BTC", "ETH", "XRP", "LTC", "ADA", "SOL", "TRX", "DOGE", "BNB"]) {
+      expect(settlementCurrency(code), code).toBe("");
+      expect(USD_PEGGED_CURRENCIES.has(code), code).toBe(false);
+    }
+  });
+
+  it("is enumerated, never pattern-matched on the letters USD", () => {
+    // The tempting shortcut, and it would value any future ticker containing
+    // those three letters at par, whatever it actually is.
+    for (const lookalike of ["USDX", "MYUSD", "USDTX", "WUSDC", "USD1"]) {
+      expect(settlementCurrency(lookalike), lookalike).toBe("");
+    }
+  });
+
+  // An env var that let someone add BTC to this list would report a 0.4 BTC
+  // deposit as $0.40 of revenue, and it would be one typo away at all times.
+  // Three tests, because a table built at IMPORT time escapes a test that only
+  // stubs the environment afterwards -- which is exactly how the first version
+  // of this case passed against a deliberately configurable table.
+  const PEG_ENV_NAMES = [
+    "USD_PEGGED_CURRENCIES",
+    "CRM_USD_PEGGED_CURRENCIES",
+    "PEGGED_CURRENCIES",
+    "STABLECOINS",
+    "CRM_STABLECOINS",
+    "DOLLAR_DENOMINATED_CURRENCIES",
+  ];
+
+  it("is not extended by the environment at call time", () => {
+    for (const name of PEG_ENV_NAMES) vi.stubEnv(name, "BTC,ETH");
+    try {
+      expect(settlementCurrency("BTC")).toBe("");
+      expect(settlementCurrency("ETH")).toBe("");
+      expect(USD_PEGGED_CURRENCIES.has("BTC")).toBe(false);
+      expect(USD_PEGGED_CURRENCIES.size).toBe(13);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("is not extended by the environment at import time either", async () => {
+    // The variable is set and the module registry cleared BEFORE the import, so
+    // a table assembled while the module is first evaluated is caught too. The
+    // call-time test above cannot see that: by the time it runs, the set it is
+    // asserting against was built long ago.
+    for (const name of PEG_ENV_NAMES) vi.stubEnv(name, "BTC,ETH");
+    vi.resetModules();
+    try {
+      const fresh = await import("./depositValue.js");
+      expect(fresh.USD_PEGGED_CURRENCIES.has("BTC")).toBe(false);
+      expect(fresh.USD_PEGGED_CURRENCIES.size).toBe(13);
+      expect(fresh.settlementCurrency("BTC")).toBe("");
+      expect(fresh.settlementCurrency("ETH")).toBe("");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it("reads no environment variable anywhere in the module", () => {
+    // The class-level guard rather than a list of names nobody can finish. The
+    // ONLY thing here an operator may tune is the shared send timeout, and that
+    // is read inside sendTimeout.js -- so this file has no business touching
+    // process.env at all, and a table, a status list or a currency allowlist
+    // that grew a variable would be caught whatever it was called.
+    // Comments are stripped first: the module says in prose that it reads
+    // nothing from the environment, and a test that counted that sentence as a
+    // violation would be unable to tell the promise from the breach.
+    const source = readFileSync(path.resolve("crmSignup/depositValue.js"), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    expect(code).not.toContain("process.env");
+    // Taken with the line above, this says the mention survives only in prose:
+    // the module still states the rule, and states it nowhere that executes.
+    expect(source).toContain("process.env");
+  });
+
+  it("does not drift from the treasury side's dollar-pegged list", () => {
+    // wallet/pspClients.js answers the neighbouring question about PSP wallet
+    // holdings and reached the same conclusion about the same tokens. This list
+    // is its dollar-pegged half: everything there except USD itself, which
+    // needs no mapping because it is already the ISO code we report.
+    for (const code of USD_PEGGED_CURRENCIES) {
+      expect(DOLLAR_DENOMINATED_CURRENCIES.has(code), code).toBe(true);
+    }
+    const theirsWithoutUsd = [...DOLLAR_DENOMINATED_CURRENCIES].filter((c) => c !== "USD");
+    expect([...USD_PEGGED_CURRENCIES].sort()).toEqual(theirsWithoutUsd.sort());
+  });
+});
+
 describe("isoCurrency", () => {
-  it("accepts three letters, uppercased, and nothing else", () => {
+  it("accepts a reportable currency, uppercased", () => {
     expect(isoCurrency("usd")).toBe("USD");
     expect(isoCurrency(" eur ")).toBe("EUR");
+    expect(isoCurrency("aed")).toBe("AED");
+  });
+
+  it("refuses anything that is not one, three letters or not", () => {
     // Meta silently ignores a currency it cannot read, which would put us back
     // where this change started: an accepted request and no conversion.
-    for (const bad of ["USDT", "US", "US1", "$", "", null, undefined, 840]) {
+    // `USDT` is among these ON PURPOSE: this function is the membership test
+    // alone, and the peg is settlementCurrency's job, one step earlier.
+    for (const bad of ["USDT", "US", "US1", "$", "ZZZ", "", null, undefined, 840]) {
       expect(isoCurrency(bad), String(bad)).toBe("");
+    }
+  });
+
+  it("is an allowlist, because a shape test cannot tell BRL from BTC", () => {
+    // **Every major non-pegged crypto ticker is exactly three letters.** A
+    // `/^[A-Z]{3}$/` test accepts a 0.4 BTC deposit, calls it
+    // `value: 0.4, currency: "BTC"`, and reports a five-figure deposit as forty
+    // cents of revenue -- with Meta silently ignoring the currency it cannot
+    // read. The real three-letter currencies next to them are the reason this
+    // cannot be a pattern.
+    for (const crypto of ["BTC", "ETH", "XRP", "LTC", "ADA", "SOL", "TRX", "BNB", "XBT"]) {
+      expect(isoCurrency(crypto), crypto).toBe("");
+      expect(REPORTABLE_CURRENCIES.has(crypto), crypto).toBe(false);
+    }
+    // And the currencies a denylist would have had to tell them apart from.
+    for (const real of ["BRL", "ETB", "XCD", "LSL", "AED", "SOS", "TRY", "BND"]) {
+      expect(isoCurrency(real), real).toBe(real);
+    }
+  });
+
+  it("holds no fund unit, metal or reserved code", () => {
+    // Nobody deposits in one, and every one of them would need a rate.
+    for (const code of ["BOV", "CHE", "CHW", "COU", "MXV", "USN", "UYI", "UYW", "CLF"]) {
+      expect(isoCurrency(code), code).toBe("");
+    }
+    for (const code of ["XAU", "XAG", "XPT", "XPD", "XDR", "XSU", "XUA", "XXX", "XTS"]) {
+      expect(isoCurrency(code), code).toBe("");
+    }
+    // The three X-codes that ARE circulating currencies stay in.
+    for (const code of ["XAF", "XOF", "XPF", "XCD"]) {
+      expect(isoCurrency(code), code).toBe(code);
+    }
+  });
+
+  it("gives every minor-unit exception a place on the allowlist", () => {
+    // A code with a digit count but no membership would be unreachable, and the
+    // two tables disagreeing is how a 0-decimal currency comes to be scaled by
+    // 100 somewhere else later.
+    for (const code of MINOR_UNIT_DIGITS.keys()) {
+      expect(REPORTABLE_CURRENCIES.has(code), code).toBe(true);
     }
   });
 });
@@ -224,11 +446,14 @@ describe("depositValueFrom", () => {
     expect(depositValueFrom(deposit({ processedAmount: -129.99 })).value.amountMinor).toBe(12999);
   });
 
-  it("refuses a currency Meta could not read, permanently and by name", () => {
-    const { value, failure } = depositValueFrom(deposit({ processedCurrency: "USDT" }));
+  it("refuses a currency it cannot report, permanently and by name", () => {
+    // Non-pegged crypto, where the code IS the reason: there is no rate here to
+    // convert it at, and inventing one would hand Meta a bid signal wrong by
+    // orders of magnitude.
+    const { value, failure } = depositValueFrom(deposit({ processedCurrency: "BTC" }));
     expect(value).toBeUndefined();
     expect(failure.detail).toContain("processedCurrency");
-    expect(failure.detail).toContain("USDT");
+    expect(failure.detail).toContain("BTC");
     // It will not be a different code in five minutes.
     expect(failure.retryable).toBe(false);
   });

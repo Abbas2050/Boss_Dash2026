@@ -1,7 +1,7 @@
 # CRM events webhook — Meta CAPI + WhatsApp welcome + Brevo contact
 
 **Date:** 2026-10-09, scope widened 2026-10-12, revised 2026-10-13,
-first-deposit value added 2026-10-19
+first-deposit value and the stablecoin peg added 2026-10-19
 **Status:** Approved design, pending implementation plan
 
 Receive FXBO Assistant Rule webhooks at five points in the client funnel, store
@@ -181,6 +181,72 @@ type and the CRM books some legs signed-negative (the same rule
 `reports/summaryCore.js` applies to these rows). **Nothing else is read off the
 transaction**: it also carries the client's comments, ticket and custom fields,
 and none of that is stored or logged.
+
+### Crypto deposits: the peg maps, the rate does not (2026-10-19, user's call)
+
+Skylinks takes crypto deposits, so this is a live path and not a hypothetical.
+The asymmetry is deliberate and the two halves of it are not comparable.
+
+**USD-pegged stablecoins settle as `USD` at par.** Thirteen codes, hard-coded in
+`USD_PEGGED_CURRENCIES`: `USDT` and `USDC` with the chain suffixes the PSPs
+actually settle them under (`USDTTRC20`, `USDTBEP20`, `USDTPOL`, `USDTSOL`,
+`USDTAVAX`, `USDCSOL`, `USDCPOL`, `USDCBASE`, `USDCAVAX`), plus `PAX` and
+`TUSD`. **There is no rate in the module at all** — the amount crosses
+unchanged and only the code is rewritten, because a pegged token is *issued*
+against a dollar. 1:1 is a claim about issuance, not an exchange-rate lookup,
+which is the only reason it can be made without a price feed.
+
+The peg is an **accepted assumption**, recorded rather than left implicit: a
+material depeg would quietly misreport deposit value and nothing in the code
+would notice, because there is no rate to disagree with. At ordinary drift
+(fractions of a cent) the error is far below anything an ad platform optimises
+on, and `wallet/cryptoRates.js` already accepts exactly this error for exactly
+this reason on the treasury side. A sustained depeg is an operational event, and
+the response is to delete the coin from the list — which turns its deposits into
+visible `failed` rows rather than silently mispriced conversions.
+
+**Non-pegged crypto is deliberately not converted.** `BTC`, `ETH`, `XRP`, `LTC`
+and the rest record a permanent `failed` naming the code. A live rate is not
+available here, and the failure modes are not symmetric: a wrong rate does not
+produce a slightly-off conversion, it hands Meta a bid signal wrong by orders of
+magnitude, and Meta optimises spend against it. Losing one conversion is
+cheaper, and it is visible on the destination card.
+
+**The list is hard-coded and reads nothing from the environment**, the same rule
+as `statuses: ["approved"]` and for a sharper reason: a variable that let someone
+add `BTC` at 1:1 would report a 0.4 BTC deposit as $0.40 of revenue, and it would
+be one typo away permanently.
+
+**Three implementation constraints that each hide a real defect:**
+
+1. **Which currencies are reportable is an allowlist
+   (`REPORTABLE_CURRENCIES`), not a `/^[A-Z]{3}$/` test.** This is a
+   **correction to what was first built**, not a refinement of it. Every major
+   non-pegged crypto ticker is exactly three letters, so the shape test accepted
+   `BTC`, sent `value: 0.4, currency: "BTC"`, and reported a five-figure deposit
+   as forty cents — with Meta silently ignoring the currency it could not read.
+   `BRL` sits beside `BTC` and `ETB` beside `ETH`; no pattern separates them.
+   `wallet/pspClients.js` had already written the lesson down for its own
+   dollar list.
+2. **The minor-unit digits are read from the SETTLED currency, never from the
+   source ticker.** USDT is 6-decimal on chain and USD is 2, so the wrong order
+   turns a $100 deposit into $1,000,000 of reported revenue. `minorUnitDigits`
+   returns `null` for an unsettled code precisely so that mistake produces a
+   visible "could not be priced" instead of a plausible number.
+3. **Enumerated, never pattern-matched.** `code.includes("USD")` would value any
+   future ticker containing those letters at par, whatever it is.
+
+The membership is the dollar-pegged half of `DOLLAR_DENOMINATED_CURRENCIES` in
+`wallet/pspClients.js` — everything there but `USD` itself, which needs no
+mapping. It is a second copy rather than an import, because that module pulls in
+`googleapis`, the Google Sheets reader and the live rate feed, and the webhook's
+send path must not depend on any of them; `depositValue.test.js` asserts the
+subset, so **the duplication is the alarm** rather than a drift waiting to
+happen. Where the risk sits is also deliberate: the long allowlist carries the
+length (a typo there refuses a deposit and names it) and the short
+`MINOR_UNIT_DIGITS` table carries the danger (a typo there misreports a real
+deposit by a factor of ten or a hundred), so the risky table is the one small
+enough to read at a glance.
 
 **`userFtd` is deliberately not used.** The request offers it, documented only
 as "Transaction list by first time deposit", and

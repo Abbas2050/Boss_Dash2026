@@ -80,9 +80,15 @@ export function isDepositType(type) {
  * 150000 minor units tells ChatGPT Ads the deposit was a hundred times its real
  * size, and nothing downstream would query it.
  *
- * Listed here are the currencies whose minor unit is not 1/100. Everything
- * absent uses two digits, which is the right default and the overwhelming
+ * Listed here are the currencies whose minor unit is not 1/100. A reportable
+ * currency absent from this table uses two digits, which is the overwhelming
  * majority -- including the USD almost every deposit here arrives in.
+ *
+ * **This table is kept short on purpose, and `REPORTABLE_CURRENCIES` carries
+ * the length instead.** A typo in the long allowlist costs a refused deposit,
+ * named in the row; a typo in THIS one silently misreports a real deposit by a
+ * factor of ten or a hundred. So the risky table is the one small enough to
+ * read in a glance.
  */
 export const MINOR_UNIT_DIGITS = new Map([
   ["BIF", 0], ["CLP", 0], ["DJF", 0], ["GNF", 0], ["ISK", 0], ["JPY", 0],
@@ -94,41 +100,225 @@ export const MINOR_UNIT_DIGITS = new Map([
 
 export const DEFAULT_MINOR_UNIT_DIGITS = 2;
 
+/**
+ * The minor-unit digits of a **settled** currency, or `null` for a code that
+ * has not been through `settlementCurrency`.
+ *
+ * **Null rather than the default, and that is the guard the whole ordering
+ * rests on.** The digits must be read from the currency the deposit is
+ * REPORTED in, never from the ticker it arrived as. USDT is 6-decimal on chain
+ * and its settled form, USD, is 2 -- so a $100 USDT deposit scaled by the raw
+ * ticker's precision is 100000000 minor units, a hundredfold overstatement, in
+ * the direction that tells Meta to bid harder. Returning
+ * `DEFAULT_MINOR_UNIT_DIGITS` for an unsettled code would make that mistake
+ * produce a perfectly plausible number today and a wrong one the day anybody
+ * writes a real precision down.
+ *
+ * So an unsettled code yields nothing a scale can be built from, and both
+ * callers below turn that into a deposit we could not price -- visible -- rather
+ * than a number nobody can check.
+ *
+ * A reportable currency this table has never seen is a different thing and
+ * still gets the two-digit default: that is the overwhelming majority,
+ * including the USD almost every deposit here arrives in.
+ */
 export function minorUnitDigits(currency) {
-  const code = text(currency).toUpperCase();
+  const code = isoCurrency(currency);
+  if (!code) return null;
   return MINOR_UNIT_DIGITS.has(code) ? MINOR_UNIT_DIGITS.get(code) : DEFAULT_MINOR_UNIT_DIGITS;
 }
 
 /**
- * An ISO 4217 alphabetic code, uppercased, or "".
+ * The USD-pegged stablecoins, and nothing else.
  *
- * Three ASCII letters and nothing else. Meta documents `currency` as an ISO
- * code and silently ignores a value it cannot read, which would put us back
- * where this change started -- an accepted request and no conversion. So a code
- * we cannot vouch for stops the send with a reason instead.
+ * **A hard-coded constant, deliberately not configurable.** The same reasoning
+ * as `DEPOSIT_STATUSES`, only sharper: an environment variable that let someone
+ * add `BTC` to this list would report a 0.4 BTC deposit as $0.40 of revenue,
+ * and it would be one typo away at all times. There is no variable, no merge
+ * with anything from `process.env`, and the test asserts the membership exactly
+ * so a coin added here has to be added on purpose.
  *
- * The consequence worth knowing: a deposit booked in something that is not an
- * ISO code -- a stablecoin ticker, say -- has no sendable value, and its row
- * settles `failed` naming the code rather than converting. That is the visible
- * failure, which is the point.
+ * **Every entry is 1:1 by construction, which is why there is no rate anywhere
+ * in this file.** The amount is carried across unchanged and only the code is
+ * rewritten. A pegged token is issued against a dollar; valuing it at par is a
+ * statement about its issuance, not an exchange-rate lookup.
+ *
+ * **The peg is an assumption, and it is accepted rather than implicit.** If any
+ * of these depegs materially, this quietly misreports deposit value -- there is
+ * nothing in the code that would notice, because there is no rate to disagree
+ * with. At a stablecoin's ordinary drift (fractions of a cent) that error is far
+ * below anything an ad platform optimises on, and `wallet/cryptoRates.js`
+ * already accepts exactly the same error for exactly the same reason on the
+ * treasury side. A sustained depeg is an operational event somebody would know
+ * about; the fix then is to remove the coin from this list, which makes its
+ * deposits `failed` and visible rather than silently mispriced.
+ *
+ * **Non-pegged crypto is deliberately absent and must stay absent.** BTC, ETH,
+ * XRP, LTC and the rest need a live rate we do not have here, and a wrong rate
+ * does not produce a slightly-off conversion -- it hands Meta a bid signal wrong
+ * by orders of magnitude, which is worse than the conversion we lose by sending
+ * nothing. Those codes keep the behaviour below: a permanent `failed` naming the
+ * code.
+ *
+ * **Enumerated, never pattern-matched.** `code.includes("USD")` is the tempting
+ * shortcut and is wrong -- it would value any future ticker containing those
+ * three letters at par, whatever it actually is. `wallet/pspClients.js` has that
+ * warning written on the same list for the same reason.
+ *
+ * The membership is the dollar-pegged half of `DOLLAR_DENOMINATED_CURRENCIES` in
+ * `wallet/pspClients.js`, which answers the neighbouring question "may this PSP
+ * holding be counted as dollars in the treasury total". The chain suffixes are
+ * not decoration: those are the codes Bitpace and LetKnow Pay actually settle
+ * Tether and USD Coin under. It is a second copy rather than an import, because
+ * that module pulls in `googleapis`, the Google Sheets reader and the live rate
+ * feed, and the CRM webhook's send path must not depend on any of them. **The
+ * duplication is the alarm:** `depositValue.test.js` asserts this set is a
+ * subset of that one, so the two cannot drift apart without a test saying so.
+ */
+export const USD_PEGGED_CURRENCIES = new Set([
+  // Tether, across every chain the providers settle it on.
+  "USDT",
+  "USDTTRC20",
+  "USDTBEP20",
+  "USDTPOL",
+  "USDTSOL",
+  "USDTAVAX",
+  // USD Coin, likewise.
+  "USDC",
+  "USDCSOL",
+  "USDCPOL",
+  "USDCBASE",
+  "USDCAVAX",
+  // Paxos Standard and TrueUSD, the two other dollar-pegged tokens these
+  // accounts have ever been able to hold.
+  "PAX",
+  "TUSD",
+]);
+
+/** What a USD-pegged code settles as. One constant, so the 1:1 claim and the
+ *  reported code cannot come apart. */
+export const PEGGED_SETTLEMENT_CURRENCY = "USD";
+
+/**
+ * The currency codes we are willing to report a deposit in.
+ *
+ * **An allowlist rather than a `/^[A-Z]{3}$/` shape test, and that is the whole
+ * point of it.** A three-letter shape test cannot tell `BRL` from `BTC`: every
+ * major non-pegged crypto ticker is exactly three letters -- BTC, ETH, XRP,
+ * LTC, ADA, SOL, TRX, BNB -- so a shape test accepts a 0.4 BTC deposit, calls
+ * it `value: 0.4, currency: "BTC"`, and reports a five-figure deposit as forty
+ * cents of revenue. `wallet/pspClients.js` has this same warning on its own
+ * dollar allowlist: a code the list has never seen is not a currency, it is
+ * something this module cannot value.
+ *
+ * ISO 4217 alphabetic codes for circulating currencies. Deliberately NOT
+ * included:
+ *
+ * - **Crypto of any kind.** Pegged stablecoins come in through
+ *   `USD_PEGGED_CURRENCIES` and settle as `USD`; everything else needs a live
+ *   rate this module does not have. `BTC` is not an ISO code in any case -- the
+ *   unofficial one is `XBT`, which is also absent.
+ * - **Fund and index units** (`BOV`, `CHE`, `CHW`, `COU`, `MXV`, `USN`, `UYI`,
+ *   `UYW`, `CLF`, `XDR`, `XSU`, `XUA`, `XBA`-`XBD`). Nobody deposits in one.
+ * - **Precious metals** (`XAU`, `XAG`, `XPT`, `XPD`) and the reserved codes
+ *   `XXX` and `XTS`, for the same reason plus the rate problem above.
+ *
+ * **An omission here costs a visible `failed` naming the code, and is a
+ * one-line fix.** That is the direction this is built to fail in: the other way
+ * round sends Meta a number nobody can check. A handful of recently retired
+ * codes (`HRK`, `SLL`, `ZWL`) are kept because a historical transaction row can
+ * still carry one.
+ */
+export const REPORTABLE_CURRENCIES = new Set([
+  "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
+  "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL",
+  "BSD", "BTN", "BWP", "BYN", "BZD",
+  "CAD", "CDF", "CHF", "CLP", "CNY", "COP", "CRC", "CUP", "CVE", "CZK",
+  "DJF", "DKK", "DOP", "DZD",
+  "EGP", "ERN", "ETB", "EUR",
+  "FJD", "FKP",
+  "GBP", "GEL", "GHS", "GIP", "GMD", "GNF", "GTQ", "GYD",
+  "HKD", "HNL", "HRK", "HTG", "HUF",
+  "IDR", "ILS", "INR", "IQD", "IRR", "ISK",
+  "JMD", "JOD", "JPY",
+  "KES", "KGS", "KHR", "KMF", "KPW", "KRW", "KWD", "KYD", "KZT",
+  "LAK", "LBP", "LKR", "LRD", "LSL", "LYD",
+  "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU", "MUR", "MVR",
+  "MWK", "MXN", "MYR", "MZN",
+  "NAD", "NGN", "NIO", "NOK", "NPR", "NZD",
+  "OMR",
+  "PAB", "PEN", "PGK", "PHP", "PKR", "PLN", "PYG",
+  "QAR",
+  "RON", "RSD", "RUB", "RWF",
+  "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SLL", "SOS",
+  "SRD", "SSP", "STN", "SVC", "SYP", "SZL",
+  "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS",
+  "UAH", "UGX", "USD", "UYU", "UZS",
+  "VES", "VND", "VUV",
+  "WST",
+  "XAF", "XCD", "XOF", "XPF",
+  "YER",
+  "ZAR", "ZMW", "ZWG", "ZWL",
+]);
+
+/**
+ * A reportable currency code, uppercased, or "".
+ *
+ * Meta documents `currency` as an ISO code and silently ignores a value it
+ * cannot read, which would put us back where this change started -- an accepted
+ * request and no conversion. So a code we cannot vouch for stops the send with
+ * a reason instead.
+ *
+ * This is the membership test alone. The stablecoin peg is
+ * `settlementCurrency`'s job, one step earlier, which is why `USDT` is "" here.
  */
 export function isoCurrency(value) {
   const code = text(value).toUpperCase();
-  return /^[A-Z]{3}$/.test(code) ? code : "";
+  return REPORTABLE_CURRENCIES.has(code) ? code : "";
 }
 
 /**
- * The amount as an integer in the currency's minor unit: $129.99 is 12999.
+ * The ISO code a deposit is REPORTED in, or "".
+ *
+ * **This is the only door into the rest of this module**, and everything
+ * downstream -- the minor-unit digits, the integer, the decimal, the code sent
+ * to both platforms -- is built from what it returns and never from the raw
+ * value again. That is what keeps the mapping and the scaling in the right
+ * order; `minorUnitDigits` refuses an unsettled code so that getting it wrong
+ * is loud rather than plausible.
+ *
+ * A USD-pegged stablecoin settles as USD at par. Anything else has to be a
+ * reportable currency already, or it is not one this can report.
+ *
+ * The consequence worth knowing: a deposit booked in non-pegged crypto -- BTC,
+ * ETH -- has no sendable value, and its row settles `failed` naming the code
+ * rather than converting at a rate we would have to invent. That is the visible
+ * failure, which is the point.
+ */
+export function settlementCurrency(value) {
+  const code = text(value).toUpperCase();
+  if (USD_PEGGED_CURRENCIES.has(code)) return PEGGED_SETTLEMENT_CURRENCY;
+  return isoCurrency(code);
+}
+
+/**
+ * The amount as an integer in the settled currency's minor unit: $129.99 is
+ * 12999.
  *
  * `Math.round`, never a truncation: 129.99 * 100 is 12998.999999999998 in
  * binary floating point, and cutting it would under-report every other deposit
- * by a cent. This is the ONE place a currency's minor-unit digits are applied,
- * so the decimal and the integer cannot be scaled by two different opinions.
+ * by a cent.
+ *
+ * `currency` must already be settled. An unsettled code has no digits (see
+ * `minorUnitDigits`) and yields 0 here, which the caller reports as a deposit it
+ * could not price -- never as a number scaled by the wrong precision.
  */
 export function toMinorUnits(amount, currency) {
+  const digits = minorUnitDigits(currency);
+  if (digits === null) return 0;
   const n = Number(amount);
   if (!Number.isFinite(n)) return 0;
-  return Math.round(Math.abs(n) * 10 ** minorUnitDigits(currency));
+  return Math.round(Math.abs(n) * 10 ** digits);
 }
 
 /** When a transaction happened, for ordering. A row whose date cannot be read
@@ -185,11 +375,18 @@ export function depositValueFrom(row) {
     const amount = Number.isFinite(raw) ? Math.abs(raw) : 0;
     if (!(amount > 0)) continue;
 
-    const currency = isoCurrency(row?.[currencyKey]);
+    // **Settled first, and the raw value is never read again below.** A pegged
+    // stablecoin becomes USD here, so the digits, the integer and the decimal
+    // are all built from USD's two places rather than from the ticker's own
+    // precision. Reversing those two steps is the hundredfold error
+    // minorUnitDigits exists to make loud.
+    const currency = settlementCurrency(row?.[currencyKey]);
     if (!currency) {
       return {
         failure: {
-          detail: `${currencyKey} ${JSON.stringify(text(row?.[currencyKey]))} is not a three-letter ISO currency code`,
+          // Names the code, because for non-pegged crypto the code IS the
+          // reason: there is no rate here to convert it at.
+          detail: `${currencyKey} ${JSON.stringify(text(row?.[currencyKey]))} is not a reportable currency`,
           // It will not be a different code in five minutes.
           retryable: false,
         },

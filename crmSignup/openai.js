@@ -347,6 +347,11 @@ const MONEY_FAMILY = "contents";
  * `currency` is required whenever `amount` is present, so the pair is attached
  * together or not at all -- the same rule Meta states outright, honoured here
  * before OpenAI has to.
+ *
+ * As in `metaValueFields`, the three-letter test here is the last-ditch half of
+ * that rule and **not the authority on which currencies exist**: that is
+ * `settlementCurrency` in `depositValue.js`, which holds an allowlist because a
+ * shape test cannot tell `BRL` from `BTC`.
  */
 export function openaiAmountFields(depositValue) {
   const currency = String(depositValue?.currency ?? "").trim().toUpperCase();
