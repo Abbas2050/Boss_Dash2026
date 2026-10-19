@@ -82,6 +82,30 @@ describe("rowToFields", () => {
 // three, so a case that needs every action to send runs once at each of these.
 const SENDING_STAGES = ["registered", "verified"];
 
+/**
+ * The one instant every fixture row was received at, and the one instant
+ * `deps().now` returns. Both read this constant so that **a row's age is a
+ * property of the test and never of the day the test runs.**
+ *
+ * What an unpinned clock cost, on 2026-10-19: this date was written out twice,
+ * here and in `deps()`, and the cases under "the production wiring" ran the
+ * real worker against the real machine clock instead of an injected one. Those
+ * rows therefore aged in real time, and at 12:00 UTC on 19 October they crossed
+ * `OPENAI_MAX_EVENT_AGE_MS` -- OpenAI's seven-day window, seven days after the
+ * date below. Ten cases that had passed an hour earlier began to fail, on a
+ * commit nobody had touched, and the suite had been declared green on the
+ * strength of a run made before noon. Every block that reads the machine's
+ * clock pins it now; if a new one is added, pin it from here too.
+ */
+const RECEIVED_AT = new Date("2026-10-12T12:00:00Z");
+
+/**
+ * Where the real worker's clock is pinned: a minute after the row arrived,
+ * which is where a sweep genuinely picks one up. One minute rather than zero so
+ * that a case cannot pass by treating "received" and "now" as the same reading.
+ */
+const SWEEP_AT = new Date(RECEIVED_AT.getTime() + 60_000);
+
 function row(overrides = {}) {
   return {
     id: 7,
@@ -109,7 +133,7 @@ function row(overrides = {}) {
     // signup, so this column is the only place the ad click still exists.
     oppref: "oppref-9f2b",
     whatsapp_request_id: "req-7",
-    received_at: new Date("2026-10-12T12:00:00Z"),
+    received_at: new Date(RECEIVED_AT),
     meta_status: "pending",
     meta_attempts: 0,
     whatsapp_status: "pending",
@@ -172,7 +196,7 @@ function deps(overrides = {}) {
     // row was NOT scrubbed can see the absence.
     scrub: vi.fn(async () => 1),
     newMessageId: () => "uuid-fixed",
-    now: () => new Date("2026-10-12T12:00:00Z"),
+    now: () => new Date(RECEIVED_AT),
     logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
     ...overrides,
   };
@@ -2138,6 +2162,15 @@ describe("the production wiring", () => {
   let spies;
 
   beforeEach(() => {
+    // Everything in this block runs the real worker, which reads the machine's
+    // clock and not an injected one, so the clock is pinned to the fixture's
+    // own timeline -- see RECEIVED_AT for the morning that proved it has to be.
+    // The date only, not the timers: two cases below wait on a real
+    // setImmediate, and the two blocks that do drive timers take the pin off
+    // first. It also holds the module's retention gate still, which is a clock
+    // reading that outlives a single case.
+    vi.setSystemTime(SWEEP_AT);
+
     savedEnv = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
     for (const k of ENV) delete process.env[k];
 
@@ -2755,6 +2788,12 @@ describe("the production wiring", () => {
   describe("the retention passes", () => {
     const DAY = 24 * 60 * 60 * 1000;
     const startAt = (iso) => {
+      // The block's pin is a mocked date, and vitest refuses to install fake
+      // timers over one, so it comes off here. These cases are the exception
+      // that drives the clock itself, and the dates below are the assertion:
+      // every one of them is after the pin, which is what leaves the gate open
+      // whatever day the suite runs.
+      vi.useRealTimers();
       vi.useFakeTimers();
       vi.setSystemTime(new Date(iso));
       return new Date(iso);
@@ -2940,6 +2979,12 @@ describe("the production wiring", () => {
   });
 
   describe("startCrmEventsWorker", () => {
+    // The other exception: every case here installs its own fake timers to
+    // drive the interval, and vitest refuses to install them over the block's
+    // mocked date. These cases assert call counts and never a date, so the
+    // clock they run on does not matter -- only that the timers are fake.
+    beforeEach(() => vi.useRealTimers());
+
     it("sweeps every 60 seconds by default and says so in the log", async () => {
       vi.useFakeTimers();
       const worker = startCrmEventsWorker();
