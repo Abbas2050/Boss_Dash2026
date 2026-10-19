@@ -19,6 +19,10 @@ import {
   sendOpenaiEvent,
   OPENAI_EVENTS_URL,
 } from "./openai.js";
+// The one inbound lookup in this module. Everything else here talks to a
+// destination; this asks FXBO what the deposit was worth, because Meta discards
+// a Purchase that does not say.
+import { DEPOSIT_VALUE_STAGE, fetchFirstDepositValue } from "./depositValue.js";
 // Two sets, two questions, and reading one for the other is silent in opposite
 // directions (settled.js spells both out). SETTLED is "do not attempt this
 // action again"; SCRUBBABLE is "this row is safe to forget".
@@ -164,7 +168,25 @@ export function rowToFields(row = {}) {
 
 const eventTimeSeconds = (row) => Math.floor(new Date(row.received_at).getTime() / 1000);
 
-async function runMetaStep(row, fields, deps, begin) {
+/**
+ * The one shape a step reads a failed deposit lookup through.
+ *
+ * Anything that is not a `value` is a send that did not happen, and it must not
+ * be able to read as one. So the default here is a failure rather than a pass:
+ * a lookup that answered in a shape nobody planned for stops the send instead
+ * of letting a valueless `Purchase` through, which is precisely the bug being
+ * fixed.
+ *
+ * Retryable unless the lookup said otherwise, for the same reason: FXBO lagging
+ * its own webhook by a few seconds is far commoner than a permanent refusal,
+ * and the attempt budget bounds the wait either way.
+ */
+function depositLookupFailure(looked) {
+  const detail = str(looked?.failure?.detail) || "the deposit amount could not be looked up";
+  return { detail: `deposit lookup: ${detail}`, retryable: looked?.failure?.retryable !== false };
+}
+
+async function runMetaStep(row, fields, deps, begin, depositValue) {
   const { config, sendMeta, now, logger } = deps;
 
   // One decision for both reasons a Meta send is not ours to make: no token, or
@@ -172,6 +194,41 @@ async function runMetaStep(row, fields, deps, begin) {
   const skip = decideMetaSkip({ stage: fields.stage, accessToken: config.metaAccessToken });
   if (skip) {
     return { status: "skipped", detail: skip.reason, attempts: Number(row.meta_attempts) || 0, nextAttemptAt: null };
+  }
+
+  // **Meta DISCARDS a Purchase that carries no value.** It answers 200 with
+  // `events_received: 1`, we record `sent`, and the conversion never exists --
+  // diagnostic s2s_invalid_purchase_event_actions, raised 2026-10-16, with
+  // three deposits sent and none in the dataset to prove it. So the amount is
+  // not an enrichment of this send, it is a precondition of it, and a lookup
+  // that found nothing has to stop the send rather than thin it out.
+  //
+  // Sent anyway, the row would read `sent` for an event Meta threw away, which
+  // is the exact failure this change exists to remove.
+  let deposit = null;
+  if (fields.stage === DEPOSIT_VALUE_STAGE) {
+    const looked = await depositValue();
+    if (!looked?.value) {
+      const failure = depositLookupFailure(looked);
+      // Before the claim and before any request, like decideBrevoListIdFailure:
+      // nothing is sent, so there is nothing for a second sweeper to collide
+      // with. Unlike that case it still spends an attempt and sets a clock when
+      // the cause may clear -- the deposit webhook can beat FXBO's own
+      // transaction record into existence, and three attempts five minutes
+      // apart is what bounds the waiting before the row settles `failed`.
+      const plan = planRetry({
+        attempts: Number(row.meta_attempts) || 0,
+        maxAttempts: META_MAX_ATTEMPTS,
+        retryable: failure.retryable,
+        finalStatus: "failed",
+        now: now(),
+      });
+      // The row id, not the client: a lookup failure is about the CRM or the
+      // configuration, and there is no client data in the detail either.
+      logger.warn?.(`[crm-events] meta ${plan.status} for row ${row.id}: ${failure.detail}`);
+      return { ...plan, detail: failure.detail };
+    }
+    deposit = looked.value;
   }
 
   const payload = buildMetaPayload({
@@ -186,6 +243,9 @@ async function runMetaStep(row, fields, deps, begin) {
     // what stops a lost response booking the conversion twice.
     eventId: `${fields.crmClientId}:${fields.stage}`,
     testEventCode: config.metaTestEventCode,
+    // Null at every stage but the first deposit, and buildMetaPayload then
+    // carries neither half of the pair.
+    depositValue: deposit,
   });
 
   await begin();
@@ -333,7 +393,7 @@ async function runBrevoStep(row, fields, deps, begin) {
   return { ...plan, detail: outcome.detail, contactId: outcome.contactId ?? null };
 }
 
-async function runOpenaiStep(row, fields, deps, begin) {
+async function runOpenaiStep(row, fields, deps, begin, depositValue) {
   const { config, sendOpenai, now, logger } = deps;
   const attempts = Number(row.openai_attempts) || 0;
 
@@ -357,6 +417,44 @@ async function runOpenaiStep(row, fields, deps, begin) {
     return { status: "skipped", detail: skip.reason, attempts, nextAttemptAt: null };
   }
 
+  // **The same gate as Meta's, for a different reason, and this one was a
+  // choice.** `amount` is optional to OpenAI: an `order_created` with no amount
+  // is received and counted, simply worth nothing. So sending it unpriced was
+  // available here and is not available on Meta.
+  //
+  // It is refused anyway. OpenAI deduplicates on the event `id`, which is
+  // `<client>:<stage>` and identical on every retry and every resend -- so an
+  // unpriced conversion sent now is the FINAL word on that deposit's value,
+  // and no later send can correct it. That buys a conversion whose revenue is
+  // permanently zero, on the one row where Meta's own conversion is being held
+  // back for the same missing number, and leaves the two platforms reporting
+  // the same deposit as different money with nothing saying why.
+  //
+  // `retrying` and then `failed` is the honest alternative: visible on the
+  // destination card, requeueable by an operator once FXBO answers, and bounded
+  // by the same attempt budget. The cost, recorded rather than hidden: an FXBO
+  // outage lasting longer than the budget now costs ChatGPT Ads the conversion
+  // outright where it used to cost only the amount -- and `failed` is resendable
+  // for as long as OpenAI's own 7-day window allows, which is what makes that
+  // the recoverable direction.
+  let deposit = null;
+  if (fields.stage === DEPOSIT_VALUE_STAGE) {
+    const looked = await depositValue();
+    if (!looked?.value) {
+      const failure = depositLookupFailure(looked);
+      const plan = planRetry({
+        attempts,
+        maxAttempts: config.openaiMaxAttempts,
+        retryable: failure.retryable,
+        finalStatus: "failed",
+        now: now(),
+      });
+      logger.warn?.(`[crm-events] openai ${plan.status} for row ${row.id}: ${failure.detail}`);
+      return { ...plan, detail: failure.detail };
+    }
+    deposit = looked.value;
+  }
+
   const payload = buildOpenaiPayload({
     stage: fields.stage,
     crmClientId: fields.crmClientId,
@@ -367,6 +465,10 @@ async function runOpenaiStep(row, fields, deps, begin) {
     oppref: str(row.oppref),
     receivedAt,
     validateOnly: config.openaiValidateOnly,
+    // The minor-unit integer half of the same lookup Meta's decimal came from.
+    // openaiAmountFields reads `amountMinor` and Meta's metaValueFields reads
+    // `valueDecimal`, so neither can pick up the other's number.
+    depositValue: deposit,
   });
 
   // **A null payload is not posted.** `JSON.stringify(null)` is the string
@@ -487,6 +589,34 @@ export async function processSignupEvent(row, deps) {
     return result;
   }
 
+  // **One lookup per row per pass, asked for only by a step that will use it.**
+  //
+  // Lazy: a step decides its skip first, so a row whose Meta and ChatGPT Ads
+  // steps are both skipped or already settled costs no CRM call at all, and no
+  // stage but the first deposit ever reaches this. Memoised: the two
+  // destinations that do send share one answer rather than asking FXBO the same
+  // question twice for one deposit. The promise is cached, not the result, so
+  // the second caller awaits the first call instead of starting a second.
+  //
+  // This is the only outbound call in the module that is not to a destination,
+  // which is why its cost is bounded here rather than left to the callers.
+  let depositLookup = null;
+  const depositValue = () => {
+    if (!depositLookup) {
+      depositLookup = Promise.resolve()
+        .then(() => deps.lookupDepositValue({ config: deps.config, crmClientId: fields.crmClientId }))
+        // fetchFirstDepositValue is documented as never throwing; this is the
+        // backstop for a dep that does. A lookup that threw must read as a
+        // lookup that failed, never as a step that found no value to send --
+        // and it must not take the worker or the other destinations down with
+        // it, which is what a rejected promise awaited in two steps would do.
+        .catch((error) => ({
+          failure: { detail: `threw: ${error?.message || String(error)}`, retryable: true },
+        }));
+    }
+    return depositLookup;
+  };
+
   const steps = [
     ["meta", "meta_status", "meta_attempts", "meta_next_attempt_at", runMetaStep, deps.saveMeta, META_MAX_ATTEMPTS],
     ["whatsapp", "whatsapp_status", "whatsapp_attempts", "whatsapp_next_attempt_at", runWhatsappStep, deps.saveWhatsapp, deps.config.waMaxAttempts],
@@ -535,7 +665,7 @@ export async function processSignupEvent(row, deps) {
     };
 
     try {
-      result[key] = await run(row, fields, deps, begin);
+      result[key] = await run(row, fields, deps, begin, depositValue);
     } catch (error) {
       // Another sweeper got there first. Nothing was sent and nothing may be
       // written: a status from here would overwrite the owner's, and this is not
@@ -665,6 +795,23 @@ function liveConfig() {
     openaiValidateOnly: String(process.env.OPENAI_VALIDATE_ONLY || "").toLowerCase() === "true",
     openaiMaxAttempts: Math.max(1, Number(process.env.OPENAI_MAX_ATTEMPTS || 3) || 3),
     skipSources: parseSkipSources(process.env.SKIP_SOURCES),
+    // FXBO, for the first-deposit amount. The same three variables and the same
+    // default origin that server.js's /rest proxy and reports/reportShared.js
+    // already read -- not a fourth opinion about where the CRM is.
+    //
+    // **Not api.skylinkscapital.com.** That is the trading backend, it takes a
+    // bearer exchanged from BACKEND_API_KEY, and sending this token there (or
+    // that one here) authenticates to neither.
+    //
+    // Trimmed, all three: a .env edited on Windows leaves a trailing CR on the
+    // value, and the CRM answers a token with one on it with a 403 that says
+    // nothing about whitespace. server.js carries the same note.
+    crmRestBase: String(process.env.REST_PROXY_TARGET || "https://portal.skylinkscapital.com").trim(),
+    crmApiVersion: String(process.env.API_VERSION || process.env.VITE_API_VERSION || "1.0.0").trim(),
+    // The VITE_ name is a legacy fallback only, exactly as server.js keeps it:
+    // Vite compiles anything VITE_-prefixed into the browser bundle, which is
+    // why the unprefixed name is the one to set.
+    crmApiToken: String(process.env.API_TOKEN || process.env.VITE_API_TOKEN || "").trim(),
   };
 }
 
@@ -676,6 +823,16 @@ function liveDeps() {
     upsertBrevo: ({ apiKey, contact }) => upsertBrevoContact({ apiKey, contact }),
     sendOpenai: ({ eventsUrl, pixelId, apiKey, payload }) =>
       sendOpenaiEvent({ eventsUrl, pixelId, apiKey, payload }),
+    // Injected like the senders so a test can answer it without a network, and
+    // so the one case that matters -- the lookup finding nothing -- can be
+    // exercised rather than argued about.
+    lookupDepositValue: ({ config, crmClientId }) =>
+      fetchFirstDepositValue({
+        baseUrl: config.crmRestBase,
+        apiVersion: config.crmApiVersion,
+        apiToken: config.crmApiToken,
+        crmClientId,
+      }),
     saveMeta: updateMetaStatus,
     saveWhatsapp: updateWhatsappStatus,
     saveBrevo: updateBrevoStatus,

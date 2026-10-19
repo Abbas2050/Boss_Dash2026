@@ -147,11 +147,22 @@ function deps(overrides = {}) {
       openaiValidateOnly: false,
       openaiMaxAttempts: 3,
       skipSources: new Set(),
+      // FXBO, for the first-deposit amount, and not the trading backend: a
+      // different host with a different credential.
+      crmRestBase: "https://portal.skylinkscapital.com",
+      crmApiVersion: "1.0.0",
+      crmApiToken: "crm-token",
     },
     sendMeta: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
     sendWhatsapp: vi.fn(async () => ({ status: "sent", retryable: false, detail: "SENT", messageId: "m-1" })),
     upsertBrevo: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 201" })),
     sendOpenai: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
+    // The deposit amount, from FXBO. $129.99 on purpose: Meta wants the decimal
+    // 129.99 and ChatGPT Ads wants the integer 12999, so a fixture with a round
+    // amount would pass with the two units crossed.
+    lookupDepositValue: vi.fn(async () => ({
+      value: { currency: "USD", valueDecimal: 129.99, amountMinor: 12999 },
+    })),
     saveMeta: vi.fn(async () => {}),
     saveWhatsapp: vi.fn(async () => {}),
     saveBrevo: vi.fn(async () => {}),
@@ -259,13 +270,227 @@ describe("processSignupEvent", () => {
     expect(payload.data[0].event_time).toBe(1791806400);
   });
 
-  it("sends a deposit with no value attached", async () => {
+  it("sends a deposit with the value and currency Meta refuses the event without", async () => {
+    // Superseding the 13 October decision to send neither (2026-10-19). Meta
+    // answers 200 with events_received: 1 and then DISCARDS a Purchase that
+    // carries no value, so the row said `sent` for a conversion that never
+    // existed -- three deposits sent on 16 October, none in the dataset.
     const d = deps();
     await processSignupEvent(row({ stage: "first_deposit" }), d);
     expect(d.sendMeta).toHaveBeenCalledTimes(1);
     const { payload } = d.sendMeta.mock.calls[0][0];
     expect(payload.data[0].event_name).toBe("Purchase");
-    expect("value" in payload.data[0].custom_data).toBe(false);
+    expect(payload.data[0].custom_data.value).toBe(129.99);
+    expect(payload.data[0].custom_data.currency).toBe("USD");
+  });
+
+  it("gives Meta the decimal and ChatGPT Ads the minor-unit integer, from one lookup", async () => {
+    // The same deposit in two units, a hundred apart, and both platforms would
+    // accept either number without a word. One lookup, two named fields.
+    const d = deps();
+    await processSignupEvent(row({ stage: "first_deposit" }), d);
+    const { custom_data } = d.sendMeta.mock.calls[0][0].payload.data[0];
+    const [event] = d.sendOpenai.mock.calls[0][0].payload.events;
+    expect(custom_data.value).toBe(129.99);
+    expect(event.data.amount).toBe(12999);
+    expect(custom_data.value).not.toBe(event.data.amount);
+    expect(custom_data.currency).toBe("USD");
+    expect(event.data.currency).toBe("USD");
+  });
+
+  it("asks FXBO once per row, although two destinations need the answer", async () => {
+    // The only outbound call here that is not to a destination. Two calls for
+    // one deposit would double a cost that only exists on this path.
+    const d = deps();
+    await processSignupEvent(row({ stage: "first_deposit" }), d);
+    expect(d.sendMeta).toHaveBeenCalledTimes(1);
+    expect(d.sendOpenai).toHaveBeenCalledTimes(1);
+    expect(d.lookupDepositValue).toHaveBeenCalledTimes(1);
+    expect(d.lookupDepositValue).toHaveBeenCalledWith({
+      config: d.config,
+      crmClientId: "88214",
+    });
+  });
+
+  it("never asks FXBO at any other stage", async () => {
+    // The whole of the cost control: a handful of first deposits a day, and no
+    // call at all on the stages that arrive in volume.
+    for (const stage of ["lead", "registered", "verified", "live_account"]) {
+      const d = deps();
+      await processSignupEvent(row({ stage }), d);
+      expect(d.lookupDepositValue, stage).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never asks FXBO when neither destination that needs the answer is sending", async () => {
+    // Lazy, not eager: the lookup is asked for after each step has decided its
+    // own skip, so an unconfigured pair costs nothing.
+    const d = deps({ config: { ...deps().config, metaAccessToken: "", openaiApiKey: "" } });
+    await processSignupEvent(row({ stage: "first_deposit" }), d);
+    expect(d.lookupDepositValue).not.toHaveBeenCalled();
+    expect(d.saveMeta).toHaveBeenCalledWith(7, expect.objectContaining({ status: "skipped" }));
+  });
+
+  it("never asks FXBO for a deposit whose destinations are already settled", async () => {
+    const d = deps();
+    await processSignupEvent(
+      row({ stage: "first_deposit", meta_status: "sent", openai_status: "sent" }),
+      d
+    );
+    expect(d.lookupDepositValue).not.toHaveBeenCalled();
+  });
+
+  // The reason this lookup exists is that Meta discards a Purchase with no
+  // value, so a lookup that found nothing must never leave a row reading `sent`.
+  describe("when the deposit amount cannot be looked up", () => {
+    const FIRST_DEPOSIT = { stage: "first_deposit" };
+
+    it("retries rather than sending a Purchase Meta would throw away", async () => {
+      // The timing case: FXBO's "First time deposit by client" rule can reach us
+      // before the transaction it describes is queryable.
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({
+          failure: { detail: "no approved deposit for this client yet", retryable: true },
+        })),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      expect(d.sendMeta).not.toHaveBeenCalled();
+      expect(d.sendOpenai).not.toHaveBeenCalled();
+      for (const save of [d.saveMeta, d.saveOpenai]) {
+        expect(save).toHaveBeenCalledWith(
+          7,
+          expect.objectContaining({
+            status: "retrying",
+            attempts: 1,
+            detail: "deposit lookup: no approved deposit for this client yet",
+            nextAttemptAt: new Date("2026-10-12T12:05:00Z"),
+          })
+        );
+      }
+    });
+
+    it("never records `sent` for a row whose lookup failed", async () => {
+      // The whole point. A row reading `sent` for an event Meta threw away is the
+      // defect, so no path out of a failed lookup may produce that word.
+      for (const retryable of [true, false]) {
+        const d = deps({
+          lookupDepositValue: vi.fn(async () => ({ failure: { detail: "nope", retryable } })),
+        });
+        await processSignupEvent(row(FIRST_DEPOSIT), d);
+        for (const save of [d.saveMeta, d.saveOpenai]) {
+          for (const [, outcome] of save.mock.calls) {
+            expect(outcome.status, `${retryable}: ${outcome.detail}`).not.toBe("sent");
+          }
+        }
+      }
+    });
+
+    it("fails at once, without spending the budget, when the cause will not clear", async () => {
+      // A missing API_TOKEN, a currency nobody can read: none of these is
+      // different in five minutes, so waiting only delays the `failed` an
+      // operator has to act on anyway.
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({
+          failure: { detail: "API_TOKEN is not set, so the CRM cannot be asked", retryable: false },
+        })),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      for (const save of [d.saveMeta, d.saveOpenai]) {
+        expect(save).toHaveBeenCalledWith(
+          7,
+          expect.objectContaining({
+            status: "failed",
+            detail: "deposit lookup: API_TOKEN is not set, so the CRM cannot be asked",
+            nextAttemptAt: null,
+          })
+        );
+      }
+    });
+
+    it("settles `failed` once the attempt budget is spent, which an operator can resend", async () => {
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({ failure: { detail: "http 503", retryable: true } })),
+      });
+      await processSignupEvent(row({ ...FIRST_DEPOSIT, meta_attempts: 2, openai_attempts: 2 }), d);
+      for (const save of [d.saveMeta, d.saveOpenai]) {
+        expect(save).toHaveBeenCalledWith(
+          7,
+          expect.objectContaining({ status: "failed", attempts: 3, nextAttemptAt: null })
+        );
+      }
+      // `failed` is not scrubbable, so the row keeps the client data a resend
+      // needs -- and the resend is the whole reason this is not a skip.
+      expect(d.scrub).not.toHaveBeenCalled();
+    });
+
+    it("reads a lookup that answered in no shape at all as a failure, not a pass", async () => {
+      for (const answer of [undefined, null, {}, { value: null }, "oops"]) {
+        const d = deps({ lookupDepositValue: vi.fn(async () => answer) });
+        await processSignupEvent(row(FIRST_DEPOSIT), d);
+        expect(d.sendMeta, JSON.stringify(answer)).not.toHaveBeenCalled();
+        expect(d.saveMeta, JSON.stringify(answer)).toHaveBeenCalledWith(
+          7,
+          expect.objectContaining({ status: "retrying", detail: expect.stringContaining("deposit lookup:") })
+        );
+      }
+    });
+
+    it("survives a lookup that throws, and still reaches the other destinations", async () => {
+      // The lookup is awaited by two steps, so a rejected promise left uncaught
+      // would take both of them and the row with it.
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => {
+          throw new Error("boom");
+        }),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      expect(d.saveMeta).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ status: "retrying", detail: "deposit lookup: threw: boom" })
+      );
+      expect(d.saveOpenai).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ status: "retrying", detail: "deposit lookup: threw: boom" })
+      );
+      // The two that do not need a deposit amount still settle.
+      for (const save of [d.saveWhatsapp, d.saveBrevo]) {
+        expect(save).toHaveBeenCalledWith(7, expect.objectContaining({ status: "skipped" }));
+      }
+    });
+
+    it("spends one lookup for the row even when it fails", async () => {
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({ failure: { detail: "http 503", retryable: true } })),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      expect(d.lookupDepositValue).toHaveBeenCalledTimes(1);
+    });
+
+    it("names the lookup in the detail, so the row does not read as a provider refusal", async () => {
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({ failure: { detail: "http 403", retryable: false } })),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      const [, outcome] = d.saveMeta.mock.calls.at(-1);
+      expect(outcome.detail).toBe("deposit lookup: http 403");
+      expect(d.logger.warn).toHaveBeenCalledWith(
+        "[crm-events] meta failed for row 7: deposit lookup: http 403"
+      );
+    });
+
+    it("holds the Purchase back without touching WhatsApp or Brevo", async () => {
+      // One destination's missing precondition must not move anyone else's clock.
+      const d = deps({
+        lookupDepositValue: vi.fn(async () => ({ failure: { detail: "http 503", retryable: true } })),
+      });
+      await processSignupEvent(row(FIRST_DEPOSIT), d);
+      for (const save of [d.saveWhatsapp, d.saveBrevo]) {
+        expect(save).toHaveBeenCalledWith(
+          7,
+          expect.objectContaining({ status: "skipped", detail: "stage not applicable", nextAttemptAt: null })
+        );
+      }
+    });
   });
 
   // This case used to pin the exact opposite -- WhatsApp skipped with "lead, not
@@ -1676,17 +1901,25 @@ describe("what each provider is handed", () => {
     expect(arg.payload.validate_only).toBeUndefined();
   });
 
-  it("asks OpenAI for the deposit as an order, with no amount and no currency", async () => {
+  it("asks OpenAI for the deposit as an order, priced in the currency's minor unit", async () => {
+    // 2026-10-19: both platforms now learn what the deposit was worth, from the
+    // one FXBO lookup. The amount is an INTEGER in the minor unit -- $129.99 is
+    // 12999 -- where Meta's `value` for the same deposit is the decimal 129.99.
     const d = deps();
     await processSignupEvent(row({ stage: "first_deposit" }), d);
     const [event] = d.sendOpenai.mock.calls[0][0].payload.events;
     expect(event.type).toBe("order_created");
-    expect(event.data).toEqual({ type: "contents" });
+    expect(event.data).toEqual({ type: "contents", amount: 12999, currency: "USD" });
     expect(event.custom_event_name).toBeUndefined();
-    // Mirrors the 13 October decision for Meta's Purchase: both platforms learn
-    // that a deposit happened, not what it was worth. Sending an amount needs an
-    // FXBO REST call that is its own piece of work.
-    expect(JSON.stringify(event)).not.toMatch(/amount|currency/i);
+  });
+
+  it("never prices a stage that has no deposit", async () => {
+    for (const stage of ["lead", "verified", "live_account"]) {
+      const d = deps();
+      await processSignupEvent(row({ stage }), d);
+      const [event] = d.sendOpenai.mock.calls[0][0].payload.events;
+      expect(JSON.stringify(event), stage).not.toMatch(/amount|currency/i);
+    }
   });
 });
 
@@ -1859,6 +2092,16 @@ describe("the production wiring", () => {
     "CRM_EVENTS_WORKER_ENABLED",
     "CRM_EVENTS_WORKER_INTERVAL_SECONDS",
     "CRM_SEND_TIMEOUT_MS",
+    // FXBO, for the first-deposit amount. Cleared here like every other
+    // credential: a developer running these tests almost certainly has
+    // API_TOKEN set, and a case that passed only because of their .env would
+    // prove nothing about the wiring. The VITE_ names are the legacy fallback
+    // server.js still accepts, so they have to go too or one of them answers.
+    "API_TOKEN",
+    "VITE_API_TOKEN",
+    "API_VERSION",
+    "VITE_API_VERSION",
+    "REST_PROXY_TARGET",
   ];
   const SECRETS = { META_CAPI_ACCESS_TOKEN: "meta-secret", WA_API_KEY: "wa-secret", BREVO_API_KEY: "brevo-secret" };
   // BREVO_LIST_ID is the fourth value with no working default. Since 2026-10-14 an
@@ -1866,6 +2109,21 @@ describe("the production wiring", () => {
   // a case that wants a real Brevo send has to set it; the case that proves the
   // failure is the one that leaves it out.
   const CONFIGURED = { ...SECRETS, BREVO_LIST_ID: "19" };
+  // The CRM credential the first-deposit lookup needs, and the default host it
+  // is spent against. Its own group rather than part of CONFIGURED: it is a
+  // fifth value with no working default, and only one stage needs it.
+  const FXBO = { API_TOKEN: "crm-secret" };
+  const CRM_TRANSACTIONS_URL = "https://portal.skylinkscapital.com/rest/transactions";
+  // $129.99 -- the decimal and the minor-unit integer differ, so a wiring that
+  // crossed the two units cannot pass.
+  const CRM_DEPOSIT = {
+    id: 5001,
+    type: "deposit",
+    createdAt: "2026-10-16 09:00:00",
+    processedAmount: 129.99,
+    processedCurrency: "USD",
+    status: "approved",
+  };
 
   let savedEnv;
   let fetchMock;
@@ -1899,6 +2157,9 @@ describe("the production wiring", () => {
       // OpenAI documents no response shape at all, so a 200 with an empty object
       // is the most honest fake there is.
       if (u.startsWith(OPENAI_EVENTS_URL)) return { status: 200, json: async () => ({}) };
+      // FXBO's transaction list, which the first-deposit stage reads the amount
+      // and currency from. A list, as the CRM returns.
+      if (u.startsWith(CRM_TRANSACTIONS_URL)) return { status: 200, json: async () => [CRM_DEPOSIT] };
       throw new Error(`unexpected fetch: ${u}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -2179,7 +2440,9 @@ describe("the production wiring", () => {
       // full_link is empty on this row, exactly as it is on a real one a minute
       // after signup, and on the first-deposit row weeks later it never carried
       // anything at all. The column is the only copy of the ad click.
-      setEnv(OPENAI);
+      // FXBO's credential too: the first-deposit row below cannot be sent at all
+      // without the deposit amount, so without it there would be one event here.
+      setEnv({ ...OPENAI, ...FXBO });
       store.claimDueEvents.mockResolvedValue([
         openaiRow({ full_link: "", oppref: "oppref-frozen" }),
         openaiRow({ id: 8, stage: "first_deposit", full_link: "", oppref: null }),
@@ -2739,6 +3002,120 @@ describe("the production wiring", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(store.claimDueEvents).toHaveBeenCalledTimes(2);
       worker.stop();
+    });
+  });
+
+  describe("the first-deposit amount, from FXBO", () => {
+    const depositRow = (overrides = {}) => liveRow({ stage: "first_deposit", ...overrides });
+    const crmCall = () => fetched(CRM_TRANSACTIONS_URL)[0];
+
+    it("asks FXBO once and prices both conversions from the one answer", async () => {
+      // The whole change, end to end: one CRM call, Meta's decimal and ChatGPT
+      // Ads' minor-unit integer, from the real senders and the real lookup.
+      setEnv({ ...CONFIGURED, ...FXBO, OPENAI_CONVERSIONS_API_KEY: "openai-secret", OPENAI_PIXEL_ID: "pixel-77" });
+      store.claimDueEvents.mockResolvedValue([depositRow()]);
+      await sweepOnce();
+
+      expect(fetched(CRM_TRANSACTIONS_URL)).toHaveLength(1);
+      const { custom_data } = bodyOf(fetched("https://graph.facebook.com/")[0]).data[0];
+      const [event] = bodyOf(fetched(OPENAI_EVENTS_URL)[0]).events;
+      expect(custom_data).toMatchObject({ value: 129.99, currency: "USD" });
+      expect(event.data).toEqual({ type: "contents", amount: 12999, currency: "USD" });
+    });
+
+    it("reads API_TOKEN and REST_PROXY_TARGET, the same two server.js's /rest proxy reads", async () => {
+      // Not api.skylinkscapital.com and not BACKEND_API_KEY: that is the trading
+      // backend, and either token sent to the other host authenticates to
+      // neither. The token travels in a header, never in the URL, because a URL
+      // is echoed in every proxy log in between.
+      setEnv({ ...SECRETS, ...FXBO, REST_PROXY_TARGET: "https://crm.example.test", API_VERSION: "2.1.0" });
+      store.claimDueEvents.mockResolvedValue([depositRow()]);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u.startsWith("https://crm.example.test/")) return { status: 200, json: async () => [CRM_DEPOSIT] };
+        return { status: 200, json: async () => ({ events_received: 1 }) };
+      });
+      await sweepOnce();
+
+      const [url, init] = fetchMock.mock.calls.find(([u]) => String(u).includes("/rest/transactions"));
+      expect(url).toBe("https://crm.example.test/rest/transactions?version=2.1.0");
+      expect(url).not.toContain("crm-secret");
+      expect(init.headers.Authorization).toBe("Bearer crm-secret");
+      expect(JSON.parse(init.body)).toMatchObject({ fromUserId: 88214, statuses: ["approved"] });
+    });
+
+    it("defaults to the CRM host and version the rest of the repository uses", async () => {
+      setEnv({ ...SECRETS, ...FXBO });
+      store.claimDueEvents.mockResolvedValue([depositRow()]);
+      await sweepOnce();
+      expect(String(crmCall()[0])).toBe("https://portal.skylinkscapital.com/rest/transactions?version=1.0.0");
+    });
+
+    it("holds the Purchase back, rather than sending one Meta would discard, when FXBO has no record yet", async () => {
+      setEnv({ ...SECRETS, ...FXBO });
+      fetchMock.mockImplementation(async (url) =>
+        String(url).includes("/rest/transactions")
+          ? { status: 200, json: async () => [] }
+          : { status: 200, json: async () => ({ events_received: 1 }) }
+      );
+      store.claimDueEvents.mockResolvedValue([depositRow()]);
+      await sweepOnce();
+
+      expect(fetched("https://graph.facebook.com/")).toHaveLength(0);
+      expect(store.updateMetaStatus.mock.calls.at(-1)[1]).toMatchObject({
+        status: "retrying",
+        detail: "deposit lookup: no approved deposit for this client yet",
+      });
+    });
+
+    it("fails the Purchase by name when API_TOKEN is unset, rather than skipping it", async () => {
+      // `failed` and not `skipped`: a skip is a deliberate decision not to send
+      // and nothing decided this, and a skipped row is final while a failed one
+      // keeps its client data and can be resent once the variable is right.
+      setEnv(SECRETS);
+      store.claimDueEvents.mockResolvedValue([depositRow()]);
+      await sweepOnce();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(store.updateMetaStatus.mock.calls.at(-1)[1]).toMatchObject({
+        status: "failed",
+        detail: "deposit lookup: API_TOKEN is not set, so the CRM cannot be asked",
+      });
+    });
+
+    it("asks FXBO nothing at the stages that arrive in volume", async () => {
+      // The cost control, proved against the real lookup: a handful of first
+      // deposits a day, and no CRM call on any other stage.
+      for (const stage of ["registered", "verified", "live_account"]) {
+        fetchMock.mockClear();
+        setEnv({ ...CONFIGURED, ...FXBO });
+        store.claimDueEvents.mockResolvedValue([liveRow({ stage })]);
+        await sweepOnce();
+        expect(fetched(CRM_TRANSACTIONS_URL), stage).toHaveLength(0);
+      }
+    });
+
+    it("never logs the CRM token or the client's address on a lookup failure", async () => {
+      setEnv({ ...SECRETS, ...FXBO });
+      fetchMock.mockImplementation(async (url) => {
+        if (String(url).includes("/rest/transactions")) {
+          // The shape that leaks: a transport error quoting the request's own
+          // header back at us, which is both logged and stored.
+          throw new Error("connect failed sending Authorization: Bearer crm-secret");
+        }
+        return { status: 200, json: async () => ({ events_received: 1 }) };
+      });
+      store.claimDueEvents.mockResolvedValue([depositRow({ email: "Ali@Example.com" })]);
+      await sweepOnce();
+
+      const logged = JSON.stringify(spies.warn.mock.calls) + JSON.stringify(spies.error.mock.calls);
+      expect(logged).not.toContain("Ali@Example.com");
+      const stored = JSON.stringify(store.updateMetaStatus.mock.calls);
+      expect(stored).not.toContain("Ali@Example.com");
+      // The token reaches the detail only because the fake put it in the error
+      // message; a real transport error cannot, because the lookup never puts
+      // the token in the URL. Pinned so the assertion is read as what it is.
+      expect(String(crmCall()[0])).not.toContain("crm-secret");
     });
   });
 });
