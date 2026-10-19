@@ -1,6 +1,6 @@
 # ChatGPT Ads (OpenAI) conversions — design
 
-**Status:** design agreed 2026-10-14, not yet built.
+**Status:** design agreed 2026-10-14; built, with §6 superseded 2026-10-19.
 **Extends:** `2026-10-09-crm-signup-webhook-design.md`. Everything there about
 stages, retries, retention, masking and the settings tab applies unchanged; this
 document covers only the fourth destination.
@@ -115,7 +115,7 @@ evidence that anything landed.
 | `registered` | **not sent** | — | The website pixel owns it. See §4. |
 | `verified` | `custom`, `custom_event_name: client_verified` | `custom` | |
 | `live_account` | `custom`, `custom_event_name: live_account_opened` | `custom` | |
-| `first_deposit` | `order_created` | `contents` | No `amount`, no `currency`. See §6. |
+| `first_deposit` | `order_created` | `contents` | `data.amount` in the minor unit, with `data.currency`, from FXBO (2026-10-19). See §6. |
 
 **`appointment_scheduled` is not implemented.** The brief's mapping table lists
 it for "appointment / demo booked", but there is no such CRM stage and no FXBO
@@ -165,23 +165,57 @@ timestamp, so nothing about it needs freezing beyond the value itself.
 If `oppref` is absent the event is still sent — it is optional — and is simply
 unattributed.
 
-## 6. No deposit amount (2026-10-14, user's call)
+## 6. ~~No deposit amount (2026-10-14, user's call)~~ — SUPERSEDED 2026-10-19
 
-`order_created` carries neither `amount` nor `currency`. Both are optional, and
-`currency` is required only when `amount` is present, so the event is valid
-without them.
+> **The deferral is over.** `order_created` now carries `amount` and `currency`,
+> from the FXBO REST call this section deferred. The reason is in
+> `2026-10-09-crm-signup-webhook-design.md` §4: **Meta refuses a `Purchase` with
+> no value outright** — diagnostic `s2s_invalid_purchase_event_actions`, 16
+> October — so the trade-off the 13 October decision rested on no longer exists,
+> and the call this section called "more feasible than it was" had to be made
+> anyway. This section was right that it "would fix revenue attribution for Meta
+> and ChatGPT Ads together", and it did: one lookup, both platforms.
 
-This mirrors the 13 October decision for Meta's `Purchase`. The amount would
-need an FXBO REST call that was cut from scope. It is now more feasible than it
-was, because the CRM's OpenAPI specification is available in the repository, and
-it would fix revenue attribution for Meta and ChatGPT Ads together — but it is
-deliberately deferred to its own piece of work rather than bundled here.
+The superseded reasoning, kept so the decision does not later look accidental:
+`order_created` carried neither `amount` nor `currency`; both are optional, and
+`currency` is required only when `amount` is present, so the event was valid
+without them. That mirrored the 13 October decision for Meta's `Purchase`, and
+the amount needed an FXBO REST call that was cut from scope.
 
-The consequence: both platforms learn that a deposit happened, not what it was
-worth, so there is no return-on-ad-spend measurement on either.
+### What is sent now
 
-Amounts, when they are eventually sent, are **integers in the currency's minor
-unit**: $129.99 is `12999`, not `129.99`.
+`data.amount` and `data.currency`, together or not at all.
+
+**`amount` is an integer in the currency's minor unit**: $129.99 is `12999`, not
+`129.99`. **Meta's `value` for the same deposit is the decimal `129.99`**, and
+both platforms would accept either number without a word — the only symptom of a
+swap is a deposit reported a hundredfold, or a hundredth, in somebody else's
+dashboard. So the lookup returns both under names that carry the unit
+(`amountMinor`, `valueDecimal`), `openaiAmountFields` refuses a non-integer, and
+the test fixture uses an amount where the two forms differ.
+
+ISO 4217 does not give every currency two decimal places. The minor-unit digits
+come from one table in `depositValue.js` — zero for JPY and fifteen others,
+three for KWD and six others, two for everything else — applied in one function,
+so the decimal and the integer cannot be scaled by two opinions.
+
+**Where the two fields sit is an inference, not a verified fact.** §2's
+event-level field table is quoted verbatim from the reference and names neither
+`amount` nor `currency`, so `data` — which carries the family and the family's
+own payload — is the only place left for them. They are attached only in the
+`contents` family, read from the one table that owns the name-to-family mapping.
+If OpenAI's reference later places them elsewhere, `openaiAmountFields` and its
+one call site are the whole of the change.
+
+**An unpriced `order_created` is not sent instead.** `amount` is optional here,
+so the event would be received and counted — but OpenAI deduplicates on the
+event `id`, which is `<crm_client_id>:<stage>` and identical on every retry and
+every resend, so an unpriced conversion is the **final** word on that deposit's
+value. A failed lookup therefore settles `retrying` and then `failed`, with a
+detail naming the lookup, and is resendable while the row is inside the 7-day
+window of §2. The cost, recorded rather than hidden: an FXBO outage longer than
+the attempt budget now costs the conversion outright where it used to cost only
+the amount.
 
 ## 7. Hashed identifiers (2026-10-14, user's call)
 

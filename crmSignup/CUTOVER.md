@@ -31,7 +31,16 @@ Generate the Meta token in Events Manager → the CRM implementation guide →
 **Generate Access Token**. Doing this also rotates the token currently sitting
 exposed inside FXBO.
 
-Four of these will cost you an afternoon if you get them wrong:
+Five of these will cost you an afternoon if you get them wrong:
+
+- **`API_TOKEN` is now a conversion dependency, not only a proxy setting
+  (2026-10-19).** The `first_deposit` stage fetches the deposit amount from
+  FXBO, because Meta **discards** a `Purchase` that carries no value. It is
+  almost certainly already set — the whole dashboard needs it, and `server.js`
+  logs at startup when it is not — but if it is unset or has a trailing CR on
+  it, that one stage's Meta and ChatGPT Ads sends record `failed` naming the
+  variable. `failed` keeps the client data, so the resend controls recover them
+  once it is right. Nothing else in this feature reads it.
 
 - **`BREVO_LIST_ID` has no default.** Unset, blank or not a positive number and
   Brevo is not called at all: the row records `failed` with a detail naming the

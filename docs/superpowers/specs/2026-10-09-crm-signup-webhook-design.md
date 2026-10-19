@@ -1,6 +1,7 @@
 # CRM events webhook — Meta CAPI + WhatsApp welcome + Brevo contact
 
-**Date:** 2026-10-09, scope widened 2026-10-12, revised 2026-10-13
+**Date:** 2026-10-09, scope widened 2026-10-12, revised 2026-10-13,
+first-deposit value added 2026-10-19
 **Status:** Approved design, pending implementation plan
 
 Receive FXBO Assistant Rule webhooks at five points in the client funnel, store
@@ -111,12 +112,85 @@ the CRM derives ClickID by extracting `fbclid` from `full_link`. The same
 ourselves and never need the REST API to learn it. That closes the plan's open
 questions about REST field names for ClickID and UTM source.
 
-### So: parameters, and no REST call at all
+### So: parameters, and one REST call
 
-The rules send the full parameter set. Since `Purchase` no longer carries a
-value (§4), there is nothing left that a placeholder cannot supply — so the
-service never calls the FXBO REST API, and an outage there cannot stop a
-conversion, a message or a contact.
+The rules send the full parameter set, so nothing a placeholder can supply is
+ever fetched.
+
+~~Since `Purchase` no longer carries a value (§4), there is nothing left that a
+placeholder cannot supply — so the service never calls the FXBO REST API, and an
+outage there cannot stop a conversion, a message or a contact.~~ **Superseded
+2026-10-19 (§4).** FXBO has no placeholder for the deposit amount, and Meta
+refuses a `Purchase` that does not carry one, so the first-deposit stage makes
+exactly one REST call: `POST /rest/transactions`. The consequence this paragraph
+used to promise is now bounded rather than absolute — an FXBO REST outage stops
+the **first-deposit** conversions on Meta and ChatGPT Ads, as `retrying` and
+then `failed` rows an operator can resend. The four other stages, the WhatsApp
+welcome and the Brevo contact are untouched by it.
+
+`crmSignup/depositValue.js` holds that call. It reads `REST_PROXY_TARGET`,
+`API_VERSION` and `API_TOKEN` — **the same three variables `server.js`'s `/rest`
+proxy and `reports/reportShared.js` read**, so there is no fourth opinion about
+where the CRM is or how to authenticate to it. The `/rest` base defaults to
+`https://portal.skylinkscapital.com`. It is **not** `api.skylinkscapital.com`,
+which is the trading backend, reached with a bearer exchanged from
+`BACKEND_API_KEY`; either credential sent to the other host authenticates to
+neither.
+
+The query, and why each part of it is there:
+
+```json
+{ "fromUserId": 88214,
+  "statuses": ["approved"],
+  "transactionTypes": ["deposit"],
+  "orders": [{ "field": "createdAt", "direction": "ASC" }],
+  "segment": { "limit": 50, "offset": 0 } }
+```
+
+- **`POST`, not `GET`.** The OpenAPI specification (`CRM api doc.txt`, line
+  3385) gives `/rest/transactions` a `post` operation taking a
+  `TransactionListRequest` body. There is no `GET` form of the list; the only
+  `GET` is `/rest/transactions/{id}`, which needs an id we do not have.
+- **`fromUserId`** is the CRM user, which is what `crm_client_id` holds. Not
+  `fromLoginSid`, a composite account id (`"2-154439"`) that one client owns
+  several of. `agent/clientProfilingService.js` already reads a client's
+  transactions this way.
+- **`statuses: ["approved"]`** because a pending or declined deposit is not a
+  conversion. Deliberately not configurable: a status list an environment
+  variable could widen could book a declined deposit as revenue.
+- **`transactionTypes: ["deposit"]`** is FXBO's own word for external client
+  money arriving. The live vocabulary — `credit`, `deposit`, `ib transfer to
+  account`, `ib transfer to account out`, `ib withdrawal`, `transfer in`,
+  `transfer out`, `withdrawal` — is the one `reports/summaryCore.js` recorded
+  from the first live weekly send. The returned rows are filtered on it again
+  locally, so a server that ignored the filter cannot hand us a withdrawal.
+- **`segment`** is the request's only required field.
+- **`orders`** asks for the earliest first, and the earliest is **also chosen
+  from the rows**. A server that quietly ignored the sort would hand us the
+  client's *latest* deposit for their *first*-deposit conversion, and nothing
+  about that answer would look wrong.
+
+The fields read from `TransactionDefinition`, confirmed from the specification
+rather than guessed: **`processedAmount`** with **`processedCurrency`**, falling
+back to **`requestedAmount`** with **`requestedCurrency`**, plus `type` and
+`createdAt` to choose the row. Each amount travels with **its own** currency and
+the two pairs are never crossed — a deposit requested in EUR and processed in
+USD would otherwise be reported as dollars labelled euros, a number Meta would
+accept and bid against. The magnitude is taken, because direction comes from the
+type and the CRM books some legs signed-negative (the same rule
+`reports/summaryCore.js` applies to these rows). **Nothing else is read off the
+transaction**: it also carries the client's comments, ticket and custom fields,
+and none of that is stored or logged.
+
+**`userFtd` is deliberately not used.** The request offers it, documented only
+as "Transaction list by first time deposit", and
+`reports/summaryCore.js` rejected it for reading two ways — it once put a
+long-standing client under a "first ever deposit" heading. The stage already
+tells us this is the first deposit; the query only has to find it.
+
+**No new column and no new environment variable.** The amount is fetched at send
+time and never stored: `signup_events` holds statistics, and a figure kept there
+would be a second copy of FXBO's own ledger that nothing reconciles.
 
 ### `record_type` is derived, and derived cautiously
 
@@ -300,11 +374,81 @@ event the moment it arrives. The consequence to know: custom events do not get
 standard-event optimisation automatically, so optimising a campaign toward this
 one means defining a **Custom Conversion** on it.
 
-**`Purchase` carries no value or currency (2026-10-13, user's call).** This
-removes the FXBO REST dependency entirely, along with the deposit columns and
-the financial-category risk. The trade-off, already stated in the user's own
-integration plan: Meta learns that a deposit happened but not what it was worth,
-so there is no return-on-ad-spend measurement.
+**~~`Purchase` carries no value or currency (2026-10-13, user's call).~~
+SUPERSEDED 2026-10-19 — see the next entry.** The reason given was that it
+removed the FXBO REST dependency entirely, along with the deposit columns and
+the financial-category risk, and the trade-off was stated as: Meta learns that a
+deposit happened but not what it was worth, so there is no return-on-ad-spend
+measurement.
+
+**`Purchase` carries `value` and `currency`, from FXBO (2026-10-19, user's
+call).** **The trade-off the 13 October decision rested on does not exist.** Meta
+does not merely fail to measure a valueless `Purchase` — it **refuses the event
+outright**. Events Manager raised diagnostic
+`s2s_invalid_purchase_event_actions`, detected 16 October, the day our first
+conversions went out: *"The purchase event sent from your server is missing a
+value parameter, so it can't be received or used for ads attribution or
+optimisation. All purchase events must contain a value parameter and a currency
+parameter."* **"Can't be received"** is literal. The Graph API answers `200` with
+`events_received: 1`, our row records `sent`, and the conversion never exists.
+Verified against the live dataset: three deposits sent, zero present.
+
+So there was never a choice between *a conversion without its value* and *a
+conversion with it*. There was a choice between *no conversion* and *the REST
+call*, and the amount is a precondition of the send rather than an enrichment of
+it.
+
+Meta requires **both or neither**: a `Purchase` with one of the pair is the same
+defect in a new shape. `metaValueFields` in `meta.js` is therefore one function
+that can only return both or neither.
+
+**ChatGPT Ads is done in the same change (2026-10-19),** reversing the deferral
+in `2026-10-14-chatgpt-ads-conversions-design.md` §6, which already observed
+that the call "would fix revenue attribution for Meta and ChatGPT Ads together".
+Its `order_created` takes `amount` as an **integer in the currency's minor
+unit** — $129.99 is `12999` — where Meta's `value` is the decimal `129.99` for
+the same deposit. One lookup produces both, under names that carry the unit, and
+the test fixture uses an amount where the two genuinely differ: a round number
+would pass with the units crossed, and both platforms accept either without
+complaint.
+
+**What a failed lookup does, and why it is not a send.** A lookup that found
+nothing settles the destination `retrying` and then `failed`, with a detail
+naming the lookup — **never `sent`**, because a row reading `sent` for an event
+Meta threw away is the whole of what is being fixed, and never `skipped`,
+because a skip is a deliberate decision not to send and nothing decided this.
+`failed` keeps the row's client data and is reachable by
+`POST /api/crm-events/requeue`.
+
+Two kinds of failure, bounded differently, for the reason
+`decideBrevoListIdFailure` already distinguishes:
+
+- **Retryable.** No deposit in FXBO yet, a 5xx, a timeout, an unreadable answer.
+  The deposit webhook can beat FXBO's own transaction record into existence, so
+  **retrying is right and skipping would be wrong**; three attempts five minutes
+  apart bounds the wait at ten minutes.
+- **Permanent.** A missing `API_TOKEN`, a client id that is not a number, a
+  4xx, an amount of zero, a currency that is not an ISO code. None is different
+  in five minutes, so the budget is not spent waiting for one.
+
+**ChatGPT Ads is held back by the same gate although its `amount` is optional,
+and that was a choice.** An unpriced `order_created` would be received and
+counted. But OpenAI deduplicates on the event `id`, which is
+`<crm_client_id>:<stage>` and identical on every retry and every resend — so an
+unpriced conversion sent now is the **final** word on that deposit's value, and
+no later send can correct it. That buys a conversion permanently worth zero, on
+the one row where Meta's is being held for the same missing number, and leaves
+the two platforms reporting one deposit as two different sums. The cost,
+recorded rather than hidden: an FXBO outage lasting longer than the attempt
+budget now costs ChatGPT Ads the conversion outright where it used to cost only
+the amount — recoverable, because `failed` is resendable while the row is inside
+OpenAI's own 7-day window.
+
+**The call is on the first-deposit path and nowhere else.** One lookup per row,
+asked for lazily after each step has decided its own skip and memoised so the
+two destinations share one answer. It reuses `sendTimeout.js`, reads nothing off
+the transaction but the amount and the currency, never throws, and never puts
+the token in a URL.
 
 **The table stores statistics, not client records, and scrubs the client data as
 soon as all three destinations settle (2026-10-14, user's call — narrowed to
@@ -667,9 +811,12 @@ and the `event_id` makes a retry free of double-counting. An explicit
 `events_received: 0` — Meta itself saying it took nothing — stays permanent,
 because retrying would change nothing. Everything else stays permanent.
 
-`custom_data` carries the two CRM constants and nothing else. `Purchase`
-reports that a deposit happened, not its amount (§4), so the dataset's
-financial-category restriction on custom parameters never comes into play.
+`custom_data` carries the two CRM constants, and on `first_deposit` the
+deposit's `value` and `currency` as well (2026-10-19, §4 — superseding "the two
+constants and nothing else", which rested on `Purchase` reporting that a deposit
+happened and not its amount). The pair is attached by one function that can only
+return both or neither, because Meta refuses an event carrying one of them
+exactly as it refuses one carrying neither.
 
 ### WhatsApp (DoubleTick)
 
