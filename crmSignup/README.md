@@ -225,6 +225,24 @@ learned it once — `wallet/pspClients.js` says *"this is an ALLOWLIST rather th
 a pattern, and that is the whole point of it"* — and the first version of this
 feature made the mistake anyway.
 
+**So there are three gates, not one, and they are the same list.**
+`settlementCurrency` is the door; `metaValueFields` and `openaiAmountFields`
+each check `REPORTABLE_CURRENCIES` again before attaching a pair. That is
+deliberate duplication of a *check*, not of a *list* — all three import the one
+Set from `depositValue.js`, which costs no dependency because that module
+imports only `sendTimeout.js` and `transientHttp.js`, both of which the two
+senders already had. "An unsettled code cannot reach the builders" is a fact
+about today's wiring, not about the builders, and the shape test was sitting one
+call site away from repeating the mistake above. The two builders read
+`isoCurrency` and **not** `settlementCurrency`: by the time a value reaches them
+its amount has already been scaled to some currency's minor unit, so mapping
+`USDT` to `USD` there would relabel a number without rescaling it. Settling
+happens once, at the door.
+
+`openai.test.js` asserts the two builders qualify every currency identically.
+One of them narrowing or widening alone is how the same deposit comes to be
+priced on one platform and dropped on the other.
+
 
 **Meta's `value` and ChatGPT Ads' `amount` are the same deposit in different
 units, and no test you would naturally write could tell.** Meta wants the

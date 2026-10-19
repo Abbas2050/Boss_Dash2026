@@ -1,6 +1,11 @@
 import { createHash } from "crypto";
 import { sendTimeoutSignal } from "./sendTimeout.js";
 import { isTransientHttpStatus } from "./transientHttp.js";
+// The same allowlist meta.js reads, from the same module: one authority in two
+// places. Costs no dependency -- depositValue.js imports only the two leaf
+// modules above. openai.test.js asserts the two destinations qualify a currency
+// identically, so neither can start accepting what the other refuses.
+import { isoCurrency } from "./depositValue.js";
 
 /** The pixel id goes on the query string as `pid`; the key goes in a header. */
 export const OPENAI_EVENTS_URL = "https://bzr.openai.com/v1/events";
@@ -348,15 +353,17 @@ const MONEY_FAMILY = "contents";
  * together or not at all -- the same rule Meta states outright, honoured here
  * before OpenAI has to.
  *
- * As in `metaValueFields`, the three-letter test here is the last-ditch half of
- * that rule and **not the authority on which currencies exist**: that is
- * `settlementCurrency` in `depositValue.js`, which holds an allowlist because a
- * shape test cannot tell `BRL` from `BTC`.
+ * As in `metaValueFields`, the currency is checked against the **allowlist**
+ * rather than a three-letter shape: `/^[A-Z]{3}$/` is the gate that already let
+ * `BTC` through once on this branch, and a shape test cannot tell `BRL` from
+ * `BTC`. `isoCurrency` and not `settlementCurrency`, for the reason given
+ * there: this refuses an unsettled code, it does not settle one, because the
+ * amount beside it has already been scaled.
  */
 export function openaiAmountFields(depositValue) {
-  const currency = String(depositValue?.currency ?? "").trim().toUpperCase();
+  const currency = isoCurrency(depositValue?.currency);
   const amount = Number(depositValue?.amountMinor);
-  if (!/^[A-Z]{3}$/.test(currency)) return {};
+  if (!currency) return {};
   if (!Number.isInteger(amount) || !(amount > 0)) return {};
   return { amount, currency };
 }

@@ -16,7 +16,14 @@ import { PHONE_RE } from "./normalise.js";
 // the same rule today and the phone rule is not, and both of those facts are
 // asserted below rather than assumed: this import is the alarm that rings if
 // either side's normalisation is ever changed on its own.
-import { hashEmail as metaHashEmail, hashPhone as metaHashPhone } from "./meta.js";
+// `metaValueFields` joins them for the same reason: both destinations now read
+// the ONE currency allowlist, and one of them narrowing on its own is how the
+// same deposit gets priced on one platform and dropped on the other.
+import {
+  hashEmail as metaHashEmail,
+  hashPhone as metaHashPhone,
+  metaValueFields,
+} from "./meta.js";
 import {
   OPENAI_EVENTS,
   OPENAI_EVENT_FAMILIES,
@@ -875,6 +882,50 @@ describe("buildOpenaiPayload", () => {
     expect(openaiAmountFields({ currency: " usd ", amountMinor: 12999 })).toEqual({ amount: 12999, currency: "USD" });
     expect(openaiAmountFields(null)).toEqual({});
     expect(openaiAmountFields()).toEqual({});
+  });
+
+  it("prices nothing in a currency the allowlist does not hold", () => {
+    // The same defence in depth as metaValueFields, and the same reason: the
+    // three-letter shape test this replaced is what let BTC through once.
+    for (const currency of ["BTC", "ETH", "XRP", "LTC", "ADA", "SOL", "TRX", "BNB", "XBT", "ZZZ"]) {
+      expect(openaiAmountFields({ currency, amountMinor: 40000000 }), currency).toEqual({});
+    }
+    // A pegged ticker reaching here has not been settled, so its amount was
+    // never rescaled; refusing it is right, settling it would relabel a number.
+    for (const currency of ["USDT", "USDC", "USDTTRC20", "PAX", "TUSD"]) {
+      expect(openaiAmountFields({ currency, amountMinor: 10000 }), currency).toEqual({});
+    }
+  });
+
+  it("keeps both-or-neither when the currency is the half that is refused", () => {
+    const { data } = buildOpenaiPayload({
+      ...base,
+      stage: "first_deposit",
+      depositValue: { currency: "BTC", amountMinor: 40000000 },
+    }).events[0];
+    expect(Object.keys(data).sort()).toEqual(["type"]);
+  });
+
+  it("qualifies a currency identically to Meta, so neither takes what the other refuses", () => {
+    // **The two destinations read the same allowlist from the same module.**
+    // One of them narrowing or widening on its own is how the same deposit
+    // comes to be priced on one platform and dropped on the other -- or worse,
+    // priced in BTC on one of them. This is the alarm for that, in the same
+    // spirit as the hash comparisons at the top of this file.
+    const codes = [
+      "USD", "EUR", "GBP", "AED", "JPY", "KWD", "BRL", "ETB", "XCD", "LSL",
+      "BTC", "ETH", "XRP", "LTC", "ADA", "SOL", "TRX", "BNB", "XBT",
+      "USDT", "USDC", "USDTTRC20", "PAX", "TUSD",
+      "ZZZ", "XAU", "XXX", "US", "USDX", "", "  ",
+    ];
+    for (const currency of codes) {
+      const meta = metaValueFields({ currency, valueDecimal: 129.99 });
+      const openai = openaiAmountFields({ currency, amountMinor: 12999 });
+      // Either both priced the deposit or neither did, and when they did they
+      // agree about what the currency is called.
+      expect(Object.keys(openai).length > 0, currency).toBe(Object.keys(meta).length > 0);
+      expect(openai.currency, currency).toBe(meta.currency);
+    }
   });
 
   it("builds nothing for a stage the taxonomy has no event for", () => {

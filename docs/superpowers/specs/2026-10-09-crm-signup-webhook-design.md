@@ -228,6 +228,25 @@ be one typo away permanently.
    `BRL` sits beside `BTC` and `ETB` beside `ETH`; no pattern separates them.
    `wallet/pspClients.js` had already written the lesson down for its own
    dollar list.
+
+   **Checked in three places, from one list (2026-10-19, user's call).**
+   `settlementCurrency` is the door, and `metaValueFields` and
+   `openaiAmountFields` each test `REPORTABLE_CURRENCIES` again before
+   attaching a pair. The objection considered and overruled was that this
+   creates a second authority on which currencies exist; it does not — the same
+   Set imported twice is one authority used twice, and a second authority would
+   be a second list. What decided it: "an unsettled code cannot reach the
+   builders" is a property of the current wiring rather than of the builders,
+   and the shape test that had already failed once was sitting one call site
+   away from failing the same way again. It costs no dependency, because
+   `depositValue.js` imports only `sendTimeout.js` and `transientHttp.js`, which
+   both senders already had — nothing from the treasury side's `googleapis` or
+   rate feed reaches the send path. The builders read `isoCurrency` and **not**
+   `settlementCurrency`: a value arriving there has already had its amount
+   scaled to some currency's minor unit, so mapping a pegged ticker at that
+   point would relabel a number without rescaling it. `openai.test.js` asserts
+   the two builders qualify every currency identically, so neither can start
+   taking what the other refuses.
 2. **The minor-unit digits are read from the SETTLED currency, never from the
    source ticker.** USDT is 6-decimal on chain and USD is 2, so the wrong order
    turns a $100 deposit into $1,000,000 of reported revenue. `minorUnitDigits`

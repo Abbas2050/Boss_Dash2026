@@ -1,6 +1,12 @@
 import { createHash } from "crypto";
 import { sendTimeoutSignal } from "./sendTimeout.js";
 import { isTransientHttpStatus } from "./transientHttp.js";
+// The one allowlist of currencies this service will report, imported rather
+// than re-tested here: one authority used in two places, not a second opinion.
+// It costs no dependency -- depositValue.js imports only the two leaf modules
+// above, so nothing new reaches the send path (and nothing from the treasury
+// side's googleapis or rate feed, which live in wallet/pspClients.js).
+import { isoCurrency } from "./depositValue.js";
 
 export const GRAPH_HOST = "https://graph.facebook.com";
 
@@ -107,17 +113,25 @@ export function hashPhone(phone) {
  * which, because the two are a hundred apart and either would be accepted here
  * without comment.
  *
- * The three-letter test is the last-ditch half of "both or neither", **not the
- * authority on which currencies exist**. That is `settlementCurrency` in
- * `depositValue.js`, which holds an allowlist, because a shape test cannot tell
- * `BRL` from `BTC` and every major crypto ticker is three letters. Nothing but
- * a settled code should reach here; this only makes sure a blank one takes the
- * value with it.
+ * **The currency is checked against the allowlist, not against a three-letter
+ * shape.** `/^[A-Z]{3}$/` is the gate that already let `BTC` through once on
+ * this branch: every major crypto ticker is exactly three letters, `BRL` sits
+ * beside `BTC` and `ETB` beside `ETH`, and Meta then silently ignores a
+ * currency it cannot read -- the same discard this whole change exists to
+ * remove. Nothing but a settled code should reach here today, but that is a
+ * property of today's wiring rather than of this function, and the shape test
+ * sat one call site away from making the same mistake again.
+ *
+ * **`isoCurrency`, never `settlementCurrency`.** This refuses an unsettled code
+ * rather than settling one: by the time a value arrives here its amount has
+ * already been scaled to some currency's minor unit, so mapping `USDT` to `USD`
+ * at this point would relabel a number without rescaling it. Settlement happens
+ * once, at the one door in `depositValue.js`.
  */
 export function metaValueFields(depositValue) {
-  const currency = String(depositValue?.currency ?? "").trim().toUpperCase();
+  const currency = isoCurrency(depositValue?.currency);
   const value = Number(depositValue?.valueDecimal);
-  if (!/^[A-Z]{3}$/.test(currency)) return {};
+  if (!currency) return {};
   if (!Number.isFinite(value) || !(value > 0)) return {};
   return { value, currency };
 }

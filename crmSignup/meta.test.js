@@ -243,6 +243,52 @@ describe("buildMetaPayload", () => {
     expect(metaValueFields()).toEqual({});
   });
 
+  it("prices nothing in a currency the allowlist does not hold, crypto above all", () => {
+    // **Defence in depth against the hole that was already found once.**
+    // `/^[A-Z]{3}$/` let BTC through on this branch, and Meta then silently
+    // ignores a currency it cannot read -- so a 0.4 BTC deposit was reported as
+    // 0.40 of something. Nothing but a settled code should reach this function
+    // today, but that is a fact about today's wiring, not about the function: a
+    // new stage or a future caller would walk straight back into it.
+    for (const currency of ["BTC", "ETH", "XRP", "LTC", "ADA", "SOL", "TRX", "BNB", "XBT", "ZZZ"]) {
+      expect(
+        metaValueFields({ currency, valueDecimal: 129.99, amountMinor: 12999 }),
+        currency
+      ).toEqual({});
+    }
+  });
+
+  it("prices nothing in a stablecoin ticker, because settling is not its job", () => {
+    // A pegged code arriving HERE has not been through settlementCurrency, so
+    // its amount was never rescaled to USD's two places. Mapping it at this
+    // point would relabel a number rather than convert it, which is why this
+    // refuses rather than settles.
+    for (const currency of ["USDT", "USDC", "USDTTRC20", "PAX", "TUSD"]) {
+      expect(metaValueFields({ currency, valueDecimal: 100 }), currency).toEqual({});
+    }
+  });
+
+  it("still prices an ordinary currency, so the allowlist is a gate and not a wall", () => {
+    for (const currency of ["USD", "EUR", "GBP", "AED", "JPY", "KWD", "BRL", "ETB"]) {
+      expect(metaValueFields({ currency, valueDecimal: 129.99 }), currency).toEqual({
+        value: 129.99,
+        currency,
+      });
+    }
+    // Still normalised on the way through.
+    expect(metaValueFields({ currency: " aed ", valueDecimal: 1 })).toEqual({ value: 1, currency: "AED" });
+  });
+
+  it("keeps both-or-neither when the currency is the half that is refused", () => {
+    // The narrowing must not have turned into "send the value alone".
+    const { custom_data } = buildMetaPayload({
+      ...base,
+      stage: "first_deposit",
+      depositValue: { currency: "BTC", valueDecimal: 0.4 },
+    }).data[0];
+    expect(Object.keys(custom_data).sort()).toEqual(["event_source", "lead_event_source"]);
+  });
+
   it("includes a test event code only when one is configured", () => {
     expect(buildMetaPayload({ ...base, testEventCode: "TEST1234" }).test_event_code).toBe("TEST1234");
     expect("test_event_code" in buildMetaPayload(base)).toBe(false);
