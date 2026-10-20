@@ -284,10 +284,11 @@ export function buildMetaPayload({
   // an Azure server, not the client's browser. We would be sending FXBO's
   // server IP and FXBO's user agent as the customer's own, identically for
   // every client and every event -- one uniform fake identity, which degrades
-  // matching while the panel's coverage figure reports an improvement. Every
-  // stage this service sends (`verified`, `live_account`, `first_deposit`) is a
-  // back-office state change with no browser involved at all, so there is no
-  // real value to reach for.
+  // matching while the panel's coverage figure reports an improvement. And
+  // there is no real value to reach for: every stage this service sends is a
+  // back-office state change with no browser involved at all -- `verified`,
+  // `live_account` and `first_deposit` today, and `lead` as well once FXBO has
+  // a trigger for it, since a lead is created by an agent or an import.
   //
   // `fbp` is out for a different reason: it is a browser cookie our server
   // never sees, so it would have to be invented, and sending it needs a website
