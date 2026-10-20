@@ -235,6 +235,19 @@ async function runMetaStep(row, fields, deps, begin, depositValue) {
     stage: fields.stage,
     email: fields.email,
     phone: fields.phone,
+    // The three Event Match Quality parameters added 2026-10-20. The names are
+    // scrubbed about a minute after signup, which is safe here and only here:
+    // the scrub runs after every destination has settled, and a row that is
+    // somehow claimed once scrubbed is refused at the top of this function
+    // before any payload is built. Were it not, the columns are NULL rather
+    // than a placeholder, so buildMetaPayload would omit the keys rather than
+    // hash something uniform.
+    firstName: fields.firstName,
+    lastName: fields.lastName,
+    // The same id event_id is built from below, which is what makes our
+    // external_id consistent across everything we send for this client --
+    // Meta's one stated rule for the parameter.
+    crmClientId: fields.crmClientId,
     // Verbatim from the row: frozen at this client's first event.
     fbc: str(row.fbc),
     eventTimeSeconds: eventTimeSeconds(row),

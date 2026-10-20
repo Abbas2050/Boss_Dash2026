@@ -54,6 +54,70 @@ purpose.** OpenAI keeps `client_verified` and `live_account_opened`: nothing on
 that platform restricts an event name, and renaming there would break the
 continuity of their reporting for no gain.
 
+### What Meta's `user_data` carries — and the four parameters deliberately left out
+
+Every stage this service sends carries the same six matchers, each omitted
+entirely when the value behind it is empty:
+
+| Key | From | Normalisation | Shape |
+|---|---|---|---|
+| `em` | `email` | trim, lowercase | `[sha256]` |
+| `ph` | `phone` | digits only | `[sha256]` |
+| `external_id` | `crm_client_id` | trim, **nothing else** | `[sha256]` |
+| `fn` | `first_name` | lowercase, punctuation removed, spaces collapsed | `[sha256]` |
+| `ln` | `last_name` | same as `fn` | `[sha256]` |
+| `fbc` | `fbc` | none, verbatim | bare string |
+
+`external_id`, `fn` and `ln` were added 2026-10-20, from Meta's Event Match
+Quality panel for this dataset: it reported `user_data` carrying only `em`, `ph`
+and `fbc`, and named these three as the gains available — `external_id` at a
+claimed ~28% uplift and each name at ~15%.
+
+**A name is not normalised like an email.** Meta's rule for `fn`/`ln` is
+"lowercase only with no punctuation", so `O'Brien` and `Jean-Luc` hash as
+`obrien` and `jeanluc`. A copied `hashEmail` would lowercase and trim and stop,
+and every apostrophe and hyphen in the CRM would then hash to a digest Meta
+cannot match, with no error on either side. Accents are **lowercased, not
+folded**: Meta's own worked example is `Valéry` → `valéry`, and
+`crmSignup/meta.test.js` pins all three of Meta's published example digests
+rather than only agreeing with itself.
+
+**`external_id` is an identifier, not a name,** and Meta specifies no
+normalisation for it at all. Its one rule is consistency — the same id, in the
+same format, everywhere we send it — because it is matched against our own other
+sends rather than against Meta's profile data. So it is hashed as the CRM holds
+it. It is built from the same `crm_client_id` that `event_id` is built from, and
+lowercasing it or running it through the name rule would produce a digest no
+other channel sending that id could reproduce.
+
+**IP address and User agent are absent on purpose, and Meta's own panel will
+keep recommending them.** This is the part to read before "fixing" it. Meta's
+server-side parameter-builder library fills `client_ip_address` and
+`user_agent` by reconstructing them from the incoming HTTP request — and that is
+exactly why they cannot be filled here. **Our incoming request is FXBO's webhook
+from an Azure server, not the client's browser.** We would be sending FXBO's
+server IP and FXBO's user agent as the customer's own, *identically for every
+client and every event*: a single uniform fake identity, which degrades matching
+while the panel's coverage figure reports an improvement. `referrer_url` and
+`event_source_url` are out for the same reason. Every stage here (`verified`,
+`live_account`, `first_deposit`) is a back-office state change with no browser
+involved at all, so there is no real value to reach for. `meta.test.js` forbids
+all four by name over the serialised payload.
+
+`fbp` is out for a different reason — it is a browser cookie our server never
+sees, so sending it needs a website change first — and date of birth, city,
+region, postcode and country are out because FXBO does not send them and we do
+not store them.
+
+**The names survive long enough, and only just.** `first_name` and `last_name`
+are in `SCRUB_COLUMNS`, but the scrub runs only once every destination has
+settled, which is after this send; and `processSignupEvent` refuses a row
+carrying a `scrubbed_at` before any payload is built. The fallback behind that
+guard is that the scrub writes `NULL` rather than a placeholder, so
+`buildMetaPayload` omits the keys instead of hashing `""` — which would be one
+shared fake surname across every client. `crm_client_id` survives the scrub
+anyway, so `external_id` would be the one matcher left.
+
 ### The 19 October event-name experiment
 
 **`verified` and `live_account` were renamed on 2026-10-19, superseding the 13
@@ -391,7 +455,11 @@ person at each step, with no error anywhere.
 
 **Meta's `em` and `ph` are SHA-256 of the *normalised* value** — email
 lowercased and trimmed, phone digits only. Hashing raw input produces a hash
-Meta cannot match, and reports no problem.
+Meta cannot match, and reports no problem. The same trap, with a *different*
+rule, applies to `fn`/`ln` (punctuation removed, accents kept) and to
+`external_id` (normalised not at all); see "What Meta's `user_data` carries"
+above, which is also where the four recommended parameters we refuse to send
+are explained.
 
 **OpenAI's phone rule is not Meta's, and no test you would naturally write
 could tell.** OpenAI strips a leading `+` **and leading zeroes**; Meta's

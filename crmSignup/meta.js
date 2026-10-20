@@ -134,6 +134,63 @@ export function hashPhone(phone) {
 }
 
 /**
+ * `fn` and `ln`, which share one rule: Meta documents last name as "the same
+ * requirements as First Name", so this is one helper rather than two copies of
+ * it that could drift apart.
+ *
+ * **Not email's lowercase-and-trim.** Meta's rule for a name is "Lowercase only
+ * with no punctuation" (Customer information parameters), and the punctuation
+ * half is the part a copied email helper would quietly miss: `o'brien` and
+ * `obrien` are two unrelated digests, so every hyphenated or apostrophied name
+ * would simply never match, with nothing to see on either side.
+ *
+ * **Accents are lowercased, never folded.** Meta's own worked example is
+ * `Valéry` -> `valéry`, hashed with the accent. Stripping it to `valery` is the
+ * same mismatch in the other direction, which is why this removes punctuation
+ * and nothing else and leaves every letter, Roman or not, alone.
+ *
+ * Internal spaces survive, collapsed to one. A space is not punctuation and
+ * Meta's rule does not mention it, so "Mary Ann" stays two words; collapsing a
+ * run is worth doing only because FXBO's name fields are free text.
+ *
+ * Empty in, empty out, for the reason hashEmail gives -- and it bites harder
+ * here. FXBO sends no last name for a fair number of leads, so `sha256("")`
+ * would be sent as this client's surname, identically for every one of them:
+ * one shared fake identity rather than a missing field.
+ */
+export function hashName(name) {
+  const v = String(name ?? "")
+    .toLowerCase()
+    // "Lowercase only with no punctuation" -- the whole of the difference from
+    // the email rule, and the reason this is not that function.
+    .replace(/\p{P}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return v ? sha256(v) : "";
+}
+
+/**
+ * `external_id`, which is an IDENTIFIER and must not be normalised like a name.
+ *
+ * Meta specifies no normalisation for it at all. The only rule it states is
+ * consistency -- "if you send a browser Pixel event with external_id set to
+ * 123, your Conversions API event for that same user should also have
+ * external_id set to 123" -- because this value is matched against our own
+ * other sends of the same id, not against anything in Meta's profile data.
+ *
+ * So it is hashed as the CRM holds it, trimmed and nothing more. Lowercasing it
+ * or running it through hashName would be a silent corruption: an FXBO client
+ * id is digits today, but one carrying a letter or a dash would be hashed into
+ * a digest no other channel sending that same id could reproduce, and matching
+ * would stop with no error anywhere -- the failure mode this whole file is
+ * written around.
+ */
+export function hashExternalId(externalId) {
+  const v = String(externalId ?? "").trim();
+  return v ? sha256(v) : "";
+}
+
+/**
  * Meta's `value` and `currency`, or NEITHER of them.
  *
  * **Meta requires both or neither, and a `Purchase` carrying one of them is the
@@ -177,7 +234,19 @@ export function metaValueFields(depositValue) {
   return { value, currency };
 }
 
-export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, eventId, testEventCode, depositValue }) {
+export function buildMetaPayload({
+  stage,
+  email,
+  phone,
+  firstName,
+  lastName,
+  crmClientId,
+  fbc,
+  eventTimeSeconds,
+  eventId,
+  testEventCode,
+  depositValue,
+}) {
   const user_data = {};
 
   const em = hashEmail(email);
@@ -185,6 +254,45 @@ export function buildMetaPayload({ stage, email, phone, fbc, eventTimeSeconds, e
 
   const ph = hashPhone(phone);
   if (ph) user_data.ph = [ph];
+
+  // The three parameters Meta's Event Match Quality panel names as the gains
+  // available on this dataset (2026-10-20): external_id at a claimed ~28%
+  // uplift, first and last name at ~15% each. They are the only recommended
+  // ones we can supply truthfully -- see the note below the block for the four
+  // the panel also recommends and we deliberately do not send.
+  //
+  // Single-element arrays because Meta's type for all three is `string or
+  // list<string>`, so the array is correct and the choice is that user_data
+  // then reads one way throughout. `fbc` below is the exception for a reason
+  // rather than by habit: its type is `string`, and only that.
+  const externalId = hashExternalId(crmClientId);
+  if (externalId) user_data.external_id = [externalId];
+
+  const fn = hashName(firstName);
+  if (fn) user_data.fn = [fn];
+
+  const ln = hashName(lastName);
+  if (ln) user_data.ln = [ln];
+
+  // **No `client_ip_address`, no `user_agent`, no `referrer_url`, no
+  // `event_source_url` -- however plainly Meta's panel recommends the first
+  // two, and whoever reads that prompt next.**
+  //
+  // Meta's own server-side parameter-builder library fills them by
+  // reconstructing them from the incoming HTTP request, and that is precisely
+  // why they cannot be filled here: our incoming request is FXBO's webhook from
+  // an Azure server, not the client's browser. We would be sending FXBO's
+  // server IP and FXBO's user agent as the customer's own, identically for
+  // every client and every event -- one uniform fake identity, which degrades
+  // matching while the panel's coverage figure reports an improvement. Every
+  // stage this service sends (`verified`, `live_account`, `first_deposit`) is a
+  // back-office state change with no browser involved at all, so there is no
+  // real value to reach for.
+  //
+  // `fbp` is out for a different reason: it is a browser cookie our server
+  // never sees, so it would have to be invented, and sending it needs a website
+  // change first. Date of birth, city, region, postcode and country are out
+  // because FXBO does not send them and we do not store them.
 
   // Passed through verbatim: it was frozen at this client's first event, and
   // recomputing it per stage hands Meta a different click identity each time.

@@ -10,6 +10,8 @@ import {
   decideMetaSkip,
   hashEmail,
   hashPhone,
+  hashName,
+  hashExternalId,
   buildMetaPayload,
   metaValueFields,
   classifyMetaOutcome,
@@ -143,11 +145,81 @@ describe("hashing", () => {
   });
 });
 
+describe("hashing a name", () => {
+  // Checked against the three worked examples Meta publishes for `fn`, digests
+  // and all, rather than against our own idea of the rule. These are the only
+  // normalised-name digests we have from Meta's side, and the whole question is
+  // whether our digest equals theirs -- a rule we agree with ourselves about is
+  // worth nothing here, because a mismatch produces no error at either end.
+  it("matches Meta's own published digests for its own examples", () => {
+    expect(hashName("Mary")).toBe("6915771be1c5aa0c886870b6951b03d7eafc121fea0e80a5ea83beb7c449f4ec");
+    // The accented example, which is why accents are lowercased and NOT folded:
+    // `valery` would hash to something Meta never computes.
+    expect(hashName("Valéry")).toBe("08e1996b5dd49e62a4b4c010d44e4345592a863bb9f8e3976219bac29417149c");
+    // And a non-Roman name, hashed as UTF-8 and otherwise untouched.
+    expect(hashName("정")).toBe("8fa8cd9c440be61d0151429310034083132b35975c4bea67fdd74158eb51db14");
+  });
+
+  it("strips punctuation, which is where the name rule parts from the email rule", () => {
+    // "Lowercase only with no punctuation". Copying hashEmail would lowercase
+    // and trim and stop, and every apostrophe and hyphen in the CRM would then
+    // hash to a digest Meta cannot match -- with nothing to see on either side.
+    expect(hashName("O'Brien")).toBe(hashName("obrien"));
+    expect(hashName("Jean-Luc")).toBe(hashName("jeanluc"));
+    expect(hashName("St. John")).toBe(hashName("st john"));
+    // A curly apostrophe is punctuation too; FXBO's fields are free text and a
+    // phone keyboard types this one.
+    expect(hashName("O’Brien")).toBe(hashName("obrien"));
+  });
+
+  it("keeps an internal space, collapsed, because a space is not punctuation", () => {
+    // Meta's rule says nothing about whitespace, so the least destructive
+    // reading is the right one: "Mary Ann" is one first name, not "maryann".
+    expect(hashName("  Mary   Ann  ")).toBe("343b97011010c3549fe7fcd6c226ed9431ea37b0b77ed78f6300a0098925faf1");
+  });
+
+  it("returns empty for a missing name rather than hashing the empty string", () => {
+    // FXBO sends no last name for a good many leads. sha256("") would go out as
+    // that client's surname, and as the SAME surname for every one of them: one
+    // shared fake identity, which is worse than the missing field it replaces.
+    for (const absent of ["", "   ", null, undefined]) {
+      expect(hashName(absent), JSON.stringify(absent)).toBe("");
+    }
+    // And a value that is nothing but punctuation normalises to nothing, so it
+    // must not sneak past the emptiness check either.
+    expect(hashName("--")).toBe("");
+  });
+});
+
+describe("hashing the external id", () => {
+  it("hashes the id as the CRM holds it, normalising nothing", () => {
+    // Meta states no normalisation for external_id, only consistency: the same
+    // id, in the same format, everywhere we send it. Lowercasing or stripping
+    // punctuation here would produce a digest nothing else can reproduce.
+    expect(hashExternalId("88214")).toBe("07b4f89e5ffd3e063651bb366e38f9e416b4a971ea93d78a95d72241a6e90744");
+    expect(hashExternalId("AB-882")).not.toBe(hashExternalId("ab882"));
+    expect(hashExternalId("AB-882")).not.toBe(hashName("AB-882"));
+  });
+
+  it("trims transport whitespace, because that is not part of the id", () => {
+    expect(hashExternalId("  88214 ")).toBe(hashExternalId("88214"));
+  });
+
+  it("returns empty for a missing id rather than hashing the empty string", () => {
+    for (const absent of ["", "   ", null, undefined]) {
+      expect(hashExternalId(absent), JSON.stringify(absent)).toBe("");
+    }
+  });
+});
+
 describe("buildMetaPayload", () => {
   const base = {
     stage: "verified",
     email: "ali.khan@example.com",
     phone: "+971507192185",
+    firstName: "Ali",
+    lastName: "Khan",
+    crmClientId: "88214",
     fbc: "fb.1.1673035686000.IwY2xjawUsILdI",
     eventTimeSeconds: 1673035686,
   };
@@ -205,6 +277,145 @@ describe("buildMetaPayload", () => {
     // hashEmail returns "" for no email; that must not reach Meta as a matcher.
     const { user_data } = buildMetaPayload({ ...base, email: "" }).data[0];
     expect("em" in user_data).toBe(false);
+  });
+
+  // The Event Match Quality parameters added 2026-10-20. Meta's panel for this
+  // dataset reported `user_data` carrying only `em`, `ph` and `fbc`, and named
+  // these three as the available gains -- the only recommended ones this service
+  // can supply truthfully.
+  it("carries exactly the six user_data parameters, and no invented one", () => {
+    // Pinned as a whole set, in both directions. A dropped key is an uplift
+    // silently not taken; an added one is the real hazard, because the four
+    // Meta's panel also recommends -- IP, user agent, referrer, event source
+    // URL -- are all fillable from the incoming request and all WRONG from it.
+    const { user_data } = buildMetaPayload(base).data[0];
+    expect(Object.keys(user_data).sort()).toEqual(["em", "external_id", "fbc", "fn", "ln", "ph"]);
+  });
+
+  it("sends nothing reconstructed from the incoming HTTP request", () => {
+    // Our incoming request is FXBO's webhook from an Azure server, not the
+    // client's browser, so each of these would carry FXBO's own identity --
+    // identically for every client and every event. A uniform fake value
+    // degrades matching while the panel's coverage figure reads as an
+    // improvement, which is why this is forbidden by test and not by comment.
+    //
+    // Checked over the whole serialised payload rather than over one object:
+    // `event_source_url` sits on the event and `client_ip_address` inside
+    // `user_data`, and the mutation could add either in either place. The
+    // `user_agent` substring covers Meta's own spelling, `client_user_agent`.
+    const serialised = JSON.stringify(buildMetaPayload({ ...base, stage: "first_deposit" }));
+    for (const forbidden of ["client_ip_address", "user_agent", "referrer_url", "event_source_url", "fbp"]) {
+      expect(serialised, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it("sends external_id as a hash of the CRM client id and nothing else", () => {
+    // Derived from the client id, which is also what event_id is built from --
+    // Meta's one stated rule for external_id is that the same id goes out in
+    // the same format everywhere. Built from the email or the fbc instead it
+    // would still be a plausible 64-hex digest in the right place.
+    const { user_data } = buildMetaPayload(base).data[0];
+    expect(user_data.external_id).toEqual([hashExternalId("88214")]);
+    expect(user_data.external_id).not.toEqual([hashEmail(base.email)]);
+    expect(user_data.external_id).not.toEqual([hashPhone(base.phone)]);
+    // And it moves with the client id rather than with anything else on the row.
+    const other = buildMetaPayload({ ...base, crmClientId: "88215" }).data[0].user_data;
+    expect(other.external_id).not.toEqual(user_data.external_id);
+    expect(other.em).toEqual(user_data.em);
+  });
+
+  it("hashes the external id rather than sending the client id in the clear", () => {
+    // `user_data`, not the whole payload: `event_id` carries the same client id
+    // unhashed and is meant to, being a dedupe key rather than a matcher.
+    const { user_data } = buildMetaPayload({ ...base, eventId: "88214:verified" }).data[0];
+    expect(JSON.stringify(user_data)).not.toContain("88214");
+    expect(user_data.external_id[0]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("sends fn and ln as single-element arrays of hashes, never raw and never bare", () => {
+    // `string or list<string>` on Meta's side, so the shape is a choice and the
+    // choice is the one em and ph already use -- fbc is a bare string because
+    // its type IS string. A bare string here, or a nested array, is a shape Meta
+    // may take without comment and we would never know.
+    const { user_data } = buildMetaPayload(base).data[0];
+    for (const key of ["fn", "ln", "external_id"]) {
+      expect(Array.isArray(user_data[key]), key).toBe(true);
+      expect(user_data[key].length, key).toBe(1);
+      expect(typeof user_data[key][0], key).toBe("string");
+      expect(user_data[key][0], key).toMatch(/^[0-9a-f]{64}$/);
+    }
+    const serialised = JSON.stringify(buildMetaPayload(base));
+    expect(serialised).not.toContain("Ali");
+    expect(serialised).not.toContain("Khan");
+  });
+
+  it("hashes the NORMALISED name, not the name as the CRM typed it", () => {
+    // The punctuation rule is the half a copied email helper would miss, and
+    // the digest of "o'brien" is unrelated to the digest of "obrien".
+    const { user_data } = buildMetaPayload({
+      ...base,
+      firstName: " Jean-Luc ",
+      lastName: "O'Brien",
+    }).data[0];
+    expect(user_data.fn).toEqual([hashName("jeanluc")]);
+    expect(user_data.ln).toEqual([hashName("obrien")]);
+    expect(user_data.fn).not.toEqual([hashEmail(" Jean-Luc ")]);
+    expect(user_data.ln).not.toEqual([hashEmail("O'Brien")]);
+  });
+
+  it("omits fn and ln when the name is missing instead of hashing the empty string", () => {
+    // sha256("") is a valid digest, and it would be the SAME surname for every
+    // client whose last name FXBO never sent.
+    const { user_data } = buildMetaPayload({ ...base, firstName: "", lastName: "" }).data[0];
+    expect("fn" in user_data).toBe(false);
+    expect("ln" in user_data).toBe(false);
+    expect(JSON.stringify(user_data)).not.toContain(
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+  });
+
+  it("omits external_id when there is no client id, rather than hashing nothing", () => {
+    const { user_data } = buildMetaPayload({ ...base, crmClientId: "" }).data[0];
+    expect("external_id" in user_data).toBe(false);
+  });
+
+  it("builds a scrubbed row's payload out of what survives, inventing no identity", () => {
+    // The scrub NULLs first_name, last_name, email and phone, so rowToFields
+    // hands this empty strings for all four; crm_client_id and fbc survive it
+    // deliberately. processSignupEvent refuses a scrubbed row outright, so this
+    // should never run -- and if some later change makes such a row claimable,
+    // the degradation has to be omitted keys and not a hash of "" or of a
+    // placeholder word, which would be one uniform fake identity shared by
+    // every client in the table.
+    const { user_data } = buildMetaPayload({
+      ...base,
+      email: "",
+      phone: "",
+      firstName: "",
+      lastName: "",
+    }).data[0];
+    expect(Object.keys(user_data).sort()).toEqual(["external_id", "fbc"]);
+    const serialised = JSON.stringify(user_data);
+    for (const digest of [
+      // sha256("")
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      // sha256("scrubbed"), the placeholder nobody should ever reach for
+      "4848b001e417e7514a51465ecf92ee8631ccbb31ba5e8ba413ff5b3f6ca9ceac",
+    ]) {
+      expect(serialised, digest).not.toContain(digest);
+    }
+    // The literal word is not a name either, whatever a future scrub writes.
+    expect(hashName("scrubbed")).not.toBe("");
+    expect(serialised).not.toContain(hashName("scrubbed"));
+  });
+
+  it("sends the three new parameters at every stage, not only at the deposit", () => {
+    // Read off META_EVENT_NAMES rather than a list written here, so a stage
+    // added later is covered by this without anybody remembering to add it.
+    for (const stage of Object.keys(META_EVENT_NAMES)) {
+      const { user_data } = buildMetaPayload({ ...base, stage }).data[0];
+      expect(Object.keys(user_data).sort(), stage).toEqual(["em", "external_id", "fbc", "fn", "ln", "ph"]);
+    }
   });
 
   it("carries no value and no currency when the caller gives no deposit value", () => {

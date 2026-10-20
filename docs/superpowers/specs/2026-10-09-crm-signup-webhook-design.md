@@ -957,10 +957,62 @@ funnel event, identical on every attempt at it.
    column (§6) and not derived at send time.
 3. **`em` and `ph` are arrays of SHA-256 of the *normalised* value** — email
    lowercased and trimmed, phone digits only with no `+`. Hashing the raw input
-   produces a hash Meta cannot match.
+   produces a hash Meta cannot match. **And the normalisation is per parameter,
+   not one rule for the whole of `user_data`** — see the table below, where a
+   name and an identifier each take a different one.
 
-`lead_id` is omitted: it exists only for Meta Lead Ads instant forms. ClickID
-plus hashed email and phone already score 9.0/10 on match quality.
+#### `user_data` — the six matchers, and the four parameters refused (2026-10-20, §4)
+
+| Key | From | Normalisation | Shape |
+|---|---|---|---|
+| `em` | `email` | trim, lowercase | `[sha256]` |
+| `ph` | `phone` | digits only | `[sha256]` |
+| `external_id` | `crm_client_id` | trim, **nothing else** | `[sha256]` |
+| `fn` | `first_name` | lowercase, punctuation removed, spaces collapsed | `[sha256]` |
+| `ln` | `last_name` | same as `fn` | `[sha256]` |
+| `fbc` | `fbc` | none, verbatim | bare string |
+
+Each key is omitted entirely when its value is empty. `sha256("")` is a valid
+digest, so sending it would be a *shared* fake identity across every client the
+field is missing for — strictly worse than the gap it fills. All three new
+parameters are `string or list<string>` on Meta's side; the single-element array
+is the shape `em` and `ph` already use, and `fbc` is a bare string because its
+type is `string` and only that.
+
+`external_id`, `fn` and `ln` came from Meta's Event Match Quality panel for this
+dataset, which reported `user_data` carrying only `em`, `ph` and `fbc` and named
+these three as the available gains (`external_id` ~28% claimed uplift, each name
+~15%). They are the only recommended parameters this service can supply
+truthfully.
+
+**A name takes Meta's name rule, not the email rule.** "Lowercase only with no
+punctuation": `O'Brien` → `obrien`, `Jean-Luc` → `jeanluc`. Accents are
+lowercased and **not** folded — Meta's own worked example is `Valéry` →
+`valéry`, and `meta.test.js` pins Meta's three published example digests.
+**`external_id` is normalised not at all**: it is an identifier, Meta specifies
+no normalisation for it, and its one rule is that the same id goes out in the
+same format everywhere — so it is hashed as the CRM holds it, from the same
+`crm_client_id` that `event_id` is built from.
+
+**`client_ip_address`, `user_agent`, `referrer_url` and `event_source_url` are
+refused, and Meta's panel will keep recommending the first two.** Meta's
+server-side parameter-builder library fills them by reconstructing them from the
+incoming HTTP request. Ours is **FXBO's webhook from an Azure server, not the
+client's browser**: we would send FXBO's server IP and user agent as the
+customer's own, identically for every client and every event — one uniform fake
+identity, degrading matching while the panel's coverage figure reads as an
+improvement. Every stage here is a back-office state change with no browser
+involved. `fbp` is refused for a different reason (a browser cookie our server
+never sees — it needs a website change first), and date of birth, city, region,
+postcode and country because FXBO neither sends nor stores them.
+
+`first_name` and `last_name` are in `SCRUB_COLUMNS` (§6), which is safe only
+because the scrub runs after every destination has settled and
+`processSignupEvent` refuses a row carrying a `scrubbed_at` outright. The
+fallback behind that guard is that the scrub writes `NULL`, never a placeholder
+word, so the keys are omitted rather than hashed.
+
+`lead_id` is omitted: it exists only for Meta Lead Ads instant forms.
 
 Retry transport errors, 429, and 5xx. Also retry a response whose Graph
 `error.code` is one of `1`, `2`, `4`, `17`, `32`, `341` or `613` — Meta's

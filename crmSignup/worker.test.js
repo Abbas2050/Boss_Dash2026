@@ -662,7 +662,7 @@ import { readFileSync } from "fs";
 import path from "path";
 // META_EVENT_NAMES is read far above, by the event-id case: that id is keyed on
 // the stage, and the assertion says so against the real name rather than a copy.
-import { hashEmail, hashPhone, META_EVENT_NAMES } from "./meta.js";
+import { hashEmail, hashPhone, hashName, hashExternalId, META_EVENT_NAMES } from "./meta.js";
 import { maskEmail, maskPhone } from "./normalise.js";
 import { buildBrevoContact, BREVO_CONTACTS_URL } from "./brevo.js";
 import { DOUBLETICK_TEMPLATE_URL } from "./whatsapp.js";
@@ -1815,6 +1815,40 @@ describe("what each provider is handed", () => {
     expect(event.user_data.ph).toEqual([hashPhone("+971501112233")]);
     expect(event.event_name).toBe("StartTrial");
     expect(event.event_time).toBe(1791806400);
+  });
+
+  it("gives Meta the name and the client id from the row, each under its own parameter", async () => {
+    // The three Event Match Quality parameters, read off the row and nowhere
+    // else. All three are 64-hex digests in single-element arrays, so fn and ln
+    // could be crossed, or external_id built from the email, and no shape test
+    // anywhere would notice.
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified", first_name: "Ali", last_name: "Khan" }), d);
+    const { payload } = d.sendMeta.mock.calls[0][0];
+    const [event] = payload.data;
+    expect(event.user_data.fn).toEqual([hashName("Ali")]);
+    expect(event.user_data.ln).toEqual([hashName("Khan")]);
+    expect(event.user_data.external_id).toEqual([hashExternalId("88214")]);
+    // The id external_id is hashed from is the id event_id is built from. Meta's
+    // one stated rule for external_id is that the same id goes out everywhere.
+    expect(event.event_id).toBe("88214:verified");
+    // And none of the three reaches Meta as itself. The client id is checked
+    // against `user_data` alone, not the whole payload: `event_id` carries it in
+    // the clear on purpose and always has -- it is a dedupe key, not a matcher.
+    const matchers = JSON.stringify(event.user_data);
+    expect(matchers).not.toContain("Ali");
+    expect(matchers).not.toContain("Khan");
+    expect(matchers).not.toContain("88214");
+  });
+
+  it("omits ln for a row FXBO sent no surname for, rather than hashing nothing", async () => {
+    // A lead with no last name is ordinary, and a NULL column arrives here as
+    // one. sha256("") in `ln` would be the same surname for every such client.
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified", last_name: null }), d);
+    const [event] = d.sendMeta.mock.calls[0][0].payload.data;
+    expect("ln" in event.user_data).toBe(false);
+    expect(event.user_data.fn).toEqual([hashName("Ali")]);
   });
 
   it("gives WhatsApp the key, the template, the sender, the recipient and the frozen id, each in its own place", async () => {
