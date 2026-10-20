@@ -15,7 +15,7 @@ Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 |---|---|---|---|---|
 | `lead` | `Lead` | no | no | `lead_created` (`customer_action`) — blocked upstream, no FXBO trigger |
 | `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it |
-| `verified` | `ApprovedApplication` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
+| `verified` | `StartTrial` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
 | `live_account` | `SubmitApplication` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) |
 | `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) |
 
@@ -79,12 +79,31 @@ being dropped.
 value, diagnostic `s2s_invalid_purchase_event_actions`, fixed and deployed — so
 it is not evidence about names either way.
 
-**The new pair is deliberately mixed, because the cause is unproven.**
-`SubmitApplication` is one of Meta's standard names: the control, since standard
-names demonstrably arrive. `ApprovedApplication` is still a custom name but
-carries no financial term: the test. One test client then separates "all custom
-events are dropped under core setup" from "it was the name content", and
-whichever of the two appears is the answer.
+**The experiment ran on 20 October and settled it: only a standard name is ever
+visible.** One client went through all three stages in four minutes — same
+payload shape, same integration, the name the only variable. Meta's event list
+for that day holds `Submit Application` and `Purchase`, both via Conversions
+API. It does not hold `ApprovedApplication`.
+
+The custom one was not lost in transit.
+`connect.facebook.net/signals/config/<dataset_id>` lists it under
+`unverifiedEventNames`, beside `TradingAccountOpened`, `Client_Verified`, and
+the `Website*` names FXBO's own integration sent (ticket #71035, same dataset,
+same dead end a month earlier). Meta receives a custom name, files it as an
+unverified custom event, and an unverified custom event never surfaces.
+
+**So the rule is custom-vs-standard, and nothing else.** It is not the financial
+wording the event-blocking gate text describes — `ApprovedApplication` carries
+no financial term and was filed identically. It is not `custom_data`, not core
+setup discarding payloads, and not the domain. Each of those was a live theory;
+each was wrong.
+
+`verified` therefore moved to `StartTrial` on 20 October (user's call): a
+standard name whose funnel position fits — the account exists and is active,
+nothing has been paid yet. **Any future stage must take one of Meta's 17
+standard event names**, however badly it reads, or it is invisible. The test
+`sends only names from Meta's standard list` enforces this and carries the full
+set.
 
 **The readable names come back as Custom Conversions, not as event names.** An
 operator who wants to read "Client verified" in Ads Manager gets it from a

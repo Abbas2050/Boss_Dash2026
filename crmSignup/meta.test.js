@@ -24,38 +24,50 @@ describe("event names", () => {
     expect(META_EVENT_NAMES).toEqual({
       lead: "Lead",
       registered: "CompleteRegistration",
-      verified: "ApprovedApplication",
+      verified: "StartTrial",
       live_account: "SubmitApplication",
       first_deposit: "Purchase",
     });
   });
 
-  it("keeps the 19 October experiment mixed: one standard name and one custom one", () => {
-    // The point of the rename is the comparison, so the pair is pinned as a
-    // pair. `SubmitApplication` is one of Meta's standard names (the control);
-    // `ApprovedApplication` is custom (the test). Both sent under the old names
-    // were custom, both were discarded, and one of the two explanations --
-    // custom events dropped under core setup, or a financial term in the name
-    // -- is wrong. Making both standard, or both custom, answers nothing.
-    const STANDARD = new Set([
-      "Lead",
-      "CompleteRegistration",
-      "Purchase",
-      "SubmitApplication",
-      "InitiateCheckout",
-      "ViewContent",
-      "Contact",
-      "Schedule",
-      "StartTrial",
-      "Subscribe",
+  it("sends only names from Meta's standard list, because a custom one is invisible", () => {
+    // The invariant the 19 October experiment bought, and the one that would
+    // have caught the original bug: a custom event name is accepted with a 200
+    // and `events_received: 1`, then filed under `unverifiedEventNames` and
+    // never shown. Proven 20 October -- one client, three stages, four minutes:
+    // `SubmitApplication` and `Purchase` appeared, `ApprovedApplication` did
+    // not, and the signals config listed it beside `TradingAccountOpened` and
+    // `Client_Verified`. Nothing about the payload differed, so the name is the
+    // whole mechanism.
+    //
+    // Meta's 17 standard events, in full. Anything outside this set is custom,
+    // and custom is invisible -- so a new stage must pick from here, however
+    // badly the name reads. The readable label is a Custom Conversion built on
+    // top; it is not this string.
+    const STANDARD_EVENTS = new Set([
       "AddPaymentInfo",
+      "AddToCart",
+      "AddToWishlist",
+      "CompleteRegistration",
+      "Contact",
+      "CustomizeProduct",
+      "Donate",
+      "FindLocation",
+      "InitiateCheckout",
+      "Lead",
+      "PageView",
+      "Purchase",
+      "Schedule",
       "Search",
+      "StartTrial",
+      "SubmitApplication",
+      "Subscribe",
+      "ViewContent",
     ]);
-    expect(STANDARD.has(META_EVENT_NAMES.live_account)).toBe(true);
-    expect(STANDARD.has(META_EVENT_NAMES.verified)).toBe(false);
-    // And the custom one carries no financial term, which is what the gate text
-    // on the event-blocking page refuses.
-    expect(META_EVENT_NAMES.verified).not.toMatch(/trad|deposit|account|financ|invest/i);
+    const custom = Object.entries(META_EVENT_NAMES).filter(
+      ([, name]) => !STANDARD_EVENTS.has(name),
+    );
+    expect(custom).toEqual([]);
   });
 });
 
@@ -159,7 +171,7 @@ describe("buildMetaPayload", () => {
 
   it("uses the stage's event name and the given time", () => {
     const event = buildMetaPayload(base).data[0];
-    expect(event.event_name).toBe("ApprovedApplication");
+    expect(event.event_name).toBe("StartTrial");
     expect(event.event_time).toBe(1673035686);
   });
 

@@ -25,26 +25,39 @@ export const GRAPH_HOST = "https://graph.facebook.com";
  * every one of them arriving -- and none of ours. No diagnostic was raised for
  * either name either, so Meta never said why.
  *
- * **The pair is deliberately mixed, because the cause is still unproven.** The
- * dataset runs with core setup on, and the event-blocking page's own gate text
- * refuses event names that are "based on health, financial, consumer report or
- * otherwise sensitive information" -- which would indict `TradingAccountOpened`
- * but says nothing about every custom name being dropped. So `SubmitApplication`
- * is the control: a standard Meta name, and standard names demonstrably arrive.
- * `ApprovedApplication` is the test: still a custom name, but carrying no
- * financial term. One test client separates "custom events are dropped under
- * core setup" from "it was the name content", and whichever of the two appears
- * is the answer.
+ * **The experiment that rename set up has now run, and settled it: only a
+ * STANDARD Meta event name is ever visible (2026-10-20).** One client was sent
+ * through all three stages within four minutes, same payload shape, same
+ * integration, the only difference being the name. Meta's event list for that
+ * day holds `Submit Application` and `Purchase`, both via Conversions API, and
+ * does not hold `ApprovedApplication`. The custom one is not lost in transit:
+ * `connect.facebook.net/signals/config/<dataset_id>` lists it under
+ * `unverifiedEventNames`, beside `TradingAccountOpened` and `Client_Verified`.
+ * Meta receives a custom name, files it as an unverified custom event, and an
+ * unverified custom event never surfaces.
  *
- * `Purchase` was failing for its own named reason -- no value -- which is fixed
- * and is not evidence about names. The readable labels operators want in Ads
- * Manager come back as Custom Conversions built on whichever name survives; see
- * README, "What each stage sends".
+ * So the rule is custom-vs-standard, and nothing else. It is NOT the financial
+ * wording the event-blocking gate text describes -- `ApprovedApplication`
+ * carries no financial term and was filed exactly like `TradingAccountOpened`.
+ * It is not `custom_data`, not core setup discarding payloads, and not the
+ * domain. Every one of those was a live theory and every one was wrong.
+ *
+ * `verified` therefore moves to `StartTrial` (2026-10-20, user's call) -- a
+ * standard name, and the funnel position fits: the account exists and is
+ * active, but nothing has been paid yet. Anything not on Meta's list of 17
+ * standard events is invisible here, so a future stage must take a standard
+ * name, never a descriptive one.
+ *
+ * `Purchase` was failing for its own named reason -- no value -- which is fixed,
+ * and its arrival on 20 October is the proof: Meta's diagnostic said a Purchase
+ * without value "can't be received", and this one was. The readable labels
+ * operators want in Ads Manager come back as Custom Conversions built on these
+ * standard names; see README, "What each stage sends".
  */
 export const META_EVENT_NAMES = {
   lead: "Lead",
   registered: "CompleteRegistration",
-  verified: "ApprovedApplication",
+  verified: "StartTrial",
   live_account: "SubmitApplication",
   first_deposit: "Purchase",
 };

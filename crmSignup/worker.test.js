@@ -1813,7 +1813,7 @@ describe("what each provider is handed", () => {
     expect(arg.payload.test_event_code).toBe("TEST4242");
     expect(event.user_data.em).toEqual([hashEmail("ali.khan@example.com")]);
     expect(event.user_data.ph).toEqual([hashPhone("+971501112233")]);
-    expect(event.event_name).toBe("ApprovedApplication");
+    expect(event.event_name).toBe("StartTrial");
     expect(event.event_time).toBe(1791806400);
   });
 
