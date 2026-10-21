@@ -18,6 +18,7 @@ import {
   updateWhatsappStatus,
   updateBrevoStatus,
   updateOpenaiStatus,
+  updateGoogleStatus,
   listEventsSince,
   countEventsSince,
   latestEventReceivedAt,
@@ -371,6 +372,19 @@ describe("claimDueEvents", () => {
     expect(db.state.calls[0].sql).toContain("openai_status   IN ('pending','retrying')");
   });
 
+  it("names google among them, so an offline conversion is claimed rather than never uploaded", async () => {
+    // The literal, not only the list: a row whose only due action is the Google
+    // upload would never be selected at all, and its status would read
+    // `pending` for the rest of the table's life -- which is the one counter
+    // that means the dispatch worker is dead.
+    db.state.respond = () => [[]];
+    await claimDueEvents(25, new Date("2026-10-13T10:00:00Z"));
+    expect(DESTINATIONS).toContain("google");
+    expect(db.state.calls[0].sql).toContain("google_status   IN ('pending','retrying')");
+    // One `now` per destination, and the limit last.
+    expect(db.state.calls[0].params).toHaveLength(DESTINATIONS.length + 1);
+  });
+
   it("defaults a zero limit to 25", async () => {
     db.state.respond = () => [[]];
     await claimDueEvents(0, new Date(0));
@@ -378,7 +392,7 @@ describe("claimDueEvents", () => {
   });
 });
 
-describe("the four action writers", () => {
+describe("the five action writers", () => {
   const next = new Date("2026-10-13T11:00:00Z");
 
   it("updateMetaStatus writes only the meta columns", async () => {
@@ -423,6 +437,23 @@ describe("the four action writers", () => {
     const { sql, params } = db.state.calls[0];
     expect(sql).toContain("brevo_contact_id = COALESCE(?, brevo_contact_id)");
     expect(params[2]).toBeNull();
+  });
+
+  it("updateGoogleStatus writes only the google columns", async () => {
+    // Nothing of Google's is written outside these four: the conversion's
+    // identity is its `orderId`, derived from the row, and `gclid` is frozen at
+    // insert. A writer that touched another destination's column would settle a
+    // send that never happened.
+    await updateGoogleStatus(7, { status: "sent", detail: "http 200", attempts: 1, nextAttemptAt: null });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /SET google_status = \?, google_detail = \?, google_attempts = \?, google_next_attempt_at = \?\s+WHERE id = \?/
+    );
+    for (const other of ["meta", "whatsapp", "brevo", "openai"]) {
+      expect(sql, other).not.toContain(`${other}_status`);
+    }
+    expect(sql).not.toContain("gclid");
+    expect(params).toEqual(["sent", "http 200", 1, null, 7]);
   });
 
   it("updateOpenaiStatus writes only the openai columns", async () => {
@@ -484,6 +515,7 @@ describe("a detail is masked on the way into its column", () => {
     ["whatsapp", updateWhatsappStatus, 2],
     ["brevo", updateBrevoStatus, 1],
     ["openai", updateOpenaiStatus, 1],
+    ["google", updateGoogleStatus, 1],
   ];
 
   for (const [action, write, detailAt] of WRITERS) {
@@ -551,6 +583,7 @@ describe("a claiming write", () => {
     ["whatsapp", updateWhatsappStatus],
     ["brevo", updateBrevoStatus],
     ["openai", updateOpenaiStatus],
+    ["google", updateGoogleStatus],
   ];
 
   for (const [action, write] of WRITERS) {
@@ -771,7 +804,7 @@ describe("listEventsSince", () => {
     expect(params).toEqual([since, 2000]);
   });
 
-  it("reads every destination's status, detail and attempts, all four of them", async () => {
+  it("reads every destination's status, detail and attempts, all five of them", async () => {
     // A destination missing from this select list sends perfectly and then
     // reports as though it did not exist: `toTableRow` reads `undefined` for its
     // status, so its column is empty on every row of the one page built to
@@ -919,6 +952,16 @@ describe("scrubSignupEvent", () => {
     expect(db.state.calls[0].sql).toContain("AND openai_status IN ('sent','skipped')");
   });
 
+  it("requires google too, so no row is scrubbed while the upload is still pending", async () => {
+    // The send guard refuses a scrubbed row for ever, so a row scrubbed while
+    // the Google upload was still pending would hold `pending` until the table
+    // is dropped -- and `gclid` surviving the scrub does not help, because
+    // nothing would ever claim the row again.
+    await scrubSignupEvent(7, SCRUBBED);
+    expect(DESTINATIONS).toContain("google");
+    expect(db.state.calls[0].sql).toContain("AND google_status IN ('sent','skipped')");
+  });
+
   it("keeps a row whose send failed, refused or was never valid: scrubbing it is what destroyed the resend", async () => {
     // The gap this closes (2026-10-14, user's call). Built from SETTLED instead,
     // the three error statuses are in the clause, and a row whose Brevo send
@@ -978,6 +1021,17 @@ describe("deleteInvalidSignupEvents", () => {
     }
     expect(DESTINATIONS).toContain("openai");
     expect(sql).toContain("openai_status = 'invalid'");
+  });
+
+  it("names google too, so the condition stays satisfiable for an FXBO test press", async () => {
+    // The condition asks for every destination at once. A destination absent
+    // from it is a column that can hold anything; one present here but absent
+    // from the INSERT's invalid writes would make it unsatisfiable, and no
+    // invalid row would ever be deleted again.
+    await deleteInvalidSignupEvents(new Date("2026-10-07T12:00:00Z"));
+    const { sql } = db.state.calls[0];
+    expect(DESTINATIONS).toContain("google");
+    expect(sql).toContain("google_status = 'invalid'");
   });
 });
 

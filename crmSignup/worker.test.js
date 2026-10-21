@@ -1,7 +1,7 @@
 // @vitest-environment node
 //
 // Two rules this file exists to hold: the retry clock lives in a column, and
-// the four actions never interfere -- a Brevo retry must not move anyone
+// the five actions never interfere -- a Brevo retry must not move anyone
 // else's clock, and a failure in one must not stop the others being reached.
 //
 // Since 2026-10-14 no single event sends to every destination: `registered`
@@ -1597,7 +1597,7 @@ describe("a scrubbed row sends nothing", () => {
   });
 });
 
-describe("the four actions keep separate counters, budgets and failures", () => {
+describe("the five actions keep separate counters, budgets and failures", () => {
   it("counts each action's attempts from its own column, against its own budget", async () => {
     // Three different counts and three different outcomes. WhatsApp's budget is
     // 5 where the other two are fixed at 3, which is the only way to tell a step
