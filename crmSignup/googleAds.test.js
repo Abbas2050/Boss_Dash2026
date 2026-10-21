@@ -1256,6 +1256,33 @@ describe("uploadGoogleConversion", () => {
     expect(outcome.detail).toContain("body timed out");
   });
 
+  it("bounds BOTH of its outbound calls, not just the upload", async () => {
+    // This destination is the only one that makes two requests, and the shared
+    // contract below walks whichever comes first. An unbounded second call is
+    // the same hung sweep as an unbounded first: Node's fetch has no timeout,
+    // and the sweeper runs rows serially. So each call's signal is checked
+    // against its own AbortSignal.timeout, by identity.
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const fetchImpl = healthyFetch();
+    await uploadGoogleConversion({ fetchImpl, ...CREDENTIALS, payload: PAYLOAD });
+
+    const signals = fetchImpl.mock.calls.map(([, init]) => init?.signal);
+    expect(signals).toHaveLength(2);
+    expect(timeout).toHaveBeenCalledTimes(2);
+    for (const [i, signal] of signals.entries()) {
+      expect(signal, `call ${i}`).toBeInstanceOf(AbortSignal);
+      expect(signal, `call ${i}`).toBe(timeout.mock.results[i].value);
+      expect(signal.aborted, `call ${i}`).toBe(false);
+    }
+    // And the lookup, which is the third call this module can make.
+    clearGoogleCaches();
+    const resolving = healthyFetch();
+    await resolveGoogleConversionAction({ fetchImpl: resolving, ...CREDENTIALS, stage: "verified" });
+    for (const [, init] of resolving.mock.calls) {
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
   it("never puts a secret in the detail, even when Google quotes one back", async () => {
     const fetchImpl = vi.fn(async (url) =>
       isTokenUrl(url)
