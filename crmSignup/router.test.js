@@ -34,15 +34,17 @@ const VALID_BODY = {
   email: "ali.khan@example.com",
   phone: "+971507192185",
   is_lead: "0",
-  // One landing URL carrying both click ids, because that is what a real one
-  // looks like: the website hands the CRM the whole query string, and each
-  // platform's identifier is one parameter in it.
-  full_link: "https://skylinkscapital.com/en/?fbclid=IwY2xjawUsILdI&oppref=oppref-9f2b",
+  // One landing URL carrying all three click ids, because that is what a real
+  // one looks like: the website hands the CRM the whole query string, and each
+  // platform's identifier is one parameter in it. Google's is there by
+  // auto-tagging rather than by anything the website does.
+  full_link:
+    "https://skylinkscapital.com/en/?fbclid=IwY2xjawUsILdI&oppref=oppref-9f2b&gclid=Cj0KCQiA-9f2b",
 };
 
 // What the store's one lookup returns: the first non-empty value of each click
 // id on file for this client, or an empty string where there is none.
-const noClickIds = () => ({ fbc: "", oppref: "" });
+const noClickIds = () => ({ fbc: "", oppref: "", gclid: "" });
 
 function deps(overrides = {}) {
   return {
@@ -97,7 +99,7 @@ describe("authentication", () => {
 });
 
 describe("the click ids", () => {
-  it("derives both from the landing URL on a client's first event", async () => {
+  it("derives all three from the landing URL on a client's first event", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
     const [, derived] = d.insert.mock.calls[0];
@@ -105,6 +107,9 @@ describe("the click ids", () => {
     // Raw: no wrapper and no timestamp, because OpenAI passes it through
     // unmodified. There is nothing to build, only something to keep.
     expect(derived.oppref).toBe("oppref-9f2b");
+    // The same, and the one whose absence costs most: Google has no identifier
+    // to fall back on.
+    expect(derived.gclid).toBe("Cj0KCQiA-9f2b");
   });
 
   it("reuses the stored ones rather than recomputing them", async () => {
@@ -114,7 +119,11 @@ describe("the click ids", () => {
     // that row's own full_link is empty and this one's was scrubbed within the
     // minute, which is why the value is frozen in a column at all.
     const d = deps({
-      findClickIds: vi.fn(async () => ({ fbc: "fb.1.1673035686000.OLD", oppref: "oppref-FIRST" })),
+      findClickIds: vi.fn(async () => ({
+        fbc: "fb.1.1673035686000.OLD",
+        oppref: "oppref-FIRST",
+        gclid: "Cj0KCQiA-FIRST",
+      })),
     });
     await makeCrmEventsHandler(d)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, stage: "verified" }),
@@ -123,13 +132,31 @@ describe("the click ids", () => {
     const [, derived] = d.insert.mock.calls[0];
     expect(derived.fbc).toBe("fb.1.1673035686000.OLD");
     expect(derived.oppref).toBe("oppref-FIRST");
+    expect(derived.gclid).toBe("Cj0KCQiA-FIRST");
+  });
+
+  it("prefers the stored gclid over this row's own, even when they differ", async () => {
+    // The first deposit is the row this is really about: it arrives weeks later
+    // with its own full_link, normally empty because that visit is not an ad
+    // click, and the conversion belongs to the click that produced the client.
+    const d = deps({
+      findClickIds: vi.fn(async () => ({ fbc: "", oppref: "", gclid: "Cj0KCQiA-FIRST" })),
+    });
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][1].gclid).toBe("Cj0KCQiA-FIRST");
+  });
+
+  it("takes this row's gclid when the client has none on file yet", async () => {
+    const d = deps({ findClickIds: vi.fn(async () => noClickIds()) });
+    await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
+    expect(d.insert.mock.calls[0][1].gclid).toBe("Cj0KCQiA-9f2b");
   });
 
   it("prefers the stored oppref over this row's own, even when they differ", async () => {
     // The row carries `oppref-9f2b`; the client's first event carried another.
     // The frozen one wins, exactly as it does for the fbc: the conversion
     // belongs to the click that produced the client, not to the latest visit.
-    const d = deps({ findClickIds: vi.fn(async () => ({ fbc: "", oppref: "oppref-FIRST" })) });
+    const d = deps({ findClickIds: vi.fn(async () => ({ fbc: "", oppref: "oppref-FIRST", gclid: "" })) });
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
     expect(d.insert.mock.calls[0][1].oppref).toBe("oppref-FIRST");
   });
@@ -138,35 +165,47 @@ describe("the click ids", () => {
     // The freeze starts at the first stage that actually has a click: an earlier
     // stage that arrived without one stores nothing, so an empty stored value is
     // not an answer, it is the absence of one.
-    const d = deps({ findClickIds: vi.fn(async () => ({ fbc: "", oppref: "" })) });
+    const d = deps({ findClickIds: vi.fn(async () => noClickIds()) });
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
     expect(d.insert.mock.calls[0][1].oppref).toBe("oppref-9f2b");
   });
 
-  it("leaves both empty for an organic signup, which is normal", async () => {
+  it("leaves all three empty for an organic signup, which is normal", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/" }),
       fakeRes()
     );
-    expect(d.insert.mock.calls[0][1].fbc).toBe("");
-    expect(d.insert.mock.calls[0][1].oppref).toBe("");
+    expect(d.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "", gclid: "" });
   });
 
-  it("keeps each independent: a Meta click with no ChatGPT one, and the other way round", async () => {
+  it("keeps each independent: one platform's click with neither of the others", async () => {
     const d = deps();
     await makeCrmEventsHandler(d)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/?oppref=only-openai" }),
       fakeRes()
     );
-    expect(d.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "only-openai" });
+    expect(d.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "only-openai", gclid: "" });
 
     const e = deps();
     await makeCrmEventsHandler(e)(
       req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/?fbclid=ONLYMETA" }),
       fakeRes()
     );
-    expect(e.insert.mock.calls[0][1]).toMatchObject({ fbc: "fb.1.1791806400000.ONLYMETA", oppref: "" });
+    expect(e.insert.mock.calls[0][1]).toMatchObject({
+      fbc: "fb.1.1791806400000.ONLYMETA",
+      oppref: "",
+      gclid: "",
+    });
+
+    // A Search click and nothing else, which is the shape most Google Ads rows
+    // will have: no Meta click, no ChatGPT click, one gclid.
+    const g = deps();
+    await makeCrmEventsHandler(g)(
+      req({ authorization: "s3cret" }, { ...VALID_BODY, full_link: "https://skylinkscapital.com/en/?gclid=ONLYGOOGLE&gclsrc=aw.ds" }),
+      fakeRes()
+    );
+    expect(g.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "", gclid: "ONLYGOOGLE" });
   });
 
   it("stores the event even when the lookup throws", async () => {
@@ -530,16 +569,17 @@ describe("the click id lookup, further", () => {
     expect(d.findClickIds).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves both click ids empty, and says why, when the lookup throws", async () => {
-    // Empty, not derived, and that holds for both. A failed lookup cannot tell
-    // us whether a frozen id already exists, and deriving one here would claim
-    // an identity this row cannot check: for the fbc a fresh timestamp, and for
-    // the oppref this visit's click where the client's first one is what is
-    // frozen. Either is a different click identity for the same person, which is
-    // the quietly broken funnel the freeze exists to prevent. The landing URL
-    // below carries both, so a derived value would be non-empty in each case. A
-    // missing identifier is recoverable (both platforms fall back to the hashed
-    // email and phone, and a later event picks the frozen value up from an
+  it("leaves all three click ids empty, and says why, when the lookup throws", async () => {
+    // Empty, not derived, and that holds for all three. A failed lookup cannot
+    // tell us whether a frozen id already exists, and deriving one here would
+    // claim an identity this row cannot check: for the fbc a fresh timestamp,
+    // and for the oppref and the gclid this visit's click where the client's
+    // first one is what is frozen. Either is a different click identity for the
+    // same person, which is the quietly broken funnel the freeze exists to
+    // prevent. The landing URL below carries all three, so a derived value would
+    // be non-empty in each case. A missing identifier is recoverable (Meta and
+    // OpenAI fall back to the hashed email and phone, Google skips the
+    // conversion visibly, and a later event picks the frozen value up from an
     // earlier row); an inconsistent one is silently wrong. The event itself is
     // still stored.
     const d = deps({
@@ -550,8 +590,7 @@ describe("the click id lookup, further", () => {
     const res = fakeRes();
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), res);
     expect(d.insert).toHaveBeenCalledTimes(1);
-    expect(d.insert.mock.calls[0][1].fbc).toBe("");
-    expect(d.insert.mock.calls[0][1].oppref).toBe("");
+    expect(d.insert.mock.calls[0][1]).toMatchObject({ fbc: "", oppref: "", gclid: "" });
     expect(res.body).toEqual({ ok: true, stored: true, duplicate: false });
     expect(d.logger.error).toHaveBeenCalledTimes(1);
     expect(d.logger.error.mock.calls[0][0]).toContain("db down");
@@ -564,9 +603,10 @@ describe("the click id lookup, further", () => {
     for (const answer of [undefined, null, {}, { fbc: "fb.1.1.X" }]) {
       const d = deps({ findClickIds: vi.fn(async () => answer) });
       await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, VALID_BODY), fakeRes());
-      const { fbc, oppref } = d.insert.mock.calls[0][1];
+      const { fbc, oppref, gclid } = d.insert.mock.calls[0][1];
       expect(String(fbc), JSON.stringify(answer)).not.toContain("undefined");
       expect(String(oppref), JSON.stringify(answer)).not.toContain("undefined");
+      expect(String(gclid), JSON.stringify(answer)).not.toContain("undefined");
     }
   });
 });
@@ -587,11 +627,13 @@ describe("what the handler hands the store", () => {
     expect(column(params, "email")).toBe("ali.khan@example.com");
     expect(column(params, "fbc")).toBe("fb.1.1791806400000.IwY2xjawUsILdI");
     expect(column(params, "oppref")).toBe("oppref-9f2b");
+    expect(column(params, "gclid")).toBe("Cj0KCQiA-9f2b");
     expect(column(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
     expect(column(params, "meta_status")).toBe("pending");
     expect(column(params, "whatsapp_status")).toBe("pending");
     expect(column(params, "brevo_status")).toBe("pending");
     expect(column(params, "openai_status")).toBe("pending");
+    expect(column(params, "google_status")).toBe("pending");
     expect(JSON.parse(column(params, "raw_payload"))).toEqual(VALID_BODY);
   });
 
@@ -600,7 +642,11 @@ describe("what the handler hands the store", () => {
     const body = { ...VALID_BODY, stage: "typo" };
     await makeCrmEventsHandler(d)(req({ authorization: "s3cret" }, body), fakeRes());
     const params = buildInsertParams(...d.insert.mock.calls[0]);
-    for (const status of ["meta_status", "whatsapp_status", "brevo_status", "openai_status"]) {
+    // Every destination, and a missing one here is not a narrower test but a
+    // row the retention delete can never take: it asks for all of them to be
+    // `invalid` at once, so a destination the insert leaves `pending` makes
+    // that condition unsatisfiable for ever.
+    for (const status of INSERT_COLUMNS.filter((column) => column.endsWith("_status"))) {
       expect(column(params, status), status).toBe("invalid");
     }
     expect(column(params, "meta_detail")).toContain("missing required fields");

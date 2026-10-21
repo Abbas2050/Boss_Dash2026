@@ -18,6 +18,7 @@ import {
   updateWhatsappStatus,
   updateBrevoStatus,
   updateOpenaiStatus,
+  updateGoogleStatus,
   listEventsSince,
   countEventsSince,
   latestEventReceivedAt,
@@ -278,48 +279,64 @@ describe("insertSignupEvent", () => {
 
 describe("findExistingClickIds", () => {
   it("takes the earliest click of each kind on file, breaking a one-second tie by id", async () => {
-    db.state.respond = () => [[{ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" }]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" });
+    db.state.respond = () => [
+      [{ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST", gclid: "gclid-EARLIEST" }],
+    ];
+    expect(await findExistingClickIds(88214)).toEqual({
+      fbc: "fb.1.1.EARLIEST",
+      oppref: "oppref-EARLIEST",
+      gclid: "gclid-EARLIEST",
+    });
     const { sql, params } = db.state.calls[0];
-    expect(sql.match(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/g)).toHaveLength(2);
-    expect(params).toEqual(["88214", "88214"]);
+    expect(sql.match(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/g)).toHaveLength(3);
+    expect(params).toEqual(["88214", "88214", "88214"]);
   });
 
-  it("asks for each column in its own subquery, because the two need not sit on one row", async () => {
-    // A client can reach the funnel from a Meta click and come back through a
-    // ChatGPT one (or the other way round), so the earliest row carrying an
-    // `fbclid` need not be the row carrying an `oppref`. "The first non-empty
-    // value stored for this client" is a question per column; one row's two
-    // columns would answer a different question and silently drop whichever
-    // identifier was not on that row.
-    db.state.respond = () => [[{ fbc: "", oppref: "" }]];
+  it("asks for each column in its own subquery, because the three need not sit on one row", async () => {
+    // A client can reach the funnel from a Meta click, come back through a
+    // ChatGPT one and arrive a third time from Search, so the earliest row
+    // carrying an `fbclid` need not be the row carrying an `oppref` or a
+    // `gclid`. "The first non-empty value stored for this client" is a question
+    // per column; one row's three columns would answer a different question and
+    // silently drop whichever identifier was not on that row.
+    db.state.respond = () => [[{ fbc: "", oppref: "", gclid: "" }]];
     await findExistingClickIds(88214);
     const { sql } = db.state.calls[0];
     expect(sql).toMatch(/\(SELECT fbc FROM signup_events[\s\S]*fbc IS NOT NULL AND fbc <> ''/);
     expect(sql).toMatch(/\(SELECT oppref FROM signup_events[\s\S]*oppref IS NOT NULL AND oppref <> ''/);
+    expect(sql).toMatch(/\(SELECT gclid FROM signup_events[\s\S]*gclid IS NOT NULL AND gclid <> ''/);
   });
 
   it("is one statement, so the webhook that is answering FXBO makes one round trip", async () => {
-    db.state.respond = () => [[{ fbc: null, oppref: null }]];
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: null }]];
     await findExistingClickIds(88214);
     expect(db.state.calls).toHaveLength(1);
   });
 
   it("returns empty strings when no click is on file, and never queries for the word undefined", async () => {
-    // Both NULLs is the common case: most signups are organic.
-    db.state.respond = () => [[{ fbc: null, oppref: null }]];
-    expect(await findExistingClickIds(undefined)).toEqual({ fbc: "", oppref: "" });
-    expect(db.state.calls[0].params).toEqual(["", ""]);
+    // All three NULL is the common case: most signups are organic.
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: null }]];
+    expect(await findExistingClickIds(undefined)).toEqual({ fbc: "", oppref: "", gclid: "" });
+    expect(db.state.calls[0].params).toEqual(["", "", ""]);
   });
 
   it("returns empty strings for an empty result set as well as for NULLs", async () => {
     db.state.respond = () => [[]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "" });
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "", gclid: "" });
   });
 
-  it("hands back one id when only the other is on file", async () => {
-    db.state.respond = () => [[{ fbc: null, oppref: "oppref-ONLY" }]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "oppref-ONLY" });
+  it("hands back one id when only the others are on file", async () => {
+    db.state.respond = () => [[{ fbc: null, oppref: "oppref-ONLY", gclid: null }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "oppref-ONLY", gclid: "" });
+  });
+
+  it("hands back the gclid alone for a client who arrived from Search and nowhere else", async () => {
+    // The commonest shape of all for this one, once Google Ads is live: a
+    // gclid and nothing beside it. Pinned because it is the id with no
+    // fallback -- Meta and OpenAI still match on the hashed email and phone
+    // without theirs, and Google's conversion simply does not exist.
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: "Cj0KCQiA-only" }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "", gclid: "Cj0KCQiA-only" });
   });
 });
 
@@ -355,6 +372,19 @@ describe("claimDueEvents", () => {
     expect(db.state.calls[0].sql).toContain("openai_status   IN ('pending','retrying')");
   });
 
+  it("names google among them, so an offline conversion is claimed rather than never uploaded", async () => {
+    // The literal, not only the list: a row whose only due action is the Google
+    // upload would never be selected at all, and its status would read
+    // `pending` for the rest of the table's life -- which is the one counter
+    // that means the dispatch worker is dead.
+    db.state.respond = () => [[]];
+    await claimDueEvents(25, new Date("2026-10-13T10:00:00Z"));
+    expect(DESTINATIONS).toContain("google");
+    expect(db.state.calls[0].sql).toContain("google_status   IN ('pending','retrying')");
+    // One `now` per destination, and the limit last.
+    expect(db.state.calls[0].params).toHaveLength(DESTINATIONS.length + 1);
+  });
+
   it("defaults a zero limit to 25", async () => {
     db.state.respond = () => [[]];
     await claimDueEvents(0, new Date(0));
@@ -362,7 +392,7 @@ describe("claimDueEvents", () => {
   });
 });
 
-describe("the four action writers", () => {
+describe("the five action writers", () => {
   const next = new Date("2026-10-13T11:00:00Z");
 
   it("updateMetaStatus writes only the meta columns", async () => {
@@ -407,6 +437,23 @@ describe("the four action writers", () => {
     const { sql, params } = db.state.calls[0];
     expect(sql).toContain("brevo_contact_id = COALESCE(?, brevo_contact_id)");
     expect(params[2]).toBeNull();
+  });
+
+  it("updateGoogleStatus writes only the google columns", async () => {
+    // Nothing of Google's is written outside these four: the conversion's
+    // identity is its `orderId`, derived from the row, and `gclid` is frozen at
+    // insert. A writer that touched another destination's column would settle a
+    // send that never happened.
+    await updateGoogleStatus(7, { status: "sent", detail: "http 200", attempts: 1, nextAttemptAt: null });
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /SET google_status = \?, google_detail = \?, google_attempts = \?, google_next_attempt_at = \?\s+WHERE id = \?/
+    );
+    for (const other of ["meta", "whatsapp", "brevo", "openai"]) {
+      expect(sql, other).not.toContain(`${other}_status`);
+    }
+    expect(sql).not.toContain("gclid");
+    expect(params).toEqual(["sent", "http 200", 1, null, 7]);
   });
 
   it("updateOpenaiStatus writes only the openai columns", async () => {
@@ -468,6 +515,7 @@ describe("a detail is masked on the way into its column", () => {
     ["whatsapp", updateWhatsappStatus, 2],
     ["brevo", updateBrevoStatus, 1],
     ["openai", updateOpenaiStatus, 1],
+    ["google", updateGoogleStatus, 1],
   ];
 
   for (const [action, write, detailAt] of WRITERS) {
@@ -535,6 +583,7 @@ describe("a claiming write", () => {
     ["whatsapp", updateWhatsappStatus],
     ["brevo", updateBrevoStatus],
     ["openai", updateOpenaiStatus],
+    ["google", updateGoogleStatus],
   ];
 
   for (const [action, write] of WRITERS) {
@@ -755,7 +804,7 @@ describe("listEventsSince", () => {
     expect(params).toEqual([since, 2000]);
   });
 
-  it("reads every destination's status, detail and attempts, all four of them", async () => {
+  it("reads every destination's status, detail and attempts, all five of them", async () => {
     // A destination missing from this select list sends perfectly and then
     // reports as though it did not exist: `toTableRow` reads `undefined` for its
     // status, so its column is empty on every row of the one page built to
@@ -903,6 +952,16 @@ describe("scrubSignupEvent", () => {
     expect(db.state.calls[0].sql).toContain("AND openai_status IN ('sent','skipped')");
   });
 
+  it("requires google too, so no row is scrubbed while the upload is still pending", async () => {
+    // The send guard refuses a scrubbed row for ever, so a row scrubbed while
+    // the Google upload was still pending would hold `pending` until the table
+    // is dropped -- and `gclid` surviving the scrub does not help, because
+    // nothing would ever claim the row again.
+    await scrubSignupEvent(7, SCRUBBED);
+    expect(DESTINATIONS).toContain("google");
+    expect(db.state.calls[0].sql).toContain("AND google_status IN ('sent','skipped')");
+  });
+
   it("keeps a row whose send failed, refused or was never valid: scrubbing it is what destroyed the resend", async () => {
     // The gap this closes (2026-10-14, user's call). Built from SETTLED instead,
     // the three error statuses are in the clause, and a row whose Brevo send
@@ -937,7 +996,7 @@ describe("deleteInvalidSignupEvents", () => {
     const removed = await deleteInvalidSignupEvents(before);
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(
-      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND openai_status = 'invalid'\s+AND received_at < \?\s*$/
+      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND openai_status = 'invalid'\s+AND google_status = 'invalid'\s+AND received_at < \?\s*$/
     );
     expect(params).toEqual([before]);
     expect(removed).toBe(1);
@@ -962,6 +1021,17 @@ describe("deleteInvalidSignupEvents", () => {
     }
     expect(DESTINATIONS).toContain("openai");
     expect(sql).toContain("openai_status = 'invalid'");
+  });
+
+  it("names google too, so the condition stays satisfiable for an FXBO test press", async () => {
+    // The condition asks for every destination at once. A destination absent
+    // from it is a column that can hold anything; one present here but absent
+    // from the INSERT's invalid writes would make it unsatisfiable, and no
+    // invalid row would ever be deleted again.
+    await deleteInvalidSignupEvents(new Date("2026-10-07T12:00:00Z"));
+    const { sql } = db.state.calls[0];
+    expect(DESTINATIONS).toContain("google");
+    expect(sql).toContain("google_status = 'invalid'");
   });
 });
 
@@ -1287,6 +1357,8 @@ describe("countResendableSends", () => {
         openai_resendable: 7,
         openai_scrubbed: 8,
         openai_expired: 9,
+        google_resendable: 10,
+        google_scrubbed: 11,
         ...over,
       },
     ],
@@ -1294,7 +1366,7 @@ describe("countResendableSends", () => {
 
   it("counts, per destination, what the requeue would match and what it no longer can", async () => {
     // Every number different, so a column read into the wrong destination cannot
-    // hide behind an equal neighbour. `expired` is zero for the three
+    // hide behind an equal neighbour. `expired` is zero for the four
     // destinations that have no window, and a real number for the one that does.
     db.state.respond = () => counts();
     expect(await countResendableSends(COUNTED_AT)).toEqual({
@@ -1302,6 +1374,10 @@ describe("countResendableSends", () => {
       whatsapp: { resendable: 3, scrubbed: 4, expired: 0 },
       brevo: { resendable: 5, scrubbed: 6, expired: 0 },
       openai: { resendable: 7, scrubbed: 8, expired: 9 },
+      // Google has no window of its own: its conversion actions bound the
+      // CLICK's age, which is not an instant this table holds, so `expired` is
+      // the literal zero sendableWindow produces for every destination but one.
+      google: { resendable: 10, scrubbed: 11, expired: 0 },
     });
   });
 
@@ -1400,14 +1476,23 @@ describe("countResendableSends", () => {
       whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
       brevo: { resendable: 0, scrubbed: 0, expired: 0 },
       openai: { resendable: 0, scrubbed: 0, expired: 0 },
+      google: { resendable: 0, scrubbed: 0, expired: 0 },
     });
   });
 });
 
 describe("countEventsSince", () => {
-  it("selects the stage, all four statuses and the count, grouped over the window, with no cap", async () => {
+  it("selects the stage, all five statuses and the count, grouped over the window, with no cap", async () => {
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", n: 3 },
+      {
+        stage: "lead",
+        meta_status: "sent",
+        whatsapp_status: "skipped",
+        brevo_status: "sent",
+        openai_status: "sent",
+        google_status: "skipped",
+        n: 3,
+      },
     ];
     db.state.respond = () => [groups];
     const since = new Date("2026-09-13T00:00:00Z");
@@ -1416,7 +1501,7 @@ describe("countEventsSince", () => {
     // The whole statement, select list included. The fold reads the count as `n`, so
     // renaming the alias would make the funnel count groups instead of events.
     expect(sql).toMatch(
-      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status\s*$/
+      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status\s*$/
     );
     expect(params).toEqual([since]);
     expect(result).toEqual(groups);

@@ -46,6 +46,7 @@ export const SIGNUP_EVENTS_SCHEMA = `
     full_link VARCHAR(1024) NULL,
     fbc VARCHAR(255) NULL,
     oppref VARCHAR(512) NULL,
+    gclid VARCHAR(512) NULL,
     whatsapp_request_id VARCHAR(64) NULL,
     meta_status VARCHAR(16) NOT NULL DEFAULT 'pending',
     meta_detail TEXT NULL,
@@ -68,6 +69,10 @@ export const SIGNUP_EVENTS_SCHEMA = `
     openai_detail TEXT NULL,
     openai_attempts INT NOT NULL DEFAULT 0,
     openai_next_attempt_at DATETIME NULL,
+    google_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    google_detail TEXT NULL,
+    google_attempts INT NOT NULL DEFAULT 0,
+    google_next_attempt_at DATETIME NULL,
     raw_payload LONGTEXT NULL,
     received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -166,6 +171,29 @@ export const SIGNUP_EVENTS_ADDED_COLUMNS = [
   ["whatsapp_delivery_at", `ALTER TABLE signup_events ADD COLUMN whatsapp_delivery_at DATETIME NULL`],
   ["whatsapp_delivery_detail", `ALTER TABLE signup_events ADD COLUMN whatsapp_delivery_detail TEXT NULL`],
   ["brevo_contact_id", `ALTER TABLE signup_events ADD COLUMN brevo_contact_id VARCHAR(64) NULL`],
+  // The Google Ads destination, added 2026-10-21, in the identical shape the
+  // `oppref` / `openai_*` entries above took: one frozen click identifier and
+  // four columns of the destination's own statistics.
+  //
+  // `gclid` is Google's click identifier, and it is the one of the three
+  // without a fallback: Meta and OpenAI both match on the hashed email and
+  // phone when their click id is missing, while `uploadClickConversions`
+  // attributes on the gclid and nothing else. Its width follows `oppref`
+  // rather than `fbc` -- a gclid is an opaque token of no documented maximum,
+  // and 512 characters is several times the longest anybody has observed.
+  //
+  // The DEFAULT on `google_status` matters as much here as it did there: a
+  // table altered without it would hold NULL where the claim, the scrub and
+  // the resend all read a word, and a NULL is in no status list at all -- so
+  // such a row would never be claimed and never be scrubbed.
+  ["gclid", `ALTER TABLE signup_events ADD COLUMN gclid VARCHAR(512) NULL`],
+  [
+    "google_status",
+    `ALTER TABLE signup_events ADD COLUMN google_status VARCHAR(16) NOT NULL DEFAULT 'pending'`,
+  ],
+  ["google_detail", `ALTER TABLE signup_events ADD COLUMN google_detail TEXT NULL`],
+  ["google_attempts", `ALTER TABLE signup_events ADD COLUMN google_attempts INT NOT NULL DEFAULT 0`],
+  ["google_next_attempt_at", `ALTER TABLE signup_events ADD COLUMN google_next_attempt_at DATETIME NULL`],
 ];
 
 /** Exported so a test can pin each parameter to its column by name rather
@@ -194,6 +222,7 @@ export const INSERT_COLUMNS = [
   "full_link",
   "fbc",
   "oppref",
+  "gclid",
   "whatsapp_request_id",
   "meta_status",
   "meta_detail",
@@ -203,6 +232,8 @@ export const INSERT_COLUMNS = [
   "brevo_detail",
   "openai_status",
   "openai_detail",
+  "google_status",
+  "google_detail",
   "received_at",
   "raw_payload",
 ];
@@ -301,7 +332,14 @@ export function buildInsertParams(fields = {}, derived = {}, rawPayload = null, 
     // none of them. Unlike fbc there is no wrapper around it, so the raw value is
     // the whole of what is frozen here.
     identifier(derived.oppref, "oppref"),
+    // Never cut either, and the consequence of cutting this one is the worst of
+    // the three: a gclid is the whole of a Google Ads click conversion's
+    // identity, so a shortened one would be uploaded, accepted, and attributed
+    // to no campaign at all -- a conversion counted against nothing.
+    identifier(derived.gclid, "gclid"),
     str(derived.whatsappRequestId, "whatsapp_request_id"),
+    status,
+    detail,
     status,
     detail,
     status,
@@ -383,8 +421,8 @@ async function addWhatIsMissing() {
 }
 
 /**
- * The click ids this client already has, if any: Meta's `fbc` and OpenAI's
- * `oppref`.
+ * The click ids this client already has, if any: Meta's `fbc`, OpenAI's
+ * `oppref` and Google's `gclid`.
  *
  * This is what freezes them. Each is captured once, at the first stage whose
  * full_link carried it -- a stage that arrived earlier without one stores
@@ -395,13 +433,14 @@ async function addWhatIsMissing() {
  * (the deposit is a different row, arriving weeks later, whose own full_link is
  * normally empty because that visit is not an ad click).
  *
- * **Two scalar subqueries, not two columns off one row, and not two round
+ * **Three scalar subqueries, not three columns off one row, and not three round
  * trips.** The earliest row carrying an `fbclid` need not be the one carrying an
- * `oppref`: a client can click a Meta ad, come back through a ChatGPT ad, and
- * reach the funnel on either. "The first non-empty value stored for this client"
- * is therefore a question per column, which is what each subquery asks. It is
- * still one statement and one round trip, because the webhook answers FXBO
- * inside this request.
+ * `oppref` or a `gclid`: a client can click a Meta ad, come back through a
+ * ChatGPT ad, arrive a third time from Search, and reach the funnel on any of
+ * them. "The first non-empty value stored for this client" is therefore a
+ * question per column, which is what each subquery asks. It is still one
+ * statement and one round trip, because the webhook answers FXBO inside this
+ * request.
  */
 export async function findExistingClickIds(crmClientId) {
   const id = String(crmClientId ?? "");
@@ -414,15 +453,20 @@ export async function findExistingClickIds(crmClientId) {
        (SELECT oppref FROM signup_events
           WHERE crm_client_id = ? AND oppref IS NOT NULL AND oppref <> ''
           ORDER BY received_at ASC, id ASC
-          LIMIT 1) AS oppref`,
-    [id, id]
+          LIMIT 1) AS oppref,
+       (SELECT gclid FROM signup_events
+          WHERE crm_client_id = ? AND gclid IS NOT NULL AND gclid <> ''
+          ORDER BY received_at ASC, id ASC
+          LIMIT 1) AS gclid`,
+    [id, id, id]
   );
-  // A client with neither gets one row of two NULLs, which is the common case:
-  // most signups are organic and carry no click at all.
+  // A client with none of them gets one row of three NULLs, which is the common
+  // case: most signups are organic and carry no click at all.
   const frozen = rows[0] ?? {};
   return {
     fbc: frozen.fbc ? String(frozen.fbc) : "",
     oppref: frozen.oppref ? String(frozen.oppref) : "",
+    gclid: frozen.gclid ? String(frozen.gclid) : "",
   };
 }
 
@@ -511,9 +555,10 @@ export async function claimDueEvents(limit = 25, now = new Date()) {
          OR (whatsapp_status IN ('pending','retrying') AND (whatsapp_next_attempt_at IS NULL OR whatsapp_next_attempt_at <= ?))
          OR (brevo_status    IN ('pending','retrying') AND (brevo_next_attempt_at    IS NULL OR brevo_next_attempt_at    <= ?))
          OR (openai_status   IN ('pending','retrying') AND (openai_next_attempt_at   IS NULL OR openai_next_attempt_at   <= ?))
+         OR (google_status   IN ('pending','retrying') AND (google_next_attempt_at   IS NULL OR google_next_attempt_at   <= ?))
       ORDER BY received_at ASC
       LIMIT ?`,
-    [now, now, now, now, Number(limit) || 25]
+    [now, now, now, now, now, Number(limit) || 25]
   );
 }
 
@@ -751,6 +796,30 @@ export async function updateOpenaiStatus(id, { status, detail, attempts, nextAtt
   return matchedRows(result);
 }
 
+/** Nothing of Google's is written outside these four columns either, and for
+ *  the same two reasons: the conversion's identity is its `orderId`, derived
+ *  from the row, and `gclid` is frozen at insert. The one thing the upload does
+ *  return -- a `jobId` -- names the request rather than the conversion, and for
+ *  a batch of one it is a number Google generated, so there is no question a
+ *  person could later ask with it. */
+export async function updateGoogleStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+  const claim = claimClause("google", claimAt);
+  const result = await run(
+    `UPDATE signup_events
+        SET google_status = ?, google_detail = ?, google_attempts = ?, google_next_attempt_at = ?
+      WHERE id = ?${claim.sql}`,
+    [
+      String(status),
+      detailFor(detail),
+      Number(attempts) || 0,
+      nextAttemptAt ?? null,
+      id,
+      ...claim.params,
+    ]
+  );
+  return matchedRows(result);
+}
+
 /**
  * What DoubleTick says became of one message, matched on the id we froze.
  *
@@ -818,6 +887,18 @@ export async function recordWhatsappDelivery(messageId, { status, at, detail } =
  *   `fbc` stays. It is captured at signup and reused weeks later for the
  *   first-deposit conversion, so scrubbing it would send every later conversion
  *   to Meta with no ad attached.
+ *
+ *   `gclid` stays, and of the three click ids it is the one whose loss would
+ *   cost most. Google attributes a click conversion on the gclid and on nothing
+ *   else -- there is no hashed-email fallback as there is for Meta and OpenAI --
+ *   so scrubbing it would not weaken the first deposit's attribution weeks
+ *   later, it would remove it: decideGoogleSkip would then skip that conversion
+ *   outright, permanently, for every client whose signup had already settled.
+ *   It is not client data, for the same reason `oppref` is not: it identifies an
+ *   ad click, not a person. So it sits here beside the other two rather than
+ *   with `full_link` below, which is where the gclid also appears and which does
+ *   go -- the whole query string is redundant once the three ids and the `utm_*`
+ *   columns have been taken out of it.
  *
  *   `oppref` stays, for the same reason and one more. It is OpenAI's click
  *   identifier, their Conversions API does not capture it, and the deposit is a
@@ -901,7 +982,8 @@ export async function scrubSignupEvent(id, at = new Date()) {
         AND ${scrubbableClause("meta")}
         AND ${scrubbableClause("whatsapp")}
         AND ${scrubbableClause("brevo")}
-        AND ${scrubbableClause("openai")}`,
+        AND ${scrubbableClause("openai")}
+        AND ${scrubbableClause("google")}`,
     [at, id]
   );
   return matchedRows(result);
@@ -931,6 +1013,7 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
         AND whatsapp_status = 'invalid'
         AND brevo_status = 'invalid'
         AND openai_status = 'invalid'
+        AND google_status = 'invalid'
         AND received_at < ?`,
     [receivedBefore]
   );
@@ -938,14 +1021,22 @@ export async function deleteInvalidSignupEvents(receivedBefore) {
 }
 
 /**
- * The four destinations, in the order the tab shows them.
+ * The five destinations, in the order the tab shows them.
  *
  * Exported because the requeue route validates its body parameter against this
  * list: the destination is interpolated into a column name below, so the route
  * and the statement have to agree about what a destination is, and two copies of
- * four strings is exactly the kind of list that drifts.
+ * five strings is exactly the kind of list that drifts.
+ *
+ * `google` joined on 2026-10-21 and the three statements built from this list
+ * are the reason it had to: the backstop settles every destination it leaves
+ * unsendable, the resend reaches one by name, and the resendable count promises
+ * what the resend would match. A destination missing from here sends perfectly
+ * and then has no backstop, no resend and no number -- its rows would read
+ * `pending` for the rest of the table's life, which is the one counter that
+ * means "the dispatch worker is dead".
  */
-export const DESTINATIONS = ["meta", "whatsapp", "brevo", "openai"];
+export const DESTINATIONS = ["meta", "whatsapp", "brevo", "openai", "google"];
 
 /**
  * The rows a destination could still send, when it has a deadline at all.
@@ -957,6 +1048,15 @@ export const DESTINATIONS = ["meta", "whatsapp", "brevo", "openai"];
  * purpose is to say when the conversion happened (spec section 7a). Meta,
  * WhatsApp and Brevo take an event of any age, so for them this is empty and
  * their statements are unchanged.
+ *
+ * **Google looks as though it belongs here and does not.** Its conversion
+ * actions have a 90-day click-through window, and an upload outside it is
+ * refused as `EXPIRED_EVENT` -- but that window is measured from the CLICK, and
+ * the click is not an instant this table holds. A signup's `received_at` can
+ * follow its own click by any interval, so a bound written on `received_at`
+ * would promise rows Google refuses and refuse rows Google would take. The
+ * honest answer is that we cannot tell from here, so Google's rows are offered
+ * like Meta's and an expired one comes back as a `rejected` naming the enum.
  *
  * **Built from the two constants decideOpenaiSkip tests against**, imported
  * rather than restated, because the whole point is that the count and the skip
@@ -1219,7 +1319,7 @@ export async function countResendableSends(now = new Date()) {
  * in JavaScript is exactly the silent undercount Task 9 removed, so nothing
  * aggregated belongs here.
  *
- * **One status, detail and attempts column per destination, all four of them.**
+ * **One status, detail and attempts column per destination, all five of them.**
  * A destination missing from this select list sends perfectly and then reports
  * as though it did not exist: `toTableRow` reads `undefined` for its status and
  * the tab's own column shows an empty cell on every row. On the one page whose
@@ -1242,7 +1342,8 @@ export async function listEventsSince(since, cap = 2000) {
             whatsapp_status, whatsapp_detail, whatsapp_attempts,
             whatsapp_delivery_status, whatsapp_delivery_at, whatsapp_delivery_detail,
             brevo_status, brevo_detail, brevo_contact_id, brevo_attempts,
-            openai_status, openai_detail, openai_attempts, received_at, scrubbed_at
+            openai_status, openai_detail, openai_attempts,
+            google_status, google_detail, google_attempts, received_at, scrubbed_at
        FROM signup_events
       WHERE received_at >= ?
       ORDER BY received_at DESC
@@ -1252,7 +1353,7 @@ export async function listEventsSince(since, cap = 2000) {
 }
 
 /**
- * Event counts per (stage, status quadruple) since a date, over the whole window.
+ * Event counts per (stage, status quintuple) since a date, over the whole window.
  *
  * Grouped in SQL and never capped: the result is bounded by the number of distinct
  * status combinations, not by how many events the window holds. A count read from
@@ -1266,14 +1367,14 @@ export async function listEventsSince(since, cap = 2000) {
  * zeroes while it is sending. Adding a fourth status multiplies the number of
  * groups, not the number of rows scanned, and the result is still bounded by
  * the distinct combinations that actually occur -- which is a handful, because
- * a row's four statuses move together.
+ * a row's statuses move together.
  */
 export async function countEventsSince(since) {
   return all(
-    `SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, COUNT(*) AS n
+    `SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status, COUNT(*) AS n
        FROM signup_events
       WHERE received_at >= ?
-      GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status`,
+      GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status`,
     [since]
   );
 }
