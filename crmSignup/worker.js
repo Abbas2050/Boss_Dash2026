@@ -19,6 +19,17 @@ import {
   sendOpenaiEvent,
   OPENAI_EVENTS_URL,
 } from "./openai.js";
+import {
+  decideGoogleSkip,
+  decideGoogleValueFailure,
+  buildGoogleUpload,
+  resolveGoogleConversionAction,
+  uploadGoogleConversion,
+  resolveTimezoneOffset,
+  GOOGLE_ADS_API_HOST,
+  GOOGLE_ADS_API_VERSION,
+  GOOGLE_OAUTH_TOKEN_URL,
+} from "./googleAds.js";
 // The one inbound lookup in this module. Everything else here talks to a
 // destination; this asks FXBO what the deposit was worth, because Meta discards
 // a Purchase that does not say.
@@ -33,6 +44,7 @@ import {
   updateWhatsappStatus,
   updateBrevoStatus,
   updateOpenaiStatus,
+  updateGoogleStatus,
   scrubSignupEvent,
   deleteInvalidSignupEvents,
   scrubStaleSignupEvents,
@@ -50,8 +62,8 @@ const INVALID_RETENTION_DAYS = 7;
 
 // How long a row that never settles may keep its client data. The settle path
 // scrubs about a minute after signup; this catches what it never reaches -- a
-// worker left off by CRM_EVENTS_WORKER_ENABLED, or a row whose four claims
-// split between two overlapped workers so neither saw all four settle. Thirty
+// worker left off by CRM_EVENTS_WORKER_ENABLED, or a row whose five claims
+// split between two overlapped workers so neither saw all five settle. Thirty
 // days is the user's number, and for the same reason not an env var.
 const UNSCRUBBED_BACKSTOP_DAYS = 30;
 
@@ -72,6 +84,12 @@ let lastRetentionAt = 0;
 // literal in both.
 const META_MAX_ATTEMPTS = 3;
 const BREVO_MAX_ATTEMPTS = 3;
+// Google's, fixed at three like Meta's and Brevo's rather than configurable.
+// Nothing about this destination argues for an operator's number: unlike
+// OpenAI there is no 7-day window for a budget to race, and unlike WhatsApp
+// there is no message a retry could duplicate -- the `orderId` is what makes a
+// repeated upload the same conversion.
+const GOOGLE_MAX_ATTEMPTS = 3;
 
 /**
  * What the row says when the request was a validation rather than a send.
@@ -83,7 +101,7 @@ const BREVO_MAX_ATTEMPTS = 3;
  * card and the overview would report it as real.
  *
  * It goes in the DETAIL and not in the status, deliberately. The status is the
- * one word four destinations share: SETTLED, SCRUBBABLE and REQUEUEABLE are all
+ * one word five destinations share: SETTLED, SCRUBBABLE and REQUEUEABLE are all
  * built from that vocabulary, settled.js refuses a list that drifts, and the
  * claim, the scrub precondition, the backstop and the resend each name those
  * words in SQL. A fifth word for one destination would have to be added to every
@@ -98,6 +116,22 @@ const BREVO_MAX_ATTEMPTS = 3;
  * sees only an HTTP exchange.
  */
 export const OPENAI_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded by OpenAI";
+
+/**
+ * The same note for Google, and the same hazard.
+ *
+ * `validateOnly: true` returns a 200 with no `results` at all and records
+ * nothing in the account, so the row settles exactly as a real upload does --
+ * which means a genuine conversion passing through while the flag is on is
+ * recorded `sent` and can never be resent: the resend only reaches `failed` and
+ * `rejected`. Hence the detail, on every outcome, so the row says what actually
+ * happened rather than leaving it to whoever remembers what .env held that day.
+ *
+ * Its own constant rather than one shared with OpenAI's: they are different
+ * sentences about different providers, and one destination's flag being on says
+ * nothing about the other's.
+ */
+export const GOOGLE_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded by Google Ads";
 
 // What the row says while a request is in the air. The outcome replaces it the
 // moment it is known, so a person reads this only if the process died first.
@@ -527,10 +561,150 @@ async function runOpenaiStep(row, fields, deps, begin, depositValue) {
   return { ...plan, detail };
 }
 
+async function runGoogleStep(row, fields, deps, begin, depositValue) {
+  const { config, sendGoogle, resolveGoogleAction, now, logger } = deps;
+  const attempts = Number(row.google_attempts) || 0;
+
+  // One decision for every reason this upload is not ours to make: nothing
+  // configured, a stage the GTM container owns, a stage with no conversion
+  // action, or -- the commonest -- a client who arrived without a gclid. A skip
+  // spends no attempt and sets no clock.
+  const skip = decideGoogleSkip({
+    stage: fields.stage,
+    refreshToken: config.googleRefreshToken,
+    clientId: config.googleClientId,
+    clientSecret: config.googleClientSecret,
+    customerId: config.googleCustomerId,
+    // Verbatim from the row: frozen at this client's first event, and the only
+    // copy there is once full_link has been scrubbed. Google has no identifier
+    // to fall back on, so this is the difference between an attributed
+    // conversion and no conversion at all.
+    gclid: str(row.gclid),
+  });
+  if (skip) {
+    return { status: "skipped", detail: skip.reason, attempts, nextAttemptAt: null };
+  }
+
+  // The same gate Meta's and ChatGPT Ads' steps apply, for the reason OpenAI's
+  // gives: Google accepts a conversion with no value, and `orderId` makes this
+  // conversion unique per action for ever -- so an unpriced upload now is the
+  // final word on that deposit's worth and no later send can correct it. A
+  // visible `failed`, requeueable once FXBO answers, is the recoverable
+  // direction.
+  let deposit = null;
+  if (fields.stage === DEPOSIT_VALUE_STAGE) {
+    const looked = await depositValue();
+    if (!looked?.value) {
+      const failure = depositLookupFailure(looked);
+      const plan = planRetry({
+        attempts,
+        maxAttempts: GOOGLE_MAX_ATTEMPTS,
+        retryable: failure.retryable,
+        finalStatus: "failed",
+        now: now(),
+      });
+      logger.warn?.(`[crm-events] google ${plan.status} for row ${row.id}: ${failure.detail}`);
+      return { ...plan, detail: failure.detail };
+    }
+    deposit = looked.value;
+  }
+
+  // A deposit that was found but cannot be stated in money Google reads. Before
+  // the claim and before any request, like decideBrevoListIdFailure: nothing is
+  // uploaded, so there is nothing for a second sweeper to collide with. It
+  // spends no attempt and sets no clock either -- a currency Google cannot read
+  // will not be readable in five minutes -- and the detail names the code.
+  const unpriceable = decideGoogleValueFailure({ stage: fields.stage, depositValue: deposit });
+  if (unpriceable) {
+    // The row id, not the client: the problem is the deposit's currency, and
+    // there is no client data in the detail either.
+    logger.warn?.(`[crm-events] google ${unpriceable.status} for row ${row.id}: ${unpriceable.detail}`);
+    return { status: unpriceable.status, detail: unpriceable.detail, attempts, nextAttemptAt: null };
+  }
+
+  // **The conversion action is resolved by NAME, and the upload cannot be built
+  // without the resource name it resolves to.** Before the claim, for the same
+  // reason the deposit lookup is: no conversion has been uploaded, so there is
+  // nothing another sweeper could duplicate. It spends an attempt and sets a
+  // clock when the cause may clear, because a failure here is as often a 5xx or
+  // an expired refresh token as it is a misconfigured account.
+  //
+  // What it must never do is settle `sent`. A name that does not resolve has no
+  // resource name, and the two ways to get that wrong are both silent: a
+  // hardcoded id uploads to whatever action now holds it, and an absent action
+  // name with the field omitted is a conversion Google files against nothing.
+  // So this is a failure with the name in it, every time.
+  const resolved = await resolveGoogleAction({ config, stage: fields.stage, now: now() });
+  if (!resolved?.resourceName) {
+    const retryable = resolved?.failure?.retryable !== false;
+    const detail = str(resolved?.failure?.detail) || "the conversion action could not be resolved";
+    const plan = planRetry({
+      attempts,
+      maxAttempts: GOOGLE_MAX_ATTEMPTS,
+      retryable,
+      finalStatus: "failed",
+      now: now(),
+    });
+    logger.warn?.(`[crm-events] google ${plan.status} for row ${row.id}: ${detail}`);
+    return { ...plan, detail };
+  }
+
+  const payload = buildGoogleUpload({
+    stage: fields.stage,
+    crmClientId: fields.crmClientId,
+    gclid: str(row.gclid),
+    conversionAction: resolved.resourceName,
+    // The row's own instant, stamped in the ACCOUNT's zone rather than the
+    // server's or UTC -- googleConversionDateTime says why that is a day's
+    // difference and not an hour's.
+    receivedAt: row.received_at,
+    offset: config.googleTimezoneOffset,
+    // The DECIMAL half of the same lookup OpenAI took the minor-unit integer
+    // from. googleValueFields reads `valueDecimal` and openaiAmountFields reads
+    // `amountMinor`, so neither can pick up the other's number -- a $54.49
+    // deposit reported as $5,449 is what that mistake looks like here.
+    depositValue: deposit,
+    validateOnly: config.googleValidateOnly,
+  });
+
+  // **A null payload is not posted.** Unreachable today -- every reason is
+  // already a skip or a failure above -- so this is the backstop, and it records
+  // `invalid`: the one status no resend picks up, because nothing an operator
+  // fixes would make the payload constructible.
+  if (!payload) {
+    logger.warn?.(`[crm-events] google payload could not be built for row ${row.id}; nothing is uploaded`);
+    return { status: "invalid", detail: "no sendable payload could be built", attempts, nextAttemptAt: null };
+  }
+
+  await begin();
+  const outcome = await sendGoogle({ config, payload });
+
+  const plan = planRetry({
+    attempts,
+    maxAttempts: GOOGLE_MAX_ATTEMPTS,
+    retryable: outcome.retryable,
+    finalStatus: outcome.status,
+    now: now(),
+  });
+
+  // On every outcome, not only on a success: a validation that was refused was
+  // still only a validation, and reading `rejected` without this would send
+  // somebody looking in Google Ads for a conversion that was never offered.
+  const detail = config.googleValidateOnly
+    ? `${GOOGLE_VALIDATE_ONLY_DETAIL}; ${outcome.detail}`
+    : outcome.detail;
+
+  if (plan.status !== "sent") {
+    logger.warn?.(`[crm-events] google ${plan.status} for ${maskEmail(fields.email)}: ${detail}`);
+  }
+
+  return { ...plan, detail };
+}
+
 /**
  * Whether an action's own retry clock is still in the future.
  *
- * claimDueEvents selects a row when ANY of its four actions is due, so without
+ * claimDueEvents selects a row when ANY of its five actions is due, so without
  * this a waiting action is run early whenever a sibling comes due -- and one whose
  * request is still in the air (see `begin`) is sent a second time. "Due" is
  * `<= now`, the same test the sweeper applies in SQL.
@@ -566,7 +740,7 @@ async function saveOutcome(save, id, outcome, logger) {
 }
 
 /**
- * One row, four actions, independently.
+ * One row, five actions, independently.
  *
  * Each action has its own status, attempt count and clock in the row, and its own
  * budget. A settled one is never touched again, and one still waiting on its
@@ -583,7 +757,7 @@ async function saveOutcome(save, id, outcome, logger) {
  */
 export async function processSignupEvent(row, deps) {
   const fields = rowToFields(row);
-  const result = { meta: null, whatsapp: null, brevo: null, openai: null };
+  const result = { meta: null, whatsapp: null, brevo: null, openai: null, google: null };
   // The actions another worker took off us during this pass. Not an outcome and
   // never written anywhere: it is only read by the scrub decision below, which
   // must not read our stale column for an action somebody else is settling.
@@ -604,12 +778,14 @@ export async function processSignupEvent(row, deps) {
 
   // **One lookup per row per pass, asked for only by a step that will use it.**
   //
-  // Lazy: a step decides its skip first, so a row whose Meta and ChatGPT Ads
-  // steps are both skipped or already settled costs no CRM call at all, and no
-  // stage but the first deposit ever reaches this. Memoised: the two
-  // destinations that do send share one answer rather than asking FXBO the same
-  // question twice for one deposit. The promise is cached, not the result, so
-  // the second caller awaits the first call instead of starting a second.
+  // Lazy: a step decides its skip first, so a row whose Meta, ChatGPT Ads and
+  // Google Ads steps are all skipped or already settled costs no CRM call at
+  // all, and no stage but the first deposit ever reaches this. Memoised: the
+  // three destinations that do send share one answer rather than asking FXBO
+  // the same question three times for one deposit -- which also means they
+  // cannot disagree about what the deposit was worth. The promise is cached, not
+  // the result, so a later caller awaits the first call instead of starting
+  // another.
   //
   // This is the only outbound call in the module that is not to a destination,
   // which is why its cost is bounded here rather than left to the callers.
@@ -635,6 +811,7 @@ export async function processSignupEvent(row, deps) {
     ["whatsapp", "whatsapp_status", "whatsapp_attempts", "whatsapp_next_attempt_at", runWhatsappStep, deps.saveWhatsapp, deps.config.waMaxAttempts],
     ["brevo", "brevo_status", "brevo_attempts", "brevo_next_attempt_at", runBrevoStep, deps.saveBrevo, BREVO_MAX_ATTEMPTS],
     ["openai", "openai_status", "openai_attempts", "openai_next_attempt_at", runOpenaiStep, deps.saveOpenai, deps.config.openaiMaxAttempts],
+    ["google", "google_status", "google_attempts", "google_next_attempt_at", runGoogleStep, deps.saveGoogle, GOOGLE_MAX_ATTEMPTS],
   ];
 
   for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of steps) {
@@ -715,7 +892,7 @@ export async function processSignupEvent(row, deps) {
   //
   // This decides only WHETHER TO TRY, which is why the common case still issues
   // exactly one statement; what makes trying safe is the statement's own
-  // precondition (see scrubbableClause in store.js), which reads all four
+  // precondition (see scrubbableClause in store.js), which reads all five
   // statuses off the row as the table holds it.
   //
   // An action's status is read from its own place: the step's own outcome when it
@@ -731,7 +908,7 @@ export async function processSignupEvent(row, deps) {
   // longer decided by our copy alone: our column for it is stale by definition,
   // and its owner is settling it. During an overlapped IIS recycle two workers
   // split the claims between them, and while each read its own stale copy NEITHER
-  // ever saw all four settled -- so neither scrubbed, and the row waited the full
+  // ever saw all five settled -- so neither scrubbed, and the row waited the full
   // thirty days for the backstop in exactly the case the policy asks to reduce to
   // a minute. Both attempt it now: the earlier attempt finds the other's actions
   // still `retrying` in the table and matches nothing, and whichever worker
@@ -807,6 +984,37 @@ function liveConfig() {
     // stray `1`, `yes` or `on` left in .env must not be what does that.
     openaiValidateOnly: String(process.env.OPENAI_VALIDATE_ONLY || "").toLowerCase() === "true",
     openaiMaxAttempts: Math.max(1, Number(process.env.OPENAI_MAX_ATTEMPTS || 3) || 3),
+    // Google Ads. The refresh token is the credential the uploads cannot be
+    // made without, so its absence is what "this destination is not set up"
+    // means (decideGoogleSkip). It is minted once by
+    // scripts/google-ads-refresh-token.mjs and survives indefinitely only
+    // because the OAuth consent screen is published; left in "Testing" it
+    // expires weekly and every conversion settles `failed` at the exchange.
+    googleRefreshToken: process.env.GOOGLE_ADS_REFRESH_TOKEN || "",
+    googleClientId: process.env.GOOGLE_ADS_CLIENT_ID || "",
+    googleClientSecret: process.env.GOOGLE_ADS_CLIENT_SECRET || "",
+    googleCustomerId: process.env.GOOGLE_ADS_CUSTOMER_ID || "",
+    // Required only when reaching the customer THROUGH a manager account, so
+    // blank is the normal value and the header is then omitted entirely.
+    googleLoginCustomerId: process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || "",
+    // Optional and ignored by the API since the 2026-09-09 sunset, and Google
+    // encourages not sending it at all -- see decideGoogleSkip. Read here only
+    // so an account mid-transition can still supply one.
+    googleDeveloperToken: process.env.GOOGLE_ADS_DEVELOPER_TOKEN || "",
+    // A version in the URL that Google sunsets about a year after releasing it,
+    // so it is movable with a restart rather than a deploy.
+    googleApiVersion: String(process.env.GOOGLE_ADS_API_VERSION || GOOGLE_ADS_API_VERSION).trim(),
+    googleApiHost: String(process.env.GOOGLE_ADS_API_HOST || GOOGLE_ADS_API_HOST).trim(),
+    googleTokenUrl: String(process.env.GOOGLE_ADS_TOKEN_URL || GOOGLE_OAUTH_TOKEN_URL).trim(),
+    // The account's own zone, +04:00, unless an operator moves it. Anything
+    // unusable falls back to the account's with a warning rather than stopping
+    // the uploads -- resolveTimezoneOffset says why that is the right direction
+    // for this one value and not for a key.
+    googleTimezoneOffset: resolveTimezoneOffset(process.env.GOOGLE_ADS_TIMEZONE_OFFSET),
+    // Only the literal "true", any case, exactly as OPENAI_VALIDATE_ONLY: this
+    // flag stops every conversion being recorded while the row still settles,
+    // so a stray `1`, `yes` or `on` left in .env must not be what does that.
+    googleValidateOnly: String(process.env.GOOGLE_ADS_VALIDATE_ONLY || "").toLowerCase() === "true",
     skipSources: parseSkipSources(process.env.SKIP_SOURCES),
     // FXBO, for the first-deposit amount. The same three variables and the same
     // default origin that server.js's /rest proxy and reports/reportShared.js
@@ -828,6 +1036,30 @@ function liveConfig() {
   };
 }
 
+/**
+ * The Google credentials and endpoint, named once for the two calls that take
+ * them.
+ *
+ * Written out here rather than passed as `config` so that googleAds.js takes
+ * flat arguments like every other sender, and so this file is the only place
+ * that knows a `googleCustomerId` is a `customerId`. A mapping written twice
+ * is a mapping that can be written differently twice -- and sending the manager
+ * id as the customer id uploads to the wrong account without an error.
+ */
+function googleCall(config) {
+  return {
+    apiHost: config.googleApiHost,
+    apiVersion: config.googleApiVersion,
+    customerId: config.googleCustomerId,
+    loginCustomerId: config.googleLoginCustomerId,
+    developerToken: config.googleDeveloperToken,
+    clientId: config.googleClientId,
+    clientSecret: config.googleClientSecret,
+    refreshToken: config.googleRefreshToken,
+    tokenUrl: config.googleTokenUrl,
+  };
+}
+
 function liveDeps() {
   return {
     config: liveConfig(),
@@ -836,6 +1068,15 @@ function liveDeps() {
     upsertBrevo: ({ apiKey, contact }) => upsertBrevoContact({ apiKey, contact }),
     sendOpenai: ({ eventsUrl, pixelId, apiKey, payload }) =>
       sendOpenaiEvent({ eventsUrl, pixelId, apiKey, payload }),
+    // Two deps for Google where the others have one, because the upload needs
+    // something looked up first: the conversion action's resource name. The
+    // lookup happens BEFORE the claim and the upload after it, so a name that
+    // does not resolve costs no claim and uploads nothing. Both read the same
+    // process-wide access token cache, so the common case is one HTTP request
+    // per conversion.
+    resolveGoogleAction: ({ config, stage, now }) =>
+      resolveGoogleConversionAction({ ...googleCall(config), stage, now }),
+    sendGoogle: ({ config, payload }) => uploadGoogleConversion({ ...googleCall(config), payload }),
     // Injected like the senders so a test can answer it without a network, and
     // so the one case that matters -- the lookup finding nothing -- can be
     // exercised rather than argued about.
@@ -850,6 +1091,7 @@ function liveDeps() {
     saveWhatsapp: updateWhatsappStatus,
     saveBrevo: updateBrevoStatus,
     saveOpenai: updateOpenaiStatus,
+    saveGoogle: updateGoogleStatus,
     scrub: scrubSignupEvent,
     deleteInvalid: deleteInvalidSignupEvents,
     scrubStale: scrubStaleSignupEvents,

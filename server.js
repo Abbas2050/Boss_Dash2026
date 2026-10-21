@@ -1481,6 +1481,36 @@ server.listen(PORT, () => {
         'which is what makes them the same ad account, set it in .env and restart.',
     );
   }
+  // The third line of the same shape, for the same unrecoverable window. Only
+  // when the refresh token is set: without it Google Ads is off entirely and
+  // every row records "google ads not configured". With it set and the OAuth
+  // client or the customer id missing, every conversion records `skipped` --
+  // and `skipped` is FINAL, so the window between this boot and somebody
+  // noticing cannot be resent at all.
+  // The customer id is the sharper half: it is in the request URL, so without
+  // it there is nowhere to post. Printed, unlike the three secrets beside it,
+  // because an account number is not a secret and the commonest way this goes
+  // wrong is the dashed form copied out of the Google Ads UI, which the API
+  // refuses -- so the value is the diagnostic.
+  if (process.env.GOOGLE_ADS_REFRESH_TOKEN) {
+    const googleCustomerId = String(process.env.GOOGLE_ADS_CUSTOMER_ID || '').replace(/\D/g, '');
+    const googleOauthClient =
+      String(process.env.GOOGLE_ADS_CLIENT_ID || '').trim() &&
+      String(process.env.GOOGLE_ADS_CLIENT_SECRET || '').trim();
+    if (!googleCustomerId || !googleOauthClient) {
+      console.error(
+        '[crm-events] GOOGLE_ADS_REFRESH_TOKEN is set but ' +
+          (!googleOauthClient
+            ? 'GOOGLE_ADS_CLIENT_ID or GOOGLE_ADS_CLIENT_SECRET is unset or blank'
+            : `GOOGLE_ADS_CUSTOMER_ID holds no digits (${JSON.stringify(
+                String(process.env.GOOGLE_ADS_CUSTOMER_ID || ''),
+              )})`) +
+          '. Every Google Ads conversion will be recorded as skipped, and a skipped row is final: setting it ' +
+          'later does not upload it, and the resend control cannot reach it. The customer id is digits only ' +
+          '-- 4743067250, not 474-306-7250. Set it in .env and restart.',
+      );
+    }
+  }
   initCrmSignupStore()
     .then(() => startCrmEventsWorker())
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
