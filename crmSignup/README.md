@@ -2,25 +2,44 @@
 
 Receives FXBO webhooks at five points in the client funnel, stores each once,
 then independently sends a Meta Conversions API event, a DoubleTick WhatsApp
-welcome, a Brevo contact, and an OpenAI conversion for ChatGPT Ads.
+welcome, a Brevo contact, an OpenAI conversion for ChatGPT Ads, and a Google Ads
+offline click conversion.
 
 Design: `../docs/superpowers/specs/2026-10-09-crm-signup-webhook-design.md`
 ChatGPT Ads: `../docs/superpowers/specs/2026-10-14-chatgpt-ads-conversions-design.md`
+Google Ads: no design document of its own — the decisions are in `googleAds.js`
+and in the "Google Ads" block at the end of `../.env.example`.
 
 Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 
 ## What each stage sends
 
-| Stage | Meta event | WhatsApp | Brevo | ChatGPT Ads event (`data.type`) |
-|---|---|---|---|---|
-| `lead` | `Lead` | no | no | `lead_created` (`customer_action`) — blocked upstream, no FXBO trigger |
-| `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it |
-| `verified` | `StartTrial` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) |
-| `live_account` | `SubmitApplication` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) |
-| `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) |
+| Stage | Meta event | WhatsApp | Brevo | ChatGPT Ads event (`data.type`) | Google Ads conversion action |
+|---|---|---|---|---|---|
+| `lead` | `Lead` | no | no | `lead_created` (`customer_action`) — blocked upstream, no FXBO trigger | **none** — no action exists, same reason |
+| `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it | **not sent** -- the GTM container owns it |
+| `verified` | `StartTrial` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) | `FXBO_Client_Verified` |
+| `live_account` | `SubmitApplication` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) | `FXBO_Live_Account_Opened` |
+| `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) | `FXBO_First_Deposit` + `conversionValue`/`currencyCode` |
 
-**No single event sends to all four.** `registered` sends WhatsApp and Brevo;
-every other stage sends Meta and ChatGPT Ads together, and nothing else.
+**No single event sends to all five.** `registered` sends WhatsApp and Brevo;
+every other stage sends Meta, ChatGPT Ads and Google Ads together, and nothing
+else.
+
+**Google has no event name on the wire.** Each stage maps to a CONVERSION ACTION
+created in the Google Ads UI, and the upload names it by resource name —
+`customers/<id>/conversionActions/<numeric id>`. The names above are resolved to
+those resource names once per process and cached; a name that does not resolve
+records `failed` naming it, because the two ways of getting this wrong are both
+silent (a hardcoded id uploads to whatever action now holds it, and an omitted
+action is a conversion Google files against nothing). Renaming one of these
+actions in the UI stops that stage until the constant in `googleAds.js` is
+changed to match, and needs a restart.
+
+**`registered` has no Google entry at all, rather than a gated one.** The
+customer's GTM container already fires `Account_Registration (GADs)` with
+enhanced conversions, so that stage has an owner with better identity than this
+service could supply. The absence is what makes a second one unconstructable.
 
 **`data.type` is the data *family*, not the event name**, and a mismatched pair
 is rejected — so the family is never written beside an event name in code. It is
@@ -39,7 +58,7 @@ call).** It was the other way round until that date. The two gates fail in
 opposite directions on purpose — see "which way each gate fails" below.
 
 A destination that does not apply is stored as `skipped` with its reason, so a
-processed row shows all four. FXBO has no trigger for `lead` yet (spec section
+processed row shows all five. FXBO has no trigger for `lead` yet (spec section
 11).
 
 `registered` is mapped to `CompleteRegistration` in `META_EVENT_NAMES` but
@@ -117,6 +136,83 @@ guard is that the scrub writes `NULL` rather than a placeholder, so
 `buildMetaPayload` omits the keys instead of hashing `""` — which would be one
 shared fake surname across every client. `crm_client_id` survives the scrub
 anyway, so `external_id` would be the one matcher left.
+
+### Google Ads: the gclid, the offset, and why a 200 is not delivery
+
+Three things about this destination are different from the other four, and each
+has already been got wrong somewhere in this repository's history.
+
+**It attributes on the `gclid` and on nothing else.** Meta and OpenAI both fall
+back to the hashed email and phone when their click id is missing;
+`uploadClickConversions` has no such fallback — the gclid IS the identity of the
+click. So a row without one records
+`skipped — no gclid: the click cannot be attributed in Google Ads`, which is the
+commonest outcome here because most signups are organic. **It is deliberately
+not uploaded unattributed**: Google counts such a conversion against no
+campaign, so it inflates the account's total while leaving every campaign's own
+number unchanged — it corrupts the figure the bidding reads, and nothing in the
+account says where it came from. A visible skip is strictly better.
+
+Auto-tagging is what supplies it: Google appends `gclid` to the landing URL
+itself, so it arrives inside the same `full_link` the `fbclid` does and no
+website change was needed. It is frozen in its own column at the client's first
+event, for the reason `fbc` and `oppref` are, and it survives the scrub for a
+sharper version of that reason — scrubbing it would not weaken the first
+deposit's attribution weeks later, it would remove the conversion.
+
+**`conversionDateTime` carries a timezone offset, and ours is the account's.**
+The format is `yyyy-mm-dd hh:mm:ss+|-hh:mm` — a space, not an ISO `T`, and an
+explicit signed offset, so `Date.prototype.toISOString()` produces neither half
+of it. Google accepts any valid offset and recommends the account's for exactly
+one reason: so the counts match the Google Ads UI. The account is GMT+04:00, and
+the difference from UTC is a DAY and not an hour at the boundary — a deposit at
+02:30 Dubai time is still the previous date in UTC, and would be reported
+against the previous day's clicks. `GOOGLE_ADS_TIMEZONE_OFFSET` can move it;
+anything that is not a signed `+hh:mm` falls back to +04:00 with a warning.
+
+**A 200 is not delivery.** `partialFailure` is always set — Google documents the
+field as required and says it "should always be set to true" — and with it on, a
+refused conversion comes back as HTTP 200 with the reason inside
+`partialFailureError`. Classifying on the status alone would record `sent` for a
+conversion Google threw away, which is precisely the failure that cost this
+project a month on Meta. So the body is read, and it has to say the conversion
+was taken: `results[0]` must be a non-empty object, and a 200 whose body cannot
+be read is a retryable failure rather than a send. That last part is the
+OPPOSITE of what `openai.js` does with the same situation, and the difference is
+the reason — OpenAI documents no response shape at all, so an empty body there
+is the API behaving as documented, while Google documents both fields exactly.
+
+**Deduplication is `orderId`, and it is `<crm_client_id>:<stage>` — the same
+identity Meta's `event_id` and OpenAI's event id are built from.** Google
+documents exactly one rule: an order id can only be used for one conversion per
+conversion action, enforced as `DUPLICATE_ORDER_ID`. What it dedupes on when no
+order id is sent is stated nowhere in the API reference, so "gclid plus action
+plus time would dedupe" is inference and not something to rest a retry on. Worth
+knowing: Google's own note is that if an order id is set at import, it must be
+used for any later adjustment, so a future retraction through
+`uploadConversionAdjustments` has to quote this exact string.
+
+**The deposit's value is the DECIMAL.** `conversionValue` is a proto `double`:
+$54.49 is `54.49`. The same FXBO lookup's `amountMinor` — `5449` — is what
+OpenAI takes, and Google would accept it without a word, as a $5,449 deposit.
+Every other money field in this API is in micros, which is what makes the
+mistake inviting from the other side too.
+
+**What is not settled, and cannot be settled from documentation.** Google
+restricted `uploadClickConversions` on 2026-06-15 to developer tokens that had
+already used it, directing everyone else to the Data Manager API, and says that
+restriction "remains in effect" without saying what it is now keyed to. It is a
+different error family from the access levels, so Explorer access would not
+clear it. One `GOOGLE_ADS_VALIDATE_ONLY=true` send answers it in seconds and
+records nothing; `CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE` in a row's detail
+is what it looks like if the answer is no.
+
+**Developer tokens are not how access works any more** (Google's docs, checked
+2026-10-21): they were sunset on 2026-09-09, are "optional and ignored by the
+API servers", and Google encourages not sending one. Access is the access level
+of the Cloud project that owns the OAuth client — Test, then Explorer, which is
+the first that may call production accounts. `GOOGLE_ADS_DEVELOPER_TOKEN` is
+still sent when set, and its absence is never a skip.
 
 ### The 19 October event-name experiment
 
@@ -560,7 +656,7 @@ redeliveries.
 
 The client's details are stored at all for one reason: the endpoint answers FXBO
 immediately and sends afterwards, so the phone number and the email have to
-survive from receipt until all four destinations are done with — including
+survive from receipt until all five destinations are done with — including
 across retries, which run up to three attempts five minutes apart, and including
 a destination that failed, which a resend will need them for. After that, nothing
 needs them.
@@ -571,21 +667,21 @@ needs them.
     full_link, referer, raw_payload
 
 `full_link` and `referer` are in that list because `full_link` carries the
-`fbclid`, the `oppref` and the whole query string verbatim, and both are
-redundant once `fbc`, `oppref` and the `utm_*` columns have been extracted from
-them.
+`fbclid`, the `oppref`, the `gclid` and the whole query string verbatim, and
+both are redundant once the three click ids and the `utm_*` columns have been
+extracted from them.
 
 Everything else stays, because it is the statistics the table exists for:
 `crm_client_id`, `stage`, `fxbo_unique_id`, `record_type`, `is_lead_raw`,
 `marketing_consent`, `is_ib`, `entity`, `source`, `language`, the three `utm_*`
-columns, `fbc`, `oppref`, `whatsapp_request_id`, every status / detail /
+columns, `fbc`, `oppref`, `gclid`, `whatsapp_request_id`, every status / detail /
 attempts / clock column, the four delivery-proof columns (`brevo_contact_id`,
 `whatsapp_delivery_status`, `whatsapp_delivery_at`, `whatsapp_delivery_detail`
 -- see "Proving a message arrived"), `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
 columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
 
-**Six of those are load-bearing, not merely kept:**
+**Seven of those are load-bearing, not merely kept:**
 
 - **`fbc` deliberately survives.** It is captured at signup and reused weeks
   later for the first-deposit conversion. Scrubbing it would send every later
@@ -601,6 +697,14 @@ funnel stage after the fact.
   it is sent **raw**, with no `fb.1.<ms>.` wrapper and no timestamp, so there is
   nothing about it to freeze beyond the value itself. Absent is normal — the
   event is still sent, simply unattributed.
+- **`gclid` deliberately survives, and of the three click ids it is the one
+  whose loss would cost most.** Google attributes an offline click conversion on
+  the gclid and on nothing else — there is no hashed-email fallback as there is
+  for Meta and OpenAI — so scrubbing it would not weaken the first deposit's
+  attribution weeks later, it would remove the conversion: the step would skip
+  it outright, permanently, for every client whose signup had already settled.
+  Like `oppref` it is not client data (it identifies an ad click, not a person)
+  and is sent raw, with no wrapper and no timestamp.
 - **`crm_client_id` deliberately survives.** It is half the dedupe key. Without
   it FXBO's redelivery of a stage no longer collides on
   `(crm_client_id, stage)`: it inserts a second row and sends a second welcome.
@@ -626,8 +730,8 @@ funnel stage after the fact.
 
 | | When | What |
 |---|---|---|
-| Settle | As soon as all four destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
-| Invalid | `received_at` older than **7 days**, and all four statuses `invalid` | The whole row is deleted |
+| Settle | As soon as all five destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
+| Invalid | `received_at` older than **7 days**, and all five statuses `invalid` | The whole row is deleted |
 | Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say, and settle whatever is still unsent as `failed` |
 
 Both windows are constants in `worker.js`, not environment variables. The two
@@ -679,12 +783,12 @@ refusal with its own `failed`.
 rows: an all-`invalid` row is handled by the 7-day delete, not by the scrub.
 
 **The settle path asks the row, not the worker.** The `UPDATE` carries its own
-precondition — all four statuses scrubbable, `scrubbed_at` still NULL — so it is
+precondition — all five statuses scrubbable, `scrubbed_at` still NULL — so it is
 correct whatever the worker believes (`scrubbableClause` in `store.js`, the same
 lesson as the row claim above). The worker's own check decides only whether to
 try, so the ordinary row still costs one statement. It matters during an
-overlapped recycle: when two workers split the four claims, neither one's copy
-of the row ever shows all four settled, and a scrub decided from the copy alone
+overlapped recycle: when two workers split the five claims, neither one's copy
+of the row ever shows all five settled, and a scrub decided from the copy alone
 happened in neither — the row waited the full thirty days in exactly the case
 this policy reduces to a minute. Both attempt it now, the earlier attempt matches
 nothing, and the one that finishes last scrubs.
@@ -904,7 +1008,7 @@ nothing to create for it.
 An attribute with no value is left out, except the two booleans, `OPT_IN` and
 `IS_IB`, which are always sent, `false` included. Posting an attribute Brevo
 does not know returns 400, classified permanent and stored as `rejected` — so a
-new field needs the attribute created in Brevo first. All four destinations use
+new field needs the attribute created in Brevo first. All five destinations use
 the same two words: `rejected` is the provider refusing this event, `failed` is a
 transport failure or a spent attempt budget.
 
