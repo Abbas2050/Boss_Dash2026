@@ -34,16 +34,19 @@ function row(overrides = {}) {
     openai_status: "sent",
     openai_detail: "http 200",
     openai_attempts: 1,
+    google_status: "sent",
+    google_detail: "http 200",
+    google_attempts: 1,
     received_at: "2026-10-13T11:00:00Z",
     ...overrides,
   };
 }
 
-/** The four destinations the aggregator has to account for, in the order
+/** The five destinations the aggregator has to account for, in the order
  *  stats.js lists them. Every loop below reads this rather than its own copy:
  *  a destination added to the module and not to one of these loops is a
  *  destination that sends and then reports as though it did not exist. */
-const ALL = ["meta", "whatsapp", "brevo", "openai"];
+const ALL = ["meta", "whatsapp", "brevo", "openai", "google"];
 
 describe("health", () => {
   it("reports how long ago the newest event arrived", () => {
@@ -128,15 +131,30 @@ describe("funnel", () => {
 });
 
 describe("destinations", () => {
-  it("counts each status separately for each of the four", () => {
+  it("counts each status separately for each of the five", () => {
     // Every destination given a different status on the same row, so a column
     // read from a neighbour cannot pass. OpenAI's `skipped` is the ordinary case
     // rather than an odd one: `registered` belongs to the website pixel, so
-    // every registration is a skip there (spec section 4).
+    // every registration is a skip there (spec section 4). Google's is ordinary
+    // for a second reason that is about the row rather than the stage -- an
+    // organic signup carries no gclid -- and the counter cannot tell them apart,
+    // which is why each row's own detail is what the tab prints.
     const rows = [
       row(),
-      row({ meta_status: "failed", whatsapp_status: "skipped", brevo_status: "retrying", openai_status: "rejected" }),
-      row({ meta_status: "failed", whatsapp_status: "rejected", brevo_status: "sent", openai_status: "skipped" }),
+      row({
+        meta_status: "failed",
+        whatsapp_status: "skipped",
+        brevo_status: "retrying",
+        openai_status: "rejected",
+        google_status: "invalid",
+      }),
+      row({
+        meta_status: "failed",
+        whatsapp_status: "rejected",
+        brevo_status: "sent",
+        openai_status: "skipped",
+        google_status: "skipped",
+      }),
     ];
     const { destinations } = summariseCrmEvents(rows, { now: NOW });
     expect(destinations.meta.sent).toBe(1);
@@ -148,16 +166,24 @@ describe("destinations", () => {
     expect(destinations.openai.sent).toBe(1);
     expect(destinations.openai.rejected).toBe(1);
     expect(destinations.openai.skipped).toBe(1);
+    expect(destinations.google.sent).toBe(1);
+    expect(destinations.google.invalid).toBe(1);
+    expect(destinations.google.skipped).toBe(1);
   });
 
-  it("reports all four destinations, so one that sends cannot report as though it did not exist", () => {
-    // The failure this pins: openai dropped from the module's DESTINATIONS
-    // keeps sending, retrying and scrubbing exactly as before, and the tab
-    // simply never mentions it -- no card, no column, and a page that reads as a
-    // healthy three-destination system.
+  it("reports all five destinations, so one that sends cannot report as though it did not exist", () => {
+    // The failure this pins: openai or google dropped from the module's
+    // DESTINATIONS keeps sending, retrying and scrubbing exactly as before, and
+    // the tab simply never mentions it -- no card, no column, and a page that
+    // reads as a healthy four-destination system.
+    //
+    // The exact set is the assertion, deliberately. A subset check would pass
+    // for a list that had quietly lost one, which is the only way this ever
+    // goes wrong: nobody adds a destination here by mistake.
     const { destinations } = summariseCrmEvents([row()], { now: NOW });
-    expect(Object.keys(destinations).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    expect(Object.keys(destinations).sort()).toEqual(["brevo", "google", "meta", "openai", "whatsapp"]);
     expect(destinations.openai.sent).toBe(1);
+    expect(destinations.google.sent).toBe(1);
   });
 
   it("always reports every status key, so a zero renders rather than vanishing", () => {
@@ -205,6 +231,7 @@ describe("destinations", () => {
     expect(destinations.brevo.sent).toBe(0);
     expect(destinations.whatsapp.sent).toBe(1);
     expect(destinations.openai.sent).toBe(1);
+    expect(destinations.google.sent).toBe(1);
   });
 
   it("counts an unknown status under nothing rather than throwing", () => {
@@ -241,6 +268,26 @@ describe("toTableRow", () => {
     });
   });
 
+  it("carries the fifth destination's status, reason and attempt count, where the reason is usually a skip", () => {
+    // Same cost as the fourth, and the same shape of failure: without this the
+    // Google Ads column on every row is empty while the destination works. The
+    // reason is the one almost every row carries, and it is about the ROW and
+    // not the stage -- Google attributes a click conversion on the gclid and on
+    // nothing else, so an organic signup is nothing we can offer them.
+    const view = toTableRow(
+      row({
+        google_status: "skipped",
+        google_detail: "no gclid: the click cannot be attributed in Google Ads",
+        google_attempts: 0,
+      })
+    );
+    expect(view.google).toEqual({
+      status: "skipped",
+      detail: "no gclid: the click cannot be attributed in Google Ads",
+      attempts: 0,
+    });
+  });
+
   it("gives every destination its own status, so no column can be showing a neighbour's", () => {
     const view = toTableRow(
       row({
@@ -250,10 +297,14 @@ describe("toTableRow", () => {
         openai_status: "failed",
         openai_detail: "http 503",
         openai_attempts: 2,
+        google_status: "skipped",
+        google_detail: "no gclid: the click cannot be attributed in Google Ads",
+        google_attempts: 0,
       })
     );
-    expect(ALL.map((name) => view[name].status)).toEqual(["sent", "retrying", "rejected", "failed"]);
+    expect(ALL.map((name) => view[name].status)).toEqual(["sent", "retrying", "rejected", "failed", "skipped"]);
     expect(view.openai.attempts).toBe(2);
+    expect(view.google.detail).toBe("no gclid: the click cannot be attributed in Google Ads");
   });
 
   // The reason this work exists: "WhatsApp sent -- ENQUEUED" and "Brevo sent --
@@ -400,9 +451,9 @@ describe("grouped counts", () => {
     // 3,201 events in three groups. No table cap applies to these counts, and each
     // count must equal the sum of its group sizes, not the number of groups.
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", n: 1200 },
-      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", openai_status: "skipped", n: 2000 },
-      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "skipped", n: 1 },
+      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", google_status: "skipped", n: 1200 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "sent", brevo_status: "pending", openai_status: "skipped", google_status: "skipped", n: 2000 },
+      { stage: "registered", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "skipped", google_status: "sent", n: 1 },
     ];
     const { funnel, destinations } = summariseCrmEvents(groups, { now: NOW, latestReceivedAt: NOW });
     expect(funnel).toEqual({ lead: 1200, registered: 2001, verified: 0, live_account: 0, first_deposit: 0 });
@@ -414,6 +465,11 @@ describe("grouped counts", () => {
     // registrations skipped as the pixel's, in two groups.
     expect(destinations.openai.sent).toBe(1200);
     expect(destinations.openai.skipped).toBe(2001);
+    // And for the fifth. 3,200 of the 3,201 are skips, which is what this
+    // destination's card looks like on an ordinary week: only the one group that
+    // carried a gclid was ever offered to Google.
+    expect(destinations.google.skipped).toBe(3200);
+    expect(destinations.google.sent).toBe(1);
   });
 });
 

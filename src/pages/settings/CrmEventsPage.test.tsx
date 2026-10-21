@@ -32,6 +32,10 @@ const OVERVIEW = {
     // registration is the website pixel's, so ChatGPT Ads deliberately sends
     // nothing for that stage.
     openai: { pending: 0, sent: 10, skipped: 12, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
+    // Google's `skipped` is bigger still, and for a reason about the row rather
+    // than the stage: only an ad click carries a gclid, and most signups are
+    // organic. 20 of the 22 rows had nothing to attribute.
+    google: { pending: 0, sent: 2, skipped: 20, retrying: 0, failed: 0, rejected: 0, invalid: 0 },
   },
   events: [
     {
@@ -48,6 +52,7 @@ const OVERVIEW = {
       whatsapp: { status: "sent", detail: "SENT", attempts: 1 },
       brevo: { status: "sent", detail: "http 201", attempts: 1 },
       openai: { status: "skipped", detail: "registered is owned by the website pixel", attempts: 0 },
+      google: { status: "skipped", detail: "no gclid: the click cannot be attributed in Google Ads", attempts: 0 },
     },
     {
       id: 2,
@@ -63,6 +68,7 @@ const OVERVIEW = {
       whatsapp: { status: "skipped", detail: "stage not applicable", attempts: 0 },
       brevo: { status: "skipped", detail: "stage not applicable", attempts: 0 },
       openai: { status: "sent", detail: "http 200", attempts: 1 },
+      google: { status: "sent", detail: "http 200", attempts: 1 },
     },
   ],
 };
@@ -275,6 +281,7 @@ const DISTINCT = {
     whatsapp: { sent: 41, failed: 42, rejected: 43, retrying: 44, skipped: 45, pending: 46, invalid: 47 },
     brevo: { sent: 51, failed: 52, rejected: 53, retrying: 54, skipped: 55, pending: 56, invalid: 57 },
     openai: { sent: 61, failed: 62, rejected: 63, retrying: 64, skipped: 65, pending: 66, invalid: 67 },
+    google: { sent: 71, failed: 72, rejected: 73, retrying: 74, skipped: 75, pending: 76, invalid: 77 },
   },
   events: [] as unknown[],
 };
@@ -283,8 +290,13 @@ const withHealth = (health: Record<string, unknown>) => ({ ...DISTINCT, health }
 
 const FRESH = { lastReceivedAt: "2026-10-13T11:00:00.000Z", ageHours: 1, stale: false };
 
-function event(id: number, crmClientId: string, stage: string, statuses: [string, string, string, string]) {
-  const [meta, whatsapp, brevo, openai] = statuses;
+/** One row, with a status for each of the five destinations in the page's own
+ *  order. Five positional arguments rather than four since 2026-10-21: an
+ *  optional fifth with a default would let a test that MEANT to exercise Google
+ *  pass while saying nothing about it, which is the shape of the gap this whole
+ *  change closed. */
+function event(id: number, crmClientId: string, stage: string, statuses: [string, string, string, string, string]) {
+  const [meta, whatsapp, brevo, openai, google] = statuses;
   return {
     id,
     receivedAt: "2026-10-13T11:00:00.000Z",
@@ -299,6 +311,7 @@ function event(id: number, crmClientId: string, stage: string, statuses: [string
     whatsapp: { status: whatsapp, detail: null, attempts: 0 },
     brevo: { status: brevo, detail: null, attempts: 0 },
     openai: { status: openai, detail: null, attempts: 0 },
+    google: { status: google, detail: null, attempts: 0 },
   };
 }
 
@@ -567,6 +580,12 @@ describe("counts land in the right cell", () => {
     expect(screen.getByTestId("dest-openai").textContent).toBe(
       "ChatGPT Adspending66sent61skipped65retrying64failed62rejected63invalid67",
     );
+    // The fifth, for the same reason. Its rows go out, retry and scrub whether
+    // this card exists or not, so the only thing a missing card costs is the
+    // ability to see that they do.
+    expect(screen.getByTestId("dest-google").textContent).toBe(
+      "Google Adspending76sent71skipped75retrying74failed72rejected73invalid77",
+    );
   });
 
   it("shows zeroes for a destination or a status the response leaves out", async () => {
@@ -581,6 +600,9 @@ describe("counts land in the right cell", () => {
     );
     expect(screen.getByTestId("dest-openai").textContent).toBe(
       "ChatGPT Adspending0sent0skipped0retrying0failed0rejected0invalid0",
+    );
+    expect(screen.getByTestId("dest-google").textContent).toBe(
+      "Google Adspending0sent0skipped0retrying0failed0rejected0invalid0",
     );
   });
 
@@ -613,9 +635,13 @@ describe("the events table in detail", () => {
     whatsapp: { status: "retrying", detail: "http 503 upstream", attempts: 2 },
     brevo: { status: "invalid", detail: "no email address", attempts: 1 },
     openai: { status: "rejected", detail: "http 400 unknown field", attempts: 1 },
+    // The commonest Google outcome there is, on a row where every other
+    // destination is in a different state: a skip that is about this signup
+    // having arrived without an ad click, not about the stage and not a fault.
+    google: { status: "skipped", detail: "no gclid: the click cannot be attributed in Google Ads", attempts: 0 },
   };
 
-  it("puts every field in its own column, with the three destinations in a fixed order", async () => {
+  it("puts every field in its own column, with the five destinations in a fixed order", async () => {
     installFetch({ ...DISTINCT, events: [FULL] });
     render(<CrmEventsPage />);
     await screen.findByText("90001");
@@ -637,6 +663,10 @@ describe("the events table in detail", () => {
       "⋯retryinghttp 503 upstream",
       "✗invalidno email address",
       "✗rejectedhttp 400 unknown field",
+      // A dash and the reason, in the same shape as every other cell. Beside the
+      // cross on its left, this is the whole argument for the dash existing: the
+      // two cells are not the same kind of event and must not look alike.
+      "–skippedno gclid: the click cannot be attributed in Google Ads",
     ]);
   });
 
@@ -656,6 +686,7 @@ describe("the events table in detail", () => {
       "WhatsApp",
       "Brevo",
       "ChatGPT Ads",
+      "Google Ads",
     ]);
   });
 
@@ -848,15 +879,15 @@ describe("a scrubbed row", () => {
 
 describe("filtering the table", () => {
   const MIXED = [
-    event(1, "wa-rejected", "registered", ["sent", "rejected", "sent", "skipped"]),
-    event(2, "brevo-invalid", "verified", ["sent", "skipped", "invalid", "sent"]),
-    event(3, "meta-retrying", "verified", ["retrying", "skipped", "skipped", "sent"]),
-    event(4, "clean", "verified", ["sent", "skipped", "skipped", "sent"]),
-    event(5, "meta-failed", "registered", ["failed", "skipped", "skipped", "skipped"]),
-    event(6, "pending-only", "verified", ["pending", "pending", "pending", "pending"]),
-    event(7, "lead-clean", "lead", ["skipped", "skipped", "skipped", "skipped"]),
-    event(8, "live-clean", "live_account", ["sent", "sent", "sent", "sent"]),
-    event(9, "deposit-clean", "first_deposit", ["sent", "sent", "sent", "sent"]),
+    event(1, "wa-rejected", "registered", ["sent", "rejected", "sent", "skipped", "skipped"]),
+    event(2, "brevo-invalid", "verified", ["sent", "skipped", "invalid", "sent", "skipped"]),
+    event(3, "meta-retrying", "verified", ["retrying", "skipped", "skipped", "sent", "skipped"]),
+    event(4, "clean", "verified", ["sent", "skipped", "skipped", "sent", "skipped"]),
+    event(5, "meta-failed", "registered", ["failed", "skipped", "skipped", "skipped", "skipped"]),
+    event(6, "pending-only", "verified", ["pending", "pending", "pending", "pending", "pending"]),
+    event(7, "lead-clean", "lead", ["skipped", "skipped", "skipped", "skipped", "skipped"]),
+    event(8, "live-clean", "live_account", ["sent", "sent", "sent", "sent", "sent"]),
+    event(9, "deposit-clean", "first_deposit", ["sent", "sent", "sent", "sent", "sent"]),
   ];
 
   it("shows every row to begin with", async () => {
@@ -926,7 +957,7 @@ describe("filtering the table", () => {
   });
 
   it("says the filters excluded everything, not that the period was empty, when events exist", async () => {
-    installFetch({ ...DISTINCT, events: [event(1, "only-one", "registered", ["sent", "sent", "sent", "skipped"])] });
+    installFetch({ ...DISTINCT, events: [event(1, "only-one", "registered", ["sent", "sent", "sent", "skipped", "skipped"])] });
     render(<CrmEventsPage />);
     await screen.findByText("only-one");
     fireEvent.click(screen.getByLabelText(/problems only/i));
@@ -1145,8 +1176,14 @@ const RESENDABLE = {
     // 7-day window. `expired` is the only one of the three numbers that is not
     // zero for every other destination.
     openai: { resendable: 3, scrubbed: 7, expired: 19 },
+    // Google's `expired` is a literal zero, and it is NOT "none have aged out".
+    // Google's 90-day limit is on the click, which this table does not hold, so
+    // the backend has no honest window to count against and writes zero to keep
+    // every answer the same shape. The page's job is to not render that zero as
+    // a fact, which is pinned below.
+    google: { resendable: 5, scrubbed: 13, expired: 0 },
   },
-  events: [event(1, "row-a", "registered", ["failed", "rejected", "failed", "failed"])],
+  events: [event(1, "row-a", "registered", ["failed", "rejected", "failed", "failed", "failed"])],
 };
 
 /** A fetch that answers the overview with `overview` and every requeue POST
@@ -1174,25 +1211,26 @@ const requeued = (fn: ReturnType<typeof installResendFetch>) =>
     .map(([, init]) => JSON.parse(String((init as RequestInit)?.body ?? "{}")).destination);
 
 describe("the resend controls", () => {
-  it("offers Meta, Brevo and ChatGPT Ads together, with the count it is about to resend", async () => {
-    // One control for the three, because all three are safe to repeat: Meta
-    // deduplicates on the event id, the Brevo call is an upsert, and OpenAI
-    // deduplicates on the event id we reuse on every retry. 2 + 10 + 3.
+  it("offers Meta, Brevo, ChatGPT Ads and Google Ads together, with the count it is about to resend", async () => {
+    // One control for the four, because all four are safe to repeat: Meta
+    // deduplicates on the event id, the Brevo call is an upsert, OpenAI
+    // deduplicates on the event id we reuse on every retry, and Google refuses a
+    // second use of the same order id. 2 + 10 + 3 + 5.
     installResendFetch();
     render(<CrmEventsPage />);
     const button = await screen.findByTestId("resend-safe");
-    expect(button).toHaveTextContent("Resend 15 failed Meta, Brevo and ChatGPT Ads sends");
+    expect(button).toHaveTextContent("Resend 20 failed Meta, Brevo, ChatGPT Ads and Google Ads sends");
     expect(button).toBeEnabled();
   });
 
-  it("requeues Meta, Brevo and ChatGPT Ads, one request each, and nothing else", async () => {
+  it("requeues Meta, Brevo, ChatGPT Ads and Google Ads, one request each, and nothing else", async () => {
     // One request per destination, because the statement behind the endpoint
     // writes one destination's columns -- which is the point: fixing
     // BREVO_LIST_ID must not re-send anybody's WhatsApp welcome.
     const fn = installResendFetch();
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
-    await waitFor(() => expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]));
+    await waitFor(() => expect(requeued(fn)).toEqual(["meta", "brevo", "openai", "google"]));
     expect(requeued(fn)).not.toContain("whatsapp");
     const [, init] = fn.mock.calls.find(([url]) => String(url) === REQUEUE_URL)!;
     expect((init as RequestInit).method).toBe("POST");
@@ -1210,13 +1248,17 @@ describe("the resend controls", () => {
       { requeued: 2, alreadyScrubbed: 9, expired: 0 },
       { requeued: 10, alreadyScrubbed: 28, expired: 0 },
       { requeued: 3, alreadyScrubbed: 7, expired: 19 },
+      // Google's own answer, and its `expired` is the zero the backend writes
+      // for a destination whose deadline cannot be judged from this table. It
+      // has to not change the sentence below, which names OpenAI's rule.
+      { requeued: 5, alreadyScrubbed: 13, expired: 0 },
     ]);
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
     const note = await screen.findByTestId("resend-note");
-    expect(note).toHaveTextContent("15 sends queued");
-    expect(note).toHaveTextContent(/44 earlier failures had already been scrubbed/);
-    // The other reason the three answers add up to fewer rows than the cards
+    expect(note).toHaveTextContent("20 sends queued");
+    expect(note).toHaveTextContent(/57 earlier failures had already been scrubbed/);
+    // The other reason the four answers add up to fewer rows than the cards
     // showed, and the one nothing else on the page can say after the reload has
     // replaced the counts the button was pressed against.
     expect(note).toHaveTextContent("19 ChatGPT Ads failures are older than OpenAI's 7-day window");
@@ -1232,6 +1274,7 @@ describe("the resend controls", () => {
         whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
         brevo: { resendable: 0, scrubbed: 0, expired: 0 },
         openai: { resendable: 0, scrubbed: 0, expired: 0 },
+        google: { resendable: 0, scrubbed: 0, expired: 0 },
       },
     });
     render(<CrmEventsPage />);
@@ -1273,10 +1316,15 @@ describe("the resend controls", () => {
     expect(screen.getByTestId("resend-safe")).toBeDisabled();
     expect(screen.getByTestId("resend-whatsapp")).toBeDisabled();
 
+    // One release per destination the safe control asks for -- four of them --
+    // and the note does not appear until the last has answered.
     release(json({ requeued: 12, alreadyScrubbed: 0, expired: 0 }));
     await settle();
     release(json({ requeued: 0, alreadyScrubbed: 0, expired: 0 }));
     await settle();
+    release(json({ requeued: 0, alreadyScrubbed: 0, expired: 0 }));
+    await settle();
+    expect(screen.queryByTestId("resend-note")).toBeNull();
     release(json({ requeued: 0, alreadyScrubbed: 0, expired: 0 }));
     await settle();
     expect(screen.getByTestId("resend-note")).toHaveTextContent("12 sends queued");
@@ -1382,21 +1430,20 @@ describe("the WhatsApp control is a separate, warned, confirmed action", () => {
   });
 
   it("is never resent by the control beside it", async () => {
-    // The two destinations that are safe to repeat, and not the one that is not.
+    // The four destinations that are safe to repeat, and not the one that is not.
     const fn = installResendFetch();
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
-    await waitFor(() => expect(requeued(fn)).toHaveLength(3));
-    expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]);
+    await waitFor(() => expect(requeued(fn)).toHaveLength(4));
+    expect(requeued(fn)).toEqual(["meta", "brevo", "openai", "google"]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// The fourth destination. Everything it shares with the other three is pinned
+// The fourth destination. Everything it shares with the other four is pinned
 // above, beside theirs; what is here is only what is true of ChatGPT Ads alone:
-// it is safe to repeat although it is the newest, its shortfall has a second
-// cause nothing else on this page has, and it is the first destination whose
-// skip depends on the clock.
+// its shortfall has a second cause nothing else on this page has, and it is the
+// first destination whose skip depends on the clock.
 // ---------------------------------------------------------------------------
 
 describe("ChatGPT Ads", () => {
@@ -1409,7 +1456,7 @@ describe("ChatGPT Ads", () => {
     render(<CrmEventsPage />);
     fireEvent.click(await screen.findByTestId("resend-safe"));
     await waitFor(() => expect(requeued(fn)).toContain("openai"));
-    expect(requeued(fn)).toEqual(["meta", "brevo", "openai"]);
+    expect(requeued(fn)).toEqual(["meta", "brevo", "openai", "google"]);
     // And not the other way round: it must not be reachable from the control
     // whose press means "some of these may arrive twice".
     expect(screen.queryByTestId("resend-whatsapp-confirm")).toBeNull();
@@ -1492,8 +1539,8 @@ describe("ChatGPT Ads", () => {
     installFetch({
       ...DISTINCT,
       events: [
-        event(1, "openai-only", "verified", ["sent", "skipped", "skipped", "rejected"]),
-        event(2, "all-clean", "verified", ["sent", "skipped", "skipped", "sent"]),
+        event(1, "openai-only", "verified", ["sent", "skipped", "skipped", "rejected", "skipped"]),
+        event(2, "all-clean", "verified", ["sent", "skipped", "skipped", "sent", "skipped"]),
       ],
     });
     render(<CrmEventsPage />);
@@ -1503,9 +1550,193 @@ describe("ChatGPT Ads", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The fifth destination. Everything it shares with the other four is pinned
+// above, beside theirs; what is here is only what is true of Google Ads alone:
+// its commonest outcome by far is a skip for a reason about the ROW rather than
+// the stage, and it is the only destination with a real deadline that this
+// table cannot judge -- so a zero where OpenAI shows a number would be a lie of
+// a different kind from a wrong number.
+// ---------------------------------------------------------------------------
+
+describe("Google Ads", () => {
+  const NO_GCLID = "no gclid: the click cannot be attributed in Google Ads";
+
+  it("has its own card, under the name the Google Ads conversion actions screen uses", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    const card = await screen.findByTestId("dest-google");
+    expect(card).toHaveTextContent("Google Ads");
+    // The ordinary shape of a week: 20 skips to 2 sends, because only an ad
+    // click carries a gclid.
+    expect(within(card).getByText("skipped").nextElementSibling).toHaveTextContent("20");
+    expect(within(card).getByText("sent").nextElementSibling).toHaveTextContent("2");
+  });
+
+  it("has its own column, beside the other four and not instead of one", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    const headers = screen.getAllByRole("columnheader").map((th) => th.textContent);
+    expect(headers.slice(-5)).toEqual(["Meta", "WhatsApp", "Brevo", "ChatGPT Ads", "Google Ads"]);
+    expect(screen.getByTestId("cell-google-1")).toHaveTextContent(NO_GCLID);
+  });
+
+  it("reads a no-gclid skip as a deliberate skip, not as a failure", async () => {
+    // The commonest cell on the whole table, and the one it would be easiest to
+    // get wrong. Most signups are organic, Google attributes a click conversion
+    // on the gclid and on nothing else, so there is nothing to send -- and a
+    // cross here would paint nearly every row of every day red. It has to read
+    // exactly like ChatGPT Ads' "owned by the website pixel" skip: the dash, the
+    // word, and the reason under them.
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    const google = screen.getByTestId("cell-google-1");
+    expect(google).toHaveTextContent("–");
+    expect(google).not.toHaveTextContent("✗");
+    expect(google).toHaveTextContent("skipped");
+    expect(google).toHaveTextContent(NO_GCLID);
+    // Muted, the tone of a fact, and not the red a problem gets.
+    expect(within(google).getByText("skipped").className).toMatch(/muted/);
+    expect(within(google).getByText("skipped").className).not.toMatch(/red|rose|amber/);
+  });
+
+  it("does not count a no-gclid skip as a problem to be filtered for", async () => {
+    // Which is the other half of the same decision. If a skip were a problem,
+    // "problems only" would show every organic signup -- the filter's whole
+    // purpose is to narrow to rows somebody has to act on.
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    // 88215's Meta send failed; 88214 is a Google skip and nothing else.
+    await waitFor(() => expect(shownIds()).toEqual(["88215"]));
+  });
+
+  it("crosses a Google send that really did fail, so the skip is not the only thing it can say", async () => {
+    installFetch({
+      ...DISTINCT,
+      events: [event(1, "google-rejected", "verified", ["sent", "skipped", "skipped", "sent", "rejected"])],
+    });
+    render(<CrmEventsPage />);
+    await screen.findByText("google-rejected");
+    expect(screen.getByTestId("cell-google-1")).toHaveTextContent("✗");
+    expect(screen.getByTestId("cell-google-1")).toHaveTextContent("rejected");
+  });
+
+  it("counts a problem in the fifth destination as a problem, like the other four", async () => {
+    // The filter is a separate list from the cards and the columns, and a row
+    // whose ONLY failure is here is exactly the row an operator filters for.
+    installFetch({
+      ...DISTINCT,
+      events: [
+        event(1, "google-only", "verified", ["sent", "skipped", "skipped", "sent", "failed"]),
+        event(2, "all-clean", "verified", ["sent", "skipped", "skipped", "sent", "skipped"]),
+      ],
+    });
+    render(<CrmEventsPage />);
+    await screen.findByText("all-clean");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    await waitFor(() => expect(shownIds()).toEqual(["google-only"]));
+  });
+
+  it("explains that most signups are skipped here, and why that is not a fault", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByTestId("dest-google");
+    const note = screen.getByText(/Google Ads counts most signups as/i);
+    expect(note).toHaveTextContent(/gclid/);
+    expect(note).toHaveTextContent(/Most signups are organic/);
+    expect(note).toHaveTextContent(/not a fault/);
+  });
+
+  it("names Google Ads in the legend's dash, which is the mark most of its rows carry", async () => {
+    installFetch();
+    render(<CrmEventsPage />);
+    await screen.findByText("88214");
+    const legend = screen.getByText(/the word and the reason are beside/i);
+    expect(legend).toHaveTextContent("–");
+    expect(legend).toHaveTextContent(/Google Ads skips every signup that carried no ad click/);
+  });
+
+  it("is resent by the safe control, because a repeat reaches nobody", async () => {
+    // Google's deduplication is the narrowest of the four and is enough: an
+    // order id may be used for one conversion per conversion action, and the
+    // order id is the same `<crm_client_id>:<stage>` every retry uses. Nothing
+    // in that exchange reaches a person, so there is nothing to confirm.
+    const fn = installResendFetch();
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-safe"));
+    await waitFor(() => expect(requeued(fn)).toContain("google"));
+    expect(requeued(fn)).toEqual(["meta", "brevo", "openai", "google"]);
+    expect(screen.queryByTestId("resend-whatsapp-confirm")).toBeNull();
+  });
+
+  it("is not resent by the WhatsApp control, even once that one is confirmed", async () => {
+    const fn = installResendFetch(RESENDABLE, [{ requeued: 4, alreadyScrubbed: 11, expired: 0 }]);
+    render(<CrmEventsPage />);
+    fireEvent.click(await screen.findByTestId("resend-whatsapp"));
+    fireEvent.click(screen.getByTestId("resend-whatsapp-confirm"));
+    await waitFor(() => expect(requeued(fn)).toEqual(["whatsapp"]));
+    expect(requeued(fn)).not.toContain("google");
+  });
+
+  it("names Google Ads on the control it is resent from, so the button says what it will touch", async () => {
+    installResendFetch();
+    render(<CrmEventsPage />);
+    const button = await screen.findByTestId("resend-safe");
+    expect(button).toHaveTextContent(/Google Ads/);
+    expect(screen.getByText(/Google Ads\s+deduplicates on the order id/)).toBeInTheDocument();
+  });
+
+  // The `expired` decision, which is the one thing on this page where a zero
+  // from the backend would be read as an answer when it is not one.
+  describe("the expired count it does not have", () => {
+    it("does not report Google's zero as an expired count", async () => {
+      // `requeue.google.expired` is 0 in the fixture and it does not mean
+      // "nothing has aged out" -- it means the backend has no honest window to
+      // count against, because Google's 90 days run from the click. The only
+      // number this line ever shows is OpenAI's.
+      installResendFetch();
+      render(<CrmEventsPage />);
+      const note = await screen.findByTestId("resend-expired");
+      expect(note).toHaveTextContent("19 ChatGPT Ads failures");
+      expect(note).not.toHaveTextContent(/Google/);
+      expect(note).not.toHaveTextContent("0 ");
+    });
+
+    it("shows no expired line at all when only Google's zero would be left to show", async () => {
+      installResendFetch({
+        ...RESENDABLE,
+        requeue: { ...RESENDABLE.requeue, openai: { resendable: 3, scrubbed: 7, expired: 0 } },
+      });
+      render(<CrmEventsPage />);
+      await screen.findByTestId("resend-safe");
+      expect(screen.queryByTestId("resend-expired")).toBeNull();
+    });
+
+    it("says in words why Google has no such line, so the silence is not read as a clean bill", async () => {
+      // A reader who knows about the 90 days and sees no line would otherwise
+      // conclude none of our rows had hit it. The page has to say that the limit
+      // is on the click, that the click is not in this table, and where an age
+      // refusal does show up instead.
+      installResendFetch();
+      render(<CrmEventsPage />);
+      const note = await screen.findByTestId("resend-google-age");
+      expect(note).toHaveTextContent(/not because nothing of theirs has aged out/);
+      expect(note).toHaveTextContent(/90-day limit is measured from the ad click/);
+      expect(note).toHaveTextContent(/EXPIRED_EVENT/);
+      // A fact, in the muted tone, not a warning.
+      expect(note.className).toMatch(/muted/);
+      expect(note.className).not.toMatch(/amber|red|rose/);
+    });
+  });
+});
+
 describe("the controls", () => {
   it("show what they are set to, rather than snapping back after a change", async () => {
-    installFetch({ ...DISTINCT, events: [event(1, "row-a", "registered", ["sent", "sent", "sent", "sent"])] });
+    installFetch({ ...DISTINCT, events: [event(1, "row-a", "registered", ["sent", "sent", "sent", "sent", "sent"])] });
     render(<CrmEventsPage />);
     await screen.findByText("row-a");
     const period = screen.getByLabelText(/period/i) as HTMLSelectElement;
@@ -1530,7 +1761,7 @@ describe("the symbol per destination", () => {
   /** One row, with each destination's status and whatever proof it carries. */
   function marked(over: Record<string, unknown> = {}) {
     return {
-      ...event(1, "77001", "registered", ["sent", "sent", "sent", "skipped"]),
+      ...event(1, "77001", "registered", ["sent", "sent", "sent", "skipped", "skipped"]),
       ...over,
     };
   }
@@ -1615,7 +1846,7 @@ describe("the symbol per destination", () => {
 
 describe("WhatsApp's symbol shows the best we actually know", () => {
   function waRow(whatsapp: Record<string, unknown>) {
-    return { ...event(1, "77002", "registered", ["sent", "sent", "sent", "skipped"]), whatsapp };
+    return { ...event(1, "77002", "registered", ["sent", "sent", "sent", "skipped", "skipped"]), whatsapp };
   }
 
   const show = async (whatsapp: Record<string, unknown>) => {
@@ -1722,7 +1953,7 @@ describe("Brevo's contact id", () => {
   const show = async (brevo: Record<string, unknown>) => {
     installFetch({
       ...DISTINCT,
-      events: [{ ...event(1, "77003", "registered", ["sent", "sent", "sent", "skipped"]), brevo }],
+      events: [{ ...event(1, "77003", "registered", ["sent", "sent", "sent", "skipped", "skipped"]), brevo }],
     });
     render(<CrmEventsPage />);
     await screen.findByText("77003");

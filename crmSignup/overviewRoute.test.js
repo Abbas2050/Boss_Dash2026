@@ -47,15 +47,18 @@ const ROWS = [
     openai_status: "sent",
     openai_detail: "http 200",
     openai_attempts: 1,
+    google_status: "sent",
+    google_detail: "http 200",
+    google_attempts: 1,
     received_at: "2026-10-13T11:00:00Z",
   },
 ];
 
-/** The four destinations, in the order stats.js lists them. Imported from
+/** The five destinations, in the order stats.js lists them. Imported from
  *  nowhere on purpose: this file's job is to pin what the ROUTE answers, and a
  *  list read from the module under test could not fail when that module loses
  *  one. */
-const ALL = ["meta", "whatsapp", "brevo", "openai"];
+const ALL = ["meta", "whatsapp", "brevo", "openai", "google"];
 
 const NOW = new Date("2026-10-13T12:00:00Z");
 
@@ -83,9 +86,12 @@ function groupRows(rows) {
  *  `scrubbed_at` and, for OpenAI, on the 7-day window -- so a test that passes
  *  rows gets an answer consistent with the counters.
  *
- *  `expired` is a literal zero for the three destinations with no deadline,
- *  which is what the real statement emits for them: a missing key would print
- *  as "undefined" on the card. */
+ *  `expired` is a literal zero for the four destinations with no window the
+ *  statement can write, which is what the real statement emits for them: a
+ *  missing key would print as "undefined" on the card. Google is in that four
+ *  although it has a real 90-day limit, because the limit runs from the click
+ *  and the click is not an instant this table holds (store.js
+ *  `sendableWindow`). */
 function resendableOf(rows, now = NOW) {
   const requeueable = new Set(["failed", "rejected"]);
   const fresh = (r) => now.getTime() - new Date(r.received_at).getTime() <= 7 * 24 * 3_600_000;
@@ -181,10 +187,17 @@ describe("the payload", () => {
     ]);
     expect(res.body.funnel.registered).toBe(1);
     expect(res.body.destinations.meta.sent).toBe(1);
-    // All four, because a destination missing from the aggregator sends normally
+    // All five, because a destination missing from the aggregator sends normally
     // and then reports as though it did not exist.
-    expect(Object.keys(res.body.destinations).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    expect(Object.keys(res.body.destinations).sort()).toEqual([
+      "brevo",
+      "google",
+      "meta",
+      "openai",
+      "whatsapp",
+    ]);
     expect(res.body.destinations.openai.sent).toBe(1);
+    expect(res.body.destinations.google.sent).toBe(1);
     expect(res.body.events).toHaveLength(1);
   });
 
@@ -345,8 +358,8 @@ describe("the payload", () => {
 
   it("counts from the grouped rows, so a window far past the table cap is counted in full", async () => {
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "sent", n: 1000 },
-      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "skipped", n: 4000 },
+      { stage: "lead", meta_status: "sent", whatsapp_status: "sent", brevo_status: "sent", openai_status: "sent", google_status: "sent", n: 1000 },
+      { stage: "registered", meta_status: "failed", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "skipped", google_status: "skipped", n: 4000 },
     ];
     const threeRows = Array.from({ length: 3 }, (_, i) => ({ ...ROWS[0], id: i + 1 }));
     const res = fakeRes();
@@ -363,6 +376,7 @@ describe("the payload", () => {
     expect(res.body.destinations.meta.failed).toBe(4000);
     expect(res.body.destinations.whatsapp.skipped).toBe(4000);
     expect(res.body.destinations.openai.skipped).toBe(4000);
+    expect(res.body.destinations.google.skipped).toBe(4000);
   });
 
   it("reports what each destination could resend, over the whole table and not the window", async () => {
@@ -386,6 +400,7 @@ describe("the payload", () => {
       whatsapp: { resendable: 1, scrubbed: 0, expired: 0 },
       brevo: { resendable: 1, scrubbed: 1, expired: 0 },
       openai: { resendable: 0, scrubbed: 0, expired: 0 },
+      google: { resendable: 0, scrubbed: 0, expired: 0 },
     });
     // And the window still governs everything else, so the two cannot be read
     // as the same number.
@@ -420,7 +435,13 @@ describe("the payload", () => {
     // nothing saying which rows went missing.
     const res = fakeRes();
     await build({ now })({ auth: ADMIN, query: {} }, res);
-    expect(Object.keys(res.body.requeue).sort()).toEqual(["brevo", "meta", "openai", "whatsapp"]);
+    expect(Object.keys(res.body.requeue).sort()).toEqual([
+      "brevo",
+      "google",
+      "meta",
+      "openai",
+      "whatsapp",
+    ]);
     for (const action of ALL) {
       expect(Object.keys(res.body.requeue[action]).sort(), action).toEqual([
         "expired",
@@ -436,6 +457,7 @@ describe("the payload", () => {
       whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
       brevo: { resendable: 0, scrubbed: 0, expired: 0 },
       openai: { resendable: 0, scrubbed: 0, expired: 0 },
+      google: { resendable: 0, scrubbed: 0, expired: 0 },
     }));
     await build({ now, countResendable })({ auth: ADMIN, query: { days: "7" } }, fakeRes());
     expect(countResendable).toHaveBeenCalledTimes(1);

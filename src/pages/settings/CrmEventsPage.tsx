@@ -8,15 +8,22 @@ import { formatDubaiInstant } from "@/lib/dubaiTime";
 const OVERVIEW_URL = "/api/crm-events/overview";
 const REQUEUE_URL = "/api/crm-events/requeue";
 
-/** The three destinations one control resends together.
+/** The four destinations one control resends together.
  *
  *  Safe to repeat, each for its own reason: Meta deduplicates server events that
- *  share an event id and an event name, the Brevo call is an upsert, and OpenAI
+ *  share an event id and an event name, the Brevo call is an upsert, OpenAI
  *  deduplicates on the event `id` -- which this service derives from
  *  `<crm_client_id>:<stage>` and therefore reuses unchanged on every retry and
- *  every resend. So a row that did in fact go through is not counted twice or
- *  contacted twice, and there is nothing to be gained by making an operator
- *  press three buttons.
+ *  every resend -- and Google Ads deduplicates on the `orderId`, which is that
+ *  same `<crm_client_id>:<stage>` string. So a row that did in fact go through
+ *  is not counted twice or contacted twice, and there is nothing to be gained by
+ *  making an operator press four buttons.
+ *
+ *  Google's is the narrowest of the four and is still enough. Google documents
+ *  exactly one rule -- an order id may be used for one conversion per conversion
+ *  action, refused as `DUPLICATE_ORDER_ID` -- so a resend of a row whose first
+ *  send succeeded and whose response was lost comes back refused rather than
+ *  booked a second time. Nothing in that exchange reaches a person at all.
  *
  *  WhatsApp is deliberately not in here (2026-10-14, user's call). It has none
  *  of those properties, and a `failed` or `rejected` WhatsApp row may already
@@ -30,7 +37,7 @@ const REQUEUE_URL = "/api/crm-events/requeue";
  *  nobody and sends nothing -- the worker skips it and the count below never
  *  offered it -- so the window is a reason the number is smaller, never a reason
  *  for a warning. */
-const SAFE_TO_REPEAT = ["meta", "brevo", "openai"] as const;
+const SAFE_TO_REPEAT = ["meta", "brevo", "openai", "google"] as const;
 
 const STAGE_LABELS: Record<string, string> = {
   lead: "Lead",
@@ -40,16 +47,25 @@ const STAGE_LABELS: Record<string, string> = {
   first_deposit: "First deposit",
 };
 
-/** The four destinations, in the backend's own order (crmSignup/store.js
+/** The five destinations, in the backend's own order (crmSignup/store.js
  *  DESTINATIONS), with the name an operator knows each by. OpenAI's column is
  *  `openai_*` and its requeue key is `openai`, but the thing it feeds is the
  *  ChatGPT Ads conversion setup screen, which is where anybody reading this tab
- *  would go to check it. */
+ *  would go to check it.
+ *
+ *  `google` is the same shape of name: the column and the requeue key are
+ *  `google*`, and "Google Ads" is what the screen holding the conversion actions
+ *  is called. Leaving it out of this list is not an error anywhere -- the
+ *  backend has carried `google_status`, `google_detail` and `google_attempts`
+ *  since 2026-10-21 and the requeue endpoint has always accepted it -- it simply
+ *  deletes a working destination's card, its column and its resend from the one
+ *  page built to show them. */
 const DESTINATIONS = [
   ["meta", "Meta"],
   ["whatsapp", "WhatsApp"],
   ["brevo", "Brevo"],
   ["openai", "ChatGPT Ads"],
+  ["google", "Google Ads"],
 ] as const;
 
 /** A status that means something needs attention, as opposed to one that is
@@ -102,6 +118,7 @@ type EventRow = {
   whatsapp: DestinationStatus;
   brevo: DestinationStatus;
   openai: DestinationStatus;
+  google: DestinationStatus;
 };
 
 /** One FXBO rule's health. `everSeen` is what separates a rule that fired and
@@ -124,9 +141,20 @@ type StageHealth = {
  *  **The three account for every failure a destination has**, which is the only
  *  reason they are all here: `scrubbed` is the thirty-day backstop, and
  *  `expired` is OpenAI's 7-day window -- rows that still hold their client data
- *  and that OpenAI refuses on their age alone. It is zero for the other three,
- *  which have no deadline. Show one of the two and the subtraction looks
- *  complete when it is not, which is worse than showing neither. */
+ *  and that OpenAI refuses on their age alone. It is zero for the other four,
+ *  which have no deadline the backend can write. Show one of the two and the
+ *  subtraction looks complete when it is not, which is worse than showing
+ *  neither.
+ *
+ *  **`expired` for google is a literal zero that does not mean "none yet", and
+ *  that is why this page never prints it.** Google's conversion actions do have
+ *  a 90-day limit, but it is measured from the CLICK, and the click is not an
+ *  instant this table holds (the reasoning is in crmSignup/store.js
+ *  `sendableWindow`). So no honest count could be written, the backend writes a
+ *  zero to keep every answer the same shape, and a zero rendered beside
+ *  OpenAI's real number would read as "nothing of Google's has expired" when
+ *  what it means is "we cannot tell from here". The number is left unshown and
+ *  the Resend card says so in words instead. */
 type Resendable = { resendable: number; scrubbed: number; expired: number };
 
 type Overview = {
@@ -180,6 +208,11 @@ function toneFor(status: string): string {
  * dashboard nobody reads. `pending` and `retrying` are the other half: a send
  * still in the air is neither a success nor a fault, and calling it either is
  * wrong within the minute.
+ *
+ * Google Ads is the clearest case of all and needed nothing added here, which is
+ * the point of a shared vocabulary: its commonest value by far is a `skipped`
+ * for a signup that carried no gclid, and `skipped` already reads as NONE. A
+ * cross there would have put a red mark on nearly every row of the table.
  *
  *   OK      a send that succeeded, or -- for WhatsApp -- one DoubleTick has
  *           since reported delivered or read
@@ -456,6 +489,13 @@ export function CrmEventsPage() {
           // The other half of the same shortfall, and the half nothing else on
           // the page can explain after the action: the counts it was pressed
           // against have already been replaced by the reload below.
+          //
+          // Summed although the line below names ChatGPT Ads, and that stays
+          // true: of the four this loop asks, only OpenAI has a window the
+          // backend can write, and the other three -- google included -- answer
+          // with a literal zero. If one of them ever gains a real deadline this
+          // attributes its rows to the wrong destination, so the line to change
+          // then is this one.
           expired += Number(answer.expired) || 0;
         }
         setResendNote(
@@ -491,17 +531,22 @@ export function CrmEventsPage() {
   const whatsappCount = resendable("whatsapp");
   // Read from `openai` by name rather than summed over the group, because it is
   // the only destination with a deadline and the line below names it. A sum
-  // would read the same today -- the other three report a literal zero -- and
+  // would read the same today -- the other four report a literal zero -- and
   // would quietly attribute somebody else's expired rows to ChatGPT Ads the day
-  // that stopped being true.
+  // that stopped being true. Google is the reason that is no longer theoretical:
+  // it has a real 90-day limit and still answers zero here, because the limit is
+  // on the click and not on anything this table holds.
   const expiredCount = data?.requeue?.openai?.expired ?? 0;
 
   const rows = useMemo(() => {
     const all = data?.events ?? [];
     return all.filter((row) => {
       if (stage !== "all" && row.stage !== stage) return false;
+      // Every destination, because a row whose ONLY problem is in the newest
+      // column is exactly the row this filter is pressed for -- and one left out
+      // here is invisible the moment an operator narrows the table.
       if (!problemsOnly) return true;
-      return [row.meta, row.whatsapp, row.brevo, row.openai].some((d) => PROBLEM.has(d?.status));
+      return [row.meta, row.whatsapp, row.brevo, row.openai, row.google].some((d) => PROBLEM.has(d?.status));
     });
   }, [data, stage, problemsOnly]);
 
@@ -515,7 +560,7 @@ export function CrmEventsPage() {
           <div>
             <h1 className="text-2xl font-bold text-foreground">CRM Events</h1>
             <p className="mt-1 text-sm text-muted-foreground">
-              Every FXBO funnel webhook, and what we sent to Meta, WhatsApp, Brevo and ChatGPT Ads.
+              Every FXBO funnel webhook, and what we sent to Meta, WhatsApp, Brevo, ChatGPT Ads and Google Ads.
             </p>
           </div>
           <label className="text-sm">
@@ -622,7 +667,7 @@ export function CrmEventsPage() {
 
             <section>
               <h2 className={SECTION_TITLE}>Destinations</h2>
-              {/* The one thing a reader of these four cards can misread, said
+              {/* The one thing a reader of these five cards can misread, said
                   once rather than in a tooltip on one of them. ChatGPT Ads is
                   the first destination whose skip depends on the clock, and
                   `skipped` is the counter where that lands -- so the word means
@@ -638,7 +683,25 @@ export function CrmEventsPage() {
                 row left unsent through an outage is skipped for its age once the worker reaches it. Both reasons are
                 in each row’s detail in the table below.
               </p>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+              {/* Google's card is the one that looks alarming and is not, which
+                  is why it gets its own line rather than a clause on the one
+                  above. Its `skipped` will be nearly its whole total on an
+                  ordinary week, and the reason is about the ROW and not the
+                  stage: Google attributes a click conversion on the gclid and on
+                  nothing else -- there is no hashed-email fallback as there is
+                  for Meta and ChatGPT Ads -- so an organic signup is a
+                  conversion we could only file against no campaign at all. That
+                  would inflate the account total the bidding reads while leaving
+                  every campaign's own number unchanged, which is why it is a
+                  deliberate skip and not an attempt. */}
+              <p className="mb-2 text-xs text-muted-foreground">
+                Google Ads counts most signups as <span className="font-medium">skipped</span> too, for a different
+                reason: only a visitor who arrived by clicking an ad carries a <span className="font-medium">gclid</span>
+                , and Google attributes a click conversion on that and on nothing else. Most signups are organic, so
+                there is nothing to attribute and we deliberately send nothing — a high number here is the ordinary
+                shape of the week, not a fault. Each row’s detail says which reason applied to it.
+              </p>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
                 {DESTINATIONS.map(([key, label]) => {
                   const counts = data.destinations[key] ?? {};
                   return (
@@ -667,13 +730,30 @@ export function CrmEventsPage() {
                 out one more kind: a conversion older than OpenAI’s 7-day window, which they would refuse whatever
                 we fixed.
               </p>
+              {/* Why there is no expired line for Google, said rather than left
+                  as an absence. Google DOES have a limit -- 90 days -- so a
+                  reader who knows that and sees nothing here would reasonably
+                  conclude none of our rows had hit it. The truth is that the
+                  limit is measured from the click and the click is not an
+                  instant this table holds, so the backend writes a literal zero
+                  (crmSignup/store.js `sendableWindow`) and this page prints no
+                  number rather than one that would read as "none yet". */}
+              <p data-testid="resend-google-age" className="mb-2 text-xs text-muted-foreground">
+                There is no such line for Google Ads, and that is not because nothing of theirs has aged out. Their
+                90-day limit is measured from the <span className="font-medium">ad click</span>, which this table does
+                not record — a signup can follow its own click by any interval — so no count here could honestly
+                promise what they would accept. Google’s rows are offered like Meta’s, and one they refuse on age
+                comes back as a <span className="font-medium">rejected</span> row naming{" "}
+                <span className="font-medium">EXPIRED_EVENT</span> in the table below.
+              </p>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className={CARD}>
-                  <div className="mb-1 text-sm font-medium text-foreground">Meta, Brevo and ChatGPT Ads</div>
+                  <div className="mb-1 text-sm font-medium text-foreground">Meta, Brevo, ChatGPT Ads and Google Ads</div>
                   <p className="mb-2 text-xs text-muted-foreground">
-                    Safe to repeat: Meta deduplicates on the event id, the Brevo contact call is an upsert, and
-                    ChatGPT Ads deduplicates on the event id too — which we reuse unchanged on every retry. A row
-                    that did go through is not counted or contacted twice.
+                    Safe to repeat: Meta deduplicates on the event id, the Brevo contact call is an upsert, ChatGPT
+                    Ads deduplicates on the event id too — which we reuse unchanged on every retry — and Google Ads
+                    deduplicates on the order id, which is that same id. A row that did go through is not counted or
+                    contacted twice.
                   </p>
                   <button
                     type="button"
@@ -686,7 +766,7 @@ export function CrmEventsPage() {
                       ? "Resending…"
                       : safeCount === 0
                         ? "Nothing to resend"
-                        : `Resend ${plural(safeCount, "failed Meta, Brevo and ChatGPT Ads send")}`}
+                        : `Resend ${plural(safeCount, "failed Meta, Brevo, ChatGPT Ads and Google Ads send")}`}
                   </button>
                   {/* Stated as the fact it is, in the muted tone the rest of
                       this card uses and not the amber the WhatsApp warning uses.
@@ -795,7 +875,10 @@ export function CrmEventsPage() {
                   Four and not two, which is the one place this deliberately does
                   not do what was asked -- a cross on `skipped` would paint a red
                   mark on every row of the commonest case, since Meta and ChatGPT
-                  Ads are skipped on every registration by design. */}
+                  Ads are skipped on every registration by design and Google Ads
+                  is skipped on every signup that did not arrive by an ad click.
+                  Adding a fifth column made that argument stronger rather than
+                  weaker: the dash is now the commonest mark on the table. */}
               <p className="mb-2 text-xs text-muted-foreground">
                 <span className="font-semibold text-emerald-600 dark:text-emerald-400">{"✓"}</span> sent
                 {" · "}
@@ -803,7 +886,8 @@ export function CrmEventsPage() {
                 invalid
                 {" · "}
                 <span className="font-semibold">{"–"}</span> deliberately not sent — Meta and ChatGPT Ads
-                skip every registration, which is not a fault
+                skip every registration, and Google Ads skips every signup that carried no ad click, which is not a
+                fault
                 {" · "}
                 <span className="font-semibold">{"⋯"}</span> still going out. The word and the reason are beside
                 every symbol, because the reason is the useful part.
@@ -817,8 +901,8 @@ export function CrmEventsPage() {
                 which is a record that can be opened; an update returns no id and says so.
               </p>
               <p className="mb-2 text-xs text-muted-foreground">
-                Name, email and phone are removed once Meta, WhatsApp, Brevo and ChatGPT Ads have all succeeded or
-                been skipped —
+                Name, email and phone are removed once Meta, WhatsApp, Brevo, ChatGPT Ads and Google Ads have all
+                succeeded or been skipped —
                 about a minute after signup — so most rows read “scrubbed”. FXBO holds the client record; this table
                 holds the statistics. A row with a failed or rejected destination keeps its name, email and phone so
                 the send can be fixed and retried; it is scrubbed anyway after 30 days, and whatever it had not sent
@@ -845,6 +929,13 @@ export function CrmEventsPage() {
                         <th className="p-2 text-left">WhatsApp</th>
                         <th className="p-2 text-left">Brevo</th>
                         <th className="p-2 text-left">ChatGPT Ads</th>
+                        {/* Spelled out beside the other four rather than
+                            generated from DESTINATIONS: the cells below ARE
+                            generated from it, so a header list that drifted
+                            would shift every destination's column under the
+                            wrong name -- which is worse than a missing column,
+                            because it reads as a confident answer. */}
+                        <th className="p-2 text-left">Google Ads</th>
                       </tr>
                     </thead>
                     <tbody>

@@ -6,7 +6,7 @@ export const STALE_HOURS = 72;
 const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected", "invalid"];
 
 /**
- * The four destinations, each with the three row columns it is read from.
+ * The five destinations, each with the three row columns it is read from.
  *
  * Its own list rather than an import of `store.js`'s `DESTINATIONS`, because
  * that one is a list of action NAMES used to interpolate column names into
@@ -18,10 +18,16 @@ const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected"
  * all.** A missing entry does not fail: the destination sends, retries and
  * scrubs exactly as before, and the tab simply never mentions it. Its card is
  * absent, its column on every row is absent, and the one page built to reveal a
- * broken pipeline reports a healthy three-destination system. openai is pinned
- * by test here for that reason and no other.
+ * broken pipeline reports a healthy four-destination system. openai and google
+ * are pinned by test here for that reason and no other.
  *
- * Two of the four are no longer silent to remove, and that is an improvement
+ * `google` joined on 2026-10-21, and it is the destination an omission here
+ * would hide for longest: almost every one of its rows is a `skipped` for a
+ * signup that arrived without a gclid, so nobody is waiting on a number from it
+ * to go up. A card that was never built looks exactly like a card of zeroes
+ * nobody has reason to question.
+ *
+ * Two of the five are no longer silent to remove, and that is an improvement
  * rather than a new rule to remember: `toTableRow` attaches the delivery proof
  * to `whatsapp` and the contact id to `brevo` after this loop has built them, so
  * dropping either name here throws instead of quietly emptying a column.
@@ -31,6 +37,7 @@ const DESTINATIONS = [
   ["whatsapp", "whatsapp_status", "whatsapp_detail", "whatsapp_attempts"],
   ["brevo", "brevo_status", "brevo_detail", "brevo_attempts"],
   ["openai", "openai_status", "openai_detail", "openai_attempts"],
+  ["google", "google_status", "google_detail", "google_attempts"],
 ];
 
 function zeroCounts() {
