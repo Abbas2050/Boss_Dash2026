@@ -278,48 +278,64 @@ describe("insertSignupEvent", () => {
 
 describe("findExistingClickIds", () => {
   it("takes the earliest click of each kind on file, breaking a one-second tie by id", async () => {
-    db.state.respond = () => [[{ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" }]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST" });
+    db.state.respond = () => [
+      [{ fbc: "fb.1.1.EARLIEST", oppref: "oppref-EARLIEST", gclid: "gclid-EARLIEST" }],
+    ];
+    expect(await findExistingClickIds(88214)).toEqual({
+      fbc: "fb.1.1.EARLIEST",
+      oppref: "oppref-EARLIEST",
+      gclid: "gclid-EARLIEST",
+    });
     const { sql, params } = db.state.calls[0];
-    expect(sql.match(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/g)).toHaveLength(2);
-    expect(params).toEqual(["88214", "88214"]);
+    expect(sql.match(/ORDER BY received_at ASC, id ASC\s+LIMIT 1/g)).toHaveLength(3);
+    expect(params).toEqual(["88214", "88214", "88214"]);
   });
 
-  it("asks for each column in its own subquery, because the two need not sit on one row", async () => {
-    // A client can reach the funnel from a Meta click and come back through a
-    // ChatGPT one (or the other way round), so the earliest row carrying an
-    // `fbclid` need not be the row carrying an `oppref`. "The first non-empty
-    // value stored for this client" is a question per column; one row's two
-    // columns would answer a different question and silently drop whichever
-    // identifier was not on that row.
-    db.state.respond = () => [[{ fbc: "", oppref: "" }]];
+  it("asks for each column in its own subquery, because the three need not sit on one row", async () => {
+    // A client can reach the funnel from a Meta click, come back through a
+    // ChatGPT one and arrive a third time from Search, so the earliest row
+    // carrying an `fbclid` need not be the row carrying an `oppref` or a
+    // `gclid`. "The first non-empty value stored for this client" is a question
+    // per column; one row's three columns would answer a different question and
+    // silently drop whichever identifier was not on that row.
+    db.state.respond = () => [[{ fbc: "", oppref: "", gclid: "" }]];
     await findExistingClickIds(88214);
     const { sql } = db.state.calls[0];
     expect(sql).toMatch(/\(SELECT fbc FROM signup_events[\s\S]*fbc IS NOT NULL AND fbc <> ''/);
     expect(sql).toMatch(/\(SELECT oppref FROM signup_events[\s\S]*oppref IS NOT NULL AND oppref <> ''/);
+    expect(sql).toMatch(/\(SELECT gclid FROM signup_events[\s\S]*gclid IS NOT NULL AND gclid <> ''/);
   });
 
   it("is one statement, so the webhook that is answering FXBO makes one round trip", async () => {
-    db.state.respond = () => [[{ fbc: null, oppref: null }]];
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: null }]];
     await findExistingClickIds(88214);
     expect(db.state.calls).toHaveLength(1);
   });
 
   it("returns empty strings when no click is on file, and never queries for the word undefined", async () => {
-    // Both NULLs is the common case: most signups are organic.
-    db.state.respond = () => [[{ fbc: null, oppref: null }]];
-    expect(await findExistingClickIds(undefined)).toEqual({ fbc: "", oppref: "" });
-    expect(db.state.calls[0].params).toEqual(["", ""]);
+    // All three NULL is the common case: most signups are organic.
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: null }]];
+    expect(await findExistingClickIds(undefined)).toEqual({ fbc: "", oppref: "", gclid: "" });
+    expect(db.state.calls[0].params).toEqual(["", "", ""]);
   });
 
   it("returns empty strings for an empty result set as well as for NULLs", async () => {
     db.state.respond = () => [[]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "" });
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "", gclid: "" });
   });
 
-  it("hands back one id when only the other is on file", async () => {
-    db.state.respond = () => [[{ fbc: null, oppref: "oppref-ONLY" }]];
-    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "oppref-ONLY" });
+  it("hands back one id when only the others are on file", async () => {
+    db.state.respond = () => [[{ fbc: null, oppref: "oppref-ONLY", gclid: null }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "oppref-ONLY", gclid: "" });
+  });
+
+  it("hands back the gclid alone for a client who arrived from Search and nowhere else", async () => {
+    // The commonest shape of all for this one, once Google Ads is live: a
+    // gclid and nothing beside it. Pinned because it is the id with no
+    // fallback -- Meta and OpenAI still match on the hashed email and phone
+    // without theirs, and Google's conversion simply does not exist.
+    db.state.respond = () => [[{ fbc: null, oppref: null, gclid: "Cj0KCQiA-only" }]];
+    expect(await findExistingClickIds(88214)).toEqual({ fbc: "", oppref: "", gclid: "Cj0KCQiA-only" });
   });
 });
 
@@ -937,7 +953,7 @@ describe("deleteInvalidSignupEvents", () => {
     const removed = await deleteInvalidSignupEvents(before);
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(
-      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND openai_status = 'invalid'\s+AND received_at < \?\s*$/
+      /^\s*DELETE FROM signup_events\s+WHERE meta_status = 'invalid'\s+AND whatsapp_status = 'invalid'\s+AND brevo_status = 'invalid'\s+AND openai_status = 'invalid'\s+AND google_status = 'invalid'\s+AND received_at < \?\s*$/
     );
     expect(params).toEqual([before]);
     expect(removed).toBe(1);
@@ -1287,6 +1303,8 @@ describe("countResendableSends", () => {
         openai_resendable: 7,
         openai_scrubbed: 8,
         openai_expired: 9,
+        google_resendable: 10,
+        google_scrubbed: 11,
         ...over,
       },
     ],
@@ -1294,7 +1312,7 @@ describe("countResendableSends", () => {
 
   it("counts, per destination, what the requeue would match and what it no longer can", async () => {
     // Every number different, so a column read into the wrong destination cannot
-    // hide behind an equal neighbour. `expired` is zero for the three
+    // hide behind an equal neighbour. `expired` is zero for the four
     // destinations that have no window, and a real number for the one that does.
     db.state.respond = () => counts();
     expect(await countResendableSends(COUNTED_AT)).toEqual({
@@ -1302,6 +1320,10 @@ describe("countResendableSends", () => {
       whatsapp: { resendable: 3, scrubbed: 4, expired: 0 },
       brevo: { resendable: 5, scrubbed: 6, expired: 0 },
       openai: { resendable: 7, scrubbed: 8, expired: 9 },
+      // Google has no window of its own: its conversion actions bound the
+      // CLICK's age, which is not an instant this table holds, so `expired` is
+      // the literal zero sendableWindow produces for every destination but one.
+      google: { resendable: 10, scrubbed: 11, expired: 0 },
     });
   });
 
@@ -1400,14 +1422,23 @@ describe("countResendableSends", () => {
       whatsapp: { resendable: 0, scrubbed: 0, expired: 0 },
       brevo: { resendable: 0, scrubbed: 0, expired: 0 },
       openai: { resendable: 0, scrubbed: 0, expired: 0 },
+      google: { resendable: 0, scrubbed: 0, expired: 0 },
     });
   });
 });
 
 describe("countEventsSince", () => {
-  it("selects the stage, all four statuses and the count, grouped over the window, with no cap", async () => {
+  it("selects the stage, all five statuses and the count, grouped over the window, with no cap", async () => {
     const groups = [
-      { stage: "lead", meta_status: "sent", whatsapp_status: "skipped", brevo_status: "sent", openai_status: "sent", n: 3 },
+      {
+        stage: "lead",
+        meta_status: "sent",
+        whatsapp_status: "skipped",
+        brevo_status: "sent",
+        openai_status: "sent",
+        google_status: "skipped",
+        n: 3,
+      },
     ];
     db.state.respond = () => [groups];
     const since = new Date("2026-09-13T00:00:00Z");
@@ -1416,7 +1447,7 @@ describe("countEventsSince", () => {
     // The whole statement, select list included. The fold reads the count as `n`, so
     // renaming the alias would make the funnel count groups instead of events.
     expect(sql).toMatch(
-      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status\s*$/
+      /^\s*SELECT stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status, COUNT\(\*\) AS n\s+FROM signup_events\s+WHERE received_at >= \?\s+GROUP BY stage, meta_status, whatsapp_status, brevo_status, openai_status, google_status\s*$/
     );
     expect(params).toEqual([since]);
     expect(result).toEqual(groups);

@@ -79,6 +79,32 @@ export function extractOppref(fullLink) {
   return queryParam(fullLink, "oppref");
 }
 
+/**
+ * Google's click identifier, parsed here for the reason `oppref` is: the parse
+ * belongs to the landing URL, not to the destination, and it is the identical
+ * one `fbclid` already needs.
+ *
+ * Auto-tagging is what puts it there -- Google appends `gclid` to the landing
+ * URL itself, which is why no website change was needed for any of this. It is
+ * confirmed on for this account, so the value is already inside the `full_link`
+ * FXBO hands us.
+ *
+ * **Without it a conversion cannot be attributed at all**, and that is sharper
+ * here than for the other two: Meta and OpenAI both fall back to the hashed
+ * email and phone, and `uploadClickConversions` has no such fallback -- the
+ * gclid IS the identity of the click. So it is extracted at first sight and
+ * frozen in its own column, for the two reasons `fbc` and `oppref` are:
+ * `full_link` is scrubbed about a minute after signup, and the first deposit is
+ * a different row arriving weeks later whose own `full_link` is normally empty
+ * because that visit is not an ad click.
+ *
+ * Taken raw, like `oppref` and unlike `fbc`: there is no wrapper and no
+ * timestamp around it, so the value itself is the whole of what is frozen.
+ */
+export function extractGclid(fullLink) {
+  return queryParam(fullLink, "gclid");
+}
+
 /** `fb.1.<timestamp_ms>.<fbclid>` -- milliseconds, not seconds. */
 export function buildFbc(fbclid, timestampMs) {
   const id = String(fbclid ?? "").trim();

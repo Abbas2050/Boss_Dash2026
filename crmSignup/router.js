@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { normaliseEvent, maskEmail } from "./normalise.js";
-import { deriveFbc, extractOppref } from "./clickId.js";
+import { deriveFbc, extractOppref, extractGclid } from "./clickId.js";
 import { UNSTORABLE_KEY_CODE } from "./store.js";
 import {
   detectUnsubstitutedPlaceholder,
@@ -142,7 +142,7 @@ export function makeCrmEventsHandler({
     const invalidReason = isTestPress || !valid ? reason.slice(0, 500) : null;
 
     try {
-      // Both click ids are frozen the same way: captured once, at the first
+      // All three click ids are frozen the same way: captured once, at the first
       // stage whose full_link carried one, then reused verbatim. An earlier
       // stage without one stores nothing, so the freeze starts at the first
       // stage that has a click. Recomputing per stage gives the platform a
@@ -151,25 +151,31 @@ export function makeCrmEventsHandler({
       // has its own full_link, normally empty, and this one's was scrubbed a
       // minute after it arrived.
       //
-      // `oppref` is OpenAI's, and it is taken raw: no `fb.1.<ms>.` wrapper and no
-      // timestamp, so the value itself is the whole of what is frozen.
+      // `oppref` is OpenAI's and `gclid` is Google's, and both are taken raw: no
+      // `fb.1.<ms>.` wrapper and no timestamp, so the value itself is the whole
+      // of what is frozen. Google's arrives by auto-tagging, which appends it to
+      // the landing URL, so it is already inside the same `full_link`.
       let fbc = "";
       let oppref = "";
+      let gclid = "";
       try {
         const frozen = await findClickIds(fields.crmClientId);
         fbc = String(frozen?.fbc ?? "") || deriveFbc(fields.fullLink, now().getTime());
         oppref = String(frozen?.oppref ?? "") || extractOppref(fields.fullLink);
+        gclid = String(frozen?.gclid ?? "") || extractGclid(fields.fullLink);
       } catch (error) {
-        // Both empty, NEITHER derived. When the lookup fails we cannot know
+        // All three empty, NONE derived. When the lookup fails we cannot know
         // whether a frozen id already exists, and deriving one here would claim a
         // click identity this row cannot check: for `fbc` a fresh timestamp, and
-        // for `oppref` this visit's click where the client's first one is what is
-        // frozen. A missing identifier is recoverable (both platforms fall back to
-        // the hashed email and phone, and a later event still picks the frozen
-        // value up from an earlier row); an inconsistent one is silently wrong.
+        // for `oppref` and `gclid` this visit's click where the client's first one
+        // is what is frozen. A missing identifier is recoverable (Meta and OpenAI
+        // fall back to the hashed email and phone, Google skips the conversion
+        // visibly, and a later event still picks the frozen value up from an
+        // earlier row); an inconsistent one is silently wrong.
         logger.error?.(`[crm-events] click id lookup failed: ${error?.message || String(error)}`);
         fbc = "";
         oppref = "";
+        gclid = "";
       }
 
       // Generated once, here, and reused on every send attempt. A send times
@@ -177,7 +183,7 @@ export function makeCrmEventsHandler({
       // delivered, so a retry carrying a fresh id would be a second welcome.
       const { inserted } = await insert(
         fields,
-        { fbc, oppref, whatsappRequestId: newRequestId() },
+        { fbc, oppref, gclid, whatsappRequestId: newRequestId() },
         req?.body,
         invalidReason
       );

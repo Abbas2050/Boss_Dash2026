@@ -352,12 +352,14 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       {
         fbc: "fb.1.1673035686000.ABC",
         oppref: "oppref-XYZ",
+        gclid: "Cj0KCQiA-gclid-XYZ",
         whatsappRequestId: "11111111-2222-4333-8444-555555555555",
       },
       "{}"
     );
     expect(at(params, "fbc")).toBe("fb.1.1673035686000.ABC");
     expect(at(params, "oppref")).toBe("oppref-XYZ");
+    expect(at(params, "gclid")).toBe("Cj0KCQiA-gclid-XYZ");
     expect(at(params, "whatsapp_request_id")).toBe("11111111-2222-4333-8444-555555555555");
   });
 
@@ -367,6 +369,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
     const params = buildInsertParams(FIELDS, {}, "{}");
     expect(at(params, "fbc")).toBeNull();
     expect(at(params, "oppref")).toBeNull();
+    expect(at(params, "gclid")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
@@ -390,6 +393,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       {
         fbc: "fb.1.1673035686000.ABC",
         oppref: "oppref-XYZ",
+        gclid: "Cj0KCQiA-gclid-XYZ",
         whatsappRequestId: "11111111-2222-4333-8444-555555555555",
       },
       "{}",
@@ -419,6 +423,7 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       full_link: "https://skylinkscapital.com/en/?fbclid=ABC",
       fbc: "fb.1.1673035686000.ABC",
       oppref: "oppref-XYZ",
+      gclid: "Cj0KCQiA-gclid-XYZ",
       whatsapp_request_id: "11111111-2222-4333-8444-555555555555",
       meta_status: "pending",
       meta_detail: null,
@@ -428,6 +433,8 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
       brevo_detail: null,
       openai_status: "pending",
       openai_detail: null,
+      google_status: "pending",
+      google_detail: null,
       received_at: RECEIVED,
       raw_payload: "{}",
     };
@@ -441,9 +448,12 @@ const RECEIVED = new Date("2026-10-13T10:00:00Z");
   it("writes NULL for an empty id too, not only for an absent one", () => {
     // deriveFbc returns "" for every lead that carried no Meta click, so an
     // empty string is the common case here, not an edge case.
-    const params = buildInsertParams(FIELDS, { fbc: "", oppref: "", whatsappRequestId: "" }, "{}");
+    const params = buildInsertParams(FIELDS, { fbc: "", oppref: "", gclid: "", whatsappRequestId: "" }, "{}");
     expect(at(params, "fbc")).toBeNull();
     expect(at(params, "oppref")).toBeNull();
+    // Empty is the common case for this one too, and the commonest of the three:
+    // every organic signup reaches us with no gclid at all.
+    expect(at(params, "gclid")).toBeNull();
     expect(at(params, "whatsapp_request_id")).toBeNull();
   });
 
