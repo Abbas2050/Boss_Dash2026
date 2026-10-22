@@ -771,8 +771,38 @@ export async function processSignupEvent(row, deps) {
   // `skipped`, so no row should ever arrive here scrubbed. That is the reason this is a guard
   // and not an assumption: whatever later makes a scrubbed row claimable, it
   // sends nothing and writes nothing.
+  // **Settling, not just returning, because returning deadlocked the queue.**
+  // Adding the Google Ads column on 2026-10-22 defaulted every existing row's
+  // `google_status` to `pending`, which made 31 already-scrubbed rows claimable
+  // again. They are the OLDEST by `received_at`, claimDueEvents takes the 25
+  // oldest, and the early return wrote nothing -- so the same 25 were re-claimed
+  // every sweep for ever and no row received after them was ever reached. Every
+  // destination on every new signup sat `pending`: no WhatsApp welcome, no Brevo
+  // contact, no conversion anywhere. The guard above was right that such a row
+  // must send nothing; it was wrong that it could also write nothing.
+  //
+  // So each still-unsettled action is settled `skipped`, which is final and
+  // takes the row out of the claim query for good. `skipped` and not `failed`
+  // because nothing was attempted and nothing is recoverable: the client data a
+  // send would need was deleted by the scrub, deliberately, and will not return.
   if (row?.scrubbed_at) {
-    deps.logger?.warn?.(`[crm-events] row ${row.id} is scrubbed; nothing is sent from it`);
+    deps.logger?.warn?.(`[crm-events] row ${row.id} is scrubbed; settling its unsent actions`);
+    const detail = "row was scrubbed before this destination existed; nothing to send";
+    const settle = [
+      ["meta", row.meta_status, deps.saveMeta],
+      ["whatsapp", row.whatsapp_status, deps.saveWhatsapp],
+      ["brevo", row.brevo_status, deps.saveBrevo],
+      ["openai", row.openai_status, deps.saveOpenai],
+      ["google", row.google_status, deps.saveGoogle],
+    ];
+    for (const [action, status, save] of settle) {
+      if (status !== "pending" && status !== "retrying") continue;
+      // Claimed by another worker during this pass: it is settling the action,
+      // and writing over it here would race with the outcome it is recording.
+      if (claimedElsewhere.has(action)) continue;
+      await save?.(row.id, { status: "skipped", detail, attempts: Number(row[`${action}_attempts`]) || 0 });
+      result[action] = { status: "skipped", detail };
+    }
     return result;
   }
 

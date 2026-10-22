@@ -1488,12 +1488,19 @@ describe("the resend a kept row was kept for", () => {
     expect(requeue(table, "brevo")).toBe(0);
     expect(table.brevo_status).toBe("failed");
 
-    // The other half of the guard, for whatever else ever hands the worker one:
-    // nothing is sent and nothing is written.
+    // The other half of the guard: nothing is SENT, but the action is settled.
+    // The comment above describes the deadlock exactly, and leaving the action
+    // unwritten is what causes it -- which is not theory: it happened in
+    // production on 2026-10-22 when a new destination's column defaulted 31
+    // scrubbed rows to `pending` and they starved every newer row out of the
+    // 25-oldest claim for as long as the worker ran.
     const d = against(table);
     await processSignupEvent(row({ ...table, brevo_status: "pending" }), d);
     expect(d.upsertBrevo).not.toHaveBeenCalled();
-    expect(d.saveBrevo).not.toHaveBeenCalled();
+    expect(d.saveBrevo).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ status: "skipped" })
+    );
     expect(d.scrub).not.toHaveBeenCalled();
   });
 
@@ -1549,7 +1556,16 @@ describe("a scrubbed row sends nothing", () => {
   // the guard for whatever later changes that -- a hand-run requeue, a new
   // selection clause -- because the failure is silent: Brevo accepts a contact
   // with no address and DoubleTick accepts a template with no name.
-  it("sends nothing and writes nothing for a row that carries a scrubbed_at", async () => {
+  it("sends nothing, but SETTLES every unsent action rather than leaving it claimable", async () => {
+    // Writing nothing here deadlocked production on 2026-10-22. Adding the
+    // Google Ads column defaulted 31 already-scrubbed rows to `pending`, which
+    // made them claimable again; they were the oldest, claimDueEvents takes the
+    // 25 oldest, and an early return that wrote nothing meant the same 25 were
+    // re-claimed every sweep for ever. No row received after them was ever
+    // processed -- no WhatsApp welcome, no Brevo contact, no conversion.
+    //
+    // So the rule is "sends nothing", never "writes nothing": an action that is
+    // not settled is an action that will be claimed again.
     for (const stage of SENDING_STAGES) {
       const d = deps();
       const result = await processSignupEvent(
@@ -1558,10 +1574,15 @@ describe("a scrubbed row sends nothing", () => {
       );
       for (const a of ACTIONS) {
         expect(d[a.send], `${stage}/${a.name}`).not.toHaveBeenCalled();
-        expect(d[a.save], `${stage}/${a.name}`).not.toHaveBeenCalled();
+        // `skipped` and not `failed`: nothing was attempted, and the data a send
+        // would need was deleted by the scrub on purpose. It is final, which is
+        // what takes the row out of the claim query.
+        expect(d[a.save], `${stage}/${a.name}`).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ status: "skipped", detail: expect.stringContaining("scrubbed") })
+        );
       }
       expect(d.scrub, stage).not.toHaveBeenCalled();
-      expect(result, stage).toEqual({ meta: null, whatsapp: null, brevo: null, openai: null, google: null });
     }
   });
 
