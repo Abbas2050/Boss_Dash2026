@@ -3,12 +3,24 @@
 Receives FXBO webhooks at five points in the client funnel, stores each once,
 then independently sends a Meta Conversions API event, a DoubleTick WhatsApp
 welcome, a Brevo contact, an OpenAI conversion for ChatGPT Ads, and a Google Ads
-offline click conversion.
+conversion through the **Data Manager API**.
 
 Design: `../docs/superpowers/specs/2026-10-09-crm-signup-webhook-design.md`
 ChatGPT Ads: `../docs/superpowers/specs/2026-10-14-chatgpt-ads-conversions-design.md`
 Google Ads: no design document of its own — the decisions are in `googleAds.js`
-and in the "Google Ads" block at the end of `../.env.example`.
+and in the "Google Ads conversions, through the DATA MANAGER API" block at the
+end of `../.env.example`.
+
+**Google Ads is the one destination with two phases, and that is the single most
+important thing to know about this module.** It moved off
+`ConversionUploadService.UploadClickConversions` on 2026-10-22, because that
+call answered a real conversion with HTTP 200 carrying
+`notAllowlistedError: CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE — New
+integrations for uploading click conversions should use the Data Manager API`.
+The new API accepts a conversion asynchronously: its 200 means only "accepted
+for processing", and the real outcome is retrieved up to 24 hours later. So a
+healthy Google conversion reads `retrying` on the tab for up to a day before it
+reads `sent`. See "Google Ads: two phases, and why a 200 is not delivery" below.
 
 Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 
@@ -20,21 +32,29 @@ Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 | `registered` | **not sent** -- the website pixel owns it | yes, to anyone with a valid phone, lead or client | yes, to clients only | **not sent** -- the website pixel owns it | **not sent** -- the GTM container owns it |
 | `verified` | `StartTrial` | no | no | `custom`, `custom_event_name: client_verified` (`custom`) | `FXBO_Client_Verified` |
 | `live_account` | `SubmitApplication` | no | no | `custom`, `custom_event_name: live_account_opened` (`custom`) | `FXBO_Live_Account_Opened` |
-| `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) | `FXBO_First_Deposit` + `conversionValue`/`currencyCode` |
+| `first_deposit` | `Purchase` + `value`/`currency` | no | no | `order_created` + `amount`/`currency` (`contents`) | `FXBO_First_Deposit` + `conversionValue`/`currency` |
 
 **No single event sends to all five.** `registered` sends WhatsApp and Brevo;
 every other stage sends Meta, ChatGPT Ads and Google Ads together, and nothing
 else.
 
 **Google has no event name on the wire.** Each stage maps to a CONVERSION ACTION
-created in the Google Ads UI, and the upload names it by resource name —
-`customers/<id>/conversionActions/<numeric id>`. The names above are resolved to
-those resource names once per process and cached; a name that does not resolve
-records `failed` naming it, because the two ways of getting this wrong are both
-silent (a hardcoded id uploads to whatever action now holds it, and an omitted
-action is a conversion Google files against nothing). Renaming one of these
-actions in the UI stops that stage until the constant in `googleAds.js` is
+created in the Google Ads UI, and the ingest names it by its **numeric id** in
+`destinations[].productDestinationId` — Google: "The ID of the Google Ads
+conversion action in the `operatingAccount` that receives the events", taken
+from the `id` field of `conversion_action` and **not** from its resource name.
+The names above are resolved to those ids once per process and cached; a name
+that does not resolve records `failed` naming it, because every way of getting
+this wrong is silent (a hardcoded id reports into whatever action now holds it,
+an omitted field is a conversion Google files against nothing, and a resource
+name where the id belongs is a well-formed string that would be accepted with a
+200 and refused a day later as an error count naming no row). Renaming one of
+these actions in the UI stops that stage until the constant in `googleAds.js` is
 changed to match, and needs a restart.
+
+The actions must be type `UPLOAD_CLICKS` — "Website (Import from clicks)" in the
+UI — which is what the Data Manager API requires for offline events, and which
+the GAQL lookup filters on.
 
 **`registered` has no Google entry at all, rather than a gated one.** The
 customer's GTM container already fires `Account_Registration (GADs)` with
@@ -137,82 +157,163 @@ guard is that the scrub writes `NULL` rather than a placeholder, so
 shared fake surname across every client. `crm_client_id` survives the scrub
 anyway, so `external_id` would be the one matcher left.
 
-### Google Ads: the gclid, the offset, and why a 200 is not delivery
+### Google Ads: two phases, and why a 200 is not delivery
 
-Three things about this destination are different from the other four, and each
+Four things about this destination are different from the other four, and each
 has already been got wrong somewhere in this repository's history.
 
+#### The two phases
+
+**`events:ingest` answers 200 for "accepted for asynchronous processing" and
+nothing more.** The body carries a `requestId` and optional `fieldWarnings`. The
+real outcome comes from
+
+```
+GET https://datamanager.googleapis.com/v1/requestStatus:retrieve?requestId=...
+```
+
+as `requestStatus` per destination — `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` or
+`PROCESSING` — and Google says it "may take up to 24 hours" (some requests
+finish in about 30 minutes). So:
+
+| Phase | Status in the row | Budget | Clock |
+|---|---|---|---|
+| ingest | `retrying`, with `google_request_id` | 3 attempts | 5 minutes |
+| confirm | `retrying` until Google answers | 25 polls | 30 min, ×1.3, capped at 60 |
+
+`SUCCESS` is the **only** thing that records `sent`. `FAILED` and
+`PARTIAL_SUCCESS` record `rejected` naming Google's own reasons; 24 hours of
+`PROCESSING` records `failed` with a detail saying Google may still record it
+and that nothing here will learn that it did.
+
+**`google_request_id` is what tells the two phases apart**, and the row cannot be
+settled without it: empty means nothing has been ingested and the step ingests,
+non-empty means a conversion is awaiting its answer and the step polls. The
+writer sets it through `COALESCE`, so the claim taken before each poll cannot
+null the id it is about to poll with — written plainly, the first poll's own
+claim would erase it and the next sweep would ingest the conversion a second
+time. The resend control clears it explicitly, so a resend ingests rather than
+re-asking about a dead request.
+
+**No sixth status word, deliberately.** `settled.js` refuses a vocabulary that
+drifts, and the claim, the scrub precondition, the backstop and the resend each
+name those five words in SQL — a status missing from `SETTLED` is resent for
+ever, one missing from `SCRUBBABLE` never scrubs. `retrying` is the honest
+member of the existing set: the conversion is unconfirmed, and the row must stay
+claimable so that the answer is actually asked for.
+
+**One event per request, and the cost is accepted.** The API takes up to 2,000
+events and reports failures as `errorInfo.errorCounts[]` of
+`{reason, recordCount}` with **no per-record identifier**. A batch of five coming
+back `PARTIAL_SUCCESS` with `recordCount: 2` would name no rows — two of those
+conversions would not exist and nothing could say which, and all five would have
+to be settled on a guess. One event per request makes one `requestId` one
+conversion. Google allows 300 requests a minute and 100,000 a day per Cloud
+project; this service ingests on the order of ten conversions a day.
+
+**The scrub now waits for Google.** A row's client data is normally nulled about
+a minute after signup. A conversion awaiting confirmation is `retrying`, which
+is neither settled nor scrubbable, so such a row keeps its name, email and phone
+until Google answers — up to 24 hours, on the rows that reach Google at all AND
+carry a gclid. The thirty-day backstop still bounds it. It could be otherwise:
+the poll needs only `google_request_id`, which is not client data and is not on
+the scrub list. What stands in the way is `processSignupEvent`'s scrubbed-row
+guard, which settles every unsettled action `skipped` — it would record `skipped`
+for a conversion Google had accepted. Changing that guard is how the queue was
+starved on 2026-10-22, so the retention cost was taken instead.
+
+#### The gclid
+
 **It attributes on the `gclid` and on nothing else.** Meta and OpenAI both fall
-back to the hashed email and phone when their click id is missing;
-`uploadClickConversions` has no such fallback — the gclid IS the identity of the
-click. So a row without one records
+back to the hashed email and phone when their click id is missing; here the
+gclid goes in `adIdentifiers` and we send no `userData`, so there is no such
+fallback — the gclid IS the identity of the click. So a row without one records
 `skipped — no gclid: the click cannot be attributed in Google Ads`, which is the
 commonest outcome here because most signups are organic. **It is deliberately
-not uploaded unattributed**: Google counts such a conversion against no
-campaign, so it inflates the account's total while leaving every campaign's own
-number unchanged — it corrupts the figure the bidding reads, and nothing in the
-account says where it came from. A visible skip is strictly better.
+not sent unattributed**: Google counts such a conversion against no campaign, so
+it inflates the account's total while leaving every campaign's own number
+unchanged — it corrupts the figure the bidding reads, and nothing in the account
+says where it came from. A visible skip is strictly better.
 
 Auto-tagging is what supplies it: Google appends `gclid` to the landing URL
 itself, so it arrives inside the same `full_link` the `fbclid` does and no
 website change was needed. It is frozen in its own column at the client's first
 event, for the reason `fbc` and `oppref` are, and it survives the scrub for a
 sharper version of that reason — scrubbing it would not weaken the first
-deposit's attribution weeks later, it would remove the conversion.
+deposit's attribution weeks later, it would remove the conversion. It is also
+redacted out of every detail and log line: it is not a credential, but it names
+one person's click, and `google_detail` is read straight into the admin table.
 
-**`conversionDateTime` carries a timezone offset, and ours is the account's.**
-The format is `yyyy-mm-dd hh:mm:ss+|-hh:mm` — a space, not an ISO `T`, and an
-explicit signed offset, so `Date.prototype.toISOString()` produces neither half
-of it. Google accepts any valid offset and recommends the account's for exactly
-one reason: so the counts match the Google Ads UI. The account is GMT+04:00, and
-the difference from UTC is a DAY and not an hour at the boundary — a deposit at
-02:30 Dubai time is still the previous date in UTC, and would be reported
-against the previous day's clicks. `GOOGLE_ADS_TIMEZONE_OFFSET` can move it;
-anything that is not a signed `+hh:mm` falls back to +04:00 with a warning.
+#### `eventTimestamp`, and what the offset no longer decides
 
-**A 200 is not delivery.** `partialFailure` is always set — Google documents the
-field as required and says it "should always be set to true" — and with it on, a
-refused conversion comes back as HTTP 200 with the reason inside
-`partialFailureError`. Classifying on the status alone would record `sent` for a
-conversion Google threw away, which is precisely the failure that cost this
-project a month on Meta. So the body is read, and it has to say the conversion
-was taken: `results[0]` must be a non-empty object, and a 200 whose body cannot
-be read is a retryable failure rather than a send. That last part is the
-OPPOSITE of what `openai.js` does with the same situation, and the difference is
-the reason — OpenAI documents no response shape at all, so an empty body there
-is the API behaving as documented, while Google documents both fields exactly.
+**It is an RFC 3339 `Timestamp`, with a `T`.** `conversionDateTime` on the old
+upload was `yyyy-mm-dd hh:mm:ss+|-hh:mm` — a space — and the old separator is not
+a laxer spelling of this one: a proto3 Timestamp refuses a space where the `T`
+belongs.
 
-**Deduplication is `orderId`, and it is `<crm_client_id>:<stage>` — the same
-identity Meta's `event_id` and OpenAI's event id are built from.** Google
-documents exactly one rule: an order id can only be used for one conversion per
-conversion action, enforced as `DUPLICATE_ORDER_ID`. What it dedupes on when no
-order id is sent is stated nowhere in the API reference, so "gclid plus action
-plus time would dedupe" is inference and not something to rest a retry on. Worth
-knowing: Google's own note is that if an order id is set at import, it must be
-used for any later adjustment, so a future retraction through
-`uploadConversionAdjustments` has to quote this exact string.
+**And the offset changed meaning, which is the easier half to miss.**
+`conversionDateTime` was a LOCAL WALL CLOCK whose offset told Google which
+instant the digits beside it named, so a UTC stamp under a `+04:00` label moved a
+conversion by a DAY at the boundary. A `Timestamp` is an INSTANT:
+`2026-10-22T02:30:00+04:00` and `2026-10-21T22:30:00Z` are the same moment and
+Google files them identically, converting to the account's zone for reporting
+from the account's OWN setting. So `GOOGLE_ADS_TIMEZONE_OFFSET` is now
+**presentational** — it decides how the stamp reads to a person, not which day
+the conversion lands on. It is kept at the account's +04:00 because a stamp a
+reader can compare to the Google Ads UI without arithmetic is worth having, and
+because the formatter is the one that cannot read the IIS host's own timezone.
 
-**The deposit's value is the DECIMAL.** `conversionValue` is a proto `double`:
+#### Deduplication, the value, and access
+
+**Deduplication is `transactionId`, and it is `<crm_client_id>:<stage>` — the
+same identity Meta's `event_id` and OpenAI's event id are built from.** Google's
+offline guide calls it optional and says it "is used for deduplication"; it is
+the order-id equivalent and the same per-conversion-action uniqueness applies.
+It matters more under an asynchronous API: the one window this service cannot
+close by itself is a process dying between the ingest leaving and
+`google_request_id` being written, and this id is what makes the repeat the same
+conversion rather than a second one. It is not optional for us.
+
+**The deposit's value is the DECIMAL.** `conversionValue` is a plain number:
 $54.49 is `54.49`. The same FXBO lookup's `amountMinor` — `5449` — is what
 OpenAI takes, and Google would accept it without a word, as a $5,449 deposit.
-Every other money field in this API is in micros, which is what makes the
-mistake inviting from the other side too.
+The Google Ads API states money in micros nearly everywhere, which is what makes
+the mistake inviting from the other side too; conversion value is neither. The
+field is `currency` here and was `currencyCode` on the old API.
 
-**What is not settled, and cannot be settled from documentation.** Google
-restricted `uploadClickConversions` on 2026-06-15 to developer tokens that had
-already used it, directing everyone else to the Data Manager API, and says that
-restriction "remains in effect" without saying what it is now keyed to. It is a
-different error family from the access levels, so Explorer access would not
-clear it. One `GOOGLE_ADS_VALIDATE_ONLY=true` send answers it in seconds and
-records nothing; `CUSTOMER_NOT_ALLOWLISTED_FOR_THIS_FEATURE` in a row's detail
-is what it looks like if the answer is no.
+**`consent` is not sent.** Both `adUserData` and `adPersonalization` are
+documented optional and we have collected neither signal; sending
+`CONSENT_GRANTED` because the sample payload does would be a claim about the
+client nobody here can make. If Google ever requires it, the polls say so with
+`PROCESSING_ERROR_REASON_DENIED_CONSENT`, which is visible in the row's detail.
 
-**Developer tokens are not how access works any more** (Google's docs, checked
-2026-10-21): they were sunset on 2026-09-09, are "optional and ignored by the
-API servers", and Google encourages not sending one. Access is the access level
-of the Cloud project that owns the OAuth client — Test, then Explorer, which is
-the first that may call production accounts. `GOOGLE_ADS_DEVELOPER_TOKEN` is
-still sent when set, and its absence is never a skip.
+**The Data Manager API needs its own scope, and this is the failure to expect
+first.** `https://www.googleapis.com/auth/datamanager`, which
+`scripts/google-ads-refresh-token.mjs` requests alongside `adwords` in one
+consent. **A refresh token minted before 2026-10-22 carries only `adwords`, and
+scopes are not additive on an existing token** — such a token resolves
+conversion actions perfectly and is refused by every ingest with
+`ACCESS_TOKEN_SCOPE_INSUFFICIENT` in the detail. The fix is to re-run that
+script. The other named reasons are `SERVICE_DISABLED` (the API is not enabled
+on the Cloud project), `PERMISSION_DENIED` (the access path does not reach the
+operating account — stricter for the status retrieval, which must use the same
+path as the ingest, with Admin or Standard access) and `RESOURCE_EXHAUSTED` (the
+project quota, which arrives as a 429 and is retried).
+
+**There is no developer token anywhere, and `GOOGLE_ADS_DEVELOPER_TOKEN` is no
+longer read.** Two reasons: Google Ads sunset developer tokens on 2026-09-09
+("optional and ignored by the API servers", and they "will start rejecting
+developer tokens in API calls in a future major version"), and the Data Manager
+API documents no such header at all — its destinations guide says "Don't set
+request headers in an `IngestionService` request". Access to both APIs is the
+access level of the Cloud project that owns the OAuth client.
+
+**`GOOGLE_ADS_LOGIN_CUSTOMER_ID` is still read, in two shapes.** The
+conversion-action lookup is a Google Ads API call and still sends it as the
+`login-customer-id` header; the ingest takes no headers, so it becomes
+`destinations[].loginAccount` in the body. It is omitted entirely when blank,
+which defaults to the operating account — and it has to be right for the status
+retrieval too, which Google requires to use the same access path as the ingest.
 
 ### The 19 October event-name experiment
 
@@ -674,12 +775,22 @@ extracted from them.
 Everything else stays, because it is the statistics the table exists for:
 `crm_client_id`, `stage`, `fxbo_unique_id`, `record_type`, `is_lead_raw`,
 `marketing_consent`, `is_ib`, `entity`, `source`, `language`, the three `utm_*`
-columns, `fbc`, `oppref`, `gclid`, `whatsapp_request_id`, every status / detail /
-attempts / clock column, the four delivery-proof columns (`brevo_contact_id`,
-`whatsapp_delivery_status`, `whatsapp_delivery_at`, `whatsapp_delivery_detail`
--- see "Proving a message arrived"), `received_at` and `updated_at`. `entity`, `source` and the `utm_*`
+columns, `fbc`, `oppref`, `gclid`, `whatsapp_request_id`, `google_request_id`,
+every status / detail / attempts / clock column, the four delivery-proof columns
+(`brevo_contact_id`, `whatsapp_delivery_status`, `whatsapp_delivery_at`,
+`whatsapp_delivery_detail` -- see "Proving a message arrived"), `received_at` and
+`updated_at`. `entity`, `source` and the `utm_*`
 columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
+
+**`google_request_id` is the one absence from the scrub list that is about
+correctness rather than about evidence.** It is the handle the Data Manager API's
+status retrieval takes, so a row whose conversion is still awaiting confirmation
+would, without it, be read as never ingested and ingested again. It is not
+client data — it names one request of ours to Google, not a person. It cannot
+arise today, because the scrub only takes a row whose every destination is `sent`
+or `skipped` and a conversion awaiting confirmation is `retrying`; this is the
+floor under that.
 
 **Seven of those are load-bearing, not merely kept:**
 

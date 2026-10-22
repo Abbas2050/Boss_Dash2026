@@ -22,12 +22,16 @@ import {
 // values, and the account's own UTC offset is the one of them that would be
 // silently wrong.
 import {
+  DATA_MANAGER_API_HOST,
+  DATA_MANAGER_API_VERSION,
   GOOGLE_ADS_ACCOUNT_OFFSET,
   GOOGLE_ADS_API_HOST,
   GOOGLE_ADS_API_VERSION,
   GOOGLE_ADS_CONVERSION_ACTIONS,
+  GOOGLE_CONFIRM_MAX_ATTEMPTS,
   GOOGLE_OAUTH_TOKEN_URL,
-  googleConversionDateTime,
+  googleConfirmDelayMinutes,
+  googleEventTimestamp,
   clearGoogleCaches,
 } from "./googleAds.js";
 // The fourth destination's own module, imported for the two constants the wiring
@@ -126,14 +130,39 @@ const RECEIVED_AT = new Date("2026-10-12T12:00:00Z");
 const SWEEP_AT = new Date(RECEIVED_AT.getTime() + 60_000);
 
 /**
- * What resolving a conversion action's name hands back: the resource name the
- * upload actually carries.
+ * What resolving a conversion action's name hands back: the NUMERIC id that
+ * `productDestinationId` takes.
  *
- * A fake, but a correctly shaped one -- `customers/<id>/conversionActions/<id>`
- * -- because the thing being tested is that the step uploads what the lookup
- * returned and never a name or an id of its own.
+ * All digits, because that is what the field is and what buildGoogleIngest
+ * refuses anything else for. The resource name beside it is what the lookup also
+ * selects, and it is here to be asserted ABSENT from the payload -- sending it
+ * where the id belongs is a well-formed string the API would accept with a 200
+ * and refuse a day later as an error count naming no row.
  */
-const GOOGLE_ACTION_RESOURCE = "customers/4743067250/conversionActions/987654321";
+const GOOGLE_ACTION_ID = "987654321";
+const GOOGLE_ACTION_RESOURCE = `customers/4743067250/conversionActions/${GOOGLE_ACTION_ID}`;
+
+/**
+ * The id Google mints for one accepted ingest.
+ *
+ * **This is the whole of the second phase.** `events:ingest` answers 200 for
+ * "accepted for asynchronous processing"; the conversion's real outcome is
+ * retrieved by this id up to 24 hours later. A row holding it is a row awaiting
+ * confirmation, and a row that lost it would be ingested a second time.
+ */
+const GOOGLE_REQUEST_ID = "dm-request-7f2b9c";
+
+/**
+ * Row overrides that put the Google step in its CONFIRMATION phase.
+ *
+ * **Any case that wants a quiet, finished Google row in one pass needs this.**
+ * An ingest accepted on this sweep is `retrying` with a request id -- which is
+ * neither settled nor scrubbable, and which the step logs -- so a row that
+ * reaches "every destination done" in one pass is one whose conversion is being
+ * confirmed, not one whose conversion is being sent. That is what the sweep a
+ * day later really does.
+ */
+const AWAITING_GOOGLE = { google_request_id: GOOGLE_REQUEST_ID };
 
 /** What a token exchange hands back. Distinctive, so a header carrying anything
  *  else cannot pass by accident -- and it must never reach a log or a detail. */
@@ -210,23 +239,25 @@ function deps(overrides = {}) {
       openaiValidateOnly: false,
       openaiMaxAttempts: 3,
       // Google Ads. The refresh token stands for the key, so these four are
-      // what "configured" means; the developer token is deliberately absent,
-      // because an unset one is not a configuration gap since the 2026-09-09
-      // sunset and the cases below prove the destination sends without it.
+      // what "configured" means. There is no developer token here at all any
+      // more: the Ads API has ignored one since the 2026-09-09 sunset and the
+      // Data Manager API documents no such header, so the worker no longer
+      // reads the variable.
       googleRefreshToken: "google-refresh",
       googleClientId: "google-client",
       googleClientSecret: "google-secret",
       googleCustomerId: "4743067250",
       googleLoginCustomerId: "",
-      googleDeveloperToken: "",
       googleApiVersion: GOOGLE_ADS_API_VERSION,
       googleApiHost: GOOGLE_ADS_API_HOST,
+      // The host the conversions themselves go to: its own API on its own host.
+      googleDataManagerHost: DATA_MANAGER_API_HOST,
       googleTokenUrl: GOOGLE_OAUTH_TOKEN_URL,
       googleTimezoneOffset: GOOGLE_ADS_ACCOUNT_OFFSET,
       // Off, as it is in production, and for the same reason OpenAI's is: a
-      // validated upload records nothing in the account while settling the row
+      // validated ingest records nothing in the account while settling the row
       // exactly as a real one does, so the cases asserting a conversion was
-      // uploaded must not be running against one.
+      // ingested must not be running against one.
       googleValidateOnly: false,
       skipSources: new Set(),
       // FXBO, for the first-deposit amount, and not the trading backend: a
@@ -239,10 +270,22 @@ function deps(overrides = {}) {
     sendWhatsapp: vi.fn(async () => ({ status: "sent", retryable: false, detail: "SENT", messageId: "m-1" })),
     upsertBrevo: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 201" })),
     sendOpenai: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
-    // Google's two: the conversion action's resource name, looked up by name
-    // before the claim, and the upload itself after it.
-    resolveGoogleAction: vi.fn(async () => ({ resourceName: GOOGLE_ACTION_RESOURCE })),
-    sendGoogle: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
+    // Google's THREE: the conversion action's numeric id, looked up by name
+    // before the claim; the ingest after it; and the confirmation, hours later.
+    resolveGoogleAction: vi.fn(async () => ({ conversionActionId: GOOGLE_ACTION_ID })),
+    // **The honest default: an accepted ingest, not a send.** A 200 from
+    // `events:ingest` means "accepted for asynchronous processing", so the step
+    // writes `retrying` with the request id and the conversion is confirmed on a
+    // later sweep. Every case below that wants a settled Google row therefore
+    // starts from a row whose google_status already says so -- which is what the
+    // live system looks like too, a day later.
+    sendGoogle: vi.fn(async () => ({
+      status: "retrying",
+      retryable: true,
+      requestId: GOOGLE_REQUEST_ID,
+      detail: "http 200 accepted for processing",
+    })),
+    confirmGoogle: vi.fn(async () => ({ status: "sent", retryable: false, detail: "status http 200 SUCCESS" })),
     // The deposit amount, from FXBO. $129.99 on purpose: Meta wants the decimal
     // 129.99 and ChatGPT Ads wants the integer 12999, so a fixture with a round
     // amount would pass with the two units crossed.
@@ -770,8 +813,19 @@ const ACTIONS = [
   // and for the third version of the same reason: the customer's GTM container
   // owns the registration conversion there, so `registered` is the one stage at
   // which none of the three sends.
-  { name: "google", stage: "verified", status: "google_status", attempts: "google_attempts", clock: "google_next_attempt_at", send: "sendGoogle", save: "saveGoogle" },
+  //
+  // **`ok` is `retrying` and no other action's is**, which is the whole of this
+  // destination's second phase as the rest of this file sees it: a 200 from
+  // `events:ingest` is an acceptance, not a delivery, and the row stays
+  // claimable so that the outcome is actually asked for. Carried as a field
+  // rather than special-cased at each call site, so a case about retries or
+  // clocks or claims reads the same for all five.
+  { name: "google", stage: "verified", status: "google_status", attempts: "google_attempts", clock: "google_next_attempt_at", send: "sendGoogle", save: "saveGoogle", ok: "retrying" },
 ];
+
+// What a healthy run of each action lands on. `sent` for four of them; for
+// Google, the acceptance that is not yet a send.
+for (const a of ACTIONS) a.ok ??= "sent";
 
 // Every subset of the actions, so that a step reading another step's column is
 // caught whichever way round the columns are crossed. Counted from the list, not
@@ -802,7 +856,9 @@ function expectOthersReached(d, a, label = a.name) {
   for (const other of ACTIONS.filter((x) => x !== a)) {
     const sends = other.stage === a.stage;
     expect(d[other.send], `${label}, ${other.name}`).toHaveBeenCalledTimes(sends ? 1 : 0);
-    expect(lastSaved(d[other.save]), `${label}, ${other.name}`).toMatchObject({ status: sends ? "sent" : "skipped" });
+    expect(lastSaved(d[other.save]), `${label}, ${other.name}`).toMatchObject({
+      status: sends ? other.ok : "skipped",
+    });
   }
 }
 
@@ -987,7 +1043,7 @@ describe("the pre-send write is the claim", () => {
     for (const a of ACTIONS) {
       const [claim, outcome] = d[a.save].mock.calls;
       expect(claim, a.name).toEqual([7, expect.objectContaining({ detail: IN_FLIGHT }), NOW]);
-      expect(outcome, a.name).toEqual([7, expect.objectContaining({ status: "sent" })]);
+      expect(outcome, a.name).toEqual([7, expect.objectContaining({ status: a.ok })]);
     }
   });
 
@@ -1006,6 +1062,12 @@ describe("an outcome write that fails after the send succeeded", () => {
   // The message is gone and the row still says `retrying` with its clock due, so
   // the next sweep sends a second welcome. One dropped connection is enough for
   // this; it needs no second process.
+  //
+  // **Google's accepted ingest gets the same protection, although its status is
+  // `retrying`.** The conversion HAS been handed over, and that write is the only
+  // thing that records the request id the outcome will be confirmed by -- lost,
+  // the row reads as never ingested, the next sweep ingests a second time, and
+  // the first request becomes one nothing will ever ask about.
   for (const a of ACTIONS) {
     it(`re-records ${a.name}'s completed send once before letting the error through`, async () => {
       const save = vi.fn();
@@ -1015,7 +1077,7 @@ describe("an outcome write that fails after the send succeeded", () => {
       const d = deps({ [a.save]: save });
       await processSignupEvent(row({ stage: a.stage }), d);
       expect(save).toHaveBeenCalledTimes(3);
-      expect(save.mock.calls[2]).toEqual([7, expect.objectContaining({ status: "sent" })]);
+      expect(save.mock.calls[2]).toEqual([7, expect.objectContaining({ status: a.ok })]);
     });
 
     it(`gives ${a.name} no second write when there was no send to lose`, async () => {
@@ -1165,13 +1227,56 @@ describe("the row is scrubbed once every destination has succeeded or been skipp
   const SCRUBBABLE = ["sent", "skipped"];
   const KEPT = ["rejected", "failed", "invalid"];
 
+  // A row whose Google conversion has been ingested and is awaiting its answer
+  // (AWAITING_GOOGLE, at the top of this file). **Every case here that needs all
+  // five destinations settled in ONE pass has to go through it, and that is the
+  // behaviour change the Data Manager API brought**: an ingest accepted on this
+  // sweep is `retrying` until Google answers, up to 24 hours later, and
+  // `retrying` is in neither SETTLED nor SCRUBBABLE -- so the row genuinely is
+  // not finished and genuinely is not scrubbed.
+  const awaitingGoogle = AWAITING_GOOGLE;
+
   it("scrubs the row, with the sweeper's own clock, after the last action settles", async () => {
     for (const stage of SENDING_STAGES) {
       const d = deps();
-      await processSignupEvent(row({ stage }), d);
+      await processSignupEvent(row({ stage, ...awaitingGoogle }), d);
       expect(d.scrub, stage).toHaveBeenCalledTimes(1);
       expect(d.scrub, stage).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
     }
+  });
+
+  it("does NOT scrub a row whose conversion Google has only accepted", async () => {
+    // **The retention consequence of the second phase, pinned so it cannot
+    // change by accident in either direction.** The ingest answers 200, the row
+    // holds `retrying` with the request id, and the client's name, email and
+    // phone stay until Google confirms -- up to 24 hours rather than the usual
+    // minute. Scrubbing here would be sound for the poll, which needs only the
+    // request id, but `processSignupEvent`'s scrubbed-row guard would then settle
+    // the conversion `skipped` on the next sweep: a lie about a conversion Google
+    // had accepted. The thirty-day backstop still bounds the data.
+    const d = deps();
+    await processSignupEvent(row({ stage: "verified" }), d);
+    expect(lastSaved(d.saveGoogle)).toMatchObject({ status: "retrying", requestId: GOOGLE_REQUEST_ID });
+    expect(d.scrub).not.toHaveBeenCalled();
+  });
+
+  it("scrubs the same row on the sweep that confirms the conversion", async () => {
+    // The other half: once Google says SUCCESS the row is finished and goes.
+    const d = deps();
+    await processSignupEvent(
+      row({
+        stage: "verified",
+        ...awaitingGoogle,
+        google_status: "retrying",
+        google_attempts: 4,
+        meta_status: "sent",
+        openai_status: "sent",
+      }),
+      d
+    );
+    expect(d.confirmGoogle).toHaveBeenCalledTimes(1);
+    expect(lastSaved(d.saveGoogle)).toMatchObject({ status: "sent" });
+    expect(d.scrub).toHaveBeenCalledTimes(1);
   });
 
   it("scrubs after every write, never before one of them", async () => {
@@ -1256,7 +1361,10 @@ describe("the row is scrubbed once every destination has succeeded or been skipp
     for (const stage of SENDING_STAGES) {
       for (const settled of SUBSETS) {
         const d = deps();
-        const r = row({ stage });
+        // Google reaches a scrubbable status in one pass only through its
+        // confirmation phase, so a row where it is not already settled is handed
+        // in awaiting one -- which is what such a row really looks like.
+        const r = row({ stage, ...awaitingGoogle });
         for (const a of ACTIONS) r[a.status] = settled.includes(a) ? "sent" : "pending";
         await processSignupEvent(r, d);
         expect(d.scrub, `${stage}, settled=${names(settled)}`).toHaveBeenCalledTimes(1);
@@ -1300,7 +1408,7 @@ describe("the row is scrubbed once every destination has succeeded or been skipp
     // workers, waiting the full thirty days for the backstop.
     for (const a of ACTIONS) {
       const d = deps({ [a.save]: vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1)) });
-      await processSignupEvent(row({ stage: a.stage }), d);
+      await processSignupEvent(row({ stage: a.stage, ...awaitingGoogle }), d);
       expect(d.scrub, a.name).toHaveBeenCalledTimes(1);
       expect(d.scrub, a.name).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
     }
@@ -2124,40 +2232,56 @@ describe("what each provider is handed", () => {
     }
   });
 
-  it("gives Google the frozen gclid, the RESOLVED conversion action and the row's own instant", async () => {
+  it("gives Google the frozen gclid, the RESOLVED numeric action id and the row's own instant", async () => {
     const d = deps();
     await processSignupEvent(row({ stage: "verified", gclid: "Cj0KCQiA-frozen" }), d);
 
     // The action is looked up by name for this stage, before anything is
-    // uploaded.
+    // ingested.
     expect(d.resolveGoogleAction).toHaveBeenCalledTimes(1);
     expect(d.resolveGoogleAction.mock.calls[0][0]).toMatchObject({ stage: "verified" });
 
-    const [conversion] = d.sendGoogle.mock.calls[0][0].payload.conversions;
+    const { payload } = d.sendGoogle.mock.calls[0][0];
+    const [event] = payload.events;
+    // One event per request, which is what makes a per-request status a
+    // per-conversion status: the API reports failures as aggregate counts with
+    // no per-record identifier.
+    expect(payload.events).toHaveLength(1);
     // Verbatim from the column, which is the only copy once full_link has been
     // scrubbed -- and the whole of what makes the conversion attributable.
-    expect(conversion.gclid).toBe("Cj0KCQiA-frozen");
-    // The resource name the lookup returned, never a name and never an id of
-    // this module's own.
-    expect(conversion.conversionAction).toBe(GOOGLE_ACTION_RESOURCE);
-    expect(JSON.stringify(conversion)).not.toContain(GOOGLE_ADS_CONVERSION_ACTIONS.verified);
-    // The account's zone, +04:00, from the row's own received_at.
-    expect(conversion.conversionDateTime).toBe("2026-10-12 16:00:00+04:00");
-    expect(conversion.conversionDateTime).toBe(
-      googleConversionDateTime(RECEIVED_AT, GOOGLE_ADS_ACCOUNT_OFFSET)
-    );
+    expect(event.adIdentifiers).toEqual({ gclid: "Cj0KCQiA-frozen" });
+    // The NUMERIC id the lookup returned, never a resource name and never a
+    // name of this module's own. The resource name is asserted absent, because
+    // it is a well-formed string the API would accept with a 200 and refuse a
+    // day later as an error count naming no row.
+    const [destination] = payload.destinations;
+    expect(destination.productDestinationId).toBe(GOOGLE_ACTION_ID);
+    expect(JSON.stringify(payload)).not.toContain(GOOGLE_ACTION_RESOURCE);
+    expect(JSON.stringify(payload)).not.toContain(GOOGLE_ADS_CONVERSION_ACTIONS.verified);
+    // The operating account, in the body rather than in the URL now.
+    expect(destination.operatingAccount).toEqual({ accountType: "GOOGLE_ADS", accountId: "4743067250" });
+    // The account's zone, +04:00, from the row's own received_at -- and RFC
+    // 3339 with a `T`, which is what a proto Timestamp parses.
+    expect(event.eventTimestamp).toBe("2026-10-12T16:00:00+04:00");
+    expect(event.eventTimestamp).toBe(googleEventTimestamp(RECEIVED_AT, GOOGLE_ADS_ACCOUNT_OFFSET));
+    expect(event.eventSource).toBe("WEB");
     // The same identity Meta's event_id and OpenAI's event id carry, so one
-    // funnel event is one conversion however often it is retried.
-    expect(conversion.orderId).toBe("88214:verified");
-    // Always, because a refusal only reaches us inside a 200 when it is set.
-    expect(d.sendGoogle.mock.calls[0][0].payload.partialFailure).toBe(true);
-    expect(d.sendGoogle.mock.calls[0][0].payload.validateOnly).toBeUndefined();
-    // No client identifiers at all: a click conversion is attributed by its
-    // gclid, and hashed identifiers would be an enhanced-conversions setup
-    // nobody has configured on this account.
-    const sent = JSON.stringify(d.sendGoogle.mock.calls[0][0].payload);
+    // funnel event is one conversion however often it is retried -- and under an
+    // asynchronous API that is what makes a repeat safe.
+    expect(event.transactionId).toBe("88214:verified");
+    expect(payload.validateOnly).toBeUndefined();
+    // No client identifiers at all, and no consent: a click conversion is
+    // attributed by its gclid, hashed identifiers would be an
+    // enhanced-conversions setup nobody has configured, and we have collected
+    // neither consent signal.
+    const sent = JSON.stringify(payload);
     expect(sent).not.toContain("ali@example.com");
     expect(sent).not.toContain("971507192185");
+    expect(payload).not.toHaveProperty("consent");
+
+    // And the gclid is handed to the sender separately, so it can be redacted
+    // out of whatever Google echoes back into the detail column.
+    expect(d.sendGoogle.mock.calls[0][0].gclid).toBe("Cj0KCQiA-frozen");
   });
 
   it("gives Google the deposit's DECIMAL value, never the minor-unit integer", async () => {
@@ -2167,10 +2291,10 @@ describe("what each provider is handed", () => {
     // that traffic.
     const d = deps();
     await processSignupEvent(row({ stage: "first_deposit" }), d);
-    const [conversion] = d.sendGoogle.mock.calls[0][0].payload.conversions;
-    expect(conversion.conversionValue).toBe(129.99);
-    expect(conversion.currencyCode).toBe("USD");
-    expect(conversion.conversionValue).not.toBe(12999);
+    const [event] = d.sendGoogle.mock.calls[0][0].payload.events;
+    expect(event.conversionValue).toBe(129.99);
+    expect(event.currency).toBe("USD");
+    expect(event.conversionValue).not.toBe(12999);
     // The same lookup, the same row, the other unit on the other platform.
     expect(d.sendOpenai.mock.calls[0][0].payload.events[0].data.amount).toBe(12999);
     expect(d.lookupDepositValue).toHaveBeenCalledTimes(1);
@@ -2180,9 +2304,9 @@ describe("what each provider is handed", () => {
     for (const stage of ["verified", "live_account"]) {
       const d = deps();
       await processSignupEvent(row({ stage }), d);
-      const [conversion] = d.sendGoogle.mock.calls[0][0].payload.conversions;
-      expect(conversion, stage).not.toHaveProperty("conversionValue");
-      expect(conversion, stage).not.toHaveProperty("currencyCode");
+      const [event] = d.sendGoogle.mock.calls[0][0].payload.events;
+      expect(event, stage).not.toHaveProperty("conversionValue");
+      expect(event, stage).not.toHaveProperty("currency");
     }
   });
 });
@@ -2190,10 +2314,10 @@ describe("what each provider is handed", () => {
 describe("the Google Ads step's own failures", () => {
   const DEPOSIT = { stage: "first_deposit" };
 
-  it("fails the deposit by name rather than uploading it unpriced", async () => {
+  it("fails the deposit by name rather than ingesting it unpriced", async () => {
     // Google accepts a conversion with no value, so this was available and is
-    // refused: `orderId` makes the conversion unique per action for ever, so an
-    // unpriced upload is the final word on that deposit's worth.
+    // refused: `transactionId` makes the conversion unique per action for ever,
+    // so an unpriced ingest is the final word on that deposit's worth.
     const d = deps({
       lookupDepositValue: vi.fn(async () => ({
         value: { currency: "BTC", valueDecimal: 0.4, amountMinor: 40000000 },
@@ -2280,14 +2404,22 @@ describe("the Google Ads step's own failures", () => {
     });
   });
 
-  it("says in the detail that a validated upload recorded nothing, on every outcome", async () => {
-    // A validated request settles the row exactly as a real one does, so a
-    // genuine conversion passing through while the flag is on is recorded
-    // `sent` and can never be resent. The row has to say so.
-    const d = deps({ config: { ...deps().config, googleValidateOnly: true } });
+  it("says in the detail that a validated ingest recorded nothing, on every outcome", async () => {
+    // A validated request settles the row exactly as a real one does -- and it
+    // is now the ONLY path on which an ingest reads `sent`, because it is not
+    // executed and there is no request to confirm. So a genuine conversion
+    // passing through while the flag is on is recorded `sent` and can never be
+    // resent. The row has to say so.
+    const d = deps({
+      config: { ...deps().config, googleValidateOnly: true },
+      // What a validated request really answers: a 2xx with no requestId, which
+      // the classifier takes at its word because nothing was executed.
+      sendGoogle: vi.fn(async () => ({ status: "sent", retryable: false, detail: "http 200" })),
+    });
     await processSignupEvent(row({ stage: "verified" }), d);
     expect(d.sendGoogle.mock.calls[0][0].payload.validateOnly).toBe(true);
     expect(lastSaved(d.saveGoogle).detail).toContain(GOOGLE_VALIDATE_ONLY_DETAIL);
+    expect(lastSaved(d.saveGoogle).status).toBe("sent");
 
     // And on a refusal too: a validation that was refused was still only a
     // validation, and `rejected` alone would send somebody looking in Google
@@ -2311,6 +2443,204 @@ describe("the Google Ads step's own failures", () => {
     const logged = d.logger.warn.mock.calls.flat().join(" ");
     expect(logged).not.toContain("Cj0KCQiA-frozen-secret");
     expect(logged).not.toContain("ali@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The two phases of the Google step. The ingest hands a conversion over; the
+// confirmation is where `sent` is earned, up to 24 hours later. Everything in
+// here is about the handover and the wait, which is the part of this
+// destination with no counterpart in the other four.
+// ---------------------------------------------------------------------------
+describe("the Google Ads step's two phases", () => {
+  const VERIFIED = { stage: "verified" };
+
+  it("writes `retrying` with the request id when the ingest is accepted, never `sent`", async () => {
+    // **The whole point.** A 200 from `events:ingest` means "accepted for
+    // asynchronous processing" and says nothing about whether the conversion
+    // will be recorded. `sent` here is the Meta failure that cost a month and
+    // the 2026-10-22 failure that cost this migration -- and `sent` is a word
+    // the resend control cannot reach back through.
+    const d = deps();
+    await processSignupEvent(row(VERIFIED), d);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.status).toBe("retrying");
+    expect(saved.status).not.toBe("sent");
+    expect(saved.requestId).toBe(GOOGLE_REQUEST_ID);
+    expect(saved.detail).toContain(GOOGLE_REQUEST_ID);
+    // And the row is not settled, so the sweep that comes due will go and ask.
+    expect(SETTLED_SET.has(saved.status)).toBe(false);
+  });
+
+  it("resets the attempt count at the handover, so the poll gets its own budget", async () => {
+    // The two phases are an order of magnitude apart: three attempts for a
+    // single HTTP request, twenty-five polls for Google's 24 hours of
+    // processing. A shared counter would either starve the poll or hammer a
+    // broken endpoint for a day.
+    const d = deps();
+    await processSignupEvent(row({ ...VERIFIED, google_status: "retrying", google_attempts: 2 }), d);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.attempts).toBe(0);
+    // Google's own first wait before a status request.
+    expect(saved.nextAttemptAt).toEqual(new Date(NOW.getTime() + googleConfirmDelayMinutes(0) * 60_000));
+    expect(googleConfirmDelayMinutes(0)).toBe(30);
+  });
+
+  it("POLLS instead of ingesting once a request id is on the row", async () => {
+    // **A conversion awaiting its answer must never be ingested again**: that
+    // would be a second conversion. The column is the whole of that
+    // discrimination.
+    const d = deps();
+    await processSignupEvent(row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying" }), d);
+    expect(d.sendGoogle).not.toHaveBeenCalled();
+    expect(d.confirmGoogle).toHaveBeenCalledTimes(1);
+    expect(d.confirmGoogle.mock.calls[0][0].requestId).toBe(GOOGLE_REQUEST_ID);
+    expect(lastSaved(d.saveGoogle)).toMatchObject({ status: "sent" });
+  });
+
+  it("ingests when there is no request id, which is what `pending` really means", async () => {
+    const d = deps();
+    await processSignupEvent(row(VERIFIED), d);
+    expect(d.sendGoogle).toHaveBeenCalledTimes(1);
+    expect(d.confirmGoogle).not.toHaveBeenCalled();
+  });
+
+  it("skips every ingest-phase decision while a conversion awaits confirmation", async () => {
+    // Re-running them cannot change the outcome and two of them can overwrite it
+    // with a word that is false: decideGoogleSkip would record `skipped` for a
+    // conversion Google is holding, and the deposit lookup would spend an FXBO
+    // call per poll on a number already on the wire.
+    const d = deps({ config: { ...deps().config, googleRefreshToken: "" } });
+    await processSignupEvent(row({ stage: "first_deposit", ...AWAITING_GOOGLE, google_status: "retrying" }), d);
+    expect(d.resolveGoogleAction).not.toHaveBeenCalled();
+    expect(d.confirmGoogle).toHaveBeenCalledTimes(1);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.status).not.toBe("skipped");
+    // The deposit lookup is asked for by the Meta and ChatGPT Ads steps at this
+    // stage, so the assertion is that GOOGLE did not ask, which it shows by
+    // never reaching its own value gate.
+    expect(saved.status).toBe("sent");
+  });
+
+  it("takes the claim before polling, and records nothing when it loses it", async () => {
+    // A poll is a write to the row, and two overlapped workers both writing the
+    // outcome of the same poll is the race `begin` exists for.
+    const lost = vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1));
+    const d = deps({ saveGoogle: lost });
+    const result = await processSignupEvent(
+      row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying" }),
+      d
+    );
+    expect(d.confirmGoogle).not.toHaveBeenCalled();
+    expect(lost).toHaveBeenCalledTimes(1);
+    expect(result.google).toBeNull();
+  });
+
+  it("books the next poll on Google's own backoff, which is nothing like five minutes", async () => {
+    const processing = vi.fn(async () => ({ status: "failed", retryable: true, detail: "status http 200 PROCESSING" }));
+    for (const made of [0, 1, 2, 5, 10]) {
+      const d = deps({ confirmGoogle: processing });
+      await processSignupEvent(
+        row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying", google_attempts: made }),
+        d
+      );
+      const saved = lastSaved(d.saveGoogle);
+      expect(saved.status, String(made)).toBe("retrying");
+      expect(saved.attempts, String(made)).toBe(made + 1);
+      expect(saved.nextAttemptAt, String(made)).toEqual(
+        new Date(NOW.getTime() + googleConfirmDelayMinutes(made + 1) * 60_000)
+      );
+      // Not the five minutes every other destination retries on: a conversion
+      // Google says may take 24 hours is not worth asking about every sweep.
+      expect(saved.nextAttemptAt.getTime() - NOW.getTime(), String(made)).toBeGreaterThan(5 * 60_000);
+    }
+  });
+
+  it("ALWAYS settles the row, whatever the confirmation said", async () => {
+    // **An unsettled action is an action that gets claimed again.** On
+    // 2026-10-22 a guard that returned without writing starved the entire queue
+    // for every destination and stopped WhatsApp and Brevo for live signups. So
+    // every shape of answer -- a status word, a refusal, a word nobody
+    // recognises, an exception -- has to leave a status in the column.
+    const answers = [
+      { status: "sent", retryable: false, detail: "SUCCESS" },
+      { status: "rejected", retryable: false, detail: "FAILED" },
+      { status: "failed", retryable: true, detail: "PROCESSING" },
+      { status: "failed", retryable: true, detail: "unrecognised requestStatus" },
+      { status: "failed", retryable: false, detail: "requestId unknown to Google" },
+    ];
+    for (const answer of answers) {
+      const d = deps({ confirmGoogle: vi.fn(async () => answer) });
+      await processSignupEvent(row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying" }), d);
+      const saved = lastSaved(d.saveGoogle);
+      expect(typeof saved.status, answer.detail).toBe("string");
+      expect(["sent", "rejected", "failed", "retrying"], answer.detail).toContain(saved.status);
+    }
+
+    // And a dep that throws outright, which the per-action catch turns into a
+    // retryable stored status rather than a row nothing wrote.
+    const thrown = deps({
+      confirmGoogle: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    await processSignupEvent(row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying" }), thrown);
+    expect(lastSaved(thrown.saveGoogle)).toMatchObject({ status: "retrying", detail: "step threw" });
+  });
+
+  it("settles `failed` once the 24 hours run out, saying it is not a refusal", async () => {
+    // `failed` because the vocabulary has nothing better for "nothing further
+    // will be attempted", and because `failed` is what the resend control can
+    // reach -- a deliberate re-ingest carries the same `transactionId`, so
+    // Google treats it as the same conversion. It does NOT mean refused.
+    const d = deps({
+      confirmGoogle: vi.fn(async () => ({ status: "failed", retryable: true, detail: "status http 200 PROCESSING" })),
+    });
+    await processSignupEvent(
+      row({
+        ...VERIFIED,
+        ...AWAITING_GOOGLE,
+        google_status: "retrying",
+        google_attempts: GOOGLE_CONFIRM_MAX_ATTEMPTS - 1,
+      }),
+      d
+    );
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.status).toBe("failed");
+    expect(saved.nextAttemptAt).toBeNull();
+    expect(saved.detail).toContain("Google may still record it");
+    expect(saved.detail).toContain(`${GOOGLE_CONFIRM_MAX_ATTEMPTS} polls`);
+    // Settled, so nothing claims it again on its own.
+    expect(SETTLED_SET.has(saved.status)).toBe(true);
+    // And requeueable, so an operator can ask for it deliberately.
+    expect(REQUEUEABLE_SET.has(saved.status)).toBe(true);
+  });
+
+  it("does not spend the ingest's budget of three on the confirmation", async () => {
+    // Three polls would abandon every conversion after two hours, unconfirmed,
+    // while Google was still working on it. The budget is read off the row --
+    // the request id is what says which phase it is in -- in both the pre-poll
+    // claim and the outcome.
+    const d = deps({
+      confirmGoogle: vi.fn(async () => ({ status: "failed", retryable: true, detail: "PROCESSING" })),
+    });
+    await processSignupEvent(
+      row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying", google_attempts: 2 }),
+      d
+    );
+    // Under the ingest's budget of 3 this third attempt would be terminal. It is
+    // not: the claim and the outcome both read the confirm phase's.
+    for (const [, patch] of d.saveGoogle.mock.calls) expect(patch.status).toBe("retrying");
+    expect(GOOGLE_CONFIRM_MAX_ATTEMPTS).toBeGreaterThan(3);
+  });
+
+  it("passes no request id on the confirmation's write, so the column keeps the one it has", async () => {
+    // The writer COALESCEs it (store.sql.test.js pins that), so passing nothing
+    // keeps the id. Re-sending the same value would work and would be one more
+    // place for it to be sent wrongly.
+    const d = deps();
+    await processSignupEvent(row({ ...VERIFIED, ...AWAITING_GOOGLE, google_status: "retrying" }), d);
+    for (const [, patch] of d.saveGoogle.mock.calls) expect(patch.requestId).toBeUndefined();
   });
 });
 
@@ -2413,7 +2743,11 @@ describe("what is logged", () => {
         upsertBrevo: failing("failed", "brevo-reason"),
         sendOpenai: failing("rejected", "openai-reason"),
       });
-      await processSignupEvent(row({ stage }), d);
+      // Google's conversion is being confirmed rather than ingested, so its own
+      // step is silent here: an acceptance logs a line of its own (see "the
+      // Google Ads step's own failures"), and this case is about the four whose
+      // sends really failed.
+      await processSignupEvent(row({ stage, ...AWAITING_GOOGLE }), d);
       expect(d.logger.warn.mock.calls.map(([line]) => line), stage).toEqual(expected);
       const everything = JSON.stringify([...d.logger.warn.mock.calls, ...d.logger.error.mock.calls, ...d.logger.info.mock.calls]);
       expect(everything, stage).not.toContain("ali@example.com");
@@ -2422,10 +2756,13 @@ describe("what is logged", () => {
   });
 
   it("logs nothing when every action that sends succeeds", async () => {
-    // At both stages, so Meta's success is held to the same silence as the others'.
+    // At both stages, so Meta's success is held to the same silence as the
+    // others'. Google's `sent` is a CONFIRMATION, and it is held to the same
+    // silence -- the line it does write is for the acceptance in between, which
+    // is the state a conversion now spends up to a day in.
     for (const stage of SENDING_STAGES) {
       const d = deps();
-      await processSignupEvent(row({ stage }), d);
+      await processSignupEvent(row({ stage, ...AWAITING_GOOGLE }), d);
       expect(d.logger.warn, stage).not.toHaveBeenCalled();
       expect(d.logger.error, stage).not.toHaveBeenCalled();
     }
@@ -2440,7 +2777,7 @@ describe("what is logged", () => {
       ["registered", "brevo"],
     ]) {
       const d = deps({ sendMeta: retry, sendWhatsapp: vi.fn(async () => sentOutcome), upsertBrevo: retry });
-      await processSignupEvent(row({ stage }), d);
+      await processSignupEvent(row({ stage, ...AWAITING_GOOGLE }), d);
       const lines = d.logger.warn.mock.calls.map(([line]) => line);
       expect(lines, stage).toHaveLength(1);
       expect(lines[0], stage).toContain(`${who} retrying`);
@@ -2579,23 +2916,44 @@ describe("the production wiring", () => {
       // OpenAI documents no response shape at all, so a 200 with an empty object
       // is the most honest fake there is.
       if (u.startsWith(OPENAI_EVENTS_URL)) return { status: 200, json: async () => ({}) };
-      // Google's three calls, each answered the way the documented shape says.
-      // The access token first, then the conversion action's resource name, then
-      // the upload -- whose body carries `results`, because a 200 that confirms
-      // nothing is NOT a send here.
+      // Google's FOUR calls, each answered the way the documented shape says.
+      // The access token first, then the conversion action's numeric id off the
+      // Google Ads API, then the ingest -- whose 200 carries only a `requestId`,
+      // because that is all an accepted request has to say -- and finally the
+      // status retrieval, which is where `sent` is earned.
       if (u === GOOGLE_OAUTH_TOKEN_URL) {
         return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
       }
       if (u.endsWith("googleAds:search")) {
         return {
           status: 200,
-          json: async () => ({ results: [{ conversionAction: { resourceName: GOOGLE_ACTION_RESOURCE } }] }),
+          json: async () => ({
+            results: [
+              {
+                conversionAction: {
+                  id: GOOGLE_ACTION_ID,
+                  resourceName: GOOGLE_ACTION_RESOURCE,
+                  name: GOOGLE_ADS_CONVERSION_ACTIONS.verified,
+                },
+              },
+            ],
+          }),
         };
       }
-      if (u.endsWith(":uploadClickConversions")) {
+      if (u.endsWith("/events:ingest")) {
+        return { status: 200, json: async () => ({ requestId: GOOGLE_REQUEST_ID }) };
+      }
+      if (u.includes("/requestStatus:retrieve")) {
         return {
           status: 200,
-          json: async () => ({ results: [{ conversionAction: GOOGLE_ACTION_RESOURCE }], jobId: "1001" }),
+          json: async () => ({
+            requestStatusPerDestination: [
+              {
+                destination: { operatingAccount: { accountType: "GOOGLE_ADS", accountId: "4743067250" } },
+                requestStatus: "SUCCESS",
+              },
+            ],
+          }),
         };
       }
       // FXBO's transaction list, which the first-deposit stage reads the amount
@@ -3040,106 +3398,326 @@ describe("the production wiring", () => {
 
   describe("with the Google Ads credentials set", () => {
     // The refresh token stands for the key; the OAuth client and the customer
-    // id are the other three values with no working default. No developer
-    // token, deliberately: the API has ignored one since the 2026-09-09 sunset
-    // and Google encourages not sending it, so these cases prove the uploads
-    // work without one.
+    // id are the other three values with no working default. No developer token
+    // anywhere, deliberately and now structurally: the Google Ads API has
+    // ignored one since the 2026-09-09 sunset and says it will start rejecting
+    // it, and the Data Manager API documents no such header at all -- so the
+    // worker no longer reads GOOGLE_ADS_DEVELOPER_TOKEN and these cases prove
+    // both calls work with none.
     const GOOGLE = {
       GOOGLE_ADS_REFRESH_TOKEN: "google-refresh-secret",
       GOOGLE_ADS_CLIENT_ID: "google-client",
       GOOGLE_ADS_CLIENT_SECRET: "google-client-secret",
       GOOGLE_ADS_CUSTOMER_ID: "4743067250",
     };
-    // Google uploads at the stages the GTM container does not own, which is
+    // Google reports at the stages the GTM container does not own, which is
     // every stage with a conversion action.
     const googleRow = (over = {}) => liveRow({ stage: "verified", gclid: "Cj0KCQiA-live", ...over });
-    const uploads = () => fetchMock.mock.calls.filter(([u]) => String(u).endsWith(":uploadClickConversions"));
+    // A row whose conversion has already been ingested, so the sweep polls for
+    // its outcome instead. The live system looks like this up to 24 hours after
+    // the ingest.
+    const awaitingRow = (over = {}) =>
+      googleRow({ google_status: "retrying", google_request_id: GOOGLE_REQUEST_ID, ...over });
+    const ingests = () => fetchMock.mock.calls.filter(([u]) => String(u).endsWith("/events:ingest"));
+    const statuses = () => fetchMock.mock.calls.filter(([u]) => String(u).includes("/requestStatus:retrieve"));
     const tokens = () => fetchMock.mock.calls.filter(([u]) => String(u) === GOOGLE_OAUTH_TOKEN_URL);
     const searches = () => fetchMock.mock.calls.filter(([u]) => String(u).endsWith("googleAds:search"));
-    const uploaded = () => bodyOf(uploads()[0]).conversions[0];
+    const ingested = () => bodyOf(ingests()[0]).events[0];
+    const destinationOf = () => bodyOf(ingests()[0]).destinations[0];
 
-    it("mints a token, resolves the action by name, then uploads the conversion", async () => {
+    it("mints a token, resolves the action by name, then ingests the conversion", async () => {
       setEnv(GOOGLE);
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
 
       expect(tokens()).toHaveLength(1);
       expect(searches()).toHaveLength(1);
-      expect(uploads()).toHaveLength(1);
+      expect(ingests()).toHaveLength(1);
+      // **And no status retrieval on this sweep.** The outcome arrives up to 24
+      // hours later; asking for it now would be a wasted request and an answer
+      // of PROCESSING.
+      expect(statuses()).toHaveLength(0);
 
-      // The lookup is by NAME. A hardcoded numeric id would upload to whatever
-      // action now holds it.
+      // The lookup is by NAME, on the Google Ads API, for the NUMERIC id. A
+      // hardcoded id would report into whatever action now holds it.
       expect(bodyOf(searches()[0]).query).toContain(GOOGLE_ADS_CONVERSION_ACTIONS.verified);
       expect(bodyOf(searches()[0]).query).toContain("UPLOAD_CLICKS");
+      expect(bodyOf(searches()[0]).query).toContain("conversion_action.id");
 
-      const [url, init] = uploads()[0];
-      expect(url).toBe(
-        `${GOOGLE_ADS_API_HOST}/${GOOGLE_ADS_API_VERSION}/customers/4743067250:uploadClickConversions`
-      );
+      const [url, init] = ingests()[0];
+      expect(url).toBe(`${DATA_MANAGER_API_HOST}/${DATA_MANAGER_API_VERSION}/events:ingest`);
       expect(init.headers.Authorization).toBe(`Bearer ${GOOGLE_ACCESS_TOKEN}`);
-      // Sunset, optional and ignored: Google's own examples send none.
-      expect(init.headers).not.toHaveProperty("developer-token");
-      // Required only when reaching the customer through a manager account.
-      expect(init.headers).not.toHaveProperty("login-customer-id");
+      // "Don't set request headers in an IngestionService request."
+      expect(Object.keys(init.headers).sort()).toEqual(["Authorization", "Content-Type"]);
 
-      // The resolved resource name, the frozen gclid, the account's zone and the
-      // row's own identity.
-      expect(uploaded()).toEqual({
-        gclid: "Cj0KCQiA-live",
-        conversionAction: GOOGLE_ACTION_RESOURCE,
-        conversionDateTime: "2026-10-12 16:00:00+04:00",
-        orderId: "88214:verified",
+      // The operating account in the body, the resolved NUMERIC id, the frozen
+      // gclid, the account's zone and the row's own identity.
+      expect(destinationOf()).toEqual({
+        operatingAccount: { accountType: "GOOGLE_ADS", accountId: "4743067250" },
+        productDestinationId: GOOGLE_ACTION_ID,
       });
-      expect(bodyOf(uploads()[0]).partialFailure).toBe(true);
+      expect(ingested()).toEqual({
+        adIdentifiers: { gclid: "Cj0KCQiA-live" },
+        transactionId: "88214:verified",
+        eventTimestamp: "2026-10-12T16:00:00+04:00",
+        eventSource: "WEB",
+      });
+      // Never the resource name where the id belongs: it is a well-formed string
+      // the API would accept with a 200 and refuse a day later as an error count
+      // naming no row.
+      expect(init.body).not.toContain(GOOGLE_ACTION_RESOURCE);
 
+      // **The row is `retrying`, not `sent`.** A 200 is "accepted for
+      // asynchronous processing", and the request id is what the outcome will be
+      // confirmed by. The attempt count goes back to 0 because the budget from
+      // here is the confirm phase's, not the ingest's.
       const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
-      expect(saved).toMatchObject({ status: "sent", attempts: 1, detail: "http 200" });
+      expect(saved.status).toBe("retrying");
+      expect(saved.status).not.toBe("sent");
+      expect(saved.requestId).toBe(GOOGLE_REQUEST_ID);
+      expect(saved.attempts).toBe(0);
+      // Google's own first wait before a status request is 30 minutes.
+      expect(saved.nextAttemptAt).toEqual(new Date(SWEEP_AT.getTime() + 30 * 60_000));
+      expect(saved.detail).toContain("awaiting Google's confirmation");
     });
 
-    it("stamps the conversion in the account's zone, not UTC and not the server's", async () => {
-      // 22:30 UTC on 11 October is 02:30 on the 12th in Dubai, so a UTC stamp
-      // reports this conversion against the previous day's clicks -- a
-      // reconciliation that silently never matches the Google Ads UI.
+    it("earns `sent` only from the status retrieval, on a later sweep", async () => {
+      // **The second phase, end to end.** Nothing is ingested: the row already
+      // holds a request id, so the only thing left to do for it is ask what
+      // became of that request.
+      setEnv(GOOGLE);
+      store.claimDueEvents.mockResolvedValue([awaitingRow({ google_attempts: 3 })]);
+      await sweepOnce();
+
+      expect(ingests()).toHaveLength(0);
+      expect(searches()).toHaveLength(0);
+      expect(statuses()).toHaveLength(1);
+
+      const [url, init] = statuses()[0];
+      expect(url).toBe(
+        `${DATA_MANAGER_API_HOST}/${DATA_MANAGER_API_VERSION}/requestStatus:retrieve?requestId=${GOOGLE_REQUEST_ID}`
+      );
+      expect(init.method).toBe("GET");
+      // "The request body must be empty", and the call "accepts only a
+      // `request_id`, not destination accounts or headers".
+      expect(init).not.toHaveProperty("body");
+      expect(Object.keys(init.headers)).toEqual(["Authorization"]);
+
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("sent");
+      expect(saved.detail).toContain("SUCCESS");
+      expect(saved.nextAttemptAt).toBeNull();
+      // No request id in the outcome write: the writer COALESCEs it, so passing
+      // nothing keeps the id already in the column.
+      expect(saved.requestId).toBeUndefined();
+    });
+
+    it("keeps polling on PROCESSING, on Google's own backoff, and never calls it sent", async () => {
+      setEnv(GOOGLE);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        }
+        return {
+          status: 200,
+          json: async () => ({ requestStatusPerDestination: [{ requestStatus: "PROCESSING" }] }),
+        };
+      });
+      store.claimDueEvents.mockResolvedValue([awaitingRow({ google_attempts: 2 })]);
+      await sweepOnce();
+
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("retrying");
+      expect(saved.status).not.toBe("sent");
+      expect(saved.attempts).toBe(3);
+      // 30 x 1.3^3, capped at 60: the fourth wait in Google's published
+      // schedule, read from the module rather than written here.
+      expect(saved.nextAttemptAt).toEqual(new Date(SWEEP_AT.getTime() + googleConfirmDelayMinutes(3) * 60_000));
+      expect(saved.detail).toContain("PROCESSING");
+    });
+
+    it("settles `failed`, saying it is not a refusal, when 24 hours of PROCESSING run out", async () => {
+      // **The row must always end up settled.** An action left unsettled is
+      // claimed again on every sweep for ever, which starved the whole queue on
+      // 2026-10-22. `failed` here does NOT mean Google refused the conversion --
+      // it may still land, and nothing here will learn that it did -- so the
+      // detail has to say which it was.
+      setEnv(GOOGLE);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        }
+        return {
+          status: 200,
+          json: async () => ({ requestStatusPerDestination: [{ requestStatus: "PROCESSING" }] }),
+        };
+      });
+      store.claimDueEvents.mockResolvedValue([
+        awaitingRow({ google_attempts: GOOGLE_CONFIRM_MAX_ATTEMPTS - 1 }),
+      ]);
+      await sweepOnce();
+
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("failed");
+      expect(saved.attempts).toBe(GOOGLE_CONFIRM_MAX_ATTEMPTS);
+      expect(saved.nextAttemptAt).toBeNull();
+      expect(saved.detail).toContain("Google may still record it");
+      expect(saved.detail).toContain("24h");
+    });
+
+    it("rejects a conversion Google says FAILED, naming the reasons it gave", async () => {
+      // **The 200 is not the answer, and this is where the answer arrives.**
+      // Failures come as `errorInfo.errorCounts[]` of {reason, recordCount} with
+      // no per-record identifier -- which is exactly why one request carries one
+      // event, so this count is about this conversion and no other.
+      setEnv(GOOGLE);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        }
+        return {
+          status: 200,
+          json: async () => ({
+            requestStatusPerDestination: [
+              {
+                requestStatus: "FAILED",
+                errorInfo: {
+                  errorCounts: [{ reason: "PROCESSING_ERROR_REASON_EVENT_TOO_OLD", recordCount: "1" }],
+                },
+              },
+            ],
+          }),
+        };
+      });
+      store.claimDueEvents.mockResolvedValue([awaitingRow()]);
+      await sweepOnce();
+
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("rejected");
+      expect(saved.status).not.toBe("sent");
+      expect(saved.detail).toContain("PROCESSING_ERROR_REASON_EVENT_TOO_OLD");
+      expect(saved.nextAttemptAt).toBeNull();
+    });
+
+    it("rejects a conversion the ingest accepted with no requestId to confirm it by", async () => {
+      // It may have been accepted, and there is no handle left to ask about it,
+      // so it can never be confirmed -- and it must not be ingested again on a
+      // clock either, because each repeat would be another unconfirmable
+      // request.
+      setEnv(GOOGLE);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        }
+        if (u.endsWith("googleAds:search")) {
+          return { status: 200, json: async () => ({ results: [{ conversionAction: { id: GOOGLE_ACTION_ID } }] }) };
+        }
+        return { status: 200, json: async () => ({}) };
+      });
+      store.claimDueEvents.mockResolvedValue([googleRow()]);
+      await sweepOnce();
+
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("rejected");
+      expect(saved.status).not.toBe("sent");
+      expect(saved.detail).toContain("never be confirmed");
+      expect(saved.nextAttemptAt).toBeNull();
+    });
+
+    it("stops asking, naming the scope, when the refresh token predates the datamanager consent", async () => {
+      // A token minted before 2026-10-22 carries only `adwords`. It resolves
+      // conversion actions perfectly and is refused by every ingest, and scopes
+      // are not additive on an existing token -- so the fix is to re-run
+      // scripts/google-ads-refresh-token.mjs, and the row has to say which
+      // failure this is.
+      setEnv(GOOGLE);
+      fetchMock.mockImplementation(async (url) => {
+        const u = String(url);
+        if (u === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        }
+        if (u.endsWith("googleAds:search")) {
+          return { status: 200, json: async () => ({ results: [{ conversionAction: { id: GOOGLE_ACTION_ID } }] }) };
+        }
+        return {
+          status: 403,
+          json: async () => ({
+            error: {
+              code: 403,
+              status: "PERMISSION_DENIED",
+              message: "Request had insufficient authentication scopes.",
+              details: [
+                { "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT" },
+              ],
+            },
+          }),
+        };
+      });
+      store.claimDueEvents.mockResolvedValue([googleRow()]);
+      await sweepOnce();
+
+      // The lookup still succeeded, which is the confusing part this detail
+      // exists to clear up.
+      expect(searches()).toHaveLength(1);
+      const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      expect(saved.status).toBe("rejected");
+      expect(saved.detail).toContain("ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+      expect(saved.nextAttemptAt).toBeNull();
+      expect(saved.requestId).toBeUndefined();
+    });
+
+    it("writes the event timestamp in the account's zone, as RFC 3339", async () => {
+      // 22:30 UTC on 11 October is 02:30 on the 12th in Dubai. Under the old
+      // `conversionDateTime` that difference was a DAY in Google's reporting;
+      // under a Timestamp the two writings name the same instant, so this is
+      // now about the string a person reads rather than about which day the
+      // conversion lands on.
       setEnv(GOOGLE);
       store.claimDueEvents.mockResolvedValue([googleRow({ received_at: new Date("2026-10-11T22:30:00Z") })]);
       await sweepOnce();
-      expect(uploaded().conversionDateTime).toBe("2026-10-12 02:30:00+04:00");
+      expect(ingested().eventTimestamp).toBe("2026-10-12T02:30:00+04:00");
+      expect(Date.parse(ingested().eventTimestamp)).toBe(Date.parse("2026-10-11T22:30:00Z"));
     });
 
     it("reads GOOGLE_ADS_TIMEZONE_OFFSET, so the zone can be moved without a deploy", async () => {
       setEnv({ ...GOOGLE, GOOGLE_ADS_TIMEZONE_OFFSET: "-05:00" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(uploaded().conversionDateTime).toBe("2026-10-12 07:00:00-05:00");
+      expect(ingested().eventTimestamp).toBe("2026-10-12T07:00:00-05:00");
     });
 
-    it("falls back to the account's offset for a value that is not one, and still uploads", async () => {
+    it("falls back to the account's offset for a value that is not one, and still ingests", async () => {
       setEnv({ ...GOOGLE, GOOGLE_ADS_TIMEZONE_OFFSET: "Asia/Dubai" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
       // The account's own offset IS the right value; this variable exists only
       // to move off it, so refusing every conversion over a typo would cost
       // real conversions to protect a number that was already correct.
-      expect(uploaded().conversionDateTime).toBe("2026-10-12 16:00:00+04:00");
+      expect(ingested().eventTimestamp).toBe("2026-10-12T16:00:00+04:00");
       expect(spies.warn.mock.calls.flat().join(" ")).toContain("GOOGLE_ADS_TIMEZONE_OFFSET");
     });
 
-    it("uploads the deposit's decimal value, where ChatGPT Ads gets the minor unit", async () => {
+    it("ingests the deposit's decimal value, where ChatGPT Ads gets the minor unit", async () => {
       setEnv({ ...GOOGLE, ...FXBO });
       store.claimDueEvents.mockResolvedValue([googleRow({ stage: "first_deposit" })]);
       await sweepOnce();
       // $129.99 from FXBO: 129.99 here, 12999 there, one lookup.
-      expect(uploaded().conversionValue).toBe(129.99);
-      expect(uploaded().currencyCode).toBe("USD");
-      expect(uploaded().conversionValue).not.toBe(12999);
+      expect(ingested().conversionValue).toBe(129.99);
+      expect(ingested().currency).toBe("USD");
+      expect(ingested().conversionValue).not.toBe(12999);
+      expect(ingests()[0][1].body).not.toContain("12999");
       expect(fetched(CRM_TRANSACTIONS_URL)).toHaveLength(1);
     });
 
-    it("skips a row with no gclid and uploads nothing at all", async () => {
+    it("skips a row with no gclid and ingests nothing at all", async () => {
       setEnv(GOOGLE);
       store.claimDueEvents.mockResolvedValue([googleRow({ gclid: "" })]);
       await sweepOnce();
-      expect(uploads()).toHaveLength(0);
+      expect(ingests()).toHaveLength(0);
       // Not even a token: the skip is decided before anything is asked of
       // Google.
       expect(tokens()).toHaveLength(0);
@@ -3151,67 +3729,59 @@ describe("the production wiring", () => {
       });
     });
 
-    it("uploads nothing at the registration stage, which the GTM container owns", async () => {
+    it("ingests nothing at the registration stage, which the GTM container owns", async () => {
       setEnv(GOOGLE);
       store.claimDueEvents.mockResolvedValue([googleRow({ stage: "registered" })]);
       await sweepOnce();
-      expect(uploads()).toHaveLength(0);
+      expect(ingests()).toHaveLength(0);
       expect(store.updateGoogleStatus.mock.calls.at(-1)[1]).toMatchObject({
         status: "skipped",
         detail: "registered is owned by the GTM container",
       });
     });
 
-    it("NEVER records sent for a conversion Google refused inside a 200", async () => {
-      // **The failure this destination is shaped around**, and the one that cost
-      // a month on Meta: the status is 200 and the refusal is in the body.
-      setEnv(GOOGLE);
+    it("does NOT re-decide a skip for a conversion already awaiting confirmation", async () => {
+      // **A conversion that has been ingested is past every decision the ingest
+      // phase makes.** A refresh token pulled during an incident would otherwise
+      // record `skipped` for a conversion Google is holding -- a lie, and a final
+      // one, because nothing resends a skip. Without a token the poll fails
+      // honestly instead.
+      setEnv({ ...GOOGLE, GOOGLE_ADS_REFRESH_TOKEN: "" });
+      // Google's own answer to a blank refresh token, so the poll fails the way
+      // it really would rather than succeeding against a mock that ignores
+      // credentials.
       fetchMock.mockImplementation(async (url) => {
-        const u = String(url);
-        if (u === GOOGLE_OAUTH_TOKEN_URL) {
-          return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
+        if (String(url) === GOOGLE_OAUTH_TOKEN_URL) {
+          return { status: 400, json: async () => ({ error: "invalid_request", error_description: "missing" }) };
         }
-        if (u.endsWith("googleAds:search")) {
-          return {
-            status: 200,
-            json: async () => ({ results: [{ conversionAction: { resourceName: GOOGLE_ACTION_RESOURCE } }] }),
-          };
-        }
-        return {
-          status: 200,
-          json: async () => ({
-            results: [{}],
-            partialFailureError: {
-              code: 3,
-              message: "one or more conversions failed",
-              details: [
-                {
-                  "@type": "type.googleapis.com/google.ads.googleads.v26.errors.GoogleAdsFailure",
-                  errors: [
-                    {
-                      errorCode: { conversionUploadError: "EXPIRED_EVENT" },
-                      message: "The click is older than the lookback window.",
-                      location: { fieldPathElements: [{ fieldName: "conversions", index: 0 }] },
-                    },
-                  ],
-                },
-              ],
-            },
-          }),
-        };
+        throw new Error(`unexpected fetch: ${url}`);
       });
-      store.claimDueEvents.mockResolvedValue([googleRow()]);
+      store.claimDueEvents.mockResolvedValue([awaitingRow()]);
       await sweepOnce();
-
       const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
+      // Not `skipped`, which would be the lie, and not `sent`, which nothing has
+      // confirmed. It polled, and the poll failed honestly.
+      expect(saved.status).not.toBe("skipped");
       expect(saved.status).not.toBe("sent");
-      expect(saved.status).toBe("rejected");
-      expect(saved.detail).toContain("EXPIRED_EVENT");
-      expect(saved.nextAttemptAt).toBeNull();
+      expect(saved.detail).toContain("access token");
+    });
+
+    it("asks FXBO nothing, and re-resolves nothing, for a row awaiting confirmation", async () => {
+      // The answer to neither question can change the outcome, and one of them
+      // costs a CRM call per poll -- up to 25 of them per deposit.
+      setEnv({ ...GOOGLE, ...FXBO });
+      store.claimDueEvents.mockResolvedValue([
+        awaitingRow({ stage: "first_deposit", meta_status: "sent", openai_status: "sent" }),
+      ]);
+      await sweepOnce();
+      expect(fetched(CRM_TRANSACTIONS_URL)).toHaveLength(0);
+      expect(searches()).toHaveLength(0);
+      expect(statuses()).toHaveLength(1);
     });
 
     it("mints ONE token for a whole sweep, not one per conversion", async () => {
-      // An access token lasts an hour. Minting one per send is a wasted round
+      // An access token lasts an hour and carries BOTH scopes, so it serves the
+      // Ads lookup and the ingest alike. Minting one per call is a wasted round
       // trip on every row and a rate limit nobody asked for.
       setEnv(GOOGLE);
       store.claimDueEvents.mockResolvedValue([
@@ -3219,10 +3789,31 @@ describe("the production wiring", () => {
         googleRow({ id: 8, crm_client_id: "88215", stage: "live_account" }),
       ]);
       await sweepOnce();
-      expect(uploads()).toHaveLength(2);
+      expect(ingests()).toHaveLength(2);
       expect(tokens()).toHaveLength(1);
       // One lookup per stage, because each stage is its own conversion action.
       expect(searches()).toHaveLength(2);
+    });
+
+    it("sends one event per request, two conversions never sharing one", async () => {
+      // **Batching would make a status unattributable**: failures arrive as
+      // aggregate counts with no per-record identifier, so a PARTIAL_SUCCESS
+      // over two events would name neither. One request, one conversion, one
+      // requestId.
+      setEnv(GOOGLE);
+      store.claimDueEvents.mockResolvedValue([
+        googleRow(),
+        googleRow({ id: 8, crm_client_id: "88215", gclid: "Cj0KCQiA-other" }),
+      ]);
+      await sweepOnce();
+      expect(ingests()).toHaveLength(2);
+      for (const [i, call] of ingests().entries()) {
+        expect(bodyOf(call).events, `request ${i}`).toHaveLength(1);
+        expect(bodyOf(call).destinations, `request ${i}`).toHaveLength(1);
+      }
+      // Two requests, two different conversions.
+      expect(bodyOf(ingests()[0]).events[0].transactionId).toBe("88214:verified");
+      expect(bodyOf(ingests()[1]).events[0].transactionId).toBe("88215:verified");
     });
 
     it("records a failure, and never a send, when the conversion action does not resolve", async () => {
@@ -3237,7 +3828,7 @@ describe("the production wiring", () => {
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
 
-      expect(uploads()).toHaveLength(0);
+      expect(ingests()).toHaveLength(0);
       const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
       expect(saved.status).not.toBe("sent");
       expect(saved.status).toBe("failed");
@@ -3245,27 +3836,33 @@ describe("the production wiring", () => {
       expect(saved.nextAttemptAt).toBeNull();
     });
 
-    it("says in the detail that a validated upload recorded nothing", async () => {
+    it("says in the detail that a validated ingest recorded nothing", async () => {
+      // A validated request is not executed, so there is no request to confirm
+      // -- which makes this the only path on which an ingest reads `sent`.
       setEnv({ ...GOOGLE, GOOGLE_ADS_VALIDATE_ONLY: "true" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(bodyOf(uploads()[0]).validateOnly).toBe(true);
+      expect(bodyOf(ingests()[0]).validateOnly).toBe(true);
       const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
       expect(saved.status).toBe("sent");
       expect(saved.detail).toContain(GOOGLE_VALIDATE_ONLY_DETAIL);
+      // No request id either, so nothing is left waiting for an answer that
+      // does not exist.
+      expect(saved.requestId).toBeUndefined();
+      expect(statuses()).toHaveLength(0);
     });
 
-    it("uploads for real unless the flag is the literal true, so a stray value cannot silence it", async () => {
+    it("ingests for real unless the flag is the literal true, so a stray value cannot silence it", async () => {
       // The same inversion OPENAI_VALIDATE_ONLY uses, for the same reason: a
       // value wrongly read as "on" would stop every conversion being recorded
-      // while every row still read `sent`.
+      // while every row still settled.
       for (const value of ["1", "yes", "on", "TRUE ", "", "nonsense"]) {
         fetchMock.mockClear();
         store.updateGoogleStatus.mockClear();
         setEnv({ ...GOOGLE, GOOGLE_ADS_VALIDATE_ONLY: value });
         store.claimDueEvents.mockResolvedValue([googleRow()]);
         await sweepOnce();
-        expect(bodyOf(uploads()[0]).validateOnly, JSON.stringify(value)).toBeUndefined();
+        expect(bodyOf(ingests()[0]).validateOnly, JSON.stringify(value)).toBeUndefined();
         expect(store.updateGoogleStatus.mock.calls.at(-1)[1].detail, JSON.stringify(value)).not.toContain(
           GOOGLE_VALIDATE_ONLY_DETAIL
         );
@@ -3276,7 +3873,7 @@ describe("the production wiring", () => {
         setEnv({ ...GOOGLE, GOOGLE_ADS_VALIDATE_ONLY: value });
         store.claimDueEvents.mockResolvedValue([googleRow()]);
         await sweepOnce();
-        expect(bodyOf(uploads()[0]).validateOnly, value).toBe(true);
+        expect(bodyOf(ingests()[0]).validateOnly, value).toBe(true);
       }
     });
 
@@ -3284,31 +3881,68 @@ describe("the production wiring", () => {
       setEnv({ ...GOOGLE, GOOGLE_ADS_CUSTOMER_ID: "474-306-7250" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(uploads()[0][0]).toContain("/customers/4743067250:uploadClickConversions");
+      // In the body now, not in the URL: Google's instruction for `accountId` is
+      // "your 10-digit Google Ads customer ID (without hyphens)".
+      expect(destinationOf().operatingAccount.accountId).toBe("4743067250");
+      expect(searches()[0][0]).toContain("/customers/4743067250/");
     });
 
-    it("sends login-customer-id only when one is configured, digits only", async () => {
+    it("states the manager account as loginAccount, digits only, and only when configured", async () => {
+      // `login-customer-id` has no header to travel in on an ingest, so it
+      // becomes `destinations[].loginAccount` -- while the Google Ads lookup,
+      // which does take headers, still sends the header.
       setEnv({ ...GOOGLE, GOOGLE_ADS_LOGIN_CUSTOMER_ID: "123-456-7890" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(uploads()[0][1].headers["login-customer-id"]).toBe("1234567890");
+      expect(destinationOf().loginAccount).toEqual({ accountType: "GOOGLE_ADS", accountId: "1234567890" });
+      expect(searches()[0][1].headers["login-customer-id"]).toBe("1234567890");
+      expect(ingests()[0][1].headers).not.toHaveProperty("login-customer-id");
     });
 
-    it("sends a developer token only when one is configured", async () => {
+    it("omits loginAccount entirely when no manager account is configured", async () => {
+      // It defaults to the operating account, and the status retrieval has to be
+      // made through the SAME access path -- so one nobody needs is a second
+      // place for that path to be wrong.
+      setEnv(GOOGLE);
+      store.claimDueEvents.mockResolvedValue([googleRow()]);
+      await sweepOnce();
+      expect(destinationOf()).not.toHaveProperty("loginAccount");
+    });
+
+    it("NEVER sends a developer token, however GOOGLE_ADS_DEVELOPER_TOKEN is set", async () => {
+      // The variable is no longer read at all. The Google Ads API has ignored
+      // the header since the 2026-09-09 sunset and says it will start rejecting
+      // it; the Data Manager API documents none.
       setEnv({ ...GOOGLE, GOOGLE_ADS_DEVELOPER_TOKEN: "dev-token" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(uploads()[0][1].headers["developer-token"]).toBe("dev-token");
+      for (const [url, init] of fetchMock.mock.calls) {
+        expect(init.headers ?? {}, String(url)).not.toHaveProperty("developer-token");
+        expect(JSON.stringify(init.headers ?? {}), String(url)).not.toContain("dev-token");
+      }
     });
 
-    it("reads GOOGLE_ADS_API_VERSION, so a sunset version can be moved without a deploy", async () => {
-      // Google sunsets a version about a year after releasing it, and a sunset
-      // version stops answering rather than degrading.
+    it("reads GOOGLE_ADS_API_VERSION for the lookup, and the Data Manager path is its own", async () => {
+      // Google Ads sunsets a version about a year after releasing it and a
+      // sunset version stops answering rather than degrading, so that one moves
+      // with a restart. Data Manager has shipped one path since going generally
+      // available, so its version is a constant and this variable must not reach
+      // it.
       setEnv({ ...GOOGLE, GOOGLE_ADS_API_VERSION: "v27" });
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
-      expect(uploads()[0][0]).toContain("/v27/customers/");
       expect(searches()[0][0]).toContain("/v27/customers/");
+      expect(ingests()[0][0]).toBe(`${DATA_MANAGER_API_HOST}/${DATA_MANAGER_API_VERSION}/events:ingest`);
+      expect(ingests()[0][0]).not.toContain("v27");
+    });
+
+    it("reads GOOGLE_DATA_MANAGER_HOST, so the ingest can be moved without a deploy", async () => {
+      setEnv({ ...GOOGLE, GOOGLE_DATA_MANAGER_HOST: "https://dm.example" });
+      store.claimDueEvents.mockResolvedValue([googleRow()]);
+      await sweepOnce();
+      expect(ingests()[0][0]).toBe(`https://dm.example/${DATA_MANAGER_API_VERSION}/events:ingest`);
+      // And the Ads lookup is untouched by it: two hosts, two APIs.
+      expect(searches()[0][0]).toContain(GOOGLE_ADS_API_HOST);
     });
 
     it("exchanges the refresh token with the documented parameters, never in a URL", async () => {
@@ -3323,15 +3957,16 @@ describe("the production wiring", () => {
       expect(body.get("client_id")).toBe("google-client");
       expect(body.get("client_secret")).toBe("google-client-secret");
       expect(body.get("refresh_token")).toBe("google-refresh-secret");
-      // No secret in any request line: a URL ends up in every proxy and access
-      // log there is.
+      // No secret, and nothing client-linked, in any request line: a URL ends up
+      // in every proxy and access log there is.
       for (const [requested] of fetchMock.mock.calls) {
         expect(String(requested)).not.toContain("google-refresh-secret");
         expect(String(requested)).not.toContain("google-client-secret");
+        expect(String(requested)).not.toContain("Cj0KCQiA-live");
       }
     });
 
-    it("treats an expired refresh token as permanent, naming it and uploading nothing", async () => {
+    it("treats an expired refresh token as permanent, naming it and ingesting nothing", async () => {
       // A consent screen left in "Testing" expires one after seven days, which
       // is the cause .env.example warns about. Permanent, so a row does not
       // spend its budget discovering it.
@@ -3344,7 +3979,7 @@ describe("the production wiring", () => {
       store.claimDueEvents.mockResolvedValue([googleRow()]);
       await sweepOnce();
 
-      expect(uploads()).toHaveLength(0);
+      expect(ingests()).toHaveLength(0);
       const saved = store.updateGoogleStatus.mock.calls.at(-1)[1];
       expect(saved.status).toBe("failed");
       expect(saved.detail).toContain("invalid_grant");
@@ -3359,17 +3994,14 @@ describe("the production wiring", () => {
           return { status: 200, json: async () => ({ access_token: GOOGLE_ACCESS_TOKEN, expires_in: 3600 }) };
         }
         if (u.endsWith("googleAds:search")) {
-          return {
-            status: 200,
-            json: async () => ({ results: [{ conversionAction: { resourceName: GOOGLE_ACTION_RESOURCE } }] }),
-          };
+          return { status: 200, json: async () => ({ results: [{ conversionAction: { id: GOOGLE_ACTION_ID } }] }) };
         }
         return {
           status: 401,
           json: async () => ({
             error: {
               status: "UNAUTHENTICATED",
-              message: `Bearer ${GOOGLE_ACCESS_TOKEN} with developer-token dev-token is not valid`,
+              message: `Bearer ${GOOGLE_ACCESS_TOKEN} rejected the gclid Cj0KCQiA-live-secret`,
             },
           }),
         };
@@ -3383,7 +4015,9 @@ describe("the production wiring", () => {
         GOOGLE_ACCESS_TOKEN,
         "google-refresh-secret",
         "google-client-secret",
-        "dev-token",
+        // The gclid is not a credential and is redacted for its own reason: it
+        // names one person's click, and the detail is read straight into the
+        // admin table.
         "Cj0KCQiA-live-secret",
         "ali.khan@example.com",
         "971501112233",

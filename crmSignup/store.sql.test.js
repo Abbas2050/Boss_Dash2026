@@ -159,6 +159,33 @@ describe("initCrmSignupStore", () => {
     expect(ddlCalls).toHaveLength(i);
   });
 
+  it("holds google_request_id in both the CREATE and the guarded ALTERs", async () => {
+    // **The column that is the difference between one conversion and two.** The
+    // Data Manager API answers 200 for "accepted for asynchronous processing"
+    // and nothing more; the real outcome is retrieved by this id up to 24 hours
+    // later, so the Google step has two phases and this column is what tells
+    // them apart. A table that predates it -- which every existing one does --
+    // would read every awaiting row as never ingested and ingest it again.
+    expect(SIGNUP_EVENTS_SCHEMA).toMatch(/google_request_id VARCHAR\(512\) NULL/);
+    const added = SIGNUP_EVENTS_ADDED_COLUMNS.find(([column]) => column === "google_request_id");
+    expect(added, "a new column with no guarded ALTER never reaches an existing table").toBeTruthy();
+    expect(added[1]).toContain("ADD COLUMN google_request_id VARCHAR(512) NULL");
+    // NULL-able with no default, unlike the four status columns beside it:
+    // nothing reads it in a status predicate, and NULL is the honest value for
+    // "nothing has been ingested for this row".
+    expect(added[1]).not.toMatch(/DEFAULT/);
+    // 512 and not 64: Google documents the id only as "auto-generated" and
+    // states no shape or maximum, so the width is set where an opaque token
+    // cannot plausibly reach rather than where today's ids happen to sit.
+    expect(SIGNUP_EVENTS_SCHEMA).not.toMatch(/google_request_id VARCHAR\(64\)/);
+  });
+
+  it("does not insert google_request_id, because an insert cannot know one", async () => {
+    // Written by whoever learns the fact, like `brevo_contact_id`: the webhook
+    // that inserts the row has ingested nothing.
+    expect(INSERT_COLUMNS).not.toContain("google_request_id");
+  });
+
   it("adds nothing when information_schema says all three are already there", async () => {
     // The other half of the guard. `ALTER TABLE ... ADD COLUMN` on a column that
     // exists is an error, and an error at startup takes the store, the sweeper and
@@ -439,21 +466,61 @@ describe("the five action writers", () => {
     expect(params[2]).toBeNull();
   });
 
-  it("updateGoogleStatus writes only the google columns", async () => {
-    // Nothing of Google's is written outside these four: the conversion's
-    // identity is its `orderId`, derived from the row, and `gclid` is frozen at
-    // insert. A writer that touched another destination's column would settle a
-    // send that never happened.
-    await updateGoogleStatus(7, { status: "sent", detail: "http 200", attempts: 1, nextAttemptAt: null });
+  it("updateGoogleStatus writes only the google columns, the request id among them", async () => {
+    // Nothing of Google's is written outside these five: the conversion's
+    // identity is its `transactionId`, derived from the row, and `gclid` is
+    // frozen at insert. A writer that touched another destination's column would
+    // settle a send that never happened.
+    await updateGoogleStatus(7, {
+      status: "retrying",
+      detail: "accepted",
+      requestId: "dm-request-1",
+      attempts: 0,
+      nextAttemptAt: next,
+    });
     const { sql, params } = db.state.calls[0];
     expect(sql).toMatch(
-      /SET google_status = \?, google_detail = \?, google_attempts = \?, google_next_attempt_at = \?\s+WHERE id = \?/
+      /SET google_status = \?, google_detail = \?,\s*google_request_id = COALESCE\(\?, google_request_id\),\s*google_attempts = \?, google_next_attempt_at = \?\s+WHERE id = \?/
     );
     for (const other of ["meta", "whatsapp", "brevo", "openai"]) {
       expect(sql, other).not.toContain(`${other}_status`);
     }
     expect(sql).not.toContain("gclid");
-    expect(params).toEqual(["sent", "http 200", 1, null, 7]);
+    expect(params).toEqual(["retrying", "accepted", "dm-request-1", 0, next, 7]);
+  });
+
+  it("updateGoogleStatus NEVER erases the request id it was not given", async () => {
+    // **COALESCE, and here it is load-bearing rather than defensive.** This
+    // writer runs at least three times for one conversion: the pre-send claim
+    // (which cannot have an id yet), the ingest's outcome (which supplies it),
+    // and then the claim and outcome of every poll that follows -- all of which
+    // pass none. Written plainly, the first poll's own claim would null the id it
+    // is about to poll with, and the next sweep, seeing an empty column, would
+    // INGEST THE CONVERSION A SECOND TIME.
+    for (const write of [
+      { status: "retrying", detail: "send started; outcome not recorded", attempts: 1 },
+      { status: "retrying", detail: "still processing", attempts: 2, requestId: undefined },
+      { status: "sent", detail: "SUCCESS", attempts: 3, requestId: null },
+    ]) {
+      await updateGoogleStatus(7, write);
+      const { sql, params } = db.state.calls.at(-1);
+      expect(sql, JSON.stringify(write)).toContain("google_request_id = COALESCE(?, google_request_id)");
+      expect(params[2], JSON.stringify(write)).toBeNull();
+    }
+  });
+
+  it("CUTS an over-width request id rather than nulling it, unlike every other id here", async () => {
+    // The opposite of the rule `fbc` and `whatsapp_message_id` follow, because
+    // the consequences are opposite. A cut id makes the next poll ask about a
+    // request Google does not know, which settles `rejected` saying so: visible,
+    // and ONE conversion. A NULL would make the next sweep read the row as never
+    // ingested and ingest it again, which is TWO.
+    const over = "x".repeat(600);
+    await updateGoogleStatus(7, { status: "retrying", detail: "accepted", requestId: over, attempts: 0 });
+    const { params } = db.state.calls.at(-1);
+    expect(params[2]).not.toBeNull();
+    expect(params[2]).toHaveLength(512);
+    expect(over.startsWith(params[2])).toBe(true);
   });
 
   it("updateOpenaiStatus writes only the openai columns", async () => {
@@ -952,14 +1019,43 @@ describe("scrubSignupEvent", () => {
     expect(db.state.calls[0].sql).toContain("AND openai_status IN ('sent','skipped')");
   });
 
-  it("requires google too, so no row is scrubbed while the upload is still pending", async () => {
+  it("requires google too, so no row is scrubbed while the ingest is still pending", async () => {
     // The send guard refuses a scrubbed row for ever, so a row scrubbed while
-    // the Google upload was still pending would hold `pending` until the table
+    // the Google ingest was still pending would hold `pending` until the table
     // is dropped -- and `gclid` surviving the scrub does not help, because
     // nothing would ever claim the row again.
     await scrubSignupEvent(7, SCRUBBED);
     expect(DESTINATIONS).toContain("google");
     expect(db.state.calls[0].sql).toContain("AND google_status IN ('sent','skipped')");
+  });
+
+  it("will not take a row whose conversion is still awaiting Google's confirmation", async () => {
+    // **The second phase's whole protection, and it needed no new code.** A
+    // conversion accepted by `events:ingest` and not yet confirmed holds
+    // `retrying`, which is in SCRUBBABLE_STATUSES exactly as little as `pending`
+    // is -- so this predicate already refuses the row. That is most of the
+    // reason the confirmation phase holds `retrying` rather than a sixth word,
+    // which settled.js refuses and which would have to be added to the claim,
+    // this predicate, the backstop and the resend.
+    //
+    // It costs something: the scrub, which normally runs about a minute after
+    // signup, waits up to 24 hours on the rows Google is still processing. That
+    // is written down in worker.js beside the decision.
+    await scrubSignupEvent(7, SCRUBBED);
+    const { sql } = db.state.calls[0];
+    expect(SCRUBBABLE_STATUSES).not.toContain("retrying");
+    expect(sql).not.toContain("'retrying'");
+  });
+
+  it("never nulls google_request_id, which is the handle the poll needs", async () => {
+    // Not client data -- it names one request of ours to Google, not a person --
+    // and the poll needs nothing else off the row. Scrubbed, a row awaiting
+    // confirmation would read as never ingested and be INGESTED AGAIN. It cannot
+    // happen today, because the predicate above refuses such a row; this is the
+    // floor under that, for whoever widens SCRUB_COLUMNS next.
+    await scrubSignupEvent(7, SCRUBBED);
+    expect(SCRUB_COLUMNS).not.toContain("google_request_id");
+    expect(db.state.calls[0].sql).not.toMatch(/\bgoogle_request_id = NULL\b/);
   });
 
   it("keeps a row whose send failed, refused or was never valid: scrubbing it is what destroyed the resend", async () => {
@@ -1282,6 +1378,39 @@ describe("requeueFailedSends", () => {
     expect(sql).not.toMatch(/whatsapp_request_id/);
     expect(sql).not.toMatch(/whatsapp_message_id/);
     expect(sql).not.toMatch(/whatsapp_detail/);
+  });
+
+  it("CLEARS google_request_id, so the resend ingests rather than re-polling a dead request", async () => {
+    // **The one column this statement clears beyond the three, and the only
+    // destination with an extra.** The Google step reads that column to decide
+    // which of its two phases it is in: an id means a conversion is awaiting
+    // Google's answer, so poll; no id means nothing has been ingested, so
+    // ingest. Every row this statement can reach is `failed` or `rejected`, so
+    // any id it still holds belongs to a request Google has already answered or
+    // never will -- left in place, the resend would spend its whole 25-poll
+    // budget re-asking about that dead request and never ingest anything.
+    db.state.respond = () => [{ affectedRows: 3 }];
+    expect(await requeueFailedSends("google", RESEND_AT)).toBe(3);
+    const { sql, params } = db.state.calls[0];
+    expect(sql).toMatch(
+      /SET google_status = 'pending', google_attempts = 0, google_next_attempt_at = NULL, google_request_id = NULL/
+    );
+    expect(sql).toMatch(/AND google_status IN \('failed','rejected'\)/);
+    // Google has no window of its own: the 90-day limit is on the CLICK, which
+    // is not an instant this table holds.
+    expect(sql).not.toMatch(/received_at/);
+    expect(params).toEqual([]);
+  });
+
+  it("clears no request id for the other four, whose statements are untouched", async () => {
+    // The extra SET is Google's alone. A `${action}_request_id` appearing in
+    // another destination's statement would be a column name that does not
+    // exist, and the statement would fail outright for every resend.
+    for (const action of DESTINATIONS.filter((a) => a !== "google")) {
+      db.state.calls.length = 0;
+      await requeueFailedSends(action, RESEND_AT);
+      expect(db.state.calls[0].sql, action).not.toMatch(/_request_id = NULL/);
+    }
   });
 
   it("accepts openai, so a fixed key or pixel id can clear the ChatGPT Ads backlog", async () => {

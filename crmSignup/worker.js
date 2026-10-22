@@ -22,13 +22,18 @@ import {
 import {
   decideGoogleSkip,
   decideGoogleValueFailure,
-  buildGoogleUpload,
+  buildGoogleIngest,
   resolveGoogleConversionAction,
-  uploadGoogleConversion,
+  ingestGoogleConversion,
+  retrieveGoogleRequestStatus,
   resolveTimezoneOffset,
+  googleConfirmDelayMinutes,
+  GOOGLE_CONFIRM_MAX_ATTEMPTS,
+  GOOGLE_CONFIRM_WINDOW_MINUTES,
   GOOGLE_ADS_API_HOST,
   GOOGLE_ADS_API_VERSION,
   GOOGLE_OAUTH_TOKEN_URL,
+  DATA_MANAGER_API_HOST,
 } from "./googleAds.js";
 // The one inbound lookup in this module. Everything else here talks to a
 // destination; this asks FXBO what the deposit was worth, because Meta discards
@@ -84,12 +89,44 @@ let lastRetentionAt = 0;
 // literal in both.
 const META_MAX_ATTEMPTS = 3;
 const BREVO_MAX_ATTEMPTS = 3;
-// Google's, fixed at three like Meta's and Brevo's rather than configurable.
-// Nothing about this destination argues for an operator's number: unlike
-// OpenAI there is no 7-day window for a budget to race, and unlike WhatsApp
-// there is no message a retry could duplicate -- the `orderId` is what makes a
-// repeated upload the same conversion.
-const GOOGLE_MAX_ATTEMPTS = 3;
+
+/**
+ * Google's INGEST budget, fixed at three like Meta's and Brevo's rather than
+ * configurable. Nothing about this phase argues for an operator's number: unlike
+ * OpenAI there is no 7-day window for a budget to race, and unlike WhatsApp
+ * there is no message a retry could duplicate -- the `transactionId` is what
+ * makes a repeated ingest the same conversion.
+ *
+ * **It is NOT the budget the confirmation phase gets, and the difference is
+ * roughly eightfold.** See googleMaxAttemptsFor.
+ */
+const GOOGLE_INGEST_MAX_ATTEMPTS = 3;
+
+/**
+ * Which of Google's two budgets this row is spending, read off the one thing
+ * that says which phase it is in.
+ *
+ * **The two phases count separately, and one shared number could not serve
+ * both.** An ingest is a single HTTP request to a live endpoint: three attempts
+ * five minutes apart is the right shape, and a failure after that is a failure.
+ * A confirmation is a wait for Google's own asynchronous processing, which
+ * Google says "may take up to 24 hours" -- so it needs 25 polls on Google's own
+ * backoff (GOOGLE_CONFIRM_MAX_ATTEMPTS, computed from their published
+ * schedule). Give the ingest 26 and a broken endpoint is hammered for a day;
+ * give the confirmation 3 and every conversion is abandoned after two hours,
+ * unconfirmed, while Google was still working on it.
+ *
+ * So `google_attempts` means "attempts at the phase this row is in", and the
+ * ingest's own outcome resets it to 0 as it writes the request id (see
+ * runGoogleStep). The detail is what carries the phase to a reader.
+ *
+ * Read in two places that must agree: here, for the pre-request claim written by
+ * `begin`, and inside the step for the outcome. One function rather than the
+ * same ternary twice.
+ */
+function googleMaxAttemptsFor(row) {
+  return str(row?.google_request_id) ? GOOGLE_CONFIRM_MAX_ATTEMPTS : GOOGLE_INGEST_MAX_ATTEMPTS;
+}
 
 /**
  * What the row says when the request was a validation rather than a send.
@@ -132,6 +169,28 @@ export const OPENAI_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded 
  * nothing about the other's.
  */
 export const GOOGLE_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded by Google Ads";
+
+/**
+ * What the row says between the ingest and Google's answer.
+ *
+ * **This is the whole of the second phase, as far as a person reading the tab is
+ * concerned.** The status is `retrying`, which is one of the five words the
+ * vocabulary allows and the only honest one available: the conversion has been
+ * accepted and NOT confirmed, nothing else will be learned until Google answers,
+ * and the row must stay claimable so that the answer is actually asked for.
+ * `sent` would be the lie this change exists to remove, and a sixth word is
+ * refused by settled.js and would have to be added to the claim, the scrub
+ * precondition, the backstop and the resend -- where one omission re-sends for
+ * ever and another never scrubs.
+ *
+ * The request id is in the sentence because the column holding it is not in the
+ * tab's select list, and it is the one thing a person needs to ask Google about
+ * this conversion by hand. Note that `redactDetail` masks any run of eight or
+ * more digits as a phone number, so an all-numeric request id reads masked here
+ * -- the column is the authority, and it is not masked.
+ */
+export const googleAwaitingDetail = (requestId, polls) =>
+  `awaiting Google's confirmation of request ${requestId} (poll ${polls} of ${GOOGLE_CONFIRM_MAX_ATTEMPTS})`;
 
 // What the row says while a request is in the air. The outcome replaces it the
 // moment it is known, so a person reads this only if the process died first.
@@ -561,11 +620,93 @@ async function runOpenaiStep(row, fields, deps, begin, depositValue) {
   return { ...plan, detail };
 }
 
+/**
+ * The confirmation phase: one poll, and whatever Google now says.
+ *
+ * **Reached before every other decision in the Google step, and the order is the
+ * point.** A conversion that has been ingested is past the stage where any of
+ * them applies: re-running decideGoogleSkip could record `skipped` for a
+ * conversion Google is holding (a refresh token pulled during an incident would
+ * do it), re-resolving the conversion action asks Google a question the answer
+ * to no longer affects, and re-looking-up the deposit would spend an FXBO call
+ * on a number already on the wire. None of them can change the outcome, and two
+ * of them can overwrite it with a word that is false.
+ *
+ * The claim is taken, exactly as the ingest takes it. A poll is a write to the
+ * row, and two overlapped workers both writing the outcome of the same poll is
+ * the race `begin` exists for -- the loser writes nothing rather than landing a
+ * stale answer on top of the winner's.
+ *
+ * `planRetry` does the rest, on the confirm phase's own budget and Google's own
+ * backoff: `SUCCESS` and `FAILED` are not retryable, so they settle as `sent`
+ * and `rejected` immediately; `PROCESSING` is, so it books the next poll. The
+ * budget is what guarantees the row settles at all -- after 25 polls spanning
+ * Google's stated 24 hours, planRetry writes `failed`.
+ *
+ * `failed` after 24 hours of `PROCESSING` does NOT mean Google refused the
+ * conversion, and the detail has to say so: it may still land, and nothing here
+ * will ever learn that it did. It is `failed` because that is the vocabulary's
+ * word for "nothing further will be attempted", and because `failed` is what the
+ * resend control can reach -- a deliberate re-ingest carries the same
+ * `transactionId`, so Google treats it as the same conversion.
+ */
+async function runGoogleConfirmStep(row, deps, begin, requestId) {
+  const { config, confirmGoogle, now, logger } = deps;
+  const attempts = Number(row.google_attempts) || 0;
+
+  await begin();
+  const outcome = await confirmGoogle({ config, requestId });
+
+  const plan = planRetry({
+    attempts,
+    maxAttempts: GOOGLE_CONFIRM_MAX_ATTEMPTS,
+    retryable: outcome.retryable,
+    finalStatus: outcome.status,
+    now: now(),
+    // Google's published schedule, continued from where the ingest left it: the
+    // ingest set the first 30-minute wait, so the poll that has just happened is
+    // number `attempts + 1` and the next wait is the one that follows it.
+    delayMinutes: googleConfirmDelayMinutes(attempts + 1),
+  });
+
+  // Three sentences, each only when it is true: what Google said, where in the
+  // schedule this is, and -- on the one outcome that is easy to misread -- that
+  // running out of polls is not a refusal.
+  const detail =
+    plan.status === "retrying"
+      ? `${googleAwaitingDetail(requestId, plan.attempts)}; ${outcome.detail}`
+      : plan.status === "failed" && outcome.retryable
+        ? `unconfirmed after ${GOOGLE_CONFIRM_MAX_ATTEMPTS} polls over ${GOOGLE_CONFIRM_WINDOW_MINUTES / 60}h; ` +
+          `Google may still record it, and nothing here will learn that it did: ${outcome.detail}`
+        : outcome.detail;
+
+  if (plan.status !== "sent") {
+    // The row id and not the client: a confirmation says nothing about a person,
+    // and there is no client data in the detail either.
+    logger.warn?.(`[crm-events] google ${plan.status} for row ${row.id}: ${detail}`);
+  }
+
+  // No `requestId` in the result, deliberately. The writer COALESCEs it, so
+  // passing nothing keeps the id that is already in the column -- and there is
+  // nothing new to say about it. Re-sending the same value would work and would
+  // be one more place for it to be sent wrongly.
+  return { ...plan, detail };
+}
+
 async function runGoogleStep(row, fields, deps, begin, depositValue) {
   const { config, sendGoogle, resolveGoogleAction, now, logger } = deps;
   const attempts = Number(row.google_attempts) || 0;
 
-  // One decision for every reason this upload is not ours to make: nothing
+  // **PHASE TWO FIRST.** A request id in the column means a conversion was
+  // accepted by `events:ingest` and has not been confirmed, so the only thing
+  // left to do for this row is ask what became of it -- and in particular NOT
+  // ingest it again, which would be a second conversion. The column is the whole
+  // of that discrimination (store.js says why it is cut rather than nulled, and
+  // why the writer COALESCEs it).
+  const awaiting = str(row.google_request_id);
+  if (awaiting) return runGoogleConfirmStep(row, deps, begin, awaiting);
+
+  // One decision for every reason this ingest is not ours to make: nothing
   // configured, a stage the GTM container owns, a stage with no conversion
   // action, or -- the commonest -- a client who arrived without a gclid. A skip
   // spends no attempt and sets no clock.
@@ -586,9 +727,9 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
   }
 
   // The same gate Meta's and ChatGPT Ads' steps apply, for the reason OpenAI's
-  // gives: Google accepts a conversion with no value, and `orderId` makes this
-  // conversion unique per action for ever -- so an unpriced upload now is the
-  // final word on that deposit's worth and no later send can correct it. A
+  // gives: Google accepts a conversion with no value, and `transactionId` makes
+  // this conversion unique per action for ever -- so an unpriced ingest now is
+  // the final word on that deposit's worth and no later send can correct it. A
   // visible `failed`, requeueable once FXBO answers, is the recoverable
   // direction.
   let deposit = null;
@@ -598,7 +739,7 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
       const failure = depositLookupFailure(looked);
       const plan = planRetry({
         attempts,
-        maxAttempts: GOOGLE_MAX_ATTEMPTS,
+        maxAttempts: GOOGLE_INGEST_MAX_ATTEMPTS,
         retryable: failure.retryable,
         finalStatus: "failed",
         now: now(),
@@ -611,7 +752,7 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
 
   // A deposit that was found but cannot be stated in money Google reads. Before
   // the claim and before any request, like decideBrevoListIdFailure: nothing is
-  // uploaded, so there is nothing for a second sweeper to collide with. It
+  // ingested, so there is nothing for a second sweeper to collide with. It
   // spends no attempt and sets no clock either -- a currency Google cannot read
   // will not be readable in five minutes -- and the detail names the code.
   const unpriceable = decideGoogleValueFailure({ stage: fields.stage, depositValue: deposit });
@@ -622,25 +763,28 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
     return { status: unpriceable.status, detail: unpriceable.detail, attempts, nextAttemptAt: null };
   }
 
-  // **The conversion action is resolved by NAME, and the upload cannot be built
-  // without the resource name it resolves to.** Before the claim, for the same
-  // reason the deposit lookup is: no conversion has been uploaded, so there is
-  // nothing another sweeper could duplicate. It spends an attempt and sets a
-  // clock when the cause may clear, because a failure here is as often a 5xx or
-  // an expired refresh token as it is a misconfigured account.
+  // **The conversion action is resolved by NAME, and the ingest cannot be built
+  // without the NUMERIC ID it resolves to.** Still a Google Ads API call, and
+  // still before the claim for the same reason the deposit lookup is: no
+  // conversion has been ingested, so there is nothing another sweeper could
+  // duplicate. It spends an attempt and sets a clock when the cause may clear,
+  // because a failure here is as often a 5xx or an expired refresh token as it
+  // is a misconfigured account.
   //
-  // What it must never do is settle `sent`. A name that does not resolve has no
-  // resource name, and the two ways to get that wrong are both silent: a
-  // hardcoded id uploads to whatever action now holds it, and an absent action
-  // name with the field omitted is a conversion Google files against nothing.
-  // So this is a failure with the name in it, every time.
+  // What it must never do is settle `sent`. The ways to get this wrong are all
+  // silent, and the move to an asynchronous API made them quieter: a hardcoded
+  // id ingests into whatever action now holds it, an omitted
+  // `productDestinationId` is a conversion Google files against nothing, and a
+  // resource name where the id belongs is a well-formed string that would be
+  // accepted with a 200 and refused a day later as an error count naming no
+  // row. So this is a failure with the action's name in it, every time.
   const resolved = await resolveGoogleAction({ config, stage: fields.stage, now: now() });
-  if (!resolved?.resourceName) {
+  if (!resolved?.conversionActionId) {
     const retryable = resolved?.failure?.retryable !== false;
     const detail = str(resolved?.failure?.detail) || "the conversion action could not be resolved";
     const plan = planRetry({
       attempts,
-      maxAttempts: GOOGLE_MAX_ATTEMPTS,
+      maxAttempts: GOOGLE_INGEST_MAX_ATTEMPTS,
       retryable,
       finalStatus: "failed",
       now: now(),
@@ -649,14 +793,24 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
     return { ...plan, detail };
   }
 
-  const payload = buildGoogleUpload({
+  const payload = buildGoogleIngest({
     stage: fields.stage,
     crmClientId: fields.crmClientId,
     gclid: str(row.gclid),
-    conversionAction: resolved.resourceName,
-    // The row's own instant, stamped in the ACCOUNT's zone rather than the
-    // server's or UTC -- googleConversionDateTime says why that is a day's
-    // difference and not an hour's.
+    // The NUMERIC id, which is what `productDestinationId` takes. The resolver
+    // returns nothing else now, so there is no resource name here to pass by
+    // mistake -- and buildGoogleIngest refuses a value that is not all digits
+    // anyway, because that mistake would be accepted with a 200.
+    conversionActionId: resolved.conversionActionId,
+    // The operating account, in the body rather than in the URL.
+    customerId: config.googleCustomerId,
+    // The manager account, when there is one: `login-customer-id` has no header
+    // to travel in on this API, so it becomes `destinations[].loginAccount`.
+    loginCustomerId: config.googleLoginCustomerId,
+    // The row's own instant, written in the ACCOUNT's zone rather than the
+    // server's. googleEventTimestamp says what that does and does NOT decide now
+    // -- a Timestamp is an instant, so the offset labels it rather than moving
+    // it.
     receivedAt: row.received_at,
     offset: config.googleTimezoneOffset,
     // The DECIMAL half of the same lookup OpenAI took the minor-unit integer
@@ -672,16 +826,47 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
   // `invalid`: the one status no resend picks up, because nothing an operator
   // fixes would make the payload constructible.
   if (!payload) {
-    logger.warn?.(`[crm-events] google payload could not be built for row ${row.id}; nothing is uploaded`);
+    logger.warn?.(`[crm-events] google payload could not be built for row ${row.id}; nothing is ingested`);
     return { status: "invalid", detail: "no sendable payload could be built", attempts, nextAttemptAt: null };
   }
 
   await begin();
-  const outcome = await sendGoogle({ config, payload });
+  const outcome = await sendGoogle({ config, payload, gclid: str(row.gclid) });
+
+  // **An accepted ingest does NOT go through planRetry, and that is the shape of
+  // the whole change.** A 200 from `events:ingest` means "accepted for
+  // asynchronous processing"; the conversion has been handed over successfully
+  // and is now waiting, which is neither a send to settle nor an attempt to
+  // retry. So the row is written by hand: `retrying`, because the conversion is
+  // unconfirmed and the row must stay claimable to go and ask; the request id,
+  // because without it the next sweep would ingest the conversion again; and the
+  // attempt count reset to 0, because the budget from here on is the confirm
+  // phase's 25 polls and not the ingest's 3 (googleMaxAttemptsFor).
+  //
+  // The clock is Google's own first wait of 30 minutes. `begin` has already
+  // written a five-minute one for crash safety, which this replaces within
+  // milliseconds; a process that died in between would poll 25 minutes early,
+  // be told `PROCESSING`, and re-clock itself properly. One wasted request
+  // against a window of 100,000 a day.
+  if (outcome.requestId) {
+    const first = {
+      status: "retrying",
+      attempts: 0,
+      nextAttemptAt: new Date(now().getTime() + googleConfirmDelayMinutes(0) * 60_000),
+      requestId: outcome.requestId,
+      detail: `${googleAwaitingDetail(outcome.requestId, 0)}; ${outcome.detail}`,
+    };
+    // Logged at warn like every other non-`sent` outcome, because this is the
+    // state a conversion now spends up to a day in and an operator reading the
+    // log should see it start rather than infer it. The row id, not the client:
+    // there is no client data in the detail.
+    logger.warn?.(`[crm-events] google accepted for row ${row.id}: ${first.detail}`);
+    return first;
+  }
 
   const plan = planRetry({
     attempts,
-    maxAttempts: GOOGLE_MAX_ATTEMPTS,
+    maxAttempts: GOOGLE_INGEST_MAX_ATTEMPTS,
     retryable: outcome.retryable,
     finalStatus: outcome.status,
     now: now(),
@@ -689,7 +874,9 @@ async function runGoogleStep(row, fields, deps, begin, depositValue) {
 
   // On every outcome, not only on a success: a validation that was refused was
   // still only a validation, and reading `rejected` without this would send
-  // somebody looking in Google Ads for a conversion that was never offered.
+  // somebody looking in Google Ads for a conversion that was never offered. It
+  // is also the only path on which an ingest reads `sent` at all -- a validated
+  // request is not executed, so there is no request to confirm.
   const detail = config.googleValidateOnly
     ? `${GOOGLE_VALIDATE_ONLY_DETAIL}; ${outcome.detail}`
     : outcome.detail;
@@ -719,19 +906,29 @@ function isWaiting(clock, now) {
 }
 
 /**
- * The outcome write, retried once when what it records is a send.
+ * The outcome write, retried once when what it records is something that has
+ * already left the building.
  *
  * A send that succeeded and could not be recorded is the one write failure that
  * costs a client a second message: the row stays `retrying` with its clock due,
  * and the next sweep sends again. One dropped connection is enough, and no
  * second process is needed for it. Anything else is left to fail on the first
  * attempt -- repeating it only delays a row that has not been sent anyway.
+ *
+ * **`requestId` counts as a send for this purpose, and has to.** Google's
+ * accepted ingest writes `retrying` rather than `sent`, because a 200 from
+ * `events:ingest` is an acceptance and not a delivery -- but the conversion HAS
+ * been handed over, and that write is the only thing that records the request id
+ * the outcome will be confirmed by. Lost, the row reads as never ingested, the
+ * next sweep ingests the conversion a second time, and the first request becomes
+ * one nothing will ever ask about. Keyed on the id rather than on the
+ * destination so that whatever is handed over next gets the same protection.
  */
 async function saveOutcome(save, id, outcome, logger) {
   try {
     return await save(id, outcome);
   } catch (error) {
-    if (outcome?.status !== "sent") throw error;
+    if (outcome?.status !== "sent" && !str(outcome?.requestId)) throw error;
     logger?.warn?.(
       `[crm-events] could not record a completed send, retrying the write: ${error?.message || String(error)}`
     );
@@ -841,7 +1038,13 @@ export async function processSignupEvent(row, deps) {
     ["whatsapp", "whatsapp_status", "whatsapp_attempts", "whatsapp_next_attempt_at", runWhatsappStep, deps.saveWhatsapp, deps.config.waMaxAttempts],
     ["brevo", "brevo_status", "brevo_attempts", "brevo_next_attempt_at", runBrevoStep, deps.saveBrevo, BREVO_MAX_ATTEMPTS],
     ["openai", "openai_status", "openai_attempts", "openai_next_attempt_at", runOpenaiStep, deps.saveOpenai, deps.config.openaiMaxAttempts],
-    ["google", "google_status", "google_attempts", "google_next_attempt_at", runGoogleStep, deps.saveGoogle, GOOGLE_MAX_ATTEMPTS],
+    // Google's budget is the only one read off the row rather than fixed per
+    // destination, because this destination has two phases and they are an order
+    // of magnitude apart (googleMaxAttemptsFor). It is read here for `begin`'s
+    // pre-request claim and again inside the step for the outcome, from the one
+    // function, so the claim cannot write `failed` on a poll the step still
+    // considers budgeted.
+    ["google", "google_status", "google_attempts", "google_next_attempt_at", runGoogleStep, deps.saveGoogle, googleMaxAttemptsFor(row)],
   ];
 
   for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of steps) {
@@ -933,6 +1136,25 @@ export async function processSignupEvent(row, deps) {
   // it is not read as finished. A status that is settled but not scrubbable
   // (`rejected`, `failed`, `invalid`) reads as not-scrubbable from either place,
   // which is what keeps the row's data for the resend.
+  //
+  // **A conversion awaiting Google's confirmation holds the row here, and that
+  // is deliberate and has a cost worth naming.** Such an action is `retrying`,
+  // which is in neither set, so the existing predicate already refuses to scrub
+  // it -- no change was needed for that, which is most of the reason the
+  // confirmation phase holds `retrying` rather than inventing a word. The cost
+  // is that the scrub, which normally runs about a minute after signup, waits up
+  // to 24 hours on the rows Google is still processing: the stages that reach
+  // Google at all, and of those only the ones carrying a gclid, which is a small
+  // fraction of signups. Those rows hold their name, email and phone for that
+  // long instead of a minute, and the thirty-day backstop still bounds them.
+  //
+  // It could be otherwise. The poll needs only `google_request_id`, which is not
+  // client data and is not on the scrub list, so scrubbing a row mid-confirmation
+  // would lose nothing the confirmation needs. What stands in the way is the
+  // scrubbed-row guard at the top of this function, which settles every unsettled
+  // action `skipped` -- it would record `skipped` for a conversion Google had
+  // actually accepted. Changing that guard is how the queue was starved on
+  // 2026-10-22, so the retention cost is taken instead and written down here.
   //
   // An action another worker claimed is the exception, and the reason this is no
   // longer decided by our copy alone: our column for it is stale by definition,
@@ -1026,20 +1248,36 @@ function liveConfig() {
     googleCustomerId: process.env.GOOGLE_ADS_CUSTOMER_ID || "",
     // Required only when reaching the customer THROUGH a manager account, so
     // blank is the normal value and the header is then omitted entirely.
+    // Still read, and now read for TWO things: the `login-customer-id` header on
+    // the conversion-action lookup (a Google Ads API call, which still takes
+    // headers) and `destinations[].loginAccount` on the Data Manager ingest,
+    // which takes none. Blank is the normal value, and both are then omitted.
     googleLoginCustomerId: process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || "",
-    // Optional and ignored by the API since the 2026-09-09 sunset, and Google
-    // encourages not sending it at all -- see decideGoogleSkip. Read here only
-    // so an account mid-transition can still supply one.
-    googleDeveloperToken: process.env.GOOGLE_ADS_DEVELOPER_TOKEN || "",
+    // GOOGLE_ADS_DEVELOPER_TOKEN is deliberately NOT read any more. The Google
+    // Ads API has ignored developer tokens since the 2026-09-09 sunset and says
+    // it will start rejecting them; the Data Manager API documents no such
+    // header and says not to set request headers on an ingest at all. A value
+    // read here would be a value that could only be sent somewhere it is
+    // unwelcome -- see decideGoogleSkip.
+    //
     // A version in the URL that Google sunsets about a year after releasing it,
-    // so it is movable with a restart rather than a deploy.
+    // so it is movable with a restart rather than a deploy. The ONE call still
+    // made to the Google Ads API is the conversion-action lookup, so this now
+    // governs that and nothing else.
     googleApiVersion: String(process.env.GOOGLE_ADS_API_VERSION || GOOGLE_ADS_API_VERSION).trim(),
     googleApiHost: String(process.env.GOOGLE_ADS_API_HOST || GOOGLE_ADS_API_HOST).trim(),
     googleTokenUrl: String(process.env.GOOGLE_ADS_TOKEN_URL || GOOGLE_OAUTH_TOKEN_URL).trim(),
+    // Where the conversions themselves go. Its own variable because it is its
+    // own API on its own host, and a single GOOGLE_ADS_API_HOST pointing at both
+    // would be one value for two services. No version variable beside it --
+    // DATA_MANAGER_API_VERSION says why there is nothing yet to move.
+    googleDataManagerHost: String(process.env.GOOGLE_DATA_MANAGER_HOST || DATA_MANAGER_API_HOST).trim(),
     // The account's own zone, +04:00, unless an operator moves it. Anything
     // unusable falls back to the account's with a warning rather than stopping
-    // the uploads -- resolveTimezoneOffset says why that is the right direction
-    // for this one value and not for a key.
+    // the ingests -- resolveTimezoneOffset says why that is the right direction
+    // for this one value and not for a key. It is presentational now:
+    // googleEventTimestamp says why a Timestamp's offset cannot move a
+    // conversion between days the way `conversionDateTime`'s could.
     googleTimezoneOffset: resolveTimezoneOffset(process.env.GOOGLE_ADS_TIMEZONE_OFFSET),
     // Only the literal "true", any case, exactly as OPENAI_VALIDATE_ONLY: this
     // flag stops every conversion being recorded while the row still settles,
@@ -1067,22 +1305,31 @@ function liveConfig() {
 }
 
 /**
- * The Google credentials and endpoint, named once for the two calls that take
+ * The Google credentials and endpoints, named once for the three calls that take
  * them.
  *
  * Written out here rather than passed as `config` so that googleAds.js takes
  * flat arguments like every other sender, and so this file is the only place
  * that knows a `googleCustomerId` is a `customerId`. A mapping written twice
  * is a mapping that can be written differently twice -- and sending the manager
- * id as the customer id uploads to the wrong account without an error.
+ * id as the customer id reports to the wrong account without an error.
+ *
+ * One object for two APIs: `apiHost`/`apiVersion`/`customerId` are the Google
+ * Ads lookup's and `dataManagerHost` is the ingest's and the status retrieval's.
+ * Each function names the arguments it wants and ignores the rest, which is
+ * cheaper than three near-identical mappings of the same credentials -- the
+ * credentials genuinely are the same, because one refresh token serves both
+ * scopes.
+ *
+ * No developer token: this module no longer holds one (see decideGoogleSkip).
  */
 function googleCall(config) {
   return {
     apiHost: config.googleApiHost,
     apiVersion: config.googleApiVersion,
+    dataManagerHost: config.googleDataManagerHost,
     customerId: config.googleCustomerId,
     loginCustomerId: config.googleLoginCustomerId,
-    developerToken: config.googleDeveloperToken,
     clientId: config.googleClientId,
     clientSecret: config.googleClientSecret,
     refreshToken: config.googleRefreshToken,
@@ -1098,15 +1345,29 @@ function liveDeps() {
     upsertBrevo: ({ apiKey, contact }) => upsertBrevoContact({ apiKey, contact }),
     sendOpenai: ({ eventsUrl, pixelId, apiKey, payload }) =>
       sendOpenaiEvent({ eventsUrl, pixelId, apiKey, payload }),
-    // Two deps for Google where the others have one, because the upload needs
-    // something looked up first: the conversion action's resource name. The
-    // lookup happens BEFORE the claim and the upload after it, so a name that
-    // does not resolve costs no claim and uploads nothing. Both read the same
-    // process-wide access token cache, so the common case is one HTTP request
-    // per conversion.
+    // THREE deps for Google where the others have one, and each is a separate
+    // round trip for a separate reason:
+    //
+    //   resolveGoogleAction -- the conversion action's numeric id, from its
+    //   name, on the Google Ads API. Before the claim, so a name that does not
+    //   resolve costs no claim and ingests nothing. Cached per process.
+    //
+    //   sendGoogle -- the ingest, on the Data Manager API. After the claim. Its
+    //   200 is an acceptance, not a delivery.
+    //
+    //   confirmGoogle -- what became of that acceptance, up to 24 hours later.
+    //   Its own dep rather than a flag on sendGoogle so that a test can answer
+    //   the two phases differently, which is the only way the interesting cases
+    //   here can be exercised at all.
+    //
+    // All three read the same process-wide access token cache, so the common
+    // case is one HTTP request per call and not two.
     resolveGoogleAction: ({ config, stage, now }) =>
       resolveGoogleConversionAction({ ...googleCall(config), stage, now }),
-    sendGoogle: ({ config, payload }) => uploadGoogleConversion({ ...googleCall(config), payload }),
+    sendGoogle: ({ config, payload, gclid }) =>
+      ingestGoogleConversion({ ...googleCall(config), payload, gclid }),
+    confirmGoogle: ({ config, requestId }) =>
+      retrieveGoogleRequestStatus({ ...googleCall(config), requestId }),
     // Injected like the senders so a test can answer it without a network, and
     // so the one case that matters -- the lookup finding nothing -- can be
     // exercised rather than argued about.

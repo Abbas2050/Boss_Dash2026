@@ -73,6 +73,7 @@ export const SIGNUP_EVENTS_SCHEMA = `
     google_detail TEXT NULL,
     google_attempts INT NOT NULL DEFAULT 0,
     google_next_attempt_at DATETIME NULL,
+    google_request_id VARCHAR(512) NULL,
     raw_payload LONGTEXT NULL,
     received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -177,8 +178,8 @@ export const SIGNUP_EVENTS_ADDED_COLUMNS = [
   //
   // `gclid` is Google's click identifier, and it is the one of the three
   // without a fallback: Meta and OpenAI both match on the hashed email and
-  // phone when their click id is missing, while `uploadClickConversions`
-  // attributes on the gclid and nothing else. Its width follows `oppref`
+  // phone when their click id is missing, while the Data Manager ingest carries
+  // the gclid and no `userData` at all. Its width follows `oppref`
   // rather than `fbc` -- a gclid is an opaque token of no documented maximum,
   // and 512 characters is several times the longest anybody has observed.
   //
@@ -194,6 +195,27 @@ export const SIGNUP_EVENTS_ADDED_COLUMNS = [
   ["google_detail", `ALTER TABLE signup_events ADD COLUMN google_detail TEXT NULL`],
   ["google_attempts", `ALTER TABLE signup_events ADD COLUMN google_attempts INT NOT NULL DEFAULT 0`],
   ["google_next_attempt_at", `ALTER TABLE signup_events ADD COLUMN google_next_attempt_at DATETIME NULL`],
+  // The Data Manager API's request id, added 2026-10-22 with the move off
+  // `uploadClickConversions`.
+  //
+  // **This column is the difference between one conversion and two.** That API
+  // answers HTTP 200 for "accepted for asynchronous processing" and nothing
+  // more; the real outcome is retrieved up to 24 hours later by this id. So the
+  // Google step has two phases, and THIS COLUMN IS WHAT TELLS THEM APART: empty
+  // means nothing has been ingested and the step ingests, non-empty means a
+  // conversion is awaiting its answer and the step polls instead. A row that
+  // lost it would be ingested a second time.
+  //
+  // NULL-able with no default, unlike the four status columns beside it and like
+  // `brevo_contact_id`: nothing reads it in a status predicate, and NULL is the
+  // honest value for "nothing has been ingested for this row". It is written by
+  // whoever learns the fact.
+  //
+  // 512 characters, following `gclid` rather than `whatsapp_request_id`'s 64:
+  // Google documents the id only as "auto-generated" and states no shape or
+  // maximum, so the width is set where an opaque token cannot plausibly reach
+  // rather than where today's ids happen to sit.
+  ["google_request_id", `ALTER TABLE signup_events ADD COLUMN google_request_id VARCHAR(512) NULL`],
 ];
 
 /** Exported so a test can pin each parameter to its column by name rather
@@ -796,21 +818,49 @@ export async function updateOpenaiStatus(id, { status, detail, attempts, nextAtt
   return matchedRows(result);
 }
 
-/** Nothing of Google's is written outside these four columns either, and for
- *  the same two reasons: the conversion's identity is its `orderId`, derived
- *  from the row, and `gclid` is frozen at insert. The one thing the upload does
- *  return -- a `jobId` -- names the request rather than the conversion, and for
- *  a batch of one it is a number Google generated, so there is no question a
- *  person could later ask with it. */
-export async function updateGoogleStatus(id, { status, detail, attempts, nextAttemptAt }, claimAt = null) {
+/**
+ * Google's, plus the one column that is a handle rather than a status.
+ *
+ * `google_request_id` is the Data Manager API's id for one accepted ingest, and
+ * the row cannot be settled without it: a 200 from `events:ingest` means only
+ * "accepted for asynchronous processing", and the conversion's real outcome is
+ * retrieved by this id up to 24 hours later.
+ *
+ * **Written through COALESCE, and here that is load-bearing rather than
+ * defensive.** This writer runs at least three times for one conversion: the
+ * pre-send claim (which cannot have an id yet), the ingest's outcome (which
+ * supplies it), and then the claim and outcome of every poll that follows. Every
+ * one of those later writes passes no id. Written plainly, the first poll's own
+ * claim would null the id it is about to poll with -- and the next sweep, seeing
+ * an empty column, would ingest the conversion a second time. COALESCE is what
+ * makes a claim safe to take on a row mid-confirmation.
+ *
+ * It is also why the id travels on this writer rather than one of its own: it is
+ * settled by the same exchange that settles the status, and a second statement
+ * would be a second thing to lose.
+ *
+ * Nothing else of Google's is written outside these five columns: the
+ * conversion's identity is its `transactionId`, derived from the row, and
+ * `gclid` is frozen at insert.
+ */
+export async function updateGoogleStatus(id, { status, detail, requestId, attempts, nextAttemptAt }, claimAt = null) {
   const claim = claimClause("google", claimAt);
   const result = await run(
     `UPDATE signup_events
-        SET google_status = ?, google_detail = ?, google_attempts = ?, google_next_attempt_at = ?
+        SET google_status = ?, google_detail = ?,
+            google_request_id = COALESCE(?, google_request_id),
+            google_attempts = ?, google_next_attempt_at = ?
       WHERE id = ?${claim.sql}`,
     [
       String(status),
       detailFor(detail),
+      // CUT if it is somehow over-width, and never NULLed -- the opposite of the
+      // rule `fbc` and `whatsapp_message_id` follow, because the consequences
+      // are opposite. A cut id makes the next poll ask about a request Google
+      // does not know, which settles `rejected` saying exactly that: visible,
+      // and one conversion. A NULL would make the next sweep read the row as
+      // never ingested and ingest it again, which is two.
+      str(requestId, "google_request_id"),
       Number(attempts) || 0,
       nextAttemptAt ?? null,
       id,
@@ -920,6 +970,17 @@ export async function recordWhatsappDelivery(messageId, { status, at, detail } =
  *   the proof alive for about a minute, which is no proof at all: the question
  *   "did client 48217's contact really get created" is asked days later. Brevo
  *   mints the id only when it creates, so once lost it cannot be re-read.
+ *
+ *   `google_request_id` stays, and it is the one absence here that is about
+ *   correctness rather than about evidence. It is the handle the Data Manager
+ *   API's status retrieval takes, so a row whose conversion is still awaiting
+ *   confirmation would, without it, be read as never ingested and ingested
+ *   again. It is not client data -- it names one request of ours to Google, not
+ *   a person -- and the poll needs nothing else off the row, which is why the
+ *   two decisions are independent: taking the client data while a conversion
+ *   awaits its answer would be sound, and taking this would not. As it happens
+ *   neither can occur, because `scrubbableClause` only matches `sent` and
+ *   `skipped` and a conversion awaiting confirmation is `retrying`.
  *
  *   `whatsapp_delivery_status`, `_at` and `_detail` stay, for the same reason
  *   and one more: the report usually ARRIVES after the scrub. DoubleTick's
@@ -1069,6 +1130,27 @@ export const DESTINATIONS = ["meta", "whatsapp", "brevo", "openai", "google"];
  * `now` is the caller's, so the count and the UPDATE that follows it are judged
  * against one instant rather than two readings of the clock.
  */
+/**
+ * The columns a resend has to clear beyond the three every destination shares,
+ * which is Google's alone: `google_request_id`.
+ *
+ * **Without this the resend control would poll instead of resending.** The
+ * Google step reads that column to decide which of its two phases it is in: an
+ * id means a conversion is awaiting Google's answer, so poll; no id means
+ * nothing has been ingested, so ingest. A requeued row is one an operator has
+ * asked to be SENT again -- and every row this statement can reach is `failed`
+ * or `rejected`, so any id it still holds belongs to a request Google has
+ * already answered, or will never answer. Left in place, the resend would spend
+ * its whole budget re-asking about that dead request and never ingest anything.
+ *
+ * Named here rather than written inline so that the one destination with an
+ * extra column is visible beside the one with an extra window (sendableWindow
+ * below), and so the other four statements stay byte for byte what they were.
+ */
+function requeueExtraSet(action) {
+  return action === "google" ? ", google_request_id = NULL" : "";
+}
+
 function sendableWindow(action, now) {
   if (action !== "openai") return null;
   return {
@@ -1221,6 +1303,12 @@ export async function scrubStaleSignupEvents(receivedBefore, at = new Date()) {
  * duplicate instead. (Same reasoning as the over-width id being cut rather than
  * nulled, above: the worker reads the id back off the row on every attempt.)
  *
+ * **`google_request_id` IS cleared, and it is the one column this statement
+ * clears beyond the three (see requeueExtraSet).** It is not evidence like the
+ * two above, it is the switch between the Google step's two phases, and a resend
+ * that left it set would re-ask about a dead request for its whole budget
+ * instead of ingesting the conversion the operator pressed the button for.
+ *
  * Returns how many rows it matched, so the caller can say what happened.
  */
 export async function requeueFailedSends(destination, now = new Date()) {
@@ -1234,7 +1322,7 @@ export async function requeueFailedSends(destination, now = new Date()) {
   const window = sendableWindow(action, now);
   const result = await run(
     `UPDATE signup_events
-        SET ${action}_status = 'pending', ${action}_attempts = 0, ${action}_next_attempt_at = NULL
+        SET ${action}_status = 'pending', ${action}_attempts = 0, ${action}_next_attempt_at = NULL${requeueExtraSet(action)}
       WHERE scrubbed_at IS NULL
         AND ${action}_status IN (${REQUEUEABLE_LIST})${window ? `
         AND (${window.sql})` : ""}`,

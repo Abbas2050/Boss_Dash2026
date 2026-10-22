@@ -91,8 +91,9 @@ export function extractOppref(fullLink) {
  *
  * **Without it a conversion cannot be attributed at all**, and that is sharper
  * here than for the other two: Meta and OpenAI both fall back to the hashed
- * email and phone, and `uploadClickConversions` has no such fallback -- the
- * gclid IS the identity of the click. So it is extracted at first sight and
+ * email and phone, while the Data Manager ingest carries the gclid in
+ * `adIdentifiers` and no `userData` at all -- the gclid IS the identity of the
+ * click, with nothing behind it. So it is extracted at first sight and
  * frozen in its own column, for the two reasons `fbc` and `oppref` are:
  * `full_link` is scrubbed about a minute after signup, and the first deposit is
  * a different row arriving weeks later whose own `full_link` is normally empty
