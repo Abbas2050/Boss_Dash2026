@@ -24,7 +24,23 @@ import path from "node:path";
  * authenticates perfectly and then sees no accounts.
  */
 
-const SCOPE = "https://www.googleapis.com/auth/adwords";
+/**
+ * Both scopes, in one consent, because the integration needs both and asking
+ * twice would mean asking a person twice.
+ *
+ * `adwords` resolves a conversion action's numeric id from its NAME, which is
+ * what keeps the three action ids out of configuration. `datamanager` is what
+ * actually ingests the conversion: Google closed uploadClickConversions to new
+ * integrations on 2026-06-15 and its rejection says so in as many words --
+ * "New integrations for uploading click conversions should use the Data Manager
+ * API" -- and Google's field-mapping page is explicit that "the Data Manager
+ * API requires credentials with a different scope than the Google Ads API".
+ *
+ * A token minted before 2026-10-22 carries only `adwords` and cannot ingest.
+ * Scopes are not additive on an existing token, so that token has to be
+ * replaced, not extended.
+ */
+const SCOPE = ["https://www.googleapis.com/auth/adwords", "https://www.googleapis.com/auth/datamanager"].join(" ");
 const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const ENV_KEY = "GOOGLE_ADS_REFRESH_TOKEN";
