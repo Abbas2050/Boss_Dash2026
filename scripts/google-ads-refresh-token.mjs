@@ -2,6 +2,7 @@ import "dotenv/config";
 import { createServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 /**
@@ -69,7 +70,83 @@ async function writeEnvValue(envPath, key, value) {
   return pattern.test(body) ? "replaced" : "appended";
 }
 
-const [, , jsonPath] = process.argv;
+/**
+ * Trades the one-time code for the refresh token and stores it. Shared by both
+ * modes so the loopback and manual paths cannot disagree about what a success
+ * looks like. `redirectUri` must be byte-identical to the one authorised.
+ */
+async function exchangeAndStore(code, redirectUri) {
+  const tokenResp = await fetch(TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }),
+  });
+
+  const tokenBody = await tokenResp.json().catch(() => ({}));
+
+  if (!tokenResp.ok) {
+    // The body carries Google's reason; the secret is not in it.
+    console.error(`Token exchange failed: HTTP ${tokenResp.status}`);
+    console.error(JSON.stringify(tokenBody, null, 2));
+    process.exit(1);
+  }
+
+  const refreshToken = text(tokenBody.refresh_token);
+  if (!refreshToken) {
+    console.error(
+      "Google returned no refresh_token. That happens when the account has approved\n" +
+        "this client before and the request did not force a new consent. This script\n" +
+        "sends prompt=consent, so if you see this, revoke the app at\n" +
+        "https://myaccount.google.com/permissions and run it again.",
+    );
+    process.exit(1);
+  }
+
+  const envPath = path.resolve(process.cwd(), ".env");
+  const how = await writeEnvValue(envPath, ENV_KEY, refreshToken);
+
+  console.log(`\n${ENV_KEY} ${how} in ${envPath}`);
+  console.log(`Starts with: ${refreshToken.slice(0, 8)}...  (${refreshToken.length} chars)`);
+  console.log("\nRestart the app so the new value is read, then the Google Ads uploads can run.\n");
+}
+
+/**
+ * Two modes, because the default one cannot be driven from a phone.
+ *
+ * The default listens on loopback and catches Google's redirect itself, which
+ * requires the browser and this process to be the same machine -- approve on a
+ * phone and `localhost` is the phone, so the code never arrives.
+ *
+ * `--manual` splits that in half. It prints a URL against a FIXED port and
+ * stops. You approve anywhere, the browser lands on a dead `localhost` page
+ * (a connection error, which is the expected and correct outcome), and its
+ * address bar now holds the code. Feed that whole URL back with `--redirect`.
+ * The port is fixed because the redirect_uri at exchange must be byte-identical
+ * to the one at authorisation, and the two halves are different processes.
+ */
+const argv = process.argv.slice(2);
+const flagValue = (name) => {
+  const i = argv.indexOf(name);
+  return i === -1 ? null : (argv[i + 1] ?? "");
+};
+const manualMode = argv.includes("--manual");
+const redirectedUrl = flagValue("--redirect");
+const jsonPath = argv.find((a) => !a.startsWith("--") && a !== redirectedUrl) || undefined;
+
+// Any free high port; it only has to agree between the two halves, and nothing
+// ever listens on it in manual mode.
+const MANUAL_PORT = 8765;
+// Carries the state between the two invocations. A single process could hold it
+// in memory; two cannot, and dropping the check instead would mean exchanging
+// whatever code someone handed us.
+const statePath = path.join(tmpdir(), "google-ads-oauth-state.json");
+
 const { clientId, clientSecret } = await readCredentials(jsonPath);
 
 if (!clientId || !clientSecret) {
@@ -79,6 +156,63 @@ if (!clientId || !clientSecret) {
       "  node scripts/google-ads-refresh-token.mjs ~/Downloads/client_secret_xxx.json",
   );
   process.exit(1);
+}
+
+/** Builds the consent URL. Shared, so the two modes cannot drift apart. */
+const buildAuthUrl = (redirectUri, state) =>
+  `${AUTH_ENDPOINT}?client_id=${encodeURIComponent(clientId)}` +
+  `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+  `&response_type=code` +
+  `&scope=${encodeURIComponent(SCOPE)}` +
+  `&access_type=offline&prompt=consent` +
+  `&state=${state}`;
+
+if (manualMode) {
+  const state = randomBytes(16).toString("hex");
+  const redirectUri = `http://localhost:${MANUAL_PORT}`;
+  await writeFile(statePath, JSON.stringify({ state, redirectUri }), "utf8");
+  console.log("\nApprove this on any device -- phone is fine:\n");
+  console.log(buildAuthUrl(redirectUri, state));
+  console.log(
+    "\nGoogle will warn the app is unverified: Advanced, then continue.\n\n" +
+      "Afterwards the browser lands on a page that CANNOT LOAD. That is correct --\n" +
+      "nothing is listening there. Copy the whole URL out of the address bar and run:\n\n" +
+      `  node scripts/google-ads-refresh-token.mjs ${jsonPath ? `"${jsonPath}" ` : ""}--redirect "<paste the url>"\n`,
+  );
+  process.exit(0);
+}
+
+if (redirectedUrl) {
+  let saved;
+  try {
+    saved = JSON.parse(await readFile(statePath, "utf8"));
+  } catch {
+    console.error("No pending authorisation. Run with --manual first.");
+    process.exit(1);
+  }
+  let parsed;
+  try {
+    parsed = new URL(redirectedUrl.trim());
+  } catch {
+    console.error("That is not a URL. Paste the whole address bar, including http://localhost.");
+    process.exit(1);
+  }
+  const err = parsed.searchParams.get("error");
+  if (err) {
+    console.error(`Authorisation failed: ${err}`);
+    process.exit(1);
+  }
+  if (parsed.searchParams.get("state") !== saved.state) {
+    console.error("State mismatch -- that URL is from a different run. Start again with --manual.");
+    process.exit(1);
+  }
+  const code = parsed.searchParams.get("code");
+  if (!code) {
+    console.error("No code in that URL. Copy it after approving, not before.");
+    process.exit(1);
+  }
+  await exchangeAndStore(code, saved.redirectUri);
+  process.exit(0);
 }
 
 // CSRF protection on the redirect: Google echoes this back and we refuse a
@@ -144,41 +278,4 @@ const code = await new Promise((resolve, reject) => {
 
 server.close();
 
-const tokenResp = await fetch(TOKEN_ENDPOINT, {
-  method: "POST",
-  headers: { "Content-Type": "application/x-www-form-urlencoded" },
-  body: new URLSearchParams({
-    code,
-    client_id: clientId,
-    client_secret: clientSecret,
-    redirect_uri: redirectUri,
-    grant_type: "authorization_code",
-  }),
-});
-
-const tokenBody = await tokenResp.json().catch(() => ({}));
-
-if (!tokenResp.ok) {
-  // The body carries Google's reason; the secret is not in it.
-  console.error(`Token exchange failed: HTTP ${tokenResp.status}`);
-  console.error(JSON.stringify(tokenBody, null, 2));
-  process.exit(1);
-}
-
-const refreshToken = text(tokenBody.refresh_token);
-if (!refreshToken) {
-  console.error(
-    "Google returned no refresh_token. That happens when the account has approved\n" +
-      "this client before and the request did not force a new consent. This script\n" +
-      "sends prompt=consent, so if you see this, revoke the app at\n" +
-      "https://myaccount.google.com/permissions and run it again.",
-  );
-  process.exit(1);
-}
-
-const envPath = path.resolve(process.cwd(), ".env");
-const how = await writeEnvValue(envPath, ENV_KEY, refreshToken);
-
-console.log(`\n${ENV_KEY} ${how} in ${envPath}`);
-console.log(`Starts with: ${refreshToken.slice(0, 8)}...  (${refreshToken.length} chars)`);
-console.log("\nRestart the app so the new value is read, then the Google Ads uploads can run.\n");
+await exchangeAndStore(code, redirectUri);
