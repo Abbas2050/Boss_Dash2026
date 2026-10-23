@@ -285,6 +285,11 @@ describe("toTableRow", () => {
       status: "skipped",
       detail: "no gclid: the click cannot be attributed in Google Ads",
       attempts: 0,
+      // Null, and present rather than absent: a skipped conversion was never
+      // ingested, so there is no request to confirm. The page reads this field
+      // to tell a `retrying` that is waiting on Google from one that is a failing
+      // upload, and `undefined` would read as the second of those.
+      requestId: null,
     });
   });
 
@@ -369,12 +374,52 @@ describe("toTableRow", () => {
       // A contact id under WhatsApp, or a delivery report under Brevo, would be
       // a column claiming evidence that destination never had.
       const view = toTableRow(
-        row({ brevo_contact_id: "4821", whatsapp_delivery_status: "DELIVERED" })
+        row({
+          brevo_contact_id: "4821",
+          whatsapp_delivery_status: "DELIVERED",
+          google_request_id: "dm-request-7f2b9c",
+        })
       );
       expect(view.whatsapp.contactId).toBeUndefined();
       expect(view.brevo.delivery).toBeUndefined();
       expect(view.meta.delivery).toBeUndefined();
       expect(view.openai.contactId).toBeUndefined();
+      // The third of them, and the only one that is not merely evidence: the
+      // page reads it to decide whether a `retrying` Google row is a problem, so
+      // it under another destination would be a column answering a question that
+      // destination is not asked.
+      expect(view.google.requestId).toBe("dm-request-7f2b9c");
+      for (const other of ["meta", "whatsapp", "brevo", "openai"]) {
+        expect(view[other].requestId, other).toBeUndefined();
+      }
+    });
+
+    it("carries the Data Manager request id, which is what makes a retrying Google row readable", () => {
+      // **The page cannot tell the two meanings of `retrying` apart without
+      // this.** WITH an id the conversion has been accepted by `events:ingest`
+      // and is waiting on Google, for up to the 24 hours Google may take --
+      // healthy, and the state nearly every live conversion is in for its first
+      // day. WITHOUT one the upload itself failed and is being retried, which is
+      // a genuine problem. Left out of this view the tab painted every healthy
+      // conversion red and filled its "problems only" filter with them.
+      //
+      // It cannot be recovered from `google_detail` either, which is why the
+      // column travels: redactDetail masks any run of eight or more digits as a
+      // phone number, so an all-numeric id reads masked there.
+      const awaiting = toTableRow(
+        row({ google_status: "retrying", google_request_id: "dm-request-7f2b9c" })
+      );
+      expect(awaiting.google).toMatchObject({ status: "retrying", requestId: "dm-request-7f2b9c" });
+
+      const failing = toTableRow(row({ google_status: "retrying", google_detail: "http 503" }));
+      expect(failing.google.requestId).toBeNull();
+    });
+
+    it("reports an all-numeric request id as the string it is, never as a number", () => {
+      // Shown and never used for arithmetic, exactly like the Brevo contact id:
+      // an id past 2^53 would lose digits as a number, and a request id that lost
+      // a digit names a request Google has never heard of.
+      expect(toTableRow(row({ google_request_id: 90210134567 })).google.requestId).toBe("90210134567");
     });
   });
 

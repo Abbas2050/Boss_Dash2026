@@ -974,6 +974,165 @@ describe("filtering the table", () => {
   });
 });
 
+/**
+ * A Google conversion waiting on Google, which is not a fault.
+ *
+ * **`retrying` means two different things on this one destination, and only the
+ * request id can say which.** Google's Data Manager API answers an upload with
+ * "accepted for asynchronous processing" and the real outcome is retrieved by
+ * `requestId` up to 24 hours later, so every healthy conversion sits at
+ * `retrying` for most of its first day. Judged on the status alone, each one of
+ * them rendered as a fault and filled the "problems only" filter for a day --
+ * and within a week that is a page nobody believes, which defeats the point of
+ * having it.
+ *
+ * `retrying` WITHOUT a request id is the other thing: the upload itself failed
+ * and is being retried five minutes later. That is a genuine problem and still
+ * reads as one.
+ */
+describe("a Google conversion awaiting Google's confirmation", () => {
+  const REQUEST_ID = "dm-request-7f2b9c";
+
+  /** The detail the worker writes while waiting, verbatim. The id is in it too,
+   *  because that string is also the log line -- but the page never reads the id
+   *  from here: `redactDetail` masks any run of eight or more digits as a phone
+   *  number, so an all-numeric id reads masked in this column. */
+  const AWAITING_DETAIL = `awaiting Google's confirmation of request ${REQUEST_ID} (poll 2 of 25); http 200 accepted for processing`;
+
+  const awaiting = (over: Record<string, unknown> = {}) => ({
+    ...event(20, "90100", "verified", ["sent", "skipped", "skipped", "sent", "retrying"]),
+    google: { status: "retrying", detail: AWAITING_DETAIL, attempts: 2, requestId: REQUEST_ID, ...over },
+  });
+
+  /** The same status with nothing accepted behind it: an upload that failed. */
+  const failingIngest = () => ({
+    ...event(21, "90101", "verified", ["sent", "skipped", "skipped", "sent", "retrying"]),
+    google: { status: "retrying", detail: "http 503 upstream", attempts: 1, requestId: null },
+  });
+
+  it("renders it as still going out, with Google's own word rather than retrying", async () => {
+    // The symbol is the one the page already has for "on its way" -- no sixth
+    // symbol and no new state. Only the word changes, because "retrying" reads
+    // in plain English as a send that went wrong and this one went right. What we
+    // actually stored is printed underneath, exactly as WhatsApp's delivery
+    // reports are, so the kinder word hides nothing.
+    installFetch({ ...DISTINCT, events: [awaiting()] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90100");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    expect(cells[11].textContent).toBe(`⋯awaiting Googlerequest ${REQUEST_ID}we recorded retrying${AWAITING_DETAIL}`);
+  });
+
+  it("colours it as waiting and not as a fault", async () => {
+    installFetch({ ...DISTINCT, events: [awaiting()] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90100");
+    const cell = within(screen.getAllByRole("row")[1]).getAllByRole("cell")[11];
+    expect(within(cell).getByText("awaiting Google").className).toMatch(/muted/);
+    expect(within(cell).getByText("awaiting Google").className).not.toMatch(/red/);
+  });
+
+  it("keeps it out of the problems filter, and keeps a failing upload in it", async () => {
+    // **The whole point.** One healthy conversion and one genuine failure, with
+    // the identical status word, separated only by the request id.
+    installFetch({ ...DISTINCT, events: [awaiting(), failingIngest()] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90100");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    await waitFor(() => expect(shownIds()).toEqual(["90101"]));
+  });
+
+  it("shows a failing upload as a problem, with the word it was stored under", async () => {
+    installFetch({ ...DISTINCT, events: [failingIngest()] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90101");
+    const cells = within(screen.getAllByRole("row")[1]).getAllByRole("cell");
+    // Still the waiting symbol -- a retry in five minutes is not a cross, on any
+    // destination -- but the word is ours and no request is named, because none
+    // was accepted. The filter is where the difference shows.
+    expect(cells[11].textContent).toBe("⋯retryinghttp 503 upstream");
+  });
+
+  it("treats a blank request id as none, not as an accepted conversion", async () => {
+    // The field is a string from JSON and an empty one is not an id. Read as
+    // truthy it would hide a real failure behind the healthy reading, which is
+    // the direction that costs.
+    for (const requestId of ["", null, undefined]) {
+      cleanup();
+      installFetch({ ...DISTINCT, events: [awaiting({ requestId })] });
+      render(<CrmEventsPage />);
+      await screen.findByText("90100");
+      fireEvent.click(screen.getByLabelText(/problems only/i));
+      await waitFor(() => expect(shownIds()).toEqual(["90100"]));
+    }
+  });
+
+  it("leaves the other four destinations' retrying as a problem", async () => {
+    // The carve-out is Google's alone. Everywhere else a `retrying` is a send
+    // that has already failed at least once, and hiding those would hide the
+    // thing this filter is pressed for. A request id on one of them changes
+    // nothing: they have no second phase to be waiting on.
+    const rows = [
+      { ...event(30, "meta-retrying", "verified", ["retrying", "skipped", "skipped", "sent", "skipped"]) },
+      { ...event(31, "wa-retrying", "registered", ["skipped", "retrying", "sent", "skipped", "skipped"]) },
+      { ...event(32, "brevo-retrying", "registered", ["skipped", "sent", "retrying", "skipped", "skipped"]) },
+      { ...event(33, "openai-retrying", "verified", ["sent", "skipped", "skipped", "retrying", "skipped"]) },
+    ].map((row) => ({ ...row, meta: { ...row.meta, requestId: REQUEST_ID } }));
+    installFetch({ ...DISTINCT, events: rows });
+    render(<CrmEventsPage />);
+    await screen.findByText("meta-retrying");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    await waitFor(() =>
+      expect(shownIds()).toEqual(["meta-retrying", "wa-retrying", "brevo-retrying", "openai-retrying"]),
+    );
+  });
+
+  it("does not mark Google's retrying count as a problem on its card, where the rows cannot be told apart", async () => {
+    // A count cannot carry the request id, so this card cannot separate the two
+    // meanings -- and on Google the healthy one is the overwhelming majority.
+    // Red there was wrong on the commonest number the card shows. The other four
+    // keep their red, because on them a pile of retries really is a pile of
+    // failures.
+    installFetch(DISTINCT);
+    render(<CrmEventsPage />);
+    await screen.findByTestId("dest-google");
+    const label = (destination: string, status: string) =>
+      within(screen.getByTestId(`dest-${destination}`)).getByText(status).className;
+    expect(label("google", "retrying")).toMatch(/muted/);
+    expect(label("google", "failed")).toMatch(/red/);
+    expect(label("google", "rejected")).toMatch(/red/);
+    for (const destination of ["meta", "whatsapp", "brevo", "openai"]) {
+      expect(label(destination, "retrying"), destination).toMatch(/red/);
+    }
+  });
+
+  it("says in words why a pile of retrying Google rows is normal", async () => {
+    // The card cannot show the distinction, so it has to state it: a reader who
+    // sees a large retrying count and no explanation concludes the destination is
+    // broken, and would be wrong.
+    installFetch(DISTINCT);
+    render(<CrmEventsPage />);
+    await screen.findByTestId("dest-google");
+    expect(
+      screen.getByText(/Google Ads counts most of its sends as retrying, and that is normal too/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/takes up to a day to confirm it/i)).toBeTruthy();
+  });
+
+  it("falls back to reading it as a problem when the server does not send the id at all", async () => {
+    // A response from a server that predates the column. Every Google row then
+    // reads as a problem while it retries, which is where this started -- and it
+    // is the safe direction to be wrong in: a visible row that needs no action
+    // beats a hidden one that does.
+    const { requestId: _gone, ...noRequestId } = awaiting().google;
+    installFetch({ ...DISTINCT, events: [{ ...awaiting(), google: noRequestId }] });
+    render(<CrmEventsPage />);
+    await screen.findByText("90100");
+    fireEvent.click(screen.getByLabelText(/problems only/i));
+    await waitFor(() => expect(shownIds()).toEqual(["90100"]));
+  });
+});
+
 describe("loading, failing and recovering", () => {
   it("says it is loading until the first answer, and not after it", async () => {
     const { answer } = deferredFetch();

@@ -27,10 +27,11 @@ const STATUSES = ["pending", "sent", "skipped", "retrying", "failed", "rejected"
  * to go up. A card that was never built looks exactly like a card of zeroes
  * nobody has reason to question.
  *
- * Two of the five are no longer silent to remove, and that is an improvement
+ * Three of the five are no longer silent to remove, and that is an improvement
  * rather than a new rule to remember: `toTableRow` attaches the delivery proof
- * to `whatsapp` and the contact id to `brevo` after this loop has built them, so
- * dropping either name here throws instead of quietly emptying a column.
+ * to `whatsapp`, the contact id to `brevo` and the Data Manager request id to
+ * `google` after this loop has built them, so dropping any of those three names
+ * here throws instead of quietly emptying a column.
  */
 const DESTINATIONS = [
   ["meta", "meta_status", "meta_detail", "meta_attempts"],
@@ -206,6 +207,15 @@ export function toTableRow(row = {}) {
   // mints an id only when it creates, so a repeat registration updates the
   // existing contact and returns none, and the row's detail says so.
   view.brevo.contactId = row.brevo_contact_id ? String(row.brevo_contact_id) : null;
+  // Google's, and unlike the two above this one is not only evidence: it is what
+  // tells the page which of two things a `retrying` Google row is. WITH an id the
+  // conversion has been accepted by `events:ingest` and is waiting on Google's
+  // answer, for up to the 24 hours Google may take -- healthy, and the commonest
+  // state a live conversion is in. WITHOUT one the ingest itself failed and is
+  // being retried, which is a problem. The status cannot say which, and
+  // `google_detail` cannot be read for it either: redactDetail masks any run of
+  // eight or more digits, so an all-numeric id reads masked there.
+  view.google.requestId = row.google_request_id ? String(row.google_request_id) : null;
 
   return view;
 }

@@ -69,8 +69,38 @@ const DESTINATIONS = [
 ] as const;
 
 /** A status that means something needs attention, as opposed to one that is
- *  simply not applicable at this stage. */
+ *  simply not applicable at this stage.
+ *
+ *  `retrying` is in here because a send that has already failed once and is
+ *  waiting to be tried again is a send that may never arrive — except for the
+ *  one case `isProblem` below carves out, which is not a retry at all. */
 const PROBLEM = new Set(["failed", "rejected", "invalid", "retrying"]);
+
+/** Whether one destination on one row needs attention.
+ *
+ *  The status alone is enough for four of the five. **Google's `retrying` is two
+ *  different things and only the id can say which**, because Google's Data
+ *  Manager API answers an upload with "accepted for asynchronous processing" and
+ *  the real outcome is retrieved by `requestId` up to 24 hours later:
+ *
+ *    `retrying` WITH a request id — the conversion has been accepted and we are
+ *    waiting on Google. Nothing is wrong, and this is the state every healthy
+ *    Google conversion spends most of its first day in.
+ *
+ *    `retrying` WITHOUT one — the ingest itself failed and is being retried.
+ *    That is a genuine problem and still reads as one.
+ *
+ *  Reading the status alone painted every healthy conversion red and filled the
+ *  "Problems only" filter with them for a day each, which within a week is a
+ *  page nobody believes — and a page nobody believes is the whole thing this tab
+ *  was built to avoid. The id comes from `google_request_id`, its own field on
+ *  the response; it is deliberately not parsed back out of `detail`, where
+ *  `redactDetail` masks any run of eight or more digits as a phone number. */
+function isProblem(d: DestinationStatus | undefined, destination: string): boolean {
+  const status = d?.status ?? "";
+  if (destination === "google" && status === "retrying") return !d?.requestId;
+  return PROBLEM.has(status);
+}
 
 /** Every status the backend can record, in the backend's own order
  *  (crmSignup/stats.js STATUSES). All seven are shown on purpose: a counter set
@@ -100,6 +130,13 @@ type DestinationStatus = {
    *  proof in that exchange that a person can open. Null on an update -- Brevo
    *  mints an id only when it creates -- and the detail says so. */
   contactId?: string | null;
+  /** Google's alone: the Data Manager API's id for one accepted ingest. Not
+   *  merely evidence -- it is what makes a `retrying` Google row readable at all
+   *  (see `isProblem`). Optional because a response from a server that predates
+   *  the column must still render the page; every Google row then reads as a
+   *  problem while it retries, which is where this started and is the safe
+   *  direction to be wrong in. */
+  requestId?: string | null;
 };
 
 type EventRow = {
@@ -192,8 +229,23 @@ function describeAge(hours: number | null | undefined): string {
   return `${Math.round(hours / 24)} days`;
 }
 
-function toneFor(status: string): string {
+/**
+ * The colour of one status WORD on a destination card, where the number beside
+ * it is a count and there is no row to ask about.
+ *
+ * `destination` is what makes Google's `retrying` readable here. On the other
+ * four a pile of `retrying` rows does want attention -- each one is a send that
+ * failed at least once. On Google it is the ordinary shape of the week: every
+ * accepted conversion sits there for up to a day while Google confirms it, and
+ * the card cannot tell those from the few that are failing ingests, because the
+ * request id that separates them is per row. Red was therefore wrong on the
+ * commonest number this card shows, and the one place the distinction CAN be
+ * made is the table below, a row at a time (see `isProblem`). The card's own
+ * paragraph says so in words.
+ */
+function toneFor(status: string, destination?: string): string {
   if (status === "sent") return "text-emerald-600 dark:text-emerald-400";
+  if (destination === "google" && status === "retrying") return "text-muted-foreground";
   if (PROBLEM.has(status)) return "text-red-600 dark:text-red-400";
   return "text-muted-foreground";
 }
@@ -209,10 +261,16 @@ function toneFor(status: string): string {
  * still in the air is neither a success nor a fault, and calling it either is
  * wrong within the minute.
  *
- * Google Ads is the clearest case of all and needed nothing added here, which is
- * the point of a shared vocabulary: its commonest value by far is a `skipped`
- * for a signup that carried no gclid, and `skipped` already reads as NONE. A
- * cross there would have put a red mark on nearly every row of the table.
+ * Google Ads needed nothing added here either, which is the point of a shared
+ * vocabulary -- twice over. Its commonest value by far is a `skipped` for a
+ * signup that carried no gclid, and `skipped` already reads as NONE; a cross
+ * there would have put a red mark on nearly every row of the table. And a
+ * conversion Google has accepted and not yet confirmed is `retrying`, which
+ * already reads as WAITING, because that is exactly what it is: still going out,
+ * nothing to conclude yet, for up to the 24 hours Google may take to answer. No
+ * sixth symbol and no new state -- only the WORD beside it is replaced, by
+ * `markOf` below, because "retrying" in plain English says a send went wrong and
+ * this one did not.
  *
  *   OK      a send that succeeded, or -- for WhatsApp -- one DoubleTick has
  *           since reported delivered or read
@@ -269,12 +327,29 @@ const DELIVERY_REPORTS: Record<string, { word: string; state: MarkState }> = {
   FAILED: { word: "not delivered", state: "bad" },
 };
 
+/** What a Google row that has been accepted and not yet confirmed says instead
+ *  of `retrying`.
+ *
+ *  The SYMBOL is unchanged -- `⋯`, still going out, which is what this is -- and
+ *  no state is added for it. Only the word, because "retrying" reads in plain
+ *  English as a send that went wrong, and this one went right: `events:ingest`
+ *  answered 200 "accepted for asynchronous processing" and Google may take up to
+ *  24 hours to say what became of it. `notesFor` prints "we recorded retrying"
+ *  underneath, exactly as it does for WhatsApp's delivery reports, so the stored
+ *  status is never hidden by the kinder word. */
+const GOOGLE_AWAITING_WORD = "awaiting Google";
+
 /**
  * One destination's symbol and the word beside it.
  *
  * The word is never dropped in favour of the symbol. A cross with no reason is a
  * thing an operator has to come and ask about, and the reason is the useful half
  * -- so the symbol leads and the word follows it, both as text, on every row.
+ *
+ * Two destinations replace the word with a truer one, and neither invents a
+ * symbol to go with it: WhatsApp's comes from DoubleTick's own delivery report,
+ * and Google's from the presence of a request id. In both cases the status we
+ * recorded is still printed, as a note under the cell.
  */
 function markOf(d: DestinationStatus | undefined, destination: string): { state: MarkState; word: string } {
   const status = d?.status ?? "";
@@ -282,6 +357,12 @@ function markOf(d: DestinationStatus | undefined, destination: string): { state:
     state: STATE_OF[status] ?? "unknown",
     word: status || "not reported",
   };
+
+  // A `retrying` with no id is an ingest that failed and is being retried, and
+  // it keeps the word `retrying` because that is what it is doing.
+  if (destination === "google") {
+    return status === "retrying" && d?.requestId ? { state: "waiting", word: GOOGLE_AWAITING_WORD } : ours;
+  }
   if (destination !== "whatsapp") return ours;
 
   const reported = DELIVERY_REPORTS[(d?.delivery?.status ?? "").trim().toUpperCase()];
@@ -324,9 +405,20 @@ function notesFor(d: DestinationStatus | undefined, destination: string, word: s
     notes.push(`contact ${d.contactId}`);
   }
 
+  if (destination === "google" && d?.requestId) {
+    // Printed from the column and NOT read out of the detail beside it, where
+    // `redactDetail` masks any run of eight or more digits as a phone number --
+    // so an all-numeric id reads masked there and unmasked here. It is the one
+    // thing a person needs to ask Google about this conversion by hand, and on a
+    // row that is still waiting it is also the evidence that it IS waiting
+    // rather than failing.
+    notes.push(`request ${d.requestId}`);
+  }
+
   // Our own status, whenever the symbol's word has replaced it. Both facts
   // matter and they are different facts: what DoubleTick answered our request,
-  // and what DoubleTick later said became of the message.
+  // and what DoubleTick later said became of the message -- or, for Google, that
+  // the word "awaiting Google" is sitting on a stored `retrying`.
   if (status && word !== status) notes.push(`we recorded ${status}`);
 
   if (d?.detail) notes.push(d.detail);
@@ -545,8 +637,13 @@ export function CrmEventsPage() {
       // Every destination, because a row whose ONLY problem is in the newest
       // column is exactly the row this filter is pressed for -- and one left out
       // here is invisible the moment an operator narrows the table.
+      //
+      // Asked per destination rather than per status, because Google's
+      // `retrying` is only a problem when it carries no request id (isProblem
+      // says why). Judged on the status alone, every healthy conversion filled
+      // this list for a day each and the filter stopped meaning anything.
       if (!problemsOnly) return true;
-      return [row.meta, row.whatsapp, row.brevo, row.openai, row.google].some((d) => PROBLEM.has(d?.status));
+      return DESTINATIONS.some(([key]) => isProblem(row[key], key));
     });
   }, [data, stage, problemsOnly]);
 
@@ -701,6 +798,20 @@ export function CrmEventsPage() {
                 there is nothing to attribute and we deliberately send nothing — a high number here is the ordinary
                 shape of the week, not a fault. Each row’s detail says which reason applied to it.
               </p>
+              {/* Why Google's `retrying` is not red on this card while every
+                  other destination's is. The count cannot separate the two
+                  meanings -- the request id that does is per row -- so the words
+                  say it and the table shows it a row at a time. */}
+              <p className="mb-2 text-xs text-muted-foreground">
+                <span className="font-medium">Google Ads counts most of its sends as retrying, and that is normal
+                too.</span>{" "}
+                Google accepts a conversion for processing and takes up to a day to confirm it, so every healthy one
+                sits at <span className="font-medium">retrying</span> until it does — which is why the number is not
+                marked as a problem here. The table below says which is which: a row reading{" "}
+                <span className="font-medium">awaiting Google</span> has been accepted and names the request, and a row
+                reading <span className="font-medium">retrying</span> is an upload that failed and is being tried
+                again.
+              </p>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-5">
                 {DESTINATIONS.map(([key, label]) => {
                   const counts = data.destinations[key] ?? {};
@@ -710,7 +821,7 @@ export function CrmEventsPage() {
                       <dl className="grid grid-cols-2 gap-x-3 text-sm">
                         {DESTINATION_STATUSES.map((status) => (
                           <div key={status} className="flex justify-between">
-                            <dt className={toneFor(status)}>{status}</dt>
+                            <dt className={toneFor(status, key)}>{status}</dt>
                             <dd className="tabular-nums">{counts[status] ?? 0}</dd>
                           </div>
                         ))}
@@ -889,8 +1000,9 @@ export function CrmEventsPage() {
                 skip every registration, and Google Ads skips every signup that carried no ad click, which is not a
                 fault
                 {" · "}
-                <span className="font-semibold">{"⋯"}</span> still going out. The word and the reason are beside
-                every symbol, because the reason is the useful part.
+                <span className="font-semibold">{"⋯"}</span> still going out — which for Google Ads includes{" "}
+                <span className="font-medium">awaiting Google</span>, a conversion they have accepted and not yet
+                confirmed. The word and the reason are beside every symbol, because the reason is the useful part.
               </p>
               <p className="mb-2 text-xs text-muted-foreground">
                 <span className="font-medium">WhatsApp shows the best we actually know.</span> A 2xx from DoubleTick
