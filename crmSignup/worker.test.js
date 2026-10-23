@@ -1229,11 +1229,18 @@ describe("the row is scrubbed once every destination has succeeded or been skipp
 
   // A row whose Google conversion has been ingested and is awaiting its answer
   // (AWAITING_GOOGLE, at the top of this file). **Every case here that needs all
-  // five destinations settled in ONE pass has to go through it, and that is the
+  // five destinations SETTLED in one pass has to go through it, and that is the
   // behaviour change the Data Manager API brought**: an ingest accepted on this
   // sweep is `retrying` until Google answers, up to 24 hours later, and
-  // `retrying` is in neither SETTLED nor SCRUBBABLE -- so the row genuinely is
-  // not finished and genuinely is not scrubbed.
+  // `retrying` is in neither SETTLED nor SCRUBBABLE.
+  //
+  // **It is no longer what decides the SCRUB, though, and that was reversed on
+  // 2026-10-23.** A conversion Google has accepted no longer holds the row: the
+  // poll takes `google_request_id` and nothing else off it, so the client data
+  // goes about a minute after signup as it does everywhere else, and the
+  // confirmation carries on across the scrub. So a row handed in with this is a
+  // row whose Google action reaches a settled status in one pass; a row without
+  // it is scrubbed on the sweep that ingests its conversion.
   const awaitingGoogle = AWAITING_GOOGLE;
 
   it("scrubs the row, with the sweeper's own clock, after the last action settles", async () => {
@@ -1245,19 +1252,65 @@ describe("the row is scrubbed once every destination has succeeded or been skipp
     }
   });
 
-  it("does NOT scrub a row whose conversion Google has only accepted", async () => {
-    // **The retention consequence of the second phase, pinned so it cannot
-    // change by accident in either direction.** The ingest answers 200, the row
-    // holds `retrying` with the request id, and the client's name, email and
-    // phone stay until Google confirms -- up to 24 hours rather than the usual
-    // minute. Scrubbing here would be sound for the poll, which needs only the
-    // request id, but `processSignupEvent`'s scrubbed-row guard would then settle
-    // the conversion `skipped` on the next sweep: a lie about a conversion Google
-    // had accepted. The thirty-day backstop still bounds the data.
+  it("DOES scrub a row whose conversion Google has only accepted, on the sweep that accepted it", async () => {
+    // **The retention consequence of the second phase, reversed on 2026-10-23
+    // and pinned so it cannot drift back.** The ingest answers 200, the row holds
+    // `retrying` with the request id -- and for a day that held the client's
+    // name, email and phone for up to 24 hours instead of the one minute the
+    // data is kept under, on every verified / live-account / first-deposit row
+    // carrying a gclid.
+    //
+    // It bought nothing. The poll takes `google_request_id` and nothing else off
+    // the row; that column is not client data and is deliberately not on the
+    // scrub list. What used to stand in the way was the scrubbed-row guard
+    // settling every unsettled action `skipped`, which would have recorded a skip
+    // for a conversion Google had accepted -- so the guard lets that one phase
+    // run, and the scrub goes back to its normal schedule.
     const d = deps();
     await processSignupEvent(row({ stage: "verified" }), d);
     expect(lastSaved(d.saveGoogle)).toMatchObject({ status: "retrying", requestId: GOOGLE_REQUEST_ID });
-    expect(d.scrub).not.toHaveBeenCalled();
+    expect(d.scrub).toHaveBeenCalledTimes(1);
+    // The sweeper's own clock, a minute after the row arrived -- not a day later.
+    expect(d.scrub).toHaveBeenCalledWith(7, new Date("2026-10-12T12:00:00Z"));
+  });
+
+  it("scrubs on the request id in the OUTCOME, and on the one in the COLUMN a poll later", async () => {
+    // The id is in two different places depending on which pass this is, and
+    // reading only one of them would leave half the rows unscrubbed. The ingest
+    // that has just been accepted carries it in its outcome while the column is
+    // still empty; every poll after that has it in the column and NOT in the
+    // outcome, because runGoogleConfirmStep deliberately returns none so the
+    // writer's COALESCE keeps the stored one.
+    const accepted = deps();
+    await processSignupEvent(row({ stage: "verified" }), accepted);
+    expect(accepted.scrub).toHaveBeenCalledTimes(1);
+
+    const polling = deps({
+      confirmGoogle: vi.fn(async () => ({ status: "retrying", retryable: true, detail: "PROCESSING" })),
+    });
+    await processSignupEvent(
+      row({ stage: "verified", ...awaitingGoogle, google_status: "retrying", google_attempts: 2 }),
+      polling
+    );
+    expect(lastSaved(polling.saveGoogle)).toMatchObject({ status: "retrying" });
+    expect(lastSaved(polling.saveGoogle).requestId).toBeUndefined();
+    expect(polling.scrub).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT scrub a row whose Google upload has not been accepted, whatever its status says", async () => {
+    // The other half, and the one the id exists to separate. A `retrying` with
+    // no request id is an upload that FAILED and is being retried five minutes
+    // later -- a send with a payload still to build, from the very columns the
+    // scrub would be nulling. Only an accepted conversion lets the row go.
+    for (const detail of ["http 503", "http 500 backendError"]) {
+      const d = deps({
+        sendGoogle: vi.fn(async () => ({ status: "failed", retryable: true, detail })),
+      });
+      await processSignupEvent(row({ stage: "verified" }), d);
+      expect(lastSaved(d.saveGoogle), detail).toMatchObject({ status: "retrying" });
+      expect(lastSaved(d.saveGoogle).requestId, detail).toBeFalsy();
+      expect(d.scrub, detail).not.toHaveBeenCalled();
+    }
   });
 
   it("scrubs the same row on the sweep that confirms the conversion", async () => {
@@ -1723,6 +1776,240 @@ describe("a scrubbed row sends nothing", () => {
       await processSignupEvent(row({ scrubbed_at: scrubbedAt }), d);
       expect(d.sendWhatsapp, String(scrubbedAt)).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+/**
+ * The one thing a scrubbed row may still do, and the invariant it must not break
+ * while doing it.
+ *
+ * The scrub now runs about a minute after signup even when Google has only
+ * ACCEPTED the conversion, so the ordinary life of a Google row is: ingested,
+ * scrubbed, and then polled across the scrub for up to 24 hours. That makes the
+ * scrubbed-row path a live path rather than a guard against the impossible, and
+ * the rule the 2026-10-22 outage bought still governs every branch of it:
+ *
+ *   **Every action on every claimed row must end up settled, or the row is
+ *   claimed again for ever.**
+ *
+ * "Settled" includes `retrying` with a clock in the FUTURE: claimDueEvents will
+ * not return the row until that clock is due, and the confirm budget bounds how
+ * many times it can happen. What must never happen is a claimed, due action that
+ * this function writes nothing for.
+ */
+describe("a scrubbed row still finishes the conversion Google has accepted", () => {
+  const SCRUBBED_AT = new Date("2026-10-12T11:00:00Z");
+  /** A scrubbed row mid-confirmation: the client columns gone, the request id and
+   *  the gclid still there, Google's action still unsettled. */
+  const confirming = (over = {}) =>
+    row({
+      stage: "verified",
+      scrubbed_at: SCRUBBED_AT,
+      first_name: "",
+      last_name: "",
+      email: "",
+      phone: "",
+      ...AWAITING_GOOGLE,
+      google_status: "retrying",
+      google_attempts: 3,
+      meta_status: "sent",
+      openai_status: "sent",
+      whatsapp_status: "skipped",
+      brevo_status: "skipped",
+      ...over,
+    });
+
+  it("polls Google and records the answer, rather than settling it skipped", async () => {
+    // **The conversion this would otherwise lose.** `skipped` is final and the
+    // resend cannot reach it, so a scrubbed row settled that way would record a
+    // skip for a conversion Google had already accepted -- and nothing would
+    // ever ask what became of it.
+    const d = deps();
+    await processSignupEvent(confirming(), d);
+    expect(d.confirmGoogle).toHaveBeenCalledTimes(1);
+    expect(d.confirmGoogle.mock.calls[0][0].requestId).toBe(GOOGLE_REQUEST_ID);
+    expect(lastSaved(d.saveGoogle)).toMatchObject({ status: "sent" });
+    // And nothing is SENT: the one phase allowed here needs no payload.
+    for (const a of ACTIONS.filter((x) => x.name !== "google")) {
+      expect(d[a.send], a.name).not.toHaveBeenCalled();
+    }
+    expect(d.sendGoogle).not.toHaveBeenCalled();
+    // Already scrubbed, so the statement would match nothing and `scrubbed_at` is
+    // the audit trail -- it must not move.
+    expect(d.scrub).not.toHaveBeenCalled();
+  });
+
+  it("settles every OTHER unsettled action skipped on the same pass", async () => {
+    // The outage row: scrubbed, and a column added later defaulted to `pending`.
+    // Those still have to be settled, or the row is re-claimed for ever -- the
+    // confirmation exception must not become an excuse to write nothing else.
+    const d = deps();
+    await processSignupEvent(
+      confirming({ meta_status: "pending", openai_status: "retrying", whatsapp_status: "pending" }),
+      d
+    );
+    for (const name of ["saveMeta", "saveOpenai", "saveWhatsapp"]) {
+      expect(d[name], name).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ status: "skipped", detail: expect.stringContaining("scrubbed") })
+      );
+    }
+    // Brevo was already `skipped`: settled, so it is not written again, and a
+    // `sent` must never be overwritten by this path at all.
+    expect(d.saveBrevo).not.toHaveBeenCalled();
+    expect(d.confirmGoogle).toHaveBeenCalledTimes(1);
+  });
+
+  it("never writes skipped over an action that really sent", async () => {
+    // The row this path runs on normally has four `sent`/`skipped` siblings --
+    // that is what let it be scrubbed. Writing `skipped` across them would
+    // destroy the record of sends that really happened.
+    const d = deps();
+    await processSignupEvent(confirming({ meta_status: "sent", whatsapp_status: "sent" }), d);
+    expect(d.saveMeta).not.toHaveBeenCalled();
+    expect(d.saveWhatsapp).not.toHaveBeenCalled();
+  });
+
+  it("settles google skipped when there is NO request id, because nothing was accepted", async () => {
+    // Both halves of the discrimination, on the same scrubbed row. With no id
+    // nothing has been ingested and nothing can be: the ingest needs a payload,
+    // and the guard refuses to build one. So the action is settled, which is what
+    // takes the row out of the claim query.
+    for (const requestId of [null, "", "   "]) {
+      const d = deps();
+      await processSignupEvent(
+        confirming({ google_request_id: requestId, google_status: "pending" }),
+        d
+      );
+      expect(d.confirmGoogle, JSON.stringify(requestId)).not.toHaveBeenCalled();
+      expect(d.sendGoogle, JSON.stringify(requestId)).not.toHaveBeenCalled();
+      expect(d.saveGoogle, JSON.stringify(requestId)).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({ status: "skipped", detail: expect.stringContaining("scrubbed") })
+      );
+    }
+  });
+
+  it("leaves nothing unsettled when Google is still PROCESSING", async () => {
+    // The answer that settles nothing has to leave a clock, or the row is
+    // claimable with nothing to show for the pass. `retrying` plus a future
+    // instant is what makes the next poll happen instead of a re-claim.
+    const d = deps({
+      confirmGoogle: vi.fn(async () => ({ status: "retrying", retryable: true, detail: "PROCESSING" })),
+    });
+    await processSignupEvent(confirming(), d);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.status).toBe("retrying");
+    expect(saved.attempts).toBe(4);
+    expect(saved.nextAttemptAt.getTime()).toBeGreaterThan(new Date(RECEIVED_AT).getTime());
+  });
+
+  it("leaves nothing unsettled when the confirm budget runs out", async () => {
+    // 24 hours of PROCESSING is the one outcome that could sit `retrying` for
+    // ever. planRetry writes `failed` with no clock instead, which is terminal --
+    // and the detail says Google may still record the conversion.
+    const d = deps({
+      confirmGoogle: vi.fn(async () => ({ status: "retrying", retryable: true, detail: "PROCESSING" })),
+    });
+    await processSignupEvent(confirming({ google_attempts: GOOGLE_CONFIRM_MAX_ATTEMPTS - 1 }), d);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved.status).toBe("failed");
+    expect(saved.nextAttemptAt).toBeNull();
+    expect(saved.detail).toMatch(/Google may still record it/);
+  });
+
+  it("leaves nothing unsettled when the confirmation dep throws", async () => {
+    // A throw must not escape as an unwritten action. It becomes a retryable
+    // stored status on the confirm phase's own budget, exactly as it would on an
+    // unscrubbed row.
+    const d = deps({
+      confirmGoogle: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    await processSignupEvent(confirming(), d);
+    const saved = lastSaved(d.saveGoogle);
+    expect(saved).toMatchObject({ status: "retrying", detail: "step threw" });
+    expect(saved.nextAttemptAt).not.toBeNull();
+  });
+
+  it("writes nothing at all for google when another sweeper holds the claim", async () => {
+    // The one case where writing nothing is correct: the owner of the claim is
+    // recording the outcome, and a status from here would land on top of it. The
+    // row is not deadlocked by it -- the owner's write is what settles or
+    // re-clocks the action.
+    const d = deps({ saveGoogle: vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1)) });
+    await processSignupEvent(confirming(), d);
+    expect(d.confirmGoogle).not.toHaveBeenCalled();
+    // Only the claiming write, which matched nothing. No outcome followed it.
+    expect(d.saveGoogle).toHaveBeenCalledTimes(1);
+    expect(d.saveGoogle.mock.calls[0][2]).toEqual(new Date(RECEIVED_AT));
+  });
+
+  it("leaves a confirmation whose own clock is still in the future alone", async () => {
+    // Not a deadlock and not an omission: claimDueEvents only returns the row
+    // once that clock is due, so a pass that writes nothing for google here
+    // cannot be the pass that re-claims it. A sibling coming due is why the row
+    // was handed over at all.
+    const d = deps();
+    await processSignupEvent(
+      confirming({
+        google_next_attempt_at: new Date("2026-10-12T12:30:00Z"),
+        meta_status: "pending",
+      }),
+      d
+    );
+    expect(d.confirmGoogle).not.toHaveBeenCalled();
+    expect(d.saveGoogle).not.toHaveBeenCalled();
+    // The sibling that made the row due is settled, which is the half that
+    // matters: nothing claimable is left unwritten.
+    expect(d.saveMeta).toHaveBeenCalledWith(7, expect.objectContaining({ status: "skipped" }));
+  });
+
+  it("leaves a request id sitting on a SETTLED google status completely alone", async () => {
+    // "A request id is set but the status column is not what you expect." A
+    // settled one is finished with: nothing polls it, and nothing writes
+    // `skipped` over it either -- that would turn the record of a real outcome
+    // into the record of a scrub.
+    for (const status of SETTLED_SET) {
+      const d = deps();
+      await processSignupEvent(confirming({ google_status: status, meta_status: "pending" }), d);
+      expect(d.confirmGoogle, status).not.toHaveBeenCalled();
+      expect(d.sendGoogle, status).not.toHaveBeenCalled();
+      expect(d.saveGoogle, status).not.toHaveBeenCalled();
+      // And the row still comes out with its claimable sibling settled.
+      expect(d.saveMeta, status).toHaveBeenCalledWith(7, expect.objectContaining({ status: "skipped" }));
+    }
+  });
+
+  it("writes nothing for a google status this vocabulary does not have, and is not deadlocked by it", async () => {
+    // A word claimDueEvents does not select on cannot bring the row back, so
+    // writing nothing for it is safe. The claim is what refuses it, exactly as it
+    // refuses an action another worker settled: `claimClause` names
+    // `pending`/`retrying` and nothing else, so the pre-poll write matches no row
+    // and the step is abandoned before it asks Google anything.
+    const d = deps({
+      // The statement's own precondition rather than a copy of it: a claiming
+      // write lands only on an action still pending or retrying.
+      saveGoogle: vi.fn(async (_id, _outcome, claimAt) => (claimAt ? 0 : 1)),
+    });
+    await processSignupEvent(confirming({ google_status: "something-else", meta_status: "pending" }), d);
+    expect(d.confirmGoogle).not.toHaveBeenCalled();
+    expect(d.sendGoogle).not.toHaveBeenCalled();
+    // The lost claim, and no outcome on top of it.
+    expect(d.saveGoogle).toHaveBeenCalledTimes(1);
+    expect(d.saveMeta).toHaveBeenCalledWith(7, expect.objectContaining({ status: "skipped" }));
+  });
+
+  it("says what it did to the row, without the client's details", async () => {
+    const d = deps();
+    await processSignupEvent(confirming({ meta_status: "pending" }), d);
+    const said = d.logger.warn.mock.calls.flat().join(" ");
+    expect(said).toMatch(/scrubbed/);
+    expect(said).toMatch(/confirming/);
+    expect(said).not.toContain("ali@example.com");
+    expect(said).not.toContain("+971507192185");
+    expect(said).not.toContain("Cj0KCQiA-gclid-7");
   });
 });
 

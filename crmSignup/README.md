@@ -19,8 +19,10 @@ call answered a real conversion with HTTP 200 carrying
 integrations for uploading click conversions should use the Data Manager API`.
 The new API accepts a conversion asynchronously: its 200 means only "accepted
 for processing", and the real outcome is retrieved up to 24 hours later. So a
-healthy Google conversion reads `retrying` on the tab for up to a day before it
-reads `sent`. See "Google Ads: two phases, and why a 200 is not delivery" below.
+healthy Google conversion holds `retrying` for up to a day before it reads
+`sent` — which the tab renders as **awaiting Google**, not as a fault, and which
+does **not** hold up the scrub. See "Google Ads: two phases, and why a 200 is not
+delivery" below.
 
 Configuration: the "CRM events webhook" block at the end of `../.env.example`.
 
@@ -202,6 +204,19 @@ ever, one missing from `SCRUBBABLE` never scrubs. `retrying` is the honest
 member of the existing set: the conversion is unconfirmed, and the row must stay
 claimable so that the answer is actually asked for.
 
+**`google_request_id` is what makes that word readable, in two places that both
+need it.** `retrying` means two different things on this destination — accepted
+and waiting, or an upload that failed and is being retried — and only the id can
+say which. The scrub precondition asks it to decide whether the row is finished
+with its client data, and the CRM events tab asks it to decide whether the row
+is a problem: `retrying` **with** an id renders *awaiting Google* against the
+page's "still going out" symbol and is kept out of the "problems only" filter,
+`retrying` **without** one stays a problem. The column is in
+`listEventsSince`'s select list and travels to the page as its own field; it is
+deliberately *not* parsed back out of `google_detail`, which carries it in prose,
+because `redactDetail` masks any run of eight or more digits as a phone number
+and an all-numeric id reads masked there.
+
 **One event per request, and the cost is accepted.** The API takes up to 2,000
 events and reports failures as `errorInfo.errorCounts[]` of
 `{reason, recordCount}` with **no per-record identifier**. A batch of five coming
@@ -211,16 +226,57 @@ to be settled on a guess. One event per request makes one `requestId` one
 conversion. Google allows 300 requests a minute and 100,000 a day per Cloud
 project; this service ingests on the order of ten conversions a day.
 
-**The scrub now waits for Google.** A row's client data is normally nulled about
-a minute after signup. A conversion awaiting confirmation is `retrying`, which
-is neither settled nor scrubbable, so such a row keeps its name, email and phone
-until Google answers — up to 24 hours, on the rows that reach Google at all AND
-carry a gclid. The thirty-day backstop still bounds it. It could be otherwise:
-the poll needs only `google_request_id`, which is not client data and is not on
-the scrub list. What stands in the way is `processSignupEvent`'s scrubbed-row
-guard, which settles every unsettled action `skipped` — it would record `skipped`
-for a conversion Google had accepted. Changing that guard is how the queue was
-starved on 2026-10-22, so the retention cost was taken instead.
+**The scrub does not wait for Google** (and for one day, 2026-10-22 to
+2026-10-23, it did). A row's client data is nulled about a minute after signup,
+and a conversion Google has *accepted* counts as finished for that purpose even
+though it is still `retrying`. `scrubbableClause` carries one extra disjunct for
+this and it is the only place that vocabulary is widened per destination:
+
+```sql
+(google_status IN ('sent','skipped')
+ OR (google_status = 'retrying' AND google_request_id IS NOT NULL AND google_request_id <> ''))
+```
+
+Nothing is lost by it. `requestStatus:retrieve` takes `google_request_id` and
+**nothing else** off the row, that column is not client data and is deliberately
+not on the scrub list, so the confirmation polls across the scrub without
+noticing it. The id is also the whole of the discrimination: a `retrying` with
+an *empty* id is an upload that failed and is being retried, which is a send
+with a payload still to build from the very columns this would be deleting, so
+that one still holds the row. `processSignupEvent` applies the same two tests
+with the same `str`, so the worker and the statement cannot come to disagree
+about one row.
+
+What used to stand in the way was `processSignupEvent`'s scrubbed-row guard,
+which settles every unsettled action `skipped` — it would have recorded a skip
+for a conversion Google had accepted, and `skipped` is final and out of the
+resend's reach. The guard lets that one phase run instead (see "A scrubbed row"
+below), so the retention cost was reversed rather than paid: holding a name, an
+email and a phone for 24 hours instead of a minute was a straight breach of the
+promise the table is kept under, and it bought nothing.
+
+**The cost this does carry**, recorded rather than discovered later: a conversion
+Google ultimately refuses settles `rejected` — or `failed`, after 24 hours of
+`PROCESSING` — on a row that was scrubbed hours earlier, and `requeueFailedSends`
+refuses a scrubbed row. So it is outside the resend control and the Resend card
+counts it under `scrubbed` rather than under `resendable`. Nothing is hidden by
+that. A Google re-ingest would not need the scrubbed columns anyway — it needs
+the `gclid`, which survives — so widening the resend for this one destination is
+available, and is its own decision.
+
+**A scrubbed row.** It is an ordinary state for a Google row now rather than a
+guard against the impossible: ingested, scrubbed about a minute later, then
+polled across the scrub for up to a day. `processSignupEvent` therefore does
+three things to such a row and no others — it runs the Google **confirm** phase
+when `google_request_id` is set, it settles every other still-unsettled action
+`skipped`, and it sends nothing at all. The rule the 2026-10-22 outage bought
+governs every branch of it: *every action on every claimed row must end up
+settled, or the row is claimed again for ever* — where `retrying` with a clock in
+the future counts as settled, because `claimDueEvents` will not return the row
+until that clock is due and the 25-poll budget bounds how often it can happen.
+An action holding a word the claim query does not select on is left alone, since
+writing nothing for it cannot bring the row back and writing a status we cannot
+justify over it would destroy a real outcome.
 
 #### The gclid
 
@@ -784,13 +840,16 @@ columns are segmentation, not identity, and FXBO cannot be asked for them per
 funnel stage after the fact.
 
 **`google_request_id` is the one absence from the scrub list that is about
-correctness rather than about evidence.** It is the handle the Data Manager API's
+correctness rather than about evidence** — and the only one the scrub routinely
+runs *on a row that still needs it*. It is the handle the Data Manager API's
 status retrieval takes, so a row whose conversion is still awaiting confirmation
-would, without it, be read as never ingested and ingested again. It is not
-client data — it names one request of ours to Google, not a person. It cannot
-arise today, because the scrub only takes a row whose every destination is `sent`
-or `skipped` and a conversion awaiting confirmation is `retrying`; this is the
-floor under that.
+would, without it, be read as never ingested and ingested a second time. It is
+not client data — it names one request of ours to Google, not a person — and the
+poll needs nothing else off the row, which is exactly why the two decisions are
+independent: taking the client data while a conversion awaits its answer is sound
+and is what `scrubbableClause` now does, and taking this would not be. Since
+2026-10-23 that is the ordinary path, about a minute after signup, rather than a
+floor under a case that could not arise.
 
 **Seven of those are load-bearing, not merely kept:**
 
@@ -841,7 +900,7 @@ floor under that.
 
 | | When | What |
 |---|---|---|
-| Settle | As soon as all five destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`) — normally about a minute after signup | Scrub |
+| Settle | As soon as all five destinations have **succeeded or been deliberately skipped** (`sent` or `skipped`), or — Google's alone — have had a conversion **accepted** (`retrying` with a `google_request_id`) — normally about a minute after signup | Scrub |
 | Invalid | `received_at` older than **7 days**, and all five statuses `invalid` | The whole row is deleted |
 | Backstop | `received_at` older than **30 days** and `scrubbed_at` still NULL | Scrub, whatever the statuses say, and settle whatever is still unsent as `failed` |
 
@@ -894,9 +953,11 @@ refusal with its own `failed`.
 rows: an all-`invalid` row is handled by the 7-day delete, not by the scrub.
 
 **The settle path asks the row, not the worker.** The `UPDATE` carries its own
-precondition — all five statuses scrubbable, `scrubbed_at` still NULL — so it is
-correct whatever the worker believes (`scrubbableClause` in `store.js`, the same
-lesson as the row claim above). The worker's own check decides only whether to
+precondition — all five statuses scrubbable (Google's clause also accepting a
+`retrying` that carries a `google_request_id`, for the reason under "The scrub
+does not wait for Google" above), `scrubbed_at` still NULL — so it is correct
+whatever the worker believes (`scrubbableClause` in `store.js`, the same lesson
+as the row claim above). The worker's own check decides only whether to
 try, so the ordinary row still costs one statement. It matters during an
 overlapped recycle: when two workers split the five claims, neither one's copy
 of the row ever shows all five settled, and a scrub decided from the copy alone
@@ -1014,6 +1075,12 @@ ChatGPT Ads are skipped on **every** registration by design, and a dashboard
 with a permanent red column is one people stop reading. The symbol leads, the
 status word follows it, and the reason sits under both — all as text, never a
 `title`, because this page is read on a phone where there is no hover.
+
+Two destinations replace the *word* beside the symbol with a truer one, and
+neither adds a symbol: WhatsApp's comes from DoubleTick's own delivery report,
+and Google's is *awaiting Google* for a `retrying` that carries a request id. In
+both cases the status we actually stored is printed underneath as
+`we recorded <status>`, so the kinder word hides nothing.
 WhatsApp's symbol shows the best known truth: a row DoubleTick has reported
 delivered or read says so, one it reports failed shows a cross however the send
 was recorded, and one still waiting says `no delivery report yet` rather than
@@ -1036,9 +1103,18 @@ per-row resend. The count is shown on the control before it is pressed.
 count to `0` and its clock to `NULL`. Three preconditions, all in the statement:
 
 - **`scrubbed_at IS NULL`.** A scrubbed row has no client data left. Requeued, it
-  is claimed on every sweep, refused by the send guard, and never settles —
-  `pending` for the rest of the table's life, which poisons the one counter that
-  means "the dispatch worker is dead".
+  is claimed, refused by the send guard, and settled `skipped` — so the resend is
+  a no-op that reports as one, which is what the 2026-10-22 fix to that guard
+  bought (before it, the row stayed `pending` for the rest of the table's life
+  and poisoned the one counter that means "the dispatch worker is dead").
+  **Since 2026-10-23 this also costs Google a resend it used to have:** a row
+  whose conversion was accepted is scrubbed about a minute after signup, so a
+  confirmation that comes back refused a day later lands `rejected` on a scrubbed
+  row and this precondition will not touch it. It shows under `scrubbed` on the
+  Resend card. A Google re-ingest would not actually need the scrubbed columns —
+  it needs the `gclid`, which survives — so letting the resend reach a scrubbed
+  row *for this destination only* is available, and is its own decision rather
+  than part of the retention fix.
 - **`failed` and `rejected` only** (`REQUEUEABLE` in `settled.js`). A `sent` row
   must be untouchable by this path: it would deliver a second welcome.
 - **The attempt count back to 0.** `planRetry` reads the stored count, so a row

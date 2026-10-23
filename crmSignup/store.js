@@ -654,9 +654,32 @@ const REQUEUEABLE_LIST = REQUEUEABLE_STATUSES.map((status) => `'${status}'`).joi
  * no-op rather than a loss. `scrubbed_at IS NULL` is the other half, and it is
  * the statement's, not this helper's: the two scrubs share it for a different
  * reason (the audit trail must not move).
+ *
+ * **Google's clause carries one extra disjunct, and it is the only place this
+ * vocabulary is widened for a destination.** A conversion that `events:ingest`
+ * has ACCEPTED holds `retrying` with a `google_request_id` for up to the 24
+ * hours Google may take to answer, and `retrying` is in neither set -- so
+ * without this the row kept its name, email and phone for a day instead of the
+ * minute the data is kept under. It bought nothing: the status retrieval takes
+ * that id and nothing else off the row, the id is not client data and is
+ * deliberately not in SCRUB_COLUMNS, so the confirmation runs on a scrubbed row
+ * exactly as well as on an unscrubbed one (`processSignupEvent` lets that one
+ * phase through its scrubbed-row guard for the same reason).
+ *
+ * Still NOT a sixth status word, and still not `retrying` on its own: a
+ * `retrying` with an EMPTY id is an ingest that failed and is being retried, and
+ * that one is a send with a payload to build, from client data this would be
+ * deleting. The id is the whole of the discrimination, exactly as it is in the
+ * worker. `<> ''` beside `IS NOT NULL` because the worker's own test is `str()`,
+ * which reads an empty string as absent; the writer stores NULL for one, but the
+ * two layers must not be able to disagree about a row either of them could see.
  */
 function scrubbableClause(action) {
-  return `${action}_status IN (${SCRUBBABLE_LIST})`;
+  if (action !== "google") return `${action}_status IN (${SCRUBBABLE_LIST})`;
+  return (
+    `(google_status IN (${SCRUBBABLE_LIST})` +
+    ` OR (google_status = 'retrying' AND google_request_id IS NOT NULL AND google_request_id <> ''))`
+  );
 }
 
 /**
@@ -972,15 +995,17 @@ export async function recordWhatsappDelivery(messageId, { status, at, detail } =
  *   mints the id only when it creates, so once lost it cannot be re-read.
  *
  *   `google_request_id` stays, and it is the one absence here that is about
- *   correctness rather than about evidence. It is the handle the Data Manager
- *   API's status retrieval takes, so a row whose conversion is still awaiting
- *   confirmation would, without it, be read as never ingested and ingested
- *   again. It is not client data -- it names one request of ours to Google, not
- *   a person -- and the poll needs nothing else off the row, which is why the
- *   two decisions are independent: taking the client data while a conversion
- *   awaits its answer would be sound, and taking this would not. As it happens
- *   neither can occur, because `scrubbableClause` only matches `sent` and
- *   `skipped` and a conversion awaiting confirmation is `retrying`.
+ *   correctness rather than about evidence -- and the only one this statement
+ *   routinely runs ON a row that still needs it. It is the handle the Data
+ *   Manager API's status retrieval takes, so a row whose conversion is still
+ *   awaiting confirmation would, without it, be read as never ingested and
+ *   ingested a second time. It is not client data -- it names one request of
+ *   ours to Google, not a person -- and the poll needs nothing else off the row,
+ *   which is exactly why the two decisions are independent: taking the client
+ *   data while a conversion awaits its answer is sound and is what
+ *   `scrubbableClause` now does, and taking this would not be. The scrub
+ *   therefore reaches such a row about a minute after signup and the
+ *   confirmation carries on across it.
  *
  *   `whatsapp_delivery_status`, `_at` and `_detail` stay, for the same reason
  *   and one more: the report usually ARRIVES after the scrub. DoubleTick's
@@ -1422,6 +1447,16 @@ export async function countResendableSends(now = new Date()) {
  * missing from this list is a column whose whole purpose is gone, silently --
  * the tab falls back to `ENQUEUED` and `http 201`, which is the reading this
  * work was done to replace.
+ *
+ * **`google_request_id` is read for a fifth reason: it is what tells a healthy
+ * Google conversion from a failing one.** Every accepted conversion holds
+ * `retrying` for up to the 24 hours Google may take to confirm it, so the status
+ * alone cannot say which of the two a row is -- `retrying` WITH an id is waiting
+ * on Google, `retrying` WITHOUT one is an ingest that failed and is being
+ * retried. Left out of this list the tab painted every healthy conversion as a
+ * problem for a day, and it cannot be recovered from `google_detail` instead:
+ * `redactDetail` masks any run of eight or more digits as a phone number, so an
+ * all-numeric id reads masked there.
  */
 export async function listEventsSince(since, cap = 2000) {
   return all(
@@ -1431,7 +1466,8 @@ export async function listEventsSince(since, cap = 2000) {
             whatsapp_delivery_status, whatsapp_delivery_at, whatsapp_delivery_detail,
             brevo_status, brevo_detail, brevo_contact_id, brevo_attempts,
             openai_status, openai_detail, openai_attempts,
-            google_status, google_detail, google_attempts, received_at, scrubbed_at
+            google_status, google_detail, google_attempts, google_request_id,
+            received_at, scrubbed_at
        FROM signup_events
       WHERE received_at >= ?
       ORDER BY received_at DESC

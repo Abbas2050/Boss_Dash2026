@@ -903,6 +903,24 @@ describe("listEventsSince", () => {
     }
   });
 
+  it("reads google_request_id, which is the only thing that tells a healthy Google row from a failing one", async () => {
+    // **A fifth reason for a column in this list, and this one is not about
+    // evidence.** Every conversion Google accepts holds `retrying` for up to the
+    // 24 hours Google may take to confirm it, so the status alone cannot say
+    // which of two things a Google row is: `retrying` WITH an id is waiting on
+    // Google and is healthy, `retrying` WITHOUT one is an upload that failed and
+    // is being retried. Missing from this select list, the tab painted every
+    // healthy conversion as a problem for a day each and the "problems only"
+    // filter filled with them -- which within a week is a page nobody believes.
+    //
+    // And it cannot be read back out of `google_detail`, which carries the id in
+    // prose: redactDetail masks any run of eight or more digits as a phone
+    // number, so an all-numeric id reads masked there. The column is the
+    // authority because the column is not masked.
+    await listEventsSince(new Date("2026-09-13T00:00:00Z"));
+    expect(db.state.calls[0].sql).toMatch(/\bgoogle_request_id\b/);
+  });
+
   it("reads scrubbed_at, so the tab can tell a scrubbed row from one that never had the value", async () => {
     // Almost every row the tab shows is scrubbed, and a masked empty email looks
     // exactly like a scrubbed one. Without this column the page shows three blank
@@ -985,7 +1003,9 @@ describe("scrubSignupEvent", () => {
     await scrubSignupEvent(7, SCRUBBED);
     const { sql, params } = db.state.calls[0];
     for (const action of DESTINATIONS) {
-        expect(sql, action).toContain(`AND ${action}_status IN ('sent','skipped')`);
+      // Google's is the one clause with a second half, and the first half is
+      // still the same two words (see the case below for the rest of it).
+      expect(sql, action).toMatch(new RegExp(`AND \\(?${action}_status IN \\('sent','skipped'\\)`));
     }
     // Unlike a claiming write there is no claim moment to bind: this takes
     // nothing away from another worker, so a second attempt is a no-op rather
@@ -1020,39 +1040,55 @@ describe("scrubSignupEvent", () => {
   });
 
   it("requires google too, so no row is scrubbed while the ingest is still pending", async () => {
-    // The send guard refuses a scrubbed row for ever, so a row scrubbed while
-    // the Google ingest was still pending would hold `pending` until the table
-    // is dropped -- and `gclid` surviving the scrub does not help, because
-    // nothing would ever claim the row again.
+    // The send guard refuses a SEND from a scrubbed row, so a row scrubbed while
+    // the Google ingest had not yet been accepted is a conversion that can never
+    // be uploaded -- and `gclid` surviving the scrub does not help, because the
+    // scrubbed-row guard settles the action `skipped` rather than building a
+    // payload. `pending`, and a `retrying` with no request id, both mean "nothing
+    // has been accepted yet" and both have to hold the row.
     await scrubSignupEvent(7, SCRUBBED);
     expect(DESTINATIONS).toContain("google");
-    expect(db.state.calls[0].sql).toContain("AND google_status IN ('sent','skipped')");
+    expect(db.state.calls[0].sql).toContain("(google_status IN ('sent','skipped')");
   });
 
-  it("will not take a row whose conversion is still awaiting Google's confirmation", async () => {
-    // **The second phase's whole protection, and it needed no new code.** A
+  it("DOES take a row whose conversion is awaiting Google's confirmation, now that it has the id", async () => {
+    // **Reversed on 2026-10-23, and the reversal is the point of this case.** A
     // conversion accepted by `events:ingest` and not yet confirmed holds
     // `retrying`, which is in SCRUBBABLE_STATUSES exactly as little as `pending`
-    // is -- so this predicate already refuses the row. That is most of the
-    // reason the confirmation phase holds `retrying` rather than a sixth word,
-    // which settled.js refuses and which would have to be added to the claim,
-    // this predicate, the backstop and the resend.
+    // is -- so for a day this predicate refused the row, and a name, an email
+    // and a phone sat in the table for up to 24 hours instead of the one minute
+    // the data is kept under. It bought nothing. The status retrieval takes
+    // `google_request_id` and NOTHING else off the row, that column is not client
+    // data and is deliberately not in SCRUB_COLUMNS, so the confirmation runs
+    // across a scrub without noticing it.
     //
-    // It costs something: the scrub, which normally runs about a minute after
-    // signup, waits up to 24 hours on the rows Google is still processing. That
-    // is written down in worker.js beside the decision.
+    // The id is the whole of the discrimination, and `retrying` on its own is
+    // deliberately NOT enough: a `retrying` with an empty id is an upload that
+    // failed and is being retried, which is a send with a payload still to build
+    // from the columns this statement would be deleting. `processSignupEvent`
+    // applies the same two tests with the same `str`, so the worker and the
+    // statement cannot come to disagree about one row.
     await scrubSignupEvent(7, SCRUBBED);
     const { sql } = db.state.calls[0];
     expect(SCRUBBABLE_STATUSES).not.toContain("retrying");
-    expect(sql).not.toContain("'retrying'");
+    expect(sql).toContain(
+      "OR (google_status = 'retrying' AND google_request_id IS NOT NULL AND google_request_id <> '')"
+    );
+    // Google's and Google's only. `retrying` means "will be attempted again"
+    // everywhere else, and a row scrubbed under one of those would have its
+    // client data taken from under a send that is still coming.
+    for (const action of DESTINATIONS.filter((name) => name !== "google")) {
+      expect(sql, action).not.toMatch(new RegExp(`${action}_status = 'retrying'`));
+    }
   });
 
   it("never nulls google_request_id, which is the handle the poll needs", async () => {
     // Not client data -- it names one request of ours to Google, not a person --
     // and the poll needs nothing else off the row. Scrubbed, a row awaiting
-    // confirmation would read as never ingested and be INGESTED AGAIN. It cannot
-    // happen today, because the predicate above refuses such a row; this is the
-    // floor under that, for whoever widens SCRUB_COLUMNS next.
+    // confirmation would read as never ingested and be INGESTED AGAIN. Since the
+    // predicate above now takes such a row, this is no longer a floor under a
+    // case that cannot arise: it is the column every scrubbed row mid-confirmation
+    // is relying on, about a minute after signup, on the ordinary path.
     await scrubSignupEvent(7, SCRUBBED);
     expect(SCRUB_COLUMNS).not.toContain("google_request_id");
     expect(db.state.calls[0].sql).not.toMatch(/\bgoogle_request_id = NULL\b/);

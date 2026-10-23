@@ -183,11 +183,15 @@ export const GOOGLE_VALIDATE_ONLY_DETAIL = "validate_only: nothing was recorded 
  * precondition, the backstop and the resend -- where one omission re-sends for
  * ever and another never scrubs.
  *
- * The request id is in the sentence because the column holding it is not in the
- * tab's select list, and it is the one thing a person needs to ask Google about
- * this conversion by hand. Note that `redactDetail` masks any run of eight or
- * more digits as a phone number, so an all-numeric request id reads masked here
- * -- the column is the authority, and it is not masked.
+ * The request id is in the sentence because this sentence is also the log line,
+ * and the log is where an operator reading iisnode's stdout connects a row to a
+ * Google request. It is NOT how the tab learns the id: `google_request_id` is in
+ * `listEventsSince`'s select list and travels to the page as its own field,
+ * which is what tells a healthy conversion awaiting Google from a failed ingest
+ * being retried. That has to be the column rather than this text, because
+ * `redactDetail` masks any run of eight or more digits as a phone number -- so
+ * an all-numeric request id reads masked in the stored detail, and the column is
+ * not masked.
  */
 export const googleAwaitingDetail = (requestId, polls) =>
   `awaiting Google's confirmation of request ${requestId} (poll ${polls} of ${GOOGLE_CONFIRM_MAX_ATTEMPTS})`;
@@ -960,49 +964,6 @@ export async function processSignupEvent(row, deps) {
   // must not read our stale column for an action somebody else is settling.
   const claimedElsewhere = new Set();
 
-  // A scrubbed row has no name, no email and no phone left. Building a payload
-  // from it would hand Brevo a contact with no address and DoubleTick a welcome
-  // template with no name in it, and both would be accepted -- that is the point:
-  // nothing downstream would complain. claimDueEvents selects only
-  // `pending`/`retrying` and the scrub only runs once every destination is `sent` or
-  // `skipped`, so no row should ever arrive here scrubbed. That is the reason this is a guard
-  // and not an assumption: whatever later makes a scrubbed row claimable, it
-  // sends nothing and writes nothing.
-  // **Settling, not just returning, because returning deadlocked the queue.**
-  // Adding the Google Ads column on 2026-10-22 defaulted every existing row's
-  // `google_status` to `pending`, which made 31 already-scrubbed rows claimable
-  // again. They are the OLDEST by `received_at`, claimDueEvents takes the 25
-  // oldest, and the early return wrote nothing -- so the same 25 were re-claimed
-  // every sweep for ever and no row received after them was ever reached. Every
-  // destination on every new signup sat `pending`: no WhatsApp welcome, no Brevo
-  // contact, no conversion anywhere. The guard above was right that such a row
-  // must send nothing; it was wrong that it could also write nothing.
-  //
-  // So each still-unsettled action is settled `skipped`, which is final and
-  // takes the row out of the claim query for good. `skipped` and not `failed`
-  // because nothing was attempted and nothing is recoverable: the client data a
-  // send would need was deleted by the scrub, deliberately, and will not return.
-  if (row?.scrubbed_at) {
-    deps.logger?.warn?.(`[crm-events] row ${row.id} is scrubbed; settling its unsent actions`);
-    const detail = "row was scrubbed before this destination existed; nothing to send";
-    const settle = [
-      ["meta", row.meta_status, deps.saveMeta],
-      ["whatsapp", row.whatsapp_status, deps.saveWhatsapp],
-      ["brevo", row.brevo_status, deps.saveBrevo],
-      ["openai", row.openai_status, deps.saveOpenai],
-      ["google", row.google_status, deps.saveGoogle],
-    ];
-    for (const [action, status, save] of settle) {
-      if (status !== "pending" && status !== "retrying") continue;
-      // Claimed by another worker during this pass: it is settling the action,
-      // and writing over it here would race with the outcome it is recording.
-      if (claimedElsewhere.has(action)) continue;
-      await save?.(row.id, { status: "skipped", detail, attempts: Number(row[`${action}_attempts`]) || 0 });
-      result[action] = { status: "skipped", detail };
-    }
-    return result;
-  }
-
   // **One lookup per row per pass, asked for only by a step that will use it.**
   //
   // Lazy: a step decides its skip first, so a row whose Meta, ChatGPT Ads and
@@ -1047,7 +1008,79 @@ export async function processSignupEvent(row, deps) {
     ["google", "google_status", "google_attempts", "google_next_attempt_at", runGoogleStep, deps.saveGoogle, googleMaxAttemptsFor(row)],
   ];
 
-  for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of steps) {
+  // A scrubbed row has no name, no email and no phone left. Building a payload
+  // from it would hand Brevo a contact with no address and DoubleTick a welcome
+  // template with no name in it, and both would be accepted -- that is the point:
+  // nothing downstream would complain. So no SEND may be made from such a row,
+  // whatever its status columns say.
+  //
+  // **Settling, not just returning, because returning deadlocked the queue.**
+  // Adding the Google Ads column on 2026-10-22 defaulted every existing row's
+  // `google_status` to `pending`, which made 31 already-scrubbed rows claimable
+  // again. They are the OLDEST by `received_at`, claimDueEvents takes the 25
+  // oldest, and the early return wrote nothing -- so the same 25 were re-claimed
+  // every sweep for ever and no row received after them was ever reached. Every
+  // destination on every new signup sat `pending`: no WhatsApp welcome, no Brevo
+  // contact, no conversion anywhere. The guard was right that such a row must
+  // send nothing; it was wrong that it could also write nothing. So each
+  // still-unsettled action is settled `skipped`, which is final and takes the row
+  // out of the claim query for good. `skipped` and not `failed` because nothing
+  // was attempted and nothing is recoverable: the client data a send would need
+  // was deleted by the scrub, deliberately, and will not return.
+  //
+  // **And one exception, which is not a send: Google's confirmation phase.** A
+  // row carrying `google_request_id` has a conversion `events:ingest` has
+  // ACCEPTED, and the poll that learns what became of it takes that id and
+  // nothing else off the row -- no name, no email, no phone (store.js keeps the
+  // column off SCRUB_COLUMNS for exactly this). Settling it `skipped` here would
+  // record a skip for a conversion Google had already taken, and the conversion
+  // would be lost: `skipped` is final and the resend cannot reach it. That is why
+  // the scrub no longer waits 24 hours for Google -- it runs about a minute after
+  // signup as it does for every other row, and this phase carries on afterwards.
+  let runnable = steps;
+  if (row?.scrubbed_at) {
+    // The one test that decides it, and the same `str` the step itself applies
+    // to the column, so the two cannot disagree about one row.
+    const confirming = str(row.google_request_id);
+    deps.logger?.warn?.(
+      confirming
+        ? `[crm-events] row ${row.id} is scrubbed; settling its unsent actions and confirming its conversion`
+        : `[crm-events] row ${row.id} is scrubbed; settling its unsent actions`
+    );
+    const detail = "row was scrubbed before this destination existed; nothing to send";
+    // Walked over `steps` rather than over a second list of the same five
+    // destinations: a list written twice is a list that can be written
+    // differently twice, and a destination missing from this one would be left
+    // unsettled on every sweep -- which is the deadlock above.
+    for (const [action, statusColumn, attemptsColumn, , , save] of steps) {
+      // Left to the loop below, which claims it and records its outcome. Not a
+      // `continue` that writes nothing: the Google step is reached for this row,
+      // and a google row with no request id falls past this line to the
+      // `skipped` like any other action.
+      if (action === "google" && confirming) continue;
+      // The same two words claimDueEvents names in SQL. An action holding
+      // anything else -- settled, or a word this vocabulary does not have -- is
+      // outside the claim query, so writing nothing for it cannot bring the row
+      // back; and writing `skipped` over a `sent` would destroy the record of a
+      // send that really happened.
+      if (row[statusColumn] !== "pending" && row[statusColumn] !== "retrying") continue;
+      // Claimed by another worker during this pass: it is settling the action,
+      // and writing over it here would race with the outcome it is recording.
+      if (claimedElsewhere.has(action)) continue;
+      // Called outright and not as `save?.()`: a writer that is not there has to
+      // throw, because the alternative is one action silently left unsettled on
+      // a claimable row -- which is the deadlock this whole branch exists for.
+      // The loop below has always called it this way for the same reason.
+      await save(row.id, { status: "skipped", detail, attempts: Number(row[attemptsColumn]) || 0 });
+      result[action] = { status: "skipped", detail };
+    }
+    // Nothing else may run. `runGoogleStep` reads the same column and goes
+    // straight to the confirmation phase, so the ingest -- the one half of this
+    // destination that would need a payload -- is not reachable from here.
+    runnable = confirming ? steps.filter(([action]) => action === "google") : [];
+  }
+
+  for (const [key, statusColumn, attemptsColumn, clockColumn, run, save, maxAttempts] of runnable) {
     // SETTLED, not SCRUBBABLE: this is "is this action still mine to attempt",
     // and a `rejected` or `failed` one is finished with even though the row it
     // sits on is not safe to forget. Read SCRUBBABLE here and every refused
@@ -1137,24 +1170,29 @@ export async function processSignupEvent(row, deps) {
   // (`rejected`, `failed`, `invalid`) reads as not-scrubbable from either place,
   // which is what keeps the row's data for the resend.
   //
-  // **A conversion awaiting Google's confirmation holds the row here, and that
-  // is deliberate and has a cost worth naming.** Such an action is `retrying`,
-  // which is in neither set, so the existing predicate already refuses to scrub
-  // it -- no change was needed for that, which is most of the reason the
-  // confirmation phase holds `retrying` rather than inventing a word. The cost
-  // is that the scrub, which normally runs about a minute after signup, waits up
-  // to 24 hours on the rows Google is still processing: the stages that reach
-  // Google at all, and of those only the ones carrying a gclid, which is a small
-  // fraction of signups. Those rows hold their name, email and phone for that
-  // long instead of a minute, and the thirty-day backstop still bounds them.
+  // **A conversion awaiting Google's confirmation does NOT hold the row here,
+  // and that is the one exception to "scrubbable or not finished".** Such an
+  // action is `retrying`, which is in neither set, so for a while the row waited
+  // for Google: the scrub, which normally runs about a minute after signup, ran
+  // up to 24 hours later on every verified / live-account / first-deposit row
+  // carrying a gclid. That was a straight breach of the promise the data is kept
+  // under -- about a minute, and then the statistics only -- and it bought
+  // nothing. The poll takes `google_request_id` and nothing else off the row;
+  // that column is not client data and is deliberately not on the scrub list, so
+  // a scrubbed row can be confirmed exactly as well as an unscrubbed one. What
+  // used to stand in the way was the scrubbed-row guard above settling every
+  // unsettled action `skipped`, which would have recorded a skip for a
+  // conversion Google had accepted -- so the guard lets that one phase run
+  // instead, and the scrub happens on its normal schedule.
   //
-  // It could be otherwise. The poll needs only `google_request_id`, which is not
-  // client data and is not on the scrub list, so scrubbing a row mid-confirmation
-  // would lose nothing the confirmation needs. What stands in the way is the
-  // scrubbed-row guard at the top of this function, which settles every unsettled
-  // action `skipped` -- it would record `skipped` for a conversion Google had
-  // actually accepted. Changing that guard is how the queue was starved on
-  // 2026-10-22, so the retention cost is taken instead and written down here.
+  // The cost this does carry, named rather than discovered later: a conversion
+  // Google ultimately refuses settles `rejected` (or `failed`) on a row that was
+  // scrubbed hours earlier, and `requeueFailedSends` refuses a scrubbed row -- so
+  // it is outside the resend control, and the Resend card counts it under
+  // `scrubbed` rather than under `resendable`. Nothing is hidden by that; a
+  // Google re-ingest would not need the scrubbed columns anyway (it needs the
+  // `gclid`, which survives), so widening the resend for this destination is
+  // available and is a separate decision.
   //
   // An action another worker claimed is the exception, and the reason this is no
   // longer decided by our copy alone: our column for it is stale by definition,
@@ -1165,9 +1203,27 @@ export async function processSignupEvent(row, deps) {
   // a minute. Both attempt it now: the earlier attempt finds the other's actions
   // still `retrying` in the table and matches nothing, and whichever worker
   // finishes last scrubs.
-  const scrubbableHere = ([key, statusColumn]) =>
-    claimedElsewhere.has(key) || SCRUBBABLE.has(result[key] ? str(result[key].status) : str(row[statusColumn]));
-  if (steps.every(scrubbableHere)) {
+  const scrubbableHere = ([key, statusColumn]) => {
+    if (claimedElsewhere.has(key)) return true;
+    const outcome = result[key];
+    const status = outcome ? str(outcome.status) : str(row[statusColumn]);
+    if (SCRUBBABLE.has(status)) return true;
+    // The id is read from both places for the same reason the status is: the
+    // ingest that has just been accepted carries it in its OUTCOME while the
+    // column is still empty, and every poll after that has it in the COLUMN and
+    // not in the outcome (runGoogleConfirmStep deliberately returns none, so the
+    // writer's COALESCE keeps the stored one). Either way it is the same fact --
+    // a conversion Google has accepted -- and the statement reads the column.
+    return (
+      key === "google" && status === "retrying" && Boolean(str(outcome?.requestId) || str(row.google_request_id))
+    );
+  };
+  // An already-scrubbed row is not scrubbed again: `scrubSignupEvent` carries
+  // `scrubbed_at IS NULL`, so the statement would match nothing and the audit
+  // timestamp cannot move. Asked here rather than left to the statement so that
+  // a row being confirmed does not issue a pointless UPDATE on every one of the
+  // 25 polls that may follow its scrub.
+  if (!row?.scrubbed_at && steps.every(scrubbableHere)) {
     // Not caught. A scrub that cannot be written leaves the row for the 30-day
     // backstop, and sweepOnce logs the row -- swallowing it here would hide a
     // scrub that never happens behind a month of silence.
