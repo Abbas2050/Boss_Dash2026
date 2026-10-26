@@ -328,6 +328,40 @@ describe("the revenue join, which is unverified", () => {
     expect(join.volumeRowsOutOfScope).toBe(2);
   });
 
+  it("prints the window ClientVolume answered when it is not the one asked for", () => {
+    // §2 records this endpoint returning six days for a seven-day week, open
+    // question. A dropped day is a day of somebody's lots.
+    const shortened = buildCommissionReport({
+      scope: ALL_SCOPE,
+      range: RANGE,
+      clients: CLIENTS,
+      accounts: ACCOUNTS,
+      volumeRows: VOLUME_ROWS,
+      volumeWindow: { fromDate: "2026-10-02", toDate: "2026-10-26", activeDays: 19 },
+      revenue: { available: true, rows: REVENUE_ROWS },
+    });
+    expect(shortened.join.volumeWindow).toEqual({
+      fromDate: "2026-10-02",
+      toDate: "2026-10-26",
+      activeDays: 19,
+    });
+    expect(shortened.join.warnings.join(" ")).toMatch(/2026-10-02\.\.2026-10-26 for a request of 2026-10-01/);
+  });
+
+  it("says nothing when the window answered is the window asked for", () => {
+    const exact = buildCommissionReport({
+      scope: ALL_SCOPE,
+      range: RANGE,
+      clients: CLIENTS,
+      accounts: ACCOUNTS,
+      volumeRows: VOLUME_ROWS,
+      volumeWindow: { fromDate: RANGE.from, toDate: RANGE.to, activeDays: 20 },
+      revenue: { available: true, rows: [] },
+    });
+    expect(exact.join.warnings.join(" ")).not.toMatch(/ClientVolume answered/);
+    expect(exact.join.volumeWindow.activeDays).toBe(20);
+  });
+
   it("pays exactly the same commission whether revenue arrived or not", () => {
     // The guarantee the design asks for: a broken revenue join must never
     // corrupt what a salesperson is owed.

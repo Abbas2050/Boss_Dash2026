@@ -154,9 +154,13 @@ describe("fetchClientVolumeByClient", () => {
       ok({
         byDate: [{ date: "2026-10-01", lots: 999, cfdLots: 999 }],
         byClient: [{ login: "5001", name: "Alice", group: "real\\A", lots: 100, stocksLots: 40, cfdLots: 12.5 }],
+        fromDate: "2026-10-01",
+        toDate: "2026-10-26",
+        activeDays: 20,
       }),
     );
     return fetchClientVolumeByClient(RANGE).then((result) => {
+      expect(result.window).toEqual({ fromDate: "2026-10-01", toDate: "2026-10-26", activeDays: 20 });
       expect(result.rows).toEqual([
         { login: "5001", name: "Alice", group: "real\\A", lots: 100, stocksLots: 40, cfdLots: 12.5 },
       ]);

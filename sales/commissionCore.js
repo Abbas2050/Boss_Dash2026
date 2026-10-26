@@ -299,7 +299,7 @@ export function resolveCommissionScope(auth) {
  * change what anyone is owed. The tests pin that by computing the same input
  * twice, once with revenue and once without, and comparing the commission.
  */
-export function buildCommissionReport({ scope, range, clients, accounts, volumeRows, revenue }) {
+export function buildCommissionReport({ scope, range, clients, accounts, volumeRows, volumeWindow, revenue }) {
   const includeRevenue = scope.kind === "all" && Boolean(revenue?.available);
   const scopedManagerIds = new Set(scope.managerIds.map((id) => toManagerId(id)).filter((id) => id !== null));
 
@@ -485,6 +485,23 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
     clientsWithNoActivity,
     warnings: [],
   };
+  // The window ClientVolume says it answered. §2 records it returning six days
+  // for a seven-day week, and a dropped day is a day of somebody's lots -- so a
+  // disagreement with the window we asked for is printed rather than absorbed.
+  if (volumeWindow) {
+    join.volumeWindow = {
+      fromDate: String(volumeWindow.fromDate || ""),
+      toDate: String(volumeWindow.toDate || ""),
+      activeDays: num(volumeWindow.activeDays),
+    };
+    const from = join.volumeWindow.fromDate;
+    const to = join.volumeWindow.toDate;
+    if ((from && from !== range.from) || (to && to !== range.to)) {
+      join.warnings.push(
+        `ClientVolume answered ${from || "?"}..${to || "?"} for a request of ${range.from}..${range.to}; the lots below cover the window it returned, not the one asked for.`,
+      );
+    }
+  }
   if (includeRevenue) {
     join.revenueRowCount = revenueRowCount;
     join.revenueRowsMatched = revenueRowsMatched;

@@ -146,6 +146,17 @@ export async function fetchClientVolumeByClient({ from, to }) {
   // parallel bucket, not clients (docs/dealing-reporting.md §4), and nobody is
   // paid commission on the firm's own flow.
   return {
+    // The window the backend says it answered, carried back so the response can
+    // show it. §2 records this endpoint returning SIX days for a seven-day week
+    // (25 Jul missing for 20–26 Jul) and the question is still open. A dropped
+    // day is a day of somebody's lots, so the figure must not be the only thing
+    // on the page: if the echoed dates disagree with the ones we asked for, the
+    // join says so.
+    window: {
+      fromDate: String(raw?.fromDate || ""),
+      toDate: String(raw?.toDate || ""),
+      activeDays: Number(raw?.activeDays) || 0,
+    },
     rows: rows.map((row) => ({
       login: row?.login,
       name: String(row?.name || ""),

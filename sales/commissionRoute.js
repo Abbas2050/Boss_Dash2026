@@ -90,6 +90,7 @@ export function makeSalesCommissionHandler({
       clients: crmResult.value?.clients ?? [],
       accounts: crmResult.value?.accounts ?? [],
       volumeRows: volumeResult.value?.rows ?? [],
+      volumeWindow: volumeResult.value?.window ?? null,
       revenue,
     });
 
