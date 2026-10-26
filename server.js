@@ -57,6 +57,12 @@ import {
   makeReportTestSendHandler,
 } from './reports/testSendRequest.js';
 import { makeReportScheduleHandler } from './reports/reportScheduleRoute.js';
+import { makeSalesCommissionHandler } from './sales/commissionRoute.js';
+import {
+  fetchClientRevenueSummaries,
+  fetchClientVolumeByClient,
+  fetchSalesClients,
+} from './sales/commissionSources.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1356,6 +1362,25 @@ app.post('/api/crm-events/requeue', authRequired, adminOnly, makeCrmEventsRequeu
 // routeCoverage.test.js greps for it.
 app.post('/api/crm-events/whatsapp-status', makeWhatsappStatusHandler({
   record: recordWhatsappDelivery,
+}));
+
+// The Sales department page's one read. Commission at $1 per realized CFD/FX
+// lot, plus -- for a Super Admin only -- the revenue it was paid on.
+//
+// `authRequired` is named here even though requireSession already calls it for
+// everything under /api. The whole of this route's confidentiality rests on
+// `req.auth` carrying a VERIFIED identity (role and crmManagerId re-read from
+// the users table, never taken from the request), and that dependency should be
+// visible at the mount site rather than inferred from a gate a thousand lines
+// above. Without it the handler still fails closed -- an absent req.auth
+// resolves to no scope and answers 403 -- but it would fail closed silently.
+//
+// Single-quoted path on purpose, like the routes above: auth/routeCoverage.test.js
+// greps server.js for literal route declarations.
+app.get('/api/sales/commission', authRequired, makeSalesCommissionHandler({
+  fetchSalesClients,
+  fetchClientVolume: fetchClientVolumeByClient,
+  fetchClientRevenue: fetchClientRevenueSummaries,
 }));
 
 app.use("/oauth", oauthRouter);
