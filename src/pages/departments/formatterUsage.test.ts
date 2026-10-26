@@ -15,6 +15,11 @@ import path from "path";
 
 const FILES = [
   "src/pages/departments/DealingDepartmentPage.tsx",
+  // The Sales page repeats formatDollar/formatRevenue rather than importing
+  // them (both are module-private to the dealing page, and lifting them into a
+  // shared module would take them out of this scan), so it inherits the same
+  // hazard and belongs in the same guard.
+  "src/pages/departments/SalesDepartmentPage.tsx",
 ];
 
 // A formatter is JSX-returning if its body contains a JSX tag.
