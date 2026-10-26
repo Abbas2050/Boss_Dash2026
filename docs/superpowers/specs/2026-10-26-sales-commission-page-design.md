@@ -81,13 +81,40 @@ The server already verifies a JWT (`auth/router.js`, `requireSession` gating
 
 ## Data flow
 
-Three fetches, joined on **MT5 login**, all performed server-side.
+**Four** fetches, joined on **MT5 login**, all performed server-side.
 
 | # | Source | Gives |
 |---|---|---|
-| 1 | FXBO `/rest/users`, filtered `managerIds: [28, 23, 20]` | which clients belong to which salesperson, and their MT5 logins |
-| 2 | `GET /ClientVolume/Run?from&to&group=*` → `byClient[]` | `cfdLots` per login — **the commission basis** |
-| 3 | `GET /DealMatch/Run` → `clientRevenueSummaries[]` | `totalRevenueUsd` per client — what we earned |
+| 1 | FXBO `/rest/users`, filtered `managerIds: [28, 23, 20]` | which CRM clients belong to which salesperson |
+| 2 | FXBO `/rest/accounts`, batched by client id | **the MT5 logins** — `/rest/users` does not carry them |
+| 3 | `GET /ClientVolume/Run?from&to&group=*` → `byClient[]` | `cfdLots` per login — **the commission basis** |
+| 4 | `GET /DealMatch/Run?from&to&lite=true` → `clientRevenueSummaries[]` | `totalRevenueUsd` per client — what we earned |
+
+**Corrected 2026-10-26 during implementation.** This section originally said
+`/rest/users` returned the logins and that there were three fetches. It does
+not: `User` carries `{id, managerId, country, city, firstName, lastName,
+middleName, email, secondaryEmail, referrer, phone}` and no login. Logins live
+on `/rest/accounts`, which `reports/dealMatchWeeklyReport.js:88` already uses
+for exactly this resolution. Without that second call there is no join key and
+every commission would be zero.
+
+Two further corrections from the same pass:
+
+- **`DealMatch/Run` needs a window and `lite=true`.** Called without one it
+  returns the whole history. It takes **Unix seconds** while `ClientVolume/Run`
+  takes `YYYY-MM-DD` — the formats genuinely differ (`dealing-reporting.md` §2).
+- **The two windows may not be the same window.** ClientVolume's dates are
+  documented as MT5 **server-local**; DealMatch's are UTC. The same date pair in
+  can mean slightly different periods out. It cannot affect anyone's pay —
+  commission is ClientVolume-only — but a Super Admin's revenue column may cover
+  a marginally different period from the lots beside it. Not resolvable from
+  this repo.
+
+`/rest/users`' `managerIds` filter is **unverified** — it is not in the typed
+request shape, and the only `managerIds` elsewhere in the codebase is on a
+ticket search. It is sent *and* the returned rows are re-filtered by
+`managerId`, so an ignored filter makes the call expensive, never wrong. **Worth
+confirming against the live CRM before go-live.**
 
 `ByClientRow` carries `login`, `name`, `group`, `lots`, `stocksLots`, `cfdLots`.
 A single call returns every client, so there is **no per-client fan-out**.
