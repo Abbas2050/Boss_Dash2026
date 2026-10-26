@@ -17,6 +17,10 @@ type UserForm = {
   status: "active" | "suspended";
   access: string[];
   password: string;
+  // Held as a STRING because that is what an <input> gives back, and the empty
+  // string has to stay distinguishable from 0 while it is being typed. It is
+  // converted to a number (or null) exactly once, on submit.
+  crmManagerId: string;
 };
 
 const blankForm: UserForm = {
@@ -26,7 +30,29 @@ const blankForm: UserForm = {
   status: "active",
   access: [],
   password: "",
+  crmManagerId: "",
 };
+
+/**
+ * The form's manager id as the server wants it: a number, or `null` to clear.
+ *
+ * A blank field is `null`, not `undefined`: on this page a cleared box means
+ * "this person is no longer a salesperson", and `undefined` would be read by
+ * the server as "leave the stored value alone".
+ *
+ * Anything else present is rejected rather than coerced to null, mirroring the
+ * server's 400. Quietly dropping a typo would leave the admin believing they
+ * had made someone a salesperson and the salesperson looking at a 403.
+ */
+// Not exported: this file exports a component, and react-refresh wants it to
+// export only components.
+function crmManagerIdForSave(raw: string): { ok: true; value: number | null } | { ok: false } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+  const n = Number(trimmed);
+  if (!Number.isInteger(n) || n <= 0) return { ok: false };
+  return { ok: true, value: n };
+}
 
 export const UserManagementPage: React.FC = () => {
   const [users, setUsers] = useState<AuthUser[]>(() => getUsers());
@@ -111,6 +137,12 @@ export const UserManagementPage: React.FC = () => {
       return;
     }
 
+    const crmManagerId = crmManagerIdForSave(form.crmManagerId);
+    if (!crmManagerId.ok) {
+      setError("CRM manager id must be a whole number above zero, or empty.");
+      return;
+    }
+
     try {
       if (editId) {
         const old = users.find((u) => u.id === editId);
@@ -118,12 +150,15 @@ export const UserManagementPage: React.FC = () => {
         await upsertUser({
           ...old,
           ...form,
+          // Overrides the string the form holds with the number the API types.
+          crmManagerId: crmManagerId.value,
           password: form.password.trim() ? form.password : undefined,
         });
         setEditId(null);
       } else {
         await upsertUser({
           ...form,
+          crmManagerId: crmManagerId.value,
         });
       }
       resetForm();
@@ -209,6 +244,7 @@ export const UserManagementPage: React.FC = () => {
       status: u.status,
       access: [...u.access],
       password: "",
+      crmManagerId: typeof u.crmManagerId === "number" ? String(u.crmManagerId) : "",
     });
   };
 
@@ -319,6 +355,30 @@ export const UserManagementPage: React.FC = () => {
               <option value="active">Active</option>
               <option value="suspended">Suspended</option>
             </select>
+          </div>
+
+          {/* The Sales department's one per-person setting. Deliberately its own
+              row with its own explanation rather than a sixth unlabelled box in
+              the grid above: it is the only field on this page that decides
+              whose money a user can look at, and the two-part act (this id AND
+              the Sales chip below) is not guessable from an empty input. */}
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-5 gap-3">
+            <label className="md:col-span-1 text-xs text-muted-foreground">
+              <span className="block mb-1 font-semibold uppercase tracking-wide">CRM Manager ID</span>
+              <input
+                value={form.crmManagerId}
+                onChange={(e) => setForm((s) => ({ ...s, crmManagerId: e.target.value }))}
+                placeholder="e.g. 28"
+                inputMode="numeric"
+                className="w-full rounded-lg bg-background/70 border border-border px-3 py-2 text-sm text-foreground"
+              />
+            </label>
+            <p className="md:col-span-4 text-xs text-muted-foreground self-end pb-2">
+              Optional, and blank for almost everyone. Set it to the person&apos;s FXBO manager id to make
+              them a salesperson: <code className="rounded bg-secondary/40 px-1">/departments/sales</code> then
+              shows their own clients, lots and commission, and no revenue figures at all. They also need the
+              <strong> Sales Department</strong> chip below. Leave it blank and the Sales page answers 403.
+            </p>
           </div>
 
           <div className="mt-4 space-y-4">

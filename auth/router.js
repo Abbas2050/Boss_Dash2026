@@ -34,6 +34,12 @@ const ALLOWED_ACCESS_ROOTS = new Set([
   "Auth",
   "Tickets",
   "CP",
+  // The Sales department page. Necessary but not sufficient on its own: the nav
+  // item also wants a crmManagerId on the record, or the Super Admin role --
+  // see canAccessDepartmentItem in src/lib/permissions.ts. Without this entry
+  // sanitizeAccess would strip the chip on every save and the page would be
+  // unreachable with no error shown.
+  "Sales",
 ]);
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -58,6 +64,14 @@ const loginAttempts = new Map();
 // unlimited total the per-email-only cap allowed.
 const LOGIN_IP_MAX_ATTEMPTS = 40;
 const loginIpAttempts = new Map();
+
+/**
+ * Columns added to `users` after its first version, for tables that already
+ * exist. Exported so a test can assert the list without a database.
+ */
+export const USERS_ADDED_COLUMNS = [
+  ["crm_manager_id", "ALTER TABLE users ADD COLUMN crm_manager_id INT NULL"],
+];
 
 let pool = null;
 let initPromise = null;
@@ -101,6 +115,43 @@ function sanitizeAccess(access) {
       return ALLOWED_ACCESS_ROOTS.has(root);
     })
     .filter((item, index, arr) => arr.indexOf(item) === index);
+}
+
+/**
+ * The FXBO manager id that makes this user a salesperson, as a POSITIVE INTEGER
+ * or nothing.
+ *
+ * Three answers, and the difference between the last two matters:
+ *   { ok: true, value: undefined }  the key was absent -- leave the stored value alone,
+ *                                   so a client that does not know about the field
+ *                                   cannot blank it by omission.
+ *   { ok: true, value: null }       explicitly cleared (null or "").
+ *   { ok: true, value: 28 }         a usable id.
+ *   { ok: false }                   present and unusable -> the caller answers 400.
+ *
+ * `"28"` is accepted and stored as 28. The whole hazard in this field is a
+ * string that looks right and matches nothing: the commission join compares it
+ * against FXBO's `managerId`, and `28 === "28"` is false, so a salesperson
+ * whose id was stored as text would be shown an empty book and told they had
+ * earned nothing, with no error anywhere. Coercing here, and again on both
+ * sides of the join in sales/commissionCore.js, is the only arrangement that
+ * cannot fail quietly.
+ *
+ * Genuine rubbish ("abc", 0, -5, 2.5) is rejected rather than silently nulled,
+ * so an admin's typo surfaces at save time instead of as a 403 the salesperson
+ * has to report.
+ */
+export function parseCrmManagerId(raw) {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  // Only a number or a string can be a manager id. Without this guard an empty
+  // array stringifies to "" and would read as a deliberate clear, and `true`
+  // would read as 1 -- a real manager id.
+  if (typeof raw !== "number" && typeof raw !== "string") return { ok: false };
+  if (String(raw).trim() === "") return { ok: true, value: null };
+  const n = Number(String(raw).trim());
+  if (!Number.isInteger(n) || n <= 0) return { ok: false };
+  return { ok: true, value: n };
 }
 
 function sanitizeRole(role) {
@@ -190,6 +241,12 @@ function resetLoginRateLimitState() {
 }
 
 function toAuthUser(row) {
+  // ABSENT, not null and not zero, when the user is not a salesperson -- which
+  // is most of them. `crmManagerId: null` would serialise into every session
+  // payload and every user list as a field that looks set-but-empty, and
+  // `crmManagerId: 0` would be a manager id. The commission route's scope check
+  // reads "is there an id here", so the honest value for "no" is no key.
+  const crmManagerId = parseCrmManagerId(row.crm_manager_id);
   return {
     id: String(row.id),
     name: String(row.name || ""),
@@ -197,6 +254,7 @@ function toAuthUser(row) {
     role: String(row.role || "User"),
     access: normalizeAccess(row.access_json),
     status: row.status === "suspended" ? "suspended" : "active",
+    ...(crmManagerId.ok && typeof crmManagerId.value === "number" ? { crmManagerId: crmManagerId.value } : {}),
   };
 }
 
@@ -231,6 +289,11 @@ async function ensureInitialized() {
         role VARCHAR(50) NOT NULL DEFAULT 'User',
         status ENUM('active','suspended') NOT NULL DEFAULT 'active',
         access_json JSON NULL,
+        -- The FXBO manager id this user is a salesperson for. NULL for almost
+        -- everyone. INT, not VARCHAR: the commission join compares it to
+        -- FXBO's numeric managerId, and a text column would invite a value
+        -- that looks right and matches nothing.
+        crm_manager_id INT NULL,
         token_version INT NOT NULL DEFAULT 1,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -247,6 +310,24 @@ async function ensureInitialized() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+
+    // `users` is already deployed, so CREATE TABLE IF NOT EXISTS above will not
+    // add the column to the live table -- this will. Guarded on
+    // information_schema rather than `ADD COLUMN IF NOT EXISTS`, which MySQL 8
+    // does not accept (it is MariaDB syntax, and this host is MySQL); same
+    // pattern as crmSignup/store.js and docusign/store.js.
+    //
+    // Failing to add it is fatal, not ignorable: every SELECT below names the
+    // column, so a half-migrated table would make login itself throw rather
+    // than quietly lose a field.
+    for (const [column, statement] of USERS_ADDED_COLUMNS) {
+      const [found] = await pool.query(
+        `SELECT COUNT(*) AS cnt FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = ?`,
+        [column]
+      );
+      if (Number(found?.[0]?.cnt || 0) === 0) await pool.query(statement);
+    }
 
     const [existing] = await pool.query("SELECT id FROM users WHERE email = ? LIMIT 1", [SEED_EMAIL]);
     if (!existing.length) {
@@ -301,7 +382,7 @@ async function authRequired(req, res, next) {
   try {
     const payload = jwt.verify(token, AUTH_JWT_SECRET);
     const [rows] = await pool.query(
-      "SELECT id, name, email, role, status, access_json, token_version FROM users WHERE id=? LIMIT 1",
+      "SELECT id, name, email, role, status, access_json, crm_manager_id, token_version FROM users WHERE id=? LIMIT 1",
       [payload.sub]
     );
 
@@ -324,6 +405,15 @@ async function authRequired(req, res, next) {
       status: user.status,
       name: user.name,
       tv: tokenVersion,
+      // From the DATABASE ROW, and set after the `...payload` spread so a token
+      // minted before the field existed -- or carrying a stale copy of it --
+      // cannot win. `signUserToken` deliberately does not put crmManagerId in
+      // the JWT at all: a token lives eight hours, and this field decides whose
+      // commission a caller can read, so there must be exactly one source for
+      // it and it must be the one an admin can change. The key is absent, not
+      // null, when the user is not a salesperson (see toAuthUser) -- so this
+      // assignment is `undefined` for them, which overwrites any stale claim.
+      crmManagerId: user.crmManagerId,
     };
 
     next();
@@ -384,7 +474,7 @@ router.post("/login", async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      "SELECT id, name, email, password_hash, role, status, access_json, token_version FROM users WHERE LOWER(email)=? LIMIT 1",
+      "SELECT id, name, email, password_hash, role, status, access_json, crm_manager_id, token_version FROM users WHERE LOWER(email)=? LIMIT 1",
       [email]
     );
     if (!rows.length) {
@@ -423,7 +513,7 @@ router.get("/me", authRequired, async (req, res) => {
   try {
     await ensureInitialized();
     const [rows] = await pool.query(
-      "SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1",
+      "SELECT id, name, email, role, status, access_json, crm_manager_id FROM users WHERE id=? LIMIT 1",
       [req.auth.sub]
     );
     if (!rows.length) return res.status(404).json({ error: "user_not_found" });
@@ -437,7 +527,7 @@ router.get("/users", authRequired, async (req, res) => {
   try {
     await ensureInitialized();
     if (!canManageUsers(req.auth)) return res.status(403).json({ error: "forbidden" });
-    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json, created_at, updated_at FROM users ORDER BY id DESC");
+    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json, crm_manager_id, created_at, updated_at FROM users ORDER BY id DESC");
     return res.json((rows || []).map((row) => ({
       ...toAuthUser(row),
       createdAt: row.created_at,
@@ -459,6 +549,8 @@ router.post("/users", authRequired, async (req, res) => {
     const role = sanitizeRole(req.body?.role || "Analyst");
     const status = req.body?.status === "suspended" ? "suspended" : "active";
     const access = sanitizeAccess(req.body?.access);
+    const crmManagerId = parseCrmManagerId(req.body?.crmManagerId);
+    if (!crmManagerId.ok) return res.status(400).json({ error: "invalid_crm_manager_id" });
     if (!name || !email || !password) return res.status(400).json({ error: "name_email_password_required" });
     if (String(req.auth?.role || "") !== "Super Admin" && role === "Super Admin") {
       return res.status(403).json({ error: "forbidden_super_admin_assignment" });
@@ -469,15 +561,22 @@ router.post("/users", authRequired, async (req, res) => {
 
     const hash = await bcrypt.hash(password, 12);
     const [result] = await pool.query(
-      "INSERT INTO users (name, email, password_hash, role, status, access_json) VALUES (?, ?, ?, ?, ?, ?)",
-      [name, email, hash, role, status, JSON.stringify(access)]
+      "INSERT INTO users (name, email, password_hash, role, status, access_json, crm_manager_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      // `?? null`: an absent key means "not a salesperson" on a create, which is
+      // the overwhelming majority. Only on an UPDATE does absent mean "leave
+      // alone" -- there is a stored value there to leave.
+      [name, email, hash, role, status, JSON.stringify(access), crmManagerId.value ?? null]
     );
 
-    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1", [result.insertId]);
+    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json, crm_manager_id FROM users WHERE id=? LIMIT 1", [result.insertId]);
     await logAuthEvent(Number(req.auth.sub), "auth.user.created", Number(result.insertId), {
       role,
       status,
       accessCount: access.length,
+      // The id itself, not the person's name or email: it is the key that
+      // decides whose commission this account can read, so a change to it
+      // should be reconstructible from the audit log alone.
+      crmManagerId: crmManagerId.value ?? null,
     });
     return res.status(201).json({ user: toAuthUser(rows[0]) });
   } catch (error) {
@@ -494,7 +593,7 @@ async function handleUpdateUser(req, res) {
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: "invalid_id" });
 
     const [existingRows] = await pool.query(
-      "SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1",
+      "SELECT id, name, email, role, status, access_json, crm_manager_id FROM users WHERE id=? LIMIT 1",
       [id]
     );
     if (!existingRows.length) return res.status(404).json({ error: "user_not_found" });
@@ -506,6 +605,13 @@ async function handleUpdateUser(req, res) {
     const status = req.body?.status === "suspended" ? "suspended" : "active";
     const access = sanitizeAccess(req.body?.access ?? existing.access_json);
     const password = String(req.body?.password || "").trim();
+    const parsedCrmManagerId = parseCrmManagerId(req.body?.crmManagerId);
+    if (!parsedCrmManagerId.ok) return res.status(400).json({ error: "invalid_crm_manager_id" });
+    // Absent key -> keep what is stored. A client that predates the field, or
+    // any other partial save, must not be able to revoke a salesperson's view
+    // of their own commission by simply not mentioning it.
+    const crmManagerId =
+      parsedCrmManagerId.value === undefined ? (existing.crm_manager_id ?? null) : parsedCrmManagerId.value;
 
     if (String(req.auth?.role || "") !== "Super Admin" && role === "Super Admin") {
       return res.status(403).json({ error: "forbidden_super_admin_assignment" });
@@ -517,26 +623,30 @@ async function handleUpdateUser(req, res) {
     if (password) {
       const hash = await bcrypt.hash(password, 12);
       await pool.query(
-        "UPDATE users SET name=?, email=?, role=?, status=?, access_json=?, password_hash=?, token_version=token_version+1 WHERE id=?",
-        [name, email, role, status, JSON.stringify(access), hash, id]
+        "UPDATE users SET name=?, email=?, role=?, status=?, access_json=?, crm_manager_id=?, password_hash=?, token_version=token_version+1 WHERE id=?",
+        [name, email, role, status, JSON.stringify(access), crmManagerId, hash, id]
       );
     } else {
-      await pool.query("UPDATE users SET name=?, email=?, role=?, status=?, access_json=? WHERE id=?", [
+      await pool.query("UPDATE users SET name=?, email=?, role=?, status=?, access_json=?, crm_manager_id=? WHERE id=?", [
         name,
         email,
         role,
         status,
         JSON.stringify(access),
+        crmManagerId,
         id,
       ]);
     }
 
-    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json FROM users WHERE id=? LIMIT 1", [id]);
+    const [rows] = await pool.query("SELECT id, name, email, role, status, access_json, crm_manager_id FROM users WHERE id=? LIMIT 1", [id]);
     await logAuthEvent(Number(req.auth.sub), "auth.user.updated", id, {
       role,
       status,
       accessCount: access.length,
       passwordChanged: Boolean(password),
+      // Recorded on every update, not only when it changes: this is the field
+      // that decides whose commission the account can read.
+      crmManagerId,
     });
     return res.json({ user: toAuthUser(rows[0]) });
   } catch (error) {
@@ -608,6 +718,9 @@ export {
   authRequired,
   canManageUsers,
   hasAccessPermission,
+  // Exported for auth/crmManagerId.test.js, which pins that a user who is not a
+  // salesperson carries no crmManagerId key at all rather than a null.
+  toAuthUser,
   isRateLimited,
   isIpRateLimited,
   noteFailedLogin,

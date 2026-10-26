@@ -5,6 +5,19 @@ export interface AuthUser {
   role: string;
   access: string[];
   status: "active" | "suspended";
+  /**
+   * The FXBO manager id that makes this user a salesperson, for
+   * GET /api/sales/commission. Optional because most users have none, and a
+   * `number` rather than a `string` because the server compares it to FXBO's
+   * numeric `managerId` — a `"28"` would match nothing and report an empty
+   * book with no error. The server coerces at both boundaries anyway; this type
+   * stops the dashboard from being the thing that introduces the string.
+   *
+   * It is NOT the authority for anything. The commission endpoint reads the
+   * copy on the verified session's database row; this one exists so User
+   * Management can display and edit the field (spec §4).
+   */
+  crmManagerId?: number;
 }
 
 export interface AuthUpsertInput {
@@ -15,6 +28,8 @@ export interface AuthUpsertInput {
   access: string[];
   status: "active" | "suspended";
   password?: string;
+  /** `null` clears it; omitted leaves whatever is stored untouched. */
+  crmManagerId?: number | null;
 }
 
 const USERS_KEY = "slc.users.v2";
@@ -134,6 +149,11 @@ export async function upsertUser(next: AuthUpsertInput): Promise<AuthUser> {
     role: next.role,
     status: next.status,
     access: next.access,
+    // Sent whenever the caller supplied the key, including as `null` to clear
+    // it. Omitted entirely otherwise, because the server reads an absent key on
+    // an update as "leave the stored value alone" — so a caller that does not
+    // know about the field cannot revoke a salesperson's page by omission.
+    ...(next.crmManagerId === undefined ? {} : { crmManagerId: next.crmManagerId }),
     ...(next.password ? { password: next.password } : {}),
   };
 
