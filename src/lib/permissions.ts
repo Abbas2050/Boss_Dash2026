@@ -68,6 +68,12 @@ export const DEPARTMENT_KEYS = [
   { key: "Backoffice", label: "Back Office Department" },
   { key: "Marketing", label: "Marketing Department" },
   { key: "HR", label: "HR Department" },
+  // Necessary but not sufficient, like CP below: canAccessDepartmentItem also
+  // requires either the Super Admin role or a crmManagerId on the record,
+  // because GET /api/sales/commission answers 403 to anyone else. A chip that
+  // opens a page which can only ever say "Forbidden" is the mistake the CRM
+  // Events comment further down records.
+  { key: "Sales", label: "Sales Department" },
   { key: "CP", label: "Client Profile Department" },
   { key: "Settings", label: "Settings" },
   { key: "Alerts", label: "Alerts" },
@@ -118,6 +124,13 @@ export const DEPARTMENT_NAV_ITEMS: readonly DepartmentNavItem[] = [
     path: "/departments/hr",
     slug: "hr",
     requiredPermissions: ["HR"],
+  },
+  {
+    key: "sales",
+    label: "Sales",
+    path: "/departments/sales",
+    slug: "sales",
+    requiredPermissions: ["Sales"],
   },
   {
     key: "cp",
@@ -336,8 +349,17 @@ export const USER_ROLE_TEMPLATES: Record<UserRoleTemplate, string[]> = {
     DASHBOARD_ROOT_KEY.key,
     ...DASHBOARD_SECTION_ITEMS.map((item) => item.key),
     "Tickets:Own",
+    // "Sales" is excluded on purpose, and there is no fifth "Sales" template.
+    // A template stamps an `access[]` array, and a salesperson's entitlement is
+    // not in `access[]` at all -- it is the crmManagerId on their own record, a
+    // per-person fact. Stamping "Sales" on a Manager with no manager id would
+    // hand them a nav item and a 403 from the server; a "Sales" template would
+    // do the same to anyone it was applied to before that field was filled in,
+    // and would also mean a fifth ALLOWED_ROLES value that every `role ===`
+    // comparison in the app has never seen. The chip is ticked by hand, in the
+    // same edit that sets the manager id.
     ...DEPARTMENT_KEYS
-      .filter((item) => !["LiveAgent", "Tickets:All"].includes(item.key))
+      .filter((item) => !["LiveAgent", "Tickets:All", "Sales"].includes(item.key))
       .map((item) => item.key),
     ...rootPrefixes(NOTIFICATION_KEYS),
   ]),
@@ -406,8 +428,28 @@ export function canAccessAll(user: AuthUser | null | undefined, permissions: rea
   return permissions.every((permission) => hasUserAccess(user, permission));
 }
 
+// The Sales page is reachable by exactly the two kinds of caller
+// GET /api/sales/commission will serve: a Super Admin, who sees all three
+// salespeople plus revenue, and a user carrying a crmManagerId, who sees their
+// own clients and no revenue at all. Anyone else gets a 403 from the server, so
+// showing them the nav item would only promise a page that cannot load.
+//
+// The chip is still required on top of this (requiredPermissions: ["Sales"]),
+// following CP: setting a manager id is then a deliberate two-part act, and a
+// manager id set for some future non-page purpose does not silently grow a nav
+// item.
+export function hasSalesScope(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.role === "Super Admin") return true;
+  // Integer, positive, and coerced — a crmManagerId that arrived as "28" must
+  // not read as "no manager id" here when the server will happily match it.
+  const managerId = Number(user.crmManagerId);
+  return Number.isInteger(managerId) && managerId > 0;
+}
+
 export function canAccessDepartmentItem(user: AuthUser | null | undefined, item: DepartmentNavItem): boolean {
   if (item.slug === "cp" && user?.role !== "Super Admin") return false;
+  if (item.slug === "sales" && !hasSalesScope(user)) return false;
   if (canAccessAll(user, item.requiredPermissions)) return true;
   if (item.scopedPrefix) return hasAnyScopedAccess(user, item.scopedPrefix);
   return false;
