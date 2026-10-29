@@ -62,6 +62,11 @@ const UNJOINED = {
 const MISSING_REVENUE_WARNING =
   "1 client(s) traded CFD lots but matched no revenue row; their revenue reads 0 and the margin beside it is understated.";
 
+/** The other warning commissionCore can raise, and the worse of the two: a
+ *  summed revenue figure reads as a fact and can be double counted. */
+const DUPLICATE_REVENUE_WARNING =
+  "8 client(s) matched more than one revenue row. The revenue table is documented as one row per CRM client, so these are summed -- verify against DealMatch before trusting the figure.";
+
 const SUPER_ADMIN_REPORT = {
   scope: "all",
   range: RANGE,
@@ -404,6 +409,32 @@ describe("commission is CFD lots and nothing else", () => {
     expect(screen.getByText(/not net of IB rebate/i)).toBeInTheDocument();
   });
 
+  it("keeps every headline figure on one row", async () => {
+    // jsdom computes no layout, so what is pinned here is the structure that
+    // produces one row: all six cards are direct children of a single strip
+    // that neither wraps nor caps its columns. `lg:grid-cols-5` with six cards
+    // stranded the sixth on a line of its own, which read as two groups.
+    installFetch({
+      ...SUPER_ADMIN_REPORT,
+      totals: { ...SUPER_ADMIN_REPORT.totals, stocksLots: 240 },
+    });
+    render(<SalesDepartmentPage />);
+    await screen.findByText("Mitul Kapadia");
+    const strip = screen.getByTestId("sales-totals");
+    expect(strip.children).toHaveLength(6);
+    expect(strip.className).not.toMatch(/flex-wrap|grid-cols/);
+    for (const id of [
+      "total-cfd-lots",
+      "total-commission",
+      "total-stocks-lots",
+      "total-deal-lots",
+      "total-revenue",
+      "total-margin",
+    ]) {
+      expect(screen.getByTestId(id).parentElement).toBe(strip);
+    }
+  });
+
   it("drops the stocks column entirely when nobody traded equity", async () => {
     // The live book: stocksLots is 0.00 for every client, so a stocks column
     // would be a zero in every row beside a lots column it already equals.
@@ -547,11 +578,38 @@ describe("revenueMatched: false", () => {
 });
 
 describe("what the backend said about its own answer", () => {
-  it("surfaces join.warnings verbatim", async () => {
+  it("surfaces join.warnings verbatim, at the foot of the calculations block", async () => {
     installFetch();
     render(<SalesDepartmentPage />);
     // Plain English written for a human; it is not summarised or swallowed.
-    expect(await screen.findByText(MISSING_REVENUE_WARNING)).toBeInTheDocument();
+    const warning = await screen.findByText(MISSING_REVENUE_WARNING);
+    expect(warning).toBeInTheDocument();
+    // And it sits inside "How these are calculated" rather than in a banner
+    // over the numbers: a caveat about a figure belongs beside the definition
+    // of that figure.
+    expect(warning.closest("details")).toBe(screen.getByText("How these are calculated").closest("details"));
+  });
+
+  it("counts the caveats on the summary, so a closed block still says there are some", async () => {
+    // The block is collapsed by default, and one of the things it can hide is
+    // "this revenue may be double counted". A reader who never opens it must
+    // still be told there is something to open.
+    installFetch({
+      ...SUPER_ADMIN_REPORT,
+      join: { ...SUPER_ADMIN_REPORT.join, warnings: [MISSING_REVENUE_WARNING, DUPLICATE_REVENUE_WARNING] },
+    });
+    render(<SalesDepartmentPage />);
+    expect(await screen.findByText(/2 caveats from this run/i)).toBeInTheDocument();
+    expect(screen.getByText(DUPLICATE_REVENUE_WARNING)).toBeInTheDocument();
+    expect(screen.getByText(MISSING_REVENUE_WARNING)).toBeInTheDocument();
+  });
+
+  it("says nothing about caveats when the run raised none", async () => {
+    installFetch({ ...SUPER_ADMIN_REPORT, join: { ...SUPER_ADMIN_REPORT.join, warnings: [] } });
+    render(<SalesDepartmentPage />);
+    await screen.findByText("Mitul Kapadia");
+    expect(screen.queryByText(/caveat/i)).toBeNull();
+    expect(screen.getByText("How these are calculated")).toBeInTheDocument();
   });
 
   it("stays quiet about the window when it is the one asked for", async () => {

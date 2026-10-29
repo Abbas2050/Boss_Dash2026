@@ -185,17 +185,35 @@ scope gate as revenue, so a salesperson's payload carries no `dealLots` key at
 all.
 
 **Summary cards carry the totals and their formulas** (restored 2026-10-29).
-Five for Abbas and Daniel — Lots, Commission, Deal lots, Revenue, Margin — and
-two for a salesperson, each with a **one-line derivation underneath**:
-`lots × $1.00`, `revenue − commission`, `markup + client comm + swap − LP comm`.
-The reader gets the formula where they are already looking, instead of a
-paragraph above the numbers.
+Five for Abbas and Daniel — Lots, Commission, Deal lots, Revenue, Margin — plus
+Stocks lots on a day somebody trades equity, and two for a salesperson, each
+with a **one-line derivation underneath**: `lots × $1.00`,
+`revenue − commission`, `markup + client comm + swap − LP comm`. The reader gets
+the formula where they are already looking, instead of a paragraph above the
+numbers.
+
+They sit on **one row**, whatever the count. A five-column grid stranded the
+sixth card on a line of its own, which reads as two unrelated groups; the strip
+is a flex row that shares the width when the cards fit and scrolls sideways when
+they do not, so the page itself never grows a horizontal scrollbar. Measured at
+375px: six cards of 152px on a single row, page overflow 0.
 
 The caveats that will not fit on one line go in a **collapsed "How these are
 calculated"** block at the foot — closed by default, because it is what someone
 opens when a figure looks wrong, not something to read past every time. It is
 where "Revenue **is not net of IB rebate**" lives, which is the one caveat that
 makes the Margin card optimistic.
+
+**`join.warnings` are the last entry in that block**, verbatim, rather than a
+banner over the numbers: a caveat about a figure belongs beside the definition
+of that figure. Because a closed block hides them, the summary line carries the
+count — "How these are calculated · 2 caveats from this run" — so a reader who
+never opens it still knows there is something to open. That matters most for the
+worst of the two warnings, the one saying N clients matched more than one
+revenue row and were summed, which if ignored makes a double-counted revenue
+read as a fact. No `showRevenue` gate is needed: `commissionCore` pushes a
+revenue warning only when revenue was computed, so a salesperson's array can
+hold nothing but the ClientVolume window line.
 
 **What stays cut:** the four explanatory paragraphs above the figures. Prose
 that restates what a column name says is a paragraph nobody reads on a phone.

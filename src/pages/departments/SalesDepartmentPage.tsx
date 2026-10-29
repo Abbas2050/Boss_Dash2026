@@ -210,7 +210,12 @@ const CFD_TONE = "text-[#c084fc]";
 
 // ── summary cards ────────────────────────────────────────────────────────────
 
-const CARD = "rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800/80 dark:bg-slate-950/70";
+// ONE ROW, always. `flex-1` lets the cards share the width evenly when they
+// fit, and `min-w` stops them shrinking into unreadable slivers when they do
+// not -- at which point the strip scrolls sideways rather than wrapping the
+// sixth card onto a line of its own. 9.5rem holds a $300,000.00 at text-lg.
+const CARD =
+  "min-w-[9.5rem] flex-1 rounded-xl border border-slate-200 bg-white p-3 dark:border-slate-800/80 dark:bg-slate-950/70";
 
 /**
  * One headline figure, with the formula that produced it underneath.
@@ -236,7 +241,7 @@ function StatCard({
   return (
     <div className={CARD} data-testid={testId}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 font-mono text-xl font-semibold ${tone}`}>{value}</div>
+      <div className={`mt-1 font-mono text-lg font-semibold ${tone}`}>{value}</div>
       <div className="mt-1 text-[11px] leading-snug text-muted-foreground">{formula}</div>
     </div>
   );
@@ -490,21 +495,6 @@ export function SalesDepartmentPage() {
             </div>
           ) : null}
 
-          {/* The backend's own warnings, verbatim. */}
-          {warnings.length > 0 ? (
-            <div role="alert" className={ALERT_WARN}>
-              {warnings.length === 1 ? (
-                warnings[0]
-              ) : (
-                <ul className="list-disc pl-5">
-                  {warnings.map((warning, i) => (
-                    <li key={`${i}-${warning}`}>{warning}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ) : null}
-
           {windowDiffers ? (
             <p className="text-xs text-amber-700 dark:text-amber-300">
               Lots cover {volumeWindow?.fromDate || "?"} → {volumeWindow?.toDate || "?"}, a different window from the
@@ -512,8 +502,11 @@ export function SalesDepartmentPage() {
             </p>
           ) : null}
 
-          {/* ── the totals, each with the formula that produced it ── */}
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {/* ── the totals, each with the formula that produced it ──
+              A single row of up to six, scrolling sideways on a narrow screen
+              instead of wrapping: five across with a sixth stranded underneath
+              read as two unrelated groups. */}
+          <div data-testid="sales-totals" className="flex gap-2 overflow-x-auto pb-1">
             <StatCard
               label="Lots"
               value={fmtLots(report.totals.cfdLots)}
@@ -708,6 +701,16 @@ export function SalesDepartmentPage() {
           <details className="rounded-xl border border-slate-200 bg-white dark:border-slate-800/80 dark:bg-slate-950/70">
             <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-foreground">
               How these are calculated
+              {/* A closed block hides whatever is inside it, and one of the
+                  things inside it is "these revenue figures may be double
+                  counted". The count rides on the summary so a reader who
+                  never opens the block still knows there is something to
+                  open. */}
+              {warnings.length > 0 ? (
+                <span className="ml-2 font-normal text-amber-700 dark:text-amber-300">
+                  · {plural(warnings.length, "caveat")} from this run
+                </span>
+              ) : null}
             </summary>
             <dl className="space-y-2 px-3 pb-3 text-xs text-muted-foreground">
               <div>
@@ -749,6 +752,29 @@ export function SalesDepartmentPage() {
                     <dd>Revenue − commission. Before IB rebate, because the revenue above it is.</dd>
                   </div>
                 </>
+              ) : null}
+              {/* The backend's own warnings, verbatim and last: they are what
+                  this particular run has to say about itself, and they belong
+                  beside the definitions they qualify rather than in a banner
+                  over the numbers. Not gated on `showRevenue` and safe not to
+                  be: commissionCore pushes a revenue warning only when revenue
+                  was computed, so a salesperson's array can only ever hold the
+                  ClientVolume window line. */}
+              {warnings.length > 0 ? (
+                <div>
+                  <dt className="font-medium text-amber-700 dark:text-amber-300">Caveats from this run</dt>
+                  <dd>
+                    {warnings.length === 1 ? (
+                      warnings[0]
+                    ) : (
+                      <ul className="list-disc space-y-1 pl-4">
+                        {warnings.map((warning, i) => (
+                          <li key={`${i}-${warning}`}>{warning}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </dd>
+                </div>
               ) : null}
             </dl>
           </details>
