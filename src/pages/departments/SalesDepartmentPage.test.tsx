@@ -325,17 +325,24 @@ describe('a Super Admin (scope: "all")', () => {
     expect(within(card).getAllByText("$0.00").length).toBeGreaterThan(0);
   });
 
-  it("shows revenue and margin columns", async () => {
+  it("shows no revenue or margin anywhere, though the payload carries both", async () => {
+    // The elevated payload below still has revenueUsd and
+    // marginAfterCommissionUsd on every row -- the server sends them because
+    // deal lots ride in on the same DealMatch call. The page renders neither.
+    // The figures are asserted by value, not only by column header, so a cell
+    // that printed one without a header would still fail here.
     installFetch();
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
-    expect(screen.getByRole("columnheader", { name: "Revenue" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Margin" })).toBeInTheDocument();
-    expect(money("$3,120.44").length).toBeGreaterThan(0);
-    expect(money("$3,089.94").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("columnheader", { name: "Revenue" })).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Margin" })).toBeNull();
+    expect(screen.queryByTestId("total-revenue")).toBeNull();
+    expect(screen.queryByTestId("total-margin")).toBeNull();
+    expect(money("$3,120.44")).toHaveLength(0);
+    expect(money("$3,089.94")).toHaveLength(0);
   });
 
-  it("shows deal lots beside revenue, and still pays on the realized figure", () => {
+  it("shows deal lots, and still pays on the realized figure", () => {
     installFetch();
     render(<SalesDepartmentPage />);
     return screen.findByText("Mitul Kapadia").then(() => {
@@ -398,22 +405,20 @@ describe("commission is CFD lots and nothing else", () => {
     await screen.findByText("Mitul Kapadia");
     // One short line per card, in the place the reader is already looking.
     expect(within(screen.getByTestId("total-commission")).getByText("lots × $1.00")).toBeInTheDocument();
-    expect(within(screen.getByTestId("total-margin")).getByText("revenue − commission")).toBeInTheDocument();
     expect(
-      within(screen.getByTestId("total-revenue")).getByText("markup + client comm + swap − LP comm"),
+      within(screen.getByTestId("total-cfd-lots")).getByText(/a closed round trip counts once/i),
     ).toBeInTheDocument();
     expect(within(screen.getByTestId("total-deal-lots")).getByText(/a round trip is two/i)).toBeInTheDocument();
-    // And the caveats that do not fit on a card, including the one that makes
-    // margin optimistic.
+    // And the caveats that do not fit on a card.
     expect(screen.getByText("How these are calculated")).toBeInTheDocument();
-    expect(screen.getByText(/not net of IB rebate/i)).toBeInTheDocument();
+    expect(screen.getByText(/never a commission basis/i)).toBeInTheDocument();
   });
 
   it("keeps every headline figure on one row", async () => {
     // jsdom computes no layout, so what is pinned here is the structure that
-    // produces one row: all six cards are direct children of a single strip
-    // that neither wraps nor caps its columns. `lg:grid-cols-5` with six cards
-    // stranded the sixth on a line of its own, which read as two groups.
+    // produces one row: every card is a direct child of a single strip that
+    // neither wraps nor caps its columns. A five-column grid stranded the last
+    // card on a line of its own, which read as two groups.
     installFetch({
       ...SUPER_ADMIN_REPORT,
       totals: { ...SUPER_ADMIN_REPORT.totals, stocksLots: 240 },
@@ -421,16 +426,10 @@ describe("commission is CFD lots and nothing else", () => {
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
     const strip = screen.getByTestId("sales-totals");
-    expect(strip.children).toHaveLength(6);
+    const ids = ["total-cfd-lots", "total-commission", "total-stocks-lots", "total-deal-lots"];
+    expect(strip.children).toHaveLength(ids.length);
     expect(strip.className).not.toMatch(/flex-wrap|grid-cols/);
-    for (const id of [
-      "total-cfd-lots",
-      "total-commission",
-      "total-stocks-lots",
-      "total-deal-lots",
-      "total-revenue",
-      "total-margin",
-    ]) {
+    for (const id of ids) {
       expect(screen.getByTestId(id).parentElement).toBe(strip);
     }
   });
@@ -522,49 +521,55 @@ describe('a salesperson (scope: "self")', () => {
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
     expect(screen.getByText("Smit")).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Revenue" })).toBeInTheDocument();
+    // Deal lots are the elevated view's extra column now that revenue and
+    // margin are gone, so they are what proves the server's scope won.
+    expect(screen.getByRole("columnheader", { name: "Deal lots" })).toBeInTheDocument();
   });
 });
 
 describe('degraded: ["revenue"]', () => {
-  it("says revenue is missing, not zero, and that commission still stands", async () => {
+  it("says the deal lots are missing, not zero, and that commission still stands", async () => {
+    // The degraded key is still called `revenue` -- that is the fetch that
+    // failed -- but what is lost ON SCREEN is the deal lots it carried, so that
+    // is what the alert names.
     installFetch(DEGRADED_REPORT);
     render(<SalesDepartmentPage />);
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/revenue is unavailable/i);
+    expect(alert).toHaveTextContent(/deal lots are unavailable/i);
     expect(alert).toHaveTextContent(/missing, not zero/i);
     expect(alert).toHaveTextContent(/commission is unaffected/i);
   });
 
-  it("renders no revenue figure as zero", async () => {
+  it("renders no deal-lots figure as zero", async () => {
     installFetch(DEGRADED_REPORT);
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
-    // $0.00 revenue would read as "we earned nothing from this client", which
-    // makes the commission look like a pure loss. There is no revenue figure.
-    expect(within(screen.getByTestId("total-revenue")).getByText(/unavailable/i)).toBeInTheDocument();
-    expect(within(screen.getByTestId("total-revenue")).queryByText("$0.00")).toBeNull();
-    expect(within(screen.getByTestId("total-margin")).getByText(/unavailable/i)).toBeInTheDocument();
-    expect(within(screen.getByTestId("total-margin")).queryByText("$0.00")).toBeNull();
+    // 0.00 deal lots would read as "this client traded nothing", which is a
+    // different claim from "the DealMatch call failed". There is no figure.
+    expect(within(screen.getByTestId("total-deal-lots")).getByText(/unavailable/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId("total-deal-lots")).queryByText("0.00")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /show mitul kapadia's clients/i }));
     const row = await screen.findByTestId("sales-client-4211");
-    expect(within(row).getAllByText(/unavailable/i).length).toBe(2);
-    expect(within(row).queryByText("$0.00")).toBeNull();
-    // And the commission beside it is untouched.
+    expect(within(row).getByText(/unavailable/i)).toBeInTheDocument();
+    // And the lots the commission is built from, and the commission itself,
+    // are untouched: they came from ClientVolume, which answered.
+    expect(within(row).getByText("30.50")).toBeInTheDocument();
     expect(within(row).getByText("$30.50")).toBeInTheDocument();
   });
 });
 
 describe("revenueMatched: false", () => {
-  it("marks the client whose margin is understated", async () => {
+  it("marks the client whose deal lots are missing", async () => {
+    // The marker outlives the revenue column: deal lots come out of those same
+    // DealMatch rows, so an unmatched client's 0.00 is an absence, not a fact.
     installFetch();
     render(<SalesDepartmentPage />);
     await screen.findByText("Aditya");
     fireEvent.click(screen.getByRole("button", { name: /show aditya's clients/i }));
     const row = await screen.findByTestId("sales-client-5120");
-    expect(within(row).getByText(/revenue not matched/i)).toBeInTheDocument();
-    expect(within(row).getByText(/margin understated/i)).toBeInTheDocument();
+    expect(within(row).getByText(/no revenue row matched/i)).toBeInTheDocument();
+    expect(within(row).getByText(/deal lots read 0 here/i)).toBeInTheDocument();
   });
 
   it("leaves a matched client unmarked", async () => {
@@ -573,7 +578,7 @@ describe("revenueMatched: false", () => {
     await screen.findByText("Mitul Kapadia");
     fireEvent.click(screen.getByRole("button", { name: /show mitul kapadia's clients/i }));
     const row = await screen.findByTestId("sales-client-4211");
-    expect(within(row).queryByText(/revenue not matched/i)).toBeNull();
+    expect(within(row).queryByText(/no revenue row matched/i)).toBeNull();
   });
 });
 

@@ -25,9 +25,14 @@ import { resolveVolumeRange } from "@/lib/clientVolumeApi";
 const COMMISSION_URL = "/api/sales/commission";
 
 // ── the contract ─────────────────────────────────────────────────────────────
-// Every revenue field is optional because for a salesperson it is ABSENT, not
-// null. `undefined` is therefore a real state with its own rendering ("no
-// revenue figure exists"), which is why none of these carry a `| null`.
+// Every DealMatch-derived field is optional because for a salesperson it is
+// ABSENT, not null, which is why none of these carry a `| null`.
+//
+// `revenueUsd` and `marginAfterCommissionUsd` are typed and NOT rendered. The
+// server still sends them -- deal lots come out of the same payload -- so the
+// honest record of the contract keeps them; the page simply shows neither.
+// Removing them here would read as "the server stopped sending revenue", which
+// is a different and untrue statement.
 
 type SalesClient = {
   crmUserId: number;
@@ -171,19 +176,18 @@ const formatDollar = (value: number) => {
 };
 
 /**
- * A revenue or margin figure, or the reason there is none.
+ * A deal-lots figure, or the reason there is none.
  *
  * NEVER falls back to zero. `degraded: ["revenue"]` means the DealMatch fetch
- * failed and the keys are absent; printing $0.00 for that would state that the
- * company earned nothing from this client, which is a different claim from "we
- * could not ask" and happens to be the one that makes commission look like a
- * pure loss.
+ * failed and the key is absent; `fmtLots(undefined)` would print 0.00, which
+ * states that this client traded nothing — a different claim from "we could not
+ * ask", and the one that makes a real book look dead.
  */
-const formatRevenue = (value: number | undefined) => {
+const fmtDealLots = (value: number | undefined) => {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return <span className="text-amber-700 dark:text-amber-300">unavailable</span>;
   }
-  return formatDollar(value);
+  return fmtLots(value);
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -252,20 +256,20 @@ function StatCard({
 /**
  * One salesperson's clients, as rows of the table they sit under.
  *
- * `showRevenue` is passed in from the single scope decision made in the page
+ * `showDealLots` is passed in from the single scope decision made in the page
  * body; it is deliberately not re-derived from whether a row happens to carry
- * `revenueUsd`, because a row-level check would render whatever arrived instead
+ * `dealLots`, because a row-level check would render whatever arrived instead
  * of what the caller is entitled to see.
  */
 function ClientRows({
   clients,
-  showRevenue,
+  showDealLots,
   showStocks,
   columns,
   indent = false,
 }: {
   clients: SalesClient[];
-  showRevenue: boolean;
+  showDealLots: boolean;
   showStocks: boolean;
   columns: number;
   indent?: boolean;
@@ -295,14 +299,18 @@ function ClientRows({
             {/* Text in the cell, not a `title`: this dashboard is read on a
                 phone, where a hover does not exist and a long-press selects
                 text -- a tooltip is the same as deleting the reason. */}
-            {showRevenue && client.revenueMatched === false ? (
+            {/* Both markers still earn their place with revenue gone: deal
+                lots come out of those same DealMatch rows, so an unmatched
+                client's deal lots read 0 and a doubly-matched one's are a sum
+                of rows the table is documented to hold only one of. */}
+            {showDealLots && client.revenueMatched === false ? (
               <div className="text-[11px] text-amber-700 dark:text-amber-300">
-                revenue not matched — margin understated
+                no revenue row matched — deal lots read 0 here
               </div>
             ) : null}
-            {showRevenue && (client.revenueRowCount ?? 0) > 1 ? (
+            {showDealLots && (client.revenueRowCount ?? 0) > 1 ? (
               <div className="text-[11px] text-amber-700 dark:text-amber-300">
-                {plural(client.revenueRowCount ?? 0, "revenue row")} summed
+                deal lots summed from {plural(client.revenueRowCount ?? 0, "revenue row")}
               </div>
             ) : null}
           </td>
@@ -310,18 +318,14 @@ function ClientRows({
           {showStocks ? (
             <td className={`${TD_NUM} text-slate-500 dark:text-slate-400`}>{fmtLots(client.stocksLots)}</td>
           ) : null}
-          {showRevenue ? (
-            <td className={`${TD_NUM} text-slate-500 dark:text-slate-400`}>{fmtLots(client.dealLots)}</td>
-          ) : null}
-          <td className={`${TD_NUM} font-medium`}>{formatDollar(client.commissionUsd)}</td>
-          {showRevenue ? <td className={TD_NUM}>{formatRevenue(client.revenueUsd)}</td> : null}
-          {showRevenue ? (
+          {showDealLots ? (
             <td
-              className={`${TD_NUM} ${client.revenueMatched === false ? "text-amber-700 dark:text-amber-300" : ""}`}
+              className={`${TD_NUM} ${client.revenueMatched === false ? "text-amber-700 dark:text-amber-300" : "text-slate-500 dark:text-slate-400"}`}
             >
-              {formatRevenue(client.marginAfterCommissionUsd)}
+              {fmtDealLots(client.dealLots)}
             </td>
           ) : null}
+          <td className={`${TD_NUM} font-medium`}>{formatDollar(client.commissionUsd)}</td>
         </tr>
       ))}
     </>
@@ -383,21 +387,23 @@ export function SalesDepartmentPage() {
     setExpanded((prev) => (prev.includes(managerId) ? prev.filter((id) => id !== managerId) : [...prev, managerId]));
 
   // ── THE ONE SCOPE DECISION ────────────────────────────────────────────────
-  // Revenue columns exist for the caller the server gave scope "all", and for
-  // nobody else -- however their locally stored role reads, and whatever stray
-  // revenue key a response might carry. A salesperson's payload has no revenue
-  // key at all, so there is nothing for this page to leak even by accident.
+  // The Deal lots column exists for the caller the server gave scope "all", and
+  // for nobody else -- however their locally stored role reads, and whatever
+  // stray DealMatch key a response might carry. A salesperson's payload has no
+  // such key at all, so there is nothing for this page to leak even by accident.
   //
-  // Whether a FIGURE exists is a separate question, answered per value by
-  // formatRevenue: the columns stay put when the fetch failed and read
-  // "unavailable", rather than disappearing from a table whose shape an
-  // elevated reader compares week to week.
-  const showRevenue = report?.scope === "all";
-  // Only the elevated caller is ever told that revenue is missing: for a sales
-  // caller "revenue unavailable" is still a statement about revenue.
-  // `!== true` rather than `=== false` so that a response with no revenue key
-  // at all is also read as missing -- the safe direction to be wrong in.
-  const revenueMissing =
+  // The server still SENDS revenue and margin, because deal lots ride in on the
+  // same DealMatch payload and cannot be had without them, but this page renders
+  // neither. It answers what was traded and what that pays; a revenue figure
+  // that is not net of IB rebate answered a different question, wrongly.
+  const showDealLots = report?.scope === "all";
+  // Only the elevated caller is ever told the DealMatch figures are missing:
+  // for a sales caller "deal lots unavailable" is a statement about a column
+  // they were never sent. `!== true` rather than `=== false` so a response with
+  // no revenue key at all is also read as missing -- the safe direction to be
+  // wrong in. The key is still called `revenue` because that is the fetch that
+  // failed; what is lost on screen is the deal lots it carried.
+  const dealLotsMissing =
     report?.scope === "all" && (report.degraded.includes("revenue") || report.revenue?.available !== true);
 
   const warnings = report?.join.warnings ?? [];
@@ -421,11 +427,10 @@ export function SalesDepartmentPage() {
   // volume the commission does not pay on.
   const showStocks = (report?.totals.stocksLots ?? 0) > 0;
 
-  // Name, lots, commission -- plus stocks when there is equity, and deal lots,
-  // revenue and margin for the elevated caller. Deal lots ride with revenue
-  // because they come from the same DealMatch payload, which is not fetched at
-  // all for a salesperson. Used for the colSpan of the empty-book row.
-  const columns = 3 + (showStocks ? 1 : 0) + (showRevenue ? 3 : 0);
+  // Name, lots, commission -- plus stocks when there is equity and deal lots
+  // for the elevated caller, whose DealMatch payload is not fetched at all for
+  // a salesperson. Used for the colSpan of the empty-book row.
+  const columns = 3 + (showStocks ? 1 : 0) + (showDealLots ? 1 : 0);
 
   return (
     <div className="space-y-3">
@@ -489,9 +494,9 @@ export function SalesDepartmentPage() {
 
       {report ? (
         <>
-          {revenueMissing ? (
+          {dealLotsMissing ? (
             <div role="alert" className={ALERT_WARN}>
-              Revenue is unavailable for this window — missing, not zero. Commission is unaffected.
+              Deal lots are unavailable for this window — missing, not zero. Commission is unaffected.
             </div>
           ) : null}
 
@@ -503,9 +508,9 @@ export function SalesDepartmentPage() {
           ) : null}
 
           {/* ── the totals, each with the formula that produced it ──
-              A single row of up to six, scrolling sideways on a narrow screen
-              instead of wrapping: five across with a sixth stranded underneath
-              read as two unrelated groups. */}
+              A single row, scrolling sideways on a narrow screen instead of
+              wrapping: a card stranded on a line of its own read as a second,
+              unrelated group. */}
           <div data-testid="sales-totals" className="flex gap-2 overflow-x-auto pb-1">
             <StatCard
               label="Lots"
@@ -529,29 +534,13 @@ export function SalesDepartmentPage() {
                 testId="total-stocks-lots"
               />
             ) : null}
-            {showRevenue ? (
+            {showDealLots ? (
               <StatCard
                 label="Deal lots"
-                value={fmtLots(report.totals.dealLots)}
+                value={fmtDealLots(report.totals.dealLots)}
                 formula="every MT5 deal · a round trip is two"
                 tone="text-slate-500 dark:text-slate-400"
                 testId="total-deal-lots"
-              />
-            ) : null}
-            {showRevenue ? (
-              <StatCard
-                label="Revenue"
-                value={formatRevenue(report.totals.revenueUsd)}
-                formula="markup + client comm + swap − LP comm"
-                testId="total-revenue"
-              />
-            ) : null}
-            {showRevenue ? (
-              <StatCard
-                label="Margin"
-                value={formatRevenue(report.totals.marginAfterCommissionUsd)}
-                formula="revenue − commission"
-                testId="total-margin"
               />
             ) : null}
           </div>
@@ -571,10 +560,8 @@ export function SalesDepartmentPage() {
                     <th className={TH}>{report.scope === "all" ? "Salesperson" : "Client"}</th>
                     <th className={TH_NUM}>Lots</th>
                     {showStocks ? <th className={TH_NUM}>Stocks lots (unpaid)</th> : null}
-                    {showRevenue ? <th className={TH_NUM}>Deal lots</th> : null}
+                    {showDealLots ? <th className={TH_NUM}>Deal lots</th> : null}
                     <th className={TH_NUM}>Commission</th>
-                    {showRevenue ? <th className={TH_NUM}>Revenue</th> : null}
-                    {showRevenue ? <th className={TH_NUM}>Margin</th> : null}
                   </tr>
                 </thead>
 
@@ -615,23 +602,19 @@ export function SalesDepartmentPage() {
                                 {fmtLots(person.stocksLots)}
                               </td>
                             ) : null}
-                            {showRevenue ? (
+                            {showDealLots ? (
                               <td className={`${TD_NUM} text-slate-500 dark:text-slate-400`}>
-                                {fmtLots(person.dealLots)}
+                                {fmtDealLots(person.dealLots)}
                               </td>
                             ) : null}
                             <td className={`${TD_NUM} font-semibold`}>{formatDollar(person.commissionUsd)}</td>
-                            {showRevenue ? <td className={TD_NUM}>{formatRevenue(person.revenueUsd)}</td> : null}
-                            {showRevenue ? (
-                              <td className={TD_NUM}>{formatRevenue(person.marginAfterCommissionUsd)}</td>
-                            ) : null}
                           </tr>
                         </tbody>
                         {expanded.includes(person.managerId) ? (
                           <tbody data-testid={`sales-clients-${person.managerId}`}>
                             <ClientRows
                               clients={person.clients}
-                              showRevenue={Boolean(showRevenue)}
+                              showDealLots={Boolean(showDealLots)}
                               showStocks={showStocks}
                               columns={columns}
                               indent
@@ -644,7 +627,7 @@ export function SalesDepartmentPage() {
                       <tbody key={person.managerId} data-testid={`sales-clients-${person.managerId}`}>
                         <ClientRows
                           clients={person.clients}
-                          showRevenue={Boolean(showRevenue)}
+                          showDealLots={Boolean(showDealLots)}
                           showStocks={showStocks}
                           columns={columns}
                         />
@@ -665,27 +648,14 @@ export function SalesDepartmentPage() {
                         {fmtLots(report.totals.stocksLots)}
                       </td>
                     ) : null}
-                    {showRevenue ? (
-                      <td
-                        className={`${TD_NUM} font-semibold text-slate-500 dark:text-slate-400`}
-
-                      >
-                        {fmtLots(report.totals.dealLots)}
+                    {showDealLots ? (
+                      <td className={`${TD_NUM} font-semibold text-slate-500 dark:text-slate-400`}>
+                        {fmtDealLots(report.totals.dealLots)}
                       </td>
                     ) : null}
                     <td className={`${TD_NUM} font-semibold`}>
                       {formatDollar(report.totals.commissionUsd)}
                     </td>
-                    {showRevenue ? (
-                      <td className={`${TD_NUM} font-semibold`}>
-                        {formatRevenue(report.totals.revenueUsd)}
-                      </td>
-                    ) : null}
-                    {showRevenue ? (
-                      <td className={`${TD_NUM} font-semibold`}>
-                        {formatRevenue(report.totals.marginAfterCommissionUsd)}
-                      </td>
-                    ) : null}
                   </tr>
                 </tfoot>
               </table>
@@ -694,10 +664,9 @@ export function SalesDepartmentPage() {
 
           {/* ── the caveats that do not fit on a card, collapsed ──
               Closed by default: these are what a reader opens when a figure
-              looks wrong, not something to read past every time. Revenue and
-              margin are gated on `showRevenue` like every other mention of
-              them, so a salesperson's page has no definition of a figure they
-              were never sent. */}
+              looks wrong, not something to read past every time. Deal lots are
+              gated on `showDealLots` like the column itself, so a salesperson's
+              page has no definition of a figure they were never sent. */}
           <details className="rounded-xl border border-slate-200 bg-white dark:border-slate-800/80 dark:bg-slate-950/70">
             <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-foreground">
               How these are calculated
@@ -727,36 +696,20 @@ export function SalesDepartmentPage() {
                   page can change it.
                 </dd>
               </div>
-              {showRevenue ? (
-                <>
-                  <div>
-                    <dt className="font-medium text-foreground">Deal lots</dt>
-                    <dd>
-                      Every MT5 deal, from the same Deal Match rows the revenue column comes from. A round trip is two
-                      deals, so this runs roughly double Lots. It is never a commission basis.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-foreground">Revenue</dt>
-                    <dd>
-                      The backend&apos;s own figure: markup + client commission + swap − LP commission. Matched to
-                      clients by MT5 login.{" "}
-                      <span className="font-medium text-amber-700 dark:text-amber-300">
-                        It is not net of IB rebate
-                      </span>{" "}
-                      — an IB-referred client&apos;s rebate is still to come out of this.
-                    </dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-foreground">Margin</dt>
-                    <dd>Revenue − commission. Before IB rebate, because the revenue above it is.</dd>
-                  </div>
-                </>
+              {showDealLots ? (
+                <div>
+                  <dt className="font-medium text-foreground">Deal lots</dt>
+                  <dd>
+                    Every MT5 deal, from the Deal Match rows, matched to clients by MT5 login. A round trip is two
+                    deals, so this runs roughly double Lots. It is never a commission basis — nothing here is paid on
+                    it.
+                  </dd>
+                </div>
               ) : null}
               {/* The backend's own warnings, verbatim and last: they are what
                   this particular run has to say about itself, and they belong
                   beside the definitions they qualify rather than in a banner
-                  over the numbers. Not gated on `showRevenue` and safe not to
+                  over the numbers. Not gated on `showDealLots` and safe not to
                   be: commissionCore pushes a revenue warning only when revenue
                   was computed, so a salesperson's array can only ever hold the
                   ClientVolume window line. */}

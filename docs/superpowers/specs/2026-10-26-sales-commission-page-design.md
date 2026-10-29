@@ -163,7 +163,29 @@ existing `UnauthorizedPage`.
 | Caller | Rows | Extra columns |
 |---|---|---|
 | Salesperson | one per client | none |
-| Abbas / Daniel | one per salesperson, expandable to their clients | revenue, margin |
+| Abbas / Daniel | one per salesperson, expandable to their clients | deal lots |
+
+**Revenue and margin are not rendered at all** (removed 2026-10-29). The server
+still *sends* them, and must: deal lots come out of the same DealMatch payload
+and cannot be fetched without them. But neither reaches the screen — not as a
+column, not as a card, not as a definition in the calculations block. The page
+answers what was traded and what that pays. A revenue figure that is **not net
+of IB rebate** (§3) answered a different question and answered it wrongly:
+Cedra alone generated $61,204 of it while paying an IB $2,618.52 that was never
+deducted, so every margin beside it was optimistic by an unstated amount.
+
+The page's internal gate is named `showDealLots` rather than `showRevenue`, and
+the degraded alert names deal lots rather than revenue. The `degraded` key stays
+`"revenue"` because that is the fetch that failed; what is lost **on screen** is
+the deal lots it carried. Two consequences worth keeping:
+
+- Deal lots render through `fmtDealLots`, which prints **"unavailable"**, never
+  `0.00`. A zero would say the client traded nothing, which is a different claim
+  from "the DealMatch call failed".
+- The per-client markers survive the removal, reworded: `revenueMatched: false`
+  now reads "no revenue row matched — deal lots read 0 here", and
+  `revenueRowCount > 1` reads "deal lots summed from N revenue rows". They
+  qualify a column that is still on screen.
 
 **One lots column, not two.** `stocksLots` is 0.00 for every client in this
 book, so `lots` and `cfdLots` are the same number and a second column printed it
@@ -177,32 +199,30 @@ DealMatch rows the revenue column is built from, so they cost **no extra call**.
 §1 verifies that column sums to `totalMt5DealLots + totalShiftingMt5DealLots`
 exactly, and a round trip is two deals, so it runs roughly 2.03× the
 commissioned figure. It exists for two reasons: it is the denominator the
-revenue beside it was earned over, which makes that revenue auditable; and it is
-the only second lots figure we hold, which is what a Zads-style gap would be
-diagnosed against. **It is never a commission basis** — `commissionOf` only ever
-receives `cfdLots`, asserted in `commissionCore.test.js`. It rides the same
-scope gate as revenue, so a salesperson's payload carries no `dealLots` key at
-all.
+revenue beside it was earned over; and it is the only second lots figure we
+hold, which is what a Zads-style gap would be diagnosed against. With revenue
+off the page the second reason is now the only one, and it is enough — the gap
+against FXBO is still unresolved. **It is never a commission basis** —
+`commissionOf` only ever receives `cfdLots`, asserted in `commissionCore.test.js`.
+It rides the same scope gate revenue does, so a salesperson's payload carries no
+`dealLots` key at all.
 
 **Summary cards carry the totals and their formulas** (restored 2026-10-29).
-Five for Abbas and Daniel — Lots, Commission, Deal lots, Revenue, Margin — plus
-Stocks lots on a day somebody trades equity, and two for a salesperson, each
-with a **one-line derivation underneath**: `lots × $1.00`,
-`revenue − commission`, `markup + client comm + swap − LP comm`. The reader gets
-the formula where they are already looking, instead of a paragraph above the
-numbers.
+Three for Abbas and Daniel — Lots, Commission, Deal lots — plus Stocks lots on a
+day somebody trades equity, and two for a salesperson, each with a **one-line
+derivation underneath**: `lots × $1.00`, `every MT5 deal · a round trip is two`.
+The reader gets the formula where they are already looking, instead of a
+paragraph above the numbers.
 
 They sit on **one row**, whatever the count. A five-column grid stranded the
-sixth card on a line of its own, which reads as two unrelated groups; the strip
+last card on a line of its own, which reads as two unrelated groups; the strip
 is a flex row that shares the width when the cards fit and scrolls sideways when
 they do not, so the page itself never grows a horizontal scrollbar. Measured at
-375px: six cards of 152px on a single row, page overflow 0.
+375px with six cards: 152px each, one row, page overflow 0.
 
 The caveats that will not fit on one line go in a **collapsed "How these are
 calculated"** block at the foot — closed by default, because it is what someone
-opens when a figure looks wrong, not something to read past every time. It is
-where "Revenue **is not net of IB rebate**" lives, which is the one caveat that
-makes the Margin card optimistic.
+opens when a figure looks wrong, not something to read past every time.
 
 **`join.warnings` are the last entry in that block**, verbatim, rather than a
 banner over the numbers: a caveat about a figure belongs beside the definition
@@ -210,10 +230,11 @@ of that figure. Because a closed block hides them, the summary line carries the
 count — "How these are calculated · 2 caveats from this run" — so a reader who
 never opens it still knows there is something to open. That matters most for the
 worst of the two warnings, the one saying N clients matched more than one
-revenue row and were summed, which if ignored makes a double-counted revenue
-read as a fact. No `showRevenue` gate is needed: `commissionCore` pushes a
-revenue warning only when revenue was computed, so a salesperson's array can
-hold nothing but the ClientVolume window line.
+revenue row and were summed — those same rows carry deal lots, so a
+double-counted figure still reaches the screen. No `showDealLots` gate is
+needed: `commissionCore` pushes a revenue warning only when revenue was
+computed, so a salesperson's array can hold nothing but the ClientVolume window
+line.
 
 **What stays cut:** the four explanatory paragraphs above the figures. Prose
 that restates what a column name says is a paragraph nobody reads on a phone.
