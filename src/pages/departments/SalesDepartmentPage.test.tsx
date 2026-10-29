@@ -37,6 +37,9 @@ const DAWEI = {
   commissionUsd: 30.5,
   revenueUsd: 3120.44,
   marginAfterCommissionUsd: 3089.94,
+  // DEAL lots, roughly double the 30.5 realized -- what a round trip costs.
+  // Commission must still read $30.50.
+  dealLots: 62.1,
   revenueMatched: true,
   revenueRowCount: 1,
 };
@@ -70,6 +73,7 @@ const SUPER_ADMIN_REPORT = {
     commissionUsd: 41.75,
     revenueUsd: 3120.44,
     marginAfterCommissionUsd: 3078.69,
+    dealLots: 62.1,
   },
   salespeople: [
     {
@@ -83,6 +87,7 @@ const SUPER_ADMIN_REPORT = {
       commissionUsd: 30.5,
       revenueUsd: 3120.44,
       marginAfterCommissionUsd: 3089.94,
+      dealLots: 62.1,
       clients: [DAWEI],
     },
     {
@@ -315,14 +320,26 @@ describe('a Super Admin (scope: "all")', () => {
     expect(within(card).getAllByText("$0.00").length).toBeGreaterThan(0);
   });
 
-  it("shows revenue earned and margin after commission", async () => {
+  it("shows revenue and margin columns", async () => {
     installFetch();
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
-    expect(screen.getAllByText(/revenue earned/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/margin after commission/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("columnheader", { name: "Revenue" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Margin" })).toBeInTheDocument();
     expect(money("$3,120.44").length).toBeGreaterThan(0);
     expect(money("$3,089.94").length).toBeGreaterThan(0);
+  });
+
+  it("shows deal lots beside revenue, and still pays on the realized figure", () => {
+    installFetch();
+    render(<SalesDepartmentPage />);
+    return screen.findByText("Mitul Kapadia").then(() => {
+      expect(screen.getByRole("columnheader", { name: "Deal lots" })).toBeInTheDocument();
+      // 62.1 deal lots next to 30.5 realized, and the money follows the 30.5.
+      expect(within(screen.getByTestId("total-deal-lots")).getByText("62.10")).toBeInTheDocument();
+      expect(within(screen.getByTestId("total-cfd-lots")).getByText("41.75")).toBeInTheDocument();
+      expect(within(screen.getByTestId("total-commission")).getByText("$41.75")).toBeInTheDocument();
+    });
   });
 
   it("expands a salesperson to their client rows", async () => {
@@ -356,16 +373,56 @@ describe("commission is CFD lots and nothing else", () => {
     expect(money("$340.00")).toHaveLength(0);
   });
 
-  it("labels the unpaid lot columns as unpaid, in text", async () => {
+  it("shows one lots column, and discloses equity only when there is some", async () => {
     installFetch();
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
-    // Someone reading a 240 in stocks lots as $240 owed is the misreading this
-    // wording exists to stop, so it is on the page and not in a tooltip.
-    expect(screen.getAllByText(/all lots \(not paid\)/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/stocks lots \(not paid\)/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/cfd lots \(paid on\)/i).length).toBeGreaterThan(0);
-    expect(screen.getByText(/never paid on/i)).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Lots" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Commission" })).toBeInTheDocument();
+    // This fixture carries 240 stocks lots, so the unpaid column is on screen
+    // and says in its own header that it is not paid on.
+    expect(screen.getByRole("columnheader", { name: "Stocks lots (unpaid)" })).toBeInTheDocument();
+    expect(within(screen.getByTestId("total-stocks-lots")).getByText("240.00")).toBeInTheDocument();
+    // The rate, which is the only thing that explains why 300 lots pays $30.50.
+    expect(screen.getByText(/per commissioned lot/i)).toBeInTheDocument();
+  });
+
+  it("prints the formula under each headline figure", async () => {
+    installFetch();
+    render(<SalesDepartmentPage />);
+    await screen.findByText("Mitul Kapadia");
+    // One short line per card, in the place the reader is already looking.
+    expect(within(screen.getByTestId("total-commission")).getByText("lots × $1.00")).toBeInTheDocument();
+    expect(within(screen.getByTestId("total-margin")).getByText("revenue − commission")).toBeInTheDocument();
+    expect(
+      within(screen.getByTestId("total-revenue")).getByText("markup + client comm + swap − LP comm"),
+    ).toBeInTheDocument();
+    expect(within(screen.getByTestId("total-deal-lots")).getByText(/a round trip is two/i)).toBeInTheDocument();
+    // And the caveats that do not fit on a card, including the one that makes
+    // margin optimistic.
+    expect(screen.getByText("How these are calculated")).toBeInTheDocument();
+    expect(screen.getByText(/not net of IB rebate/i)).toBeInTheDocument();
+  });
+
+  it("drops the stocks column entirely when nobody traded equity", async () => {
+    // The live book: stocksLots is 0.00 for every client, so a stocks column
+    // would be a zero in every row beside a lots column it already equals.
+    const noEquity = {
+      ...SUPER_ADMIN_REPORT,
+      totals: { ...SUPER_ADMIN_REPORT.totals, lots: 41.75, stocksLots: 0 },
+      salespeople: SUPER_ADMIN_REPORT.salespeople.map((p) => ({
+        ...p,
+        lots: p.cfdLots,
+        stocksLots: 0,
+        clients: p.clients.map((c) => ({ ...c, lots: c.cfdLots, stocksLots: 0 })),
+      })),
+    };
+    installFetch(noEquity);
+    render(<SalesDepartmentPage />);
+    await screen.findByText("Mitul Kapadia");
+    expect(screen.queryByRole("columnheader", { name: /stocks/i })).toBeNull();
+    expect(screen.queryByTestId("total-stocks-lots")).toBeNull();
+    expect(screen.getByRole("columnheader", { name: "Lots" })).toBeInTheDocument();
   });
 
   it("prints the server's commissionUsd rather than recomputing one", async () => {
@@ -398,6 +455,10 @@ describe('a salesperson (scope: "self")', () => {
     // Nor does the word, in a column header, a card label or a banner.
     expect(screen.queryAllByText(/revenue/i)).toHaveLength(0);
     expect(screen.queryAllByText(/margin/i)).toHaveLength(0);
+    // Deal lots come from the DealMatch payload a salesperson's request never
+    // fetches, and match neither regex above -- so they get their own line.
+    expect(screen.queryByRole("columnheader", { name: /deal lots/i })).toBeNull();
+    expect(screen.queryByTestId("total-deal-lots")).toBeNull();
   });
 
   it("shows their own clients and their own total", async () => {
@@ -430,18 +491,18 @@ describe('a salesperson (scope: "self")', () => {
     render(<SalesDepartmentPage />);
     await screen.findByText("Mitul Kapadia");
     expect(screen.getByText("Smit")).toBeInTheDocument();
-    expect(screen.getAllByText(/revenue earned/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("columnheader", { name: "Revenue" })).toBeInTheDocument();
   });
 });
 
 describe('degraded: ["revenue"]', () => {
-  it("says commission is still exact and revenue is missing, not zero", async () => {
+  it("says revenue is missing, not zero, and that commission still stands", async () => {
     installFetch(DEGRADED_REPORT);
     render(<SalesDepartmentPage />);
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent(/revenue could not be loaded/i);
-    expect(alert).toHaveTextContent(/commission below is still exact/i);
+    expect(alert).toHaveTextContent(/revenue is unavailable/i);
     expect(alert).toHaveTextContent(/missing, not zero/i);
+    expect(alert).toHaveTextContent(/commission is unaffected/i);
   });
 
   it("renders no revenue figure as zero", async () => {
@@ -493,10 +554,14 @@ describe("what the backend said about its own answer", () => {
     expect(await screen.findByText(MISSING_REVENUE_WARNING)).toBeInTheDocument();
   });
 
-  it("prints the window the lots actually cover", async () => {
+  it("stays quiet about the window when it is the one asked for", async () => {
     installFetch();
     render(<SalesDepartmentPage />);
-    expect(await screen.findByText(/lots cover 2026-10-01 → 2026-10-26 \(20 active days\)/i)).toBeInTheDocument();
+    await screen.findByText("Mitul Kapadia");
+    // The asked-for range is already in the section header; repeating it when
+    // the two agree is a line that only ever says "nothing is wrong".
+    expect(screen.queryByText(/lots cover/i)).toBeNull();
+    expect(screen.getByText("2026-10-01 → 2026-10-26")).toBeInTheDocument();
   });
 
   it("says so when that window is not the one asked for", async () => {

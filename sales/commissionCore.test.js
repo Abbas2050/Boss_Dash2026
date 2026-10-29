@@ -57,11 +57,14 @@ const VOLUME_ROWS = [
   { login: "9999", lots: 1, stocksLots: 1, cfdLots: 1 }, // no CRM account at all
 ];
 
+// `dealLots` here is roughly double the realized lots in VOLUME_ROWS, which is
+// what a round trip costs (§1). It is deliberately a different number from
+// cfdLots so that paying on the wrong one shows up as a wrong dollar figure.
 const REVENUE_ROWS = [
-  { login: "5001", totalRevenueUsd: 1000.5 },
-  { login: "5002", totalRevenueUsd: 300 }, // same client, second login
-  { login: "5004", totalRevenueUsd: 200 },
-  { login: "7777", totalRevenueUsd: 999 }, // matches nothing we know
+  { login: "5001", totalRevenueUsd: 1000.5, dealLots: 20.4 },
+  { login: "5002", totalRevenueUsd: 300, dealLots: 10.2 }, // same client, second login
+  { login: "5004", totalRevenueUsd: 200, dealLots: 4 },
+  { login: "7777", totalRevenueUsd: 999, dealLots: 500 }, // matches nothing we know
   // Note there is NO row for 5003, which traded 7.5 CFD lots.
 ];
 
@@ -217,6 +220,10 @@ describe("role scoping", () => {
     const serialised = JSON.stringify(report(SELF_SCOPE));
     expect(serialised).not.toMatch(/revenue/i);
     expect(serialised).not.toMatch(/margin/i);
+    // Deal lots ride in the same DealMatch payload as revenue and are gated on
+    // the same scope, so they must not appear either -- and they match neither
+    // regex above, which is why this line exists.
+    expect(serialised).not.toMatch(/dealLots/i);
     // Not nulled and not zeroed either -- absent.
     expect(JSON.parse(serialised)).not.toHaveProperty("revenue");
     expect(Object.keys(JSON.parse(serialised).totals).sort()).toEqual([
@@ -289,6 +296,20 @@ describe("the revenue join, which is unverified", () => {
     const alice = client(report(ALL_SCOPE), 28, 101);
     expect(alice.revenueUsd).toBe(1300.5); // 1000.5 + 300
     expect(alice.marginAfterCommissionUsd).toBe(1285.5); // 1300.5 - 15
+  });
+
+  it("reports deal lots beside revenue without ever paying on them", () => {
+    // Deal lots are the volume the revenue was earned over, and run to roughly
+    // double the realized figure. Commission must still be the 15 realized CFD
+    // lots, not the 30.6 deal lots sitting in the next column.
+    const body = report(ALL_SCOPE);
+    const alice = client(body, 28, 101);
+    expect(alice.dealLots).toBe(30.6); // 20.4 + 10.2, both of Alice's logins
+    expect(alice.cfdLots).toBe(15);
+    expect(alice.commissionUsd).toBe(15);
+    // A revenue row matching no client of ours contributes neither (7777's 500).
+    expect(body.totals.dealLots).toBe(34.6); // 30.6 + 4
+    expect(body.totals.commissionUsd).toBe(body.totals.cfdLots);
   });
 
   it("keeps a client whose logins matched no revenue row, and flags it", () => {

@@ -191,6 +191,10 @@ describe("fetchClientRevenueSummaries", () => {
           {
             login: "5001",
             totalRevenueUsd: 21609.65,
+            // DEAL lots -- the volume this revenue was earned over. Read, but
+            // never as a commission basis: §1 verifies this column sums to
+            // totalMt5DealLots, and a round trip is two deals.
+            lots: 84.5,
             // Present and deliberately ignored: rebuilding Total Revenue from
             // markup + clientComm drops client swap, which on 2026-09-16 was
             // $20,313.91 of this very figure (dealing-reporting §5).
@@ -202,7 +206,7 @@ describe("fetchClientRevenueSummaries", () => {
       }),
     );
     return fetchClientRevenueSummaries(RANGE).then((result) => {
-      expect(result.rows).toEqual([{ login: "5001", totalRevenueUsd: 21609.65 }]);
+      expect(result.rows).toEqual([{ login: "5001", totalRevenueUsd: 21609.65, dealLots: 84.5 }]);
       const [url, options] = backendFetch.mock.calls[0];
       expect(url).toContain("lite=true");
       expect(url).not.toContain("lite=false");

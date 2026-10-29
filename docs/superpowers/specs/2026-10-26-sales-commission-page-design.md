@@ -157,10 +157,72 @@ existing `UnauthorizedPage`.
 
 ### What the page renders
 
-**Salesperson:** their clients — name, lots, commission — and a total.
+**One table, two figures** (revised 2026-10-29). Every row carries **lots** and
+**commission**, and the table closes on a totals row.
 
-**Abbas / Daniel:** the three salespeople side by side — lots, commission owed,
-revenue earned, margin after commission — each expandable to per-client rows.
+| Caller | Rows | Extra columns |
+|---|---|---|
+| Salesperson | one per client | none |
+| Abbas / Daniel | one per salesperson, expandable to their clients | revenue, margin |
+
+**One lots column, not two.** `stocksLots` is 0.00 for every client in this
+book, so `lots` and `cfdLots` are the same number and a second column printed it
+twice. The stocks column is therefore rendered **only when `totals.stocksLots`
+is above zero** — equity is never silently dropped, but a zero is never shown in
+every row either. At phone width the surviving two columns fit without
+horizontal scrolling, which the six-column version did not.
+
+**Deal lots** (added 2026-10-29) are `clientRevenueSummaries[].lots` — the same
+DealMatch rows the revenue column is built from, so they cost **no extra call**.
+§1 verifies that column sums to `totalMt5DealLots + totalShiftingMt5DealLots`
+exactly, and a round trip is two deals, so it runs roughly 2.03× the
+commissioned figure. It exists for two reasons: it is the denominator the
+revenue beside it was earned over, which makes that revenue auditable; and it is
+the only second lots figure we hold, which is what a Zads-style gap would be
+diagnosed against. **It is never a commission basis** — `commissionOf` only ever
+receives `cfdLots`, asserted in `commissionCore.test.js`. It rides the same
+scope gate as revenue, so a salesperson's payload carries no `dealLots` key at
+all.
+
+**Summary cards carry the totals and their formulas** (restored 2026-10-29).
+Five for Abbas and Daniel — Lots, Commission, Deal lots, Revenue, Margin — and
+two for a salesperson, each with a **one-line derivation underneath**:
+`lots × $1.00`, `revenue − commission`, `markup + client comm + swap − LP comm`.
+The reader gets the formula where they are already looking, instead of a
+paragraph above the numbers.
+
+The caveats that will not fit on one line go in a **collapsed "How these are
+calculated"** block at the foot — closed by default, because it is what someone
+opens when a figure looks wrong, not something to read past every time. It is
+where "Revenue **is not net of IB rebate**" lives, which is the one caveat that
+makes the Margin card optimistic.
+
+**What stays cut:** the four explanatory paragraphs above the figures. Prose
+that restates what a column name says is a paragraph nobody reads on a phone.
+What survives is said only when it is true — a warning when the backend sends
+one, and a line about the window **only when it differs** from the one asked
+for — or is one line long and sits under the number it explains.
+
+### Why the page does not reconcile to FXBO's IB columns
+
+Asked on 2026-10-29 to make our two lot figures equal FXBO's. They cannot be,
+and one of them must not be.
+
+FXBO's IB tree publishes **`Lots`** and **`Total Traded Lots`** per client.
+`Lots` is **the IB's commission basis, not volume**: FXBO's own commission
+divided by it lands on exact round rates ($6.00/lot for Cedra, $8.00 for Kumail,
+$4.00 for Jitu, $4.00 for Anirban, $8.00 for Fahad), and it reads **0** for
+Golden Rose and Kasper, who traded 114.00 and 10.62 lots in October — their IB
+simply is not paid on them. Paying sales commission on that column would delete
+~$125 of October commission.
+
+Our single figure already equals **whichever of FXBO's two columns is the real
+traded volume** for that client — 10 of the 11 clients FXBO can answer for. No
+single source change makes both columns line up, because FXBO's other column is
+an artifact of a different commission scheme.
+
+Five clients sit under no IB at all (Bisan, Ankit, Bheru, Ultimo, Vahid —
+191.19 lots), so FXBO exposes no lots figure for them in any column.
 
 ---
 

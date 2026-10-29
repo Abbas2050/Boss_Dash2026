@@ -327,6 +327,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
       stocksLots: 0,
       cfdLots: 0,
       revenueUsd: 0,
+      dealLots: 0,
       revenueRowCount: 0,
     });
   }
@@ -369,6 +370,11 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
       if (!client) continue;
       revenueRowsMatched += 1;
       client.revenueUsd += num(row?.totalRevenueUsd);
+      // DEAL lots: the volume that revenue was earned over. Accumulated beside
+      // revenue and deliberately nowhere near commissionOf, which only ever
+      // sees cfdLots. A round trip is two deals (§1), so this runs roughly
+      // double the commissioned figure and must never be mistaken for it.
+      client.dealLots += num(row?.dealLots);
       client.revenueRowCount += 1;
     }
   }
@@ -386,6 +392,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
         stocksLots: 0,
         cfdLots: 0,
         revenueUsd: 0,
+        dealLots: 0,
         clients: [],
       });
     }
@@ -419,6 +426,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
     group.stocksLots += client.stocksLots;
     group.cfdLots += client.cfdLots;
     group.revenueUsd += client.revenueUsd;
+    group.dealLots += client.dealLots;
 
     if (includeRevenue) {
       if (client.cfdLots !== 0 && !hasRevenue) clientsMissingRevenue += 1;
@@ -446,6 +454,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
         ? {
             revenueUsd: round2(group.revenueUsd),
             marginAfterCommissionUsd: round2(group.revenueUsd - commissionOf(group.cfdLots)),
+            dealLots: round2(group.dealLots),
           }
         : {}),
       clients: group.clients
@@ -462,6 +471,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
             ? {
                 revenueUsd: round2(client.revenueUsd),
                 marginAfterCommissionUsd: round2(client.revenueUsd - commissionOf(client.cfdLots)),
+                dealLots: round2(client.dealLots),
                 // The join is unverified (§5 says one row per CRM client, yet
                 // the row carries a login), so every client says out loud
                 // whether a revenue row was found for it and how many.
@@ -534,6 +544,7 @@ export function buildCommissionReport({ scope, range, clients, accounts, volumeR
         ? {
             revenueUsd: round2(totalRevenueUsd),
             marginAfterCommissionUsd: round2(totalRevenueUsd - commissionOf(totalCfdLots)),
+            dealLots: round2([...groups.values()].reduce((sum, g) => sum + g.dealLots, 0)),
           }
         : {}),
     },

@@ -169,12 +169,21 @@ export async function fetchClientVolumeByClient({ from, to }) {
 }
 
 /**
- * `clientRevenueSummaries[]` from DealMatch/Run: `totalRevenueUsd` per client.
+ * `clientRevenueSummaries[]` from DealMatch/Run: `totalRevenueUsd` and the
+ * DEAL lots that revenue was earned on, per client.
  *
  * `totalRevenueUsd` is passed through untouched. It is the backend's own figure
  * (markup + client commission + swap − LP commission) and must not be rebuilt
  * from its parts -- `markup + clientComm` drops swap, which on 2026-09-16 was
  * $20,313.91 of a $21,609.65 day (docs/dealing-reporting.md §5).
+ *
+ * `lots` on this row is DEAL lots, not the realized lots commission is paid on:
+ * §1 verifies `sum(clientRevenueSummaries[].lots)` equals
+ * `totalMt5DealLots + totalShiftingMt5DealLots` exactly, and a round trip is two
+ * deals. It is read because it arrives in a payload already being fetched for
+ * revenue, and because it is the denominator the revenue beside it was earned
+ * over -- which is what makes that revenue auditable. It is NEVER a commission
+ * basis; `commissionOf` only ever sees `cfdLots`.
  */
 export async function fetchClientRevenueSummaries({ from, to }) {
   const resp = await backendFetch(`/DealMatch/Run?${dealMatchQuery({ from, to })}`, {
@@ -190,6 +199,7 @@ export async function fetchClientRevenueSummaries({ from, to }) {
     rows: rows.map((row) => ({
       login: row?.login,
       totalRevenueUsd: Number(row?.totalRevenueUsd) || 0,
+      dealLots: Number(row?.lots) || 0,
     })),
   };
 }
