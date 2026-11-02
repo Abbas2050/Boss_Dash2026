@@ -409,6 +409,28 @@ export async function runSlippageEmailReport({
   const fromYmd = toYmdUtc(period.start);
   const toYmd = toYmdUtc(period.end);
 
+  // Recipients and the send guard are settled BEFORE anything is fetched. The
+  // two calls below cost about 80 seconds of a shared backend between them, and
+  // spending that on a window that already went out -- or on an email with
+  // nowhere to go -- buys nothing. It also makes a catch-up on boot cheap when
+  // the slot turns out to have been handled already. runSwapsEmailReport does
+  // the same, for the same reason.
+  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
+  const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
+    ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
+    : resolveRecipients(SLIPPAGE_RECIPIENT_VARS[cadence]);
+  if (!recipients.length) {
+    console.warn(`[${label}] No recipients configured. Skipping.`);
+    return { ok: false, reason: "no-recipients", fromYmd, toYmd };
+  }
+
+  // Same window, already sent: this is a restart, not a new period.
+  const windowKey = spec.windowKey(fromYmd, toYmd);
+  if (isScheduledRun && (await alreadySentFor(SLIPPAGE_GUARD_KEYS[cadence], windowKey))) {
+    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
+    return { ok: false, reason: "already-sent", fromYmd, toYmd };
+  }
+
   const rows = await fetchSlippageRows(fromYmd, toYmd);
   const { buckets } = aggregateByLp(rows);
   const kpis = computeKpis(buckets, rows);
@@ -427,27 +449,6 @@ export async function runSlippageEmailReport({
   } catch (error) {
     volumeError = error?.message || String(error);
     console.warn(`[${label}] volume lookup failed:`, volumeError);
-  }
-
-  // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
-  // An explicit recipient list means the on-demand test button, which must
-  // always send. Everything else is the cron or a RUN_ON_START boot, and a
-  // window that already went out must not go again -- an app pool that
-  // recycles nightly would otherwise mail this every morning.
-  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
-  const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
-    ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : resolveRecipients(SLIPPAGE_RECIPIENT_VARS[cadence]);
-  if (!recipients.length) {
-    console.warn(`[${label}] No recipients configured. Skipping.`);
-    return { ok: false, reason: "no-recipients", lps: buckets.length, fromYmd, toYmd };
-  }
-
-  // Same window, already sent: this is a restart, not a new period.
-  const windowKey = spec.windowKey(fromYmd, toYmd);
-  if (isScheduledRun && (await alreadySentFor(SLIPPAGE_GUARD_KEYS[cadence], windowKey))) {
-    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
-    return { ok: false, reason: "already-sent", fromYmd, toYmd };
   }
 
   const subject = slippageSubject(cadence, fromYmd, toYmd);

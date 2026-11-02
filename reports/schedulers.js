@@ -1,4 +1,4 @@
-import { startReportScheduler } from "./reportShared.js";
+import { runCatchUps, startReportScheduler } from "./reportShared.js";
 import { runDailyDigest } from "./dailyDigest.js";
 import { runMonthlyReview } from "./monthlyReview.js";
 import { runWeeklyBusinessSummary, SUMMARY_RECIPIENT_VARS } from "./weeklyBusinessSummary.js";
@@ -115,8 +115,16 @@ export const REPORT_SCHEDULES = [
 ];
 
 export function startAllReportSchedulers() {
-  return REPORT_SCHEDULES.map((config) => ({
+  const started = REPORT_SCHEDULES.map((config) => ({
     label: config.label,
     ...startReportScheduler(config),
   }));
+
+  // Anything whose slot passed while no worker was alive runs now, in table
+  // order and one at a time -- the same ordering the crons use, and never two
+  // 40-second backend calls at once. Deliberately not awaited: the app must
+  // finish booting and start serving while these run behind it.
+  void runCatchUps(started.map((s) => s.catchUp));
+
+  return started;
 }

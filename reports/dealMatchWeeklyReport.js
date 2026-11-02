@@ -1673,6 +1673,31 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
   const label = `DealMatch${cadence[0].toUpperCase()}${cadence.slice(1)}`;
 
   const period = fromDate && toDate ? { start: fromDate, end: toDate } : spec.period();
+  const periodFromYmd = toYmdUtc(period.start);
+  const periodToYmd = toYmdUtc(period.end);
+
+  // Recipients and the send guard come BEFORE the fetch. DealMatch/Run costs
+  // about 40 seconds whatever window it is asked for, and spending that on a
+  // window that already went out -- or on an email with nowhere to go -- buys
+  // nothing. It also keeps a catch-up on boot cheap when the slot turns out to
+  // have been handled already.
+  //
+  // An explicit recipient list means the on-demand test button, which must
+  // always send; everything else is the cron or a boot.
+  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
+  const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
+    ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
+    : resolveRecipients(DEALMATCH_RECIPIENT_VARS[cadence]);
+  if (!recipients.length) {
+    console.warn(`[${label}] No recipients configured. Skipping.`);
+    return { ok: false, reason: "no-recipients", fromYmd: periodFromYmd, toYmd: periodToYmd };
+  }
+
+  const windowKey = spec.windowKey(periodFromYmd, periodToYmd);
+  if (isScheduledRun && (await alreadySentFor(DEALMATCH_GUARD_KEYS[cadence], windowKey))) {
+    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
+    return { ok: false, reason: "already-sent", fromYmd: periodFromYmd, toYmd: periodToYmd };
+  }
   const { from, to } = toUnixRange(period.start, period.end);
   const params = new URLSearchParams({
     group: "*",
@@ -1798,27 +1823,6 @@ export async function runDealMatchEmailReport({ cadence = "weekly", fromDate, to
 
   const fromYmd = toYmdUtc(period.start);
   const toYmd = toYmdUtc(period.end);
-  // Explicit recipients (e.g. the on-demand test button) take precedence over the configured list.
-  // An explicit recipient list means the on-demand test button, which must
-  // always send. Everything else is the cron or a RUN_ON_START boot, and a
-  // window that already went out must not go again -- an app pool that
-  // recycles nightly would otherwise mail this every morning.
-  const isScheduledRun = !(Array.isArray(recipientsOverride) && recipientsOverride.length);
-
-  const recipients = Array.isArray(recipientsOverride) && recipientsOverride.length
-    ? recipientsOverride.map((e) => String(e).trim()).filter(Boolean)
-    : resolveRecipients(DEALMATCH_RECIPIENT_VARS[cadence]);
-  if (!recipients.length) {
-    console.warn(`[${label}] No recipients configured. Skipping.`);
-    return { ok: false, reason: "no-recipients", rows: rows.length, fromYmd, toYmd };
-  }
-
-  // Same window, already sent: this is a restart, not a new period.
-  const windowKey = spec.windowKey(fromYmd, toYmd);
-  if (isScheduledRun && (await alreadySentFor(DEALMATCH_GUARD_KEYS[cadence], windowKey))) {
-    console.log(`[${label}] ${windowKey} already sent; skipping (restart, not a new ${spec.noun}).`);
-    return { ok: false, reason: "already-sent", fromYmd, toYmd };
-  }
   // Volume is supplementary — a ClientVolume outage must not block the revenue
   // report, so fall back to rendering the section as unavailable.
   let volume = null;

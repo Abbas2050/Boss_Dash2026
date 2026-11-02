@@ -375,6 +375,143 @@ export function resolveRecipients(recipientVars) {
   return [];
 }
 
+// ── catching up a slot the app slept through ────────────────────────────────
+// node-cron lives inside the IIS worker process. When the app pool is idle it
+// is shut down, and every timer in it goes with it: the job does not fire late,
+// it does not fire at all. On Sunday 1 November 2026 nothing visited the site
+// all morning, so 11:00, 11:30, 12:00 and 12:30 Dubai -- the four monthly
+// reports, the only ones due that day -- passed with no process alive. The
+// first worker of the day booted at 17:30 and knew nothing about it.
+//
+// So each boot asks the question the dead process could not: has my most
+// recent slot been handled? The answer lives in the send log, under
+// "catchup:<label>", written whether the slot was handled by the cron or by a
+// catch-up. A report is therefore late rather than lost.
+export const CATCH_UP_GRACE_MS = 72 * 60 * 60 * 1000;
+
+const CATCH_UP_MARK = (label) => `catchup:${label}`;
+
+// One cron field against one value. Supports "*", "a-b", "*/n", "a-b/n" and
+// comma-separated lists of those -- everything node-cron accepts that our
+// expressions use.
+function cronFieldMatches(field, value) {
+  return String(field).split(",").some((chunk) => {
+    const [range, stepRaw] = chunk.split("/");
+    const step = stepRaw ? Number(stepRaw) : 1;
+    if (!Number.isFinite(step) || step < 1) return false;
+    if (range === "*") return (value % step) === 0;
+    const [loRaw, hiRaw] = range.split("-");
+    const lo = Number(loRaw);
+    const hi = hiRaw === undefined ? lo : Number(hiRaw);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return false;
+    return value >= lo && value <= hi && ((value - lo) % step) === 0;
+  });
+}
+
+/**
+ * Does `expression` fire at this wall-clock minute?
+ *
+ * Day-of-month and day-of-week follow cron's OR rule: when both are
+ * restricted, either matching is enough. Our expressions never restrict both
+ * (dailies set day-of-week, monthlies set day-of-month), but getting the rule
+ * wrong silently would make a daily look like it fires on the 1st only.
+ */
+export function cronFiresAt(expression, { minute, hour, dayOfMonth, month, dayOfWeek }) {
+  const [mi, hh, dom, mon, dow] = String(expression).trim().split(/\s+/);
+  if (!dow) return false;
+  if (!cronFieldMatches(mi, minute) || !cronFieldMatches(hh, hour) || !cronFieldMatches(mon, month)) return false;
+  // Cron writes Sunday as either 0 or 7.
+  const dowMatches = cronFieldMatches(dow, dayOfWeek) || (dayOfWeek === 0 && cronFieldMatches(dow, 7));
+  if (dom === "*" && dow === "*") return true;
+  if (dom === "*") return dowMatches;
+  if (dow === "*") return cronFieldMatches(dom, dayOfMonth);
+  return cronFieldMatches(dom, dayOfMonth) || dowMatches;
+}
+
+// How far `timeZone` is ahead of UTC at `date`, in milliseconds. Read once per
+// scan and then used as a fixed offset: every schedule here runs in Asia/Dubai,
+// which has no daylight saving. In a zone that does, a scan spanning the
+// changeover can be an hour out -- which can only make a slot look handled or
+// missed by an hour, and the per-report send guard still prevents a repeat.
+function zoneOffsetMs(timeZone, date) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone, hour12: false,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(date).reduce((acc, part) => {
+    acc[part.type] = part.value;
+    return acc;
+  }, {});
+  const hour = parts.hour === "24" ? 0 : Number(parts.hour);
+  const asIfUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), hour, Number(parts.minute), Number(parts.second));
+  return asIfUtc - Math.floor(date.getTime() / 1000) * 1000;
+}
+
+/**
+ * The most recent instant `expression` fired at, at or before `now`, or null if
+ * that is further back than `withinMs`.
+ *
+ * Walks back a minute at a time. The grace window keeps a very stale slot from
+ * being resurrected: an app that has been down since the 1st should not mail
+ * last month's review on the 20th as though it were news.
+ */
+export function lastScheduledOccurrence(expression, timezone, now = new Date(), withinMs = CATCH_UP_GRACE_MS) {
+  const offset = zoneOffsetMs(timezone || "UTC", now);
+  const startMs = Math.floor(now.getTime() / 60_000) * 60_000;
+  const steps = Math.floor(withinMs / 60_000);
+  for (let i = 0; i <= steps; i += 1) {
+    const ms = startMs - i * 60_000;
+    const wall = new Date(ms + offset);
+    const fires = cronFiresAt(expression, {
+      minute: wall.getUTCMinutes(),
+      hour: wall.getUTCHours(),
+      dayOfMonth: wall.getUTCDate(),
+      month: wall.getUTCMonth() + 1,
+      dayOfWeek: wall.getUTCDay(),
+    });
+    if (fires) return new Date(ms);
+  }
+  return null;
+}
+
+/**
+ * Run the slots that nothing handled, one at a time.
+ *
+ * Each is marked BEFORE it runs, not after. A job that takes the worker down
+ * with it -- out of memory on a month of deals, say -- would otherwise be
+ * retried by the next boot, which starts the same crash again. A failure is
+ * logged and the remaining reports still get their turn.
+ */
+export async function runCatchUps(catchUps) {
+  const pending = (catchUps || []).filter(Boolean);
+  if (!pending.length) return { ran: [], failed: [] };
+
+  // No writable log means no mark, so every boot would look like the first
+  // one. On a host whose app pool recycles every few minutes that is a mail
+  // flood; doing nothing is the safe failure.
+  if (!(await getSendLogFile())) {
+    console.error("[reports] catch-up skipped: no writable send log, so a missed slot cannot be recorded.");
+    return { ran: [], failed: [], skipped: "no-send-log" };
+  }
+
+  const ran = [];
+  const failed = [];
+  for (const { label, occurrence, run } of pending) {
+    const stamp = occurrence.toISOString();
+    if (await alreadySentFor(CATCH_UP_MARK(label), stamp)) continue;
+    await recordSentFor(CATCH_UP_MARK(label), stamp);
+    console.log(`[${label}] ${stamp} passed with nothing running; sending it now.`);
+    try {
+      await run();
+      ran.push(label);
+    } catch (error) {
+      console.error(`[${label}] catch-up failed:`, error?.message || error);
+      failed.push(label);
+    }
+  }
+  return { ran, failed };
+}
+
 // One scheduler for all nine sends. Every report used to carry its own copy of
 // this block; five copies meant the boot-time warning below could be forgotten
 // in the sixth, which is the failure that made the weekly summary silently send
@@ -397,19 +534,24 @@ export function startReportScheduler({
   const enabled = String(process.env[enabledVar] || "true").toLowerCase() !== "false";
   if (!enabled) {
     console.log(`[${label}] disabled by ${enabledVar}=false`);
-    return { registered: false, reason: "disabled" };
+    return { registered: false, reason: "disabled", catchUp: null };
   }
 
   const expression = String(process.env[cronVar] || defaultCron);
   const timezone = String(process.env[timezoneVar] || defaultTimezone);
   if (!cron.validate(expression)) {
     console.error(`[${label}] Invalid cron expression: "${expression}"`);
-    return { registered: false, reason: "invalid-cron", schedule: expression, timezone };
+    return { registered: false, reason: "invalid-cron", schedule: expression, timezone, catchUp: null };
   }
 
   scheduleFn(
     expression,
     async () => {
+      // Mark the slot as handled before running it, so the catch-up on the
+      // next boot -- minutes away on a host that recycles this often -- does
+      // not send the same report a second time.
+      const firedAt = lastScheduledOccurrence(expression, timezone, new Date(), 2 * 60_000) || new Date();
+      await recordSentFor(CATCH_UP_MARK(label), firedAt.toISOString());
       try {
         await run();
       } catch (error) {
@@ -438,7 +580,12 @@ export function startReportScheduler({
     });
   }
 
-  return { registered: true, schedule: expression, timezone, warnedNoRecipients };
+  // The caller runs these; this function only reports what it found, so it
+  // stays synchronous and side-effect free apart from registering the job.
+  const occurrence = lastScheduledOccurrence(expression, timezone);
+  const catchUp = occurrence ? { label, occurrence, run } : null;
+
+  return { registered: true, schedule: expression, timezone, warnedNoRecipients, catchUp };
 }
 
 export function toUnixRange(fromDate, toDate) {
