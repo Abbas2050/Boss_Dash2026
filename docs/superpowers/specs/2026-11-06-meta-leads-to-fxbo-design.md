@@ -67,12 +67,43 @@ therefore derived from the phone's dialling code first.
 
 | Question | Decision |
 |---|---|
-| Lead type | **Per sheet.** Each registered sheet sets `ib` true or false. |
+| Lead type | **Plain leads. `ib` is false on all three sheets.** The flag is still per-sheet, so one can be switched on without a deploy. |
 | Lead source (`referrer`) | **The ad set name** — `Partners-IB-Iraq`, `Partners-IB-Turkey`. |
-| Owner | **Per sheet.** Each sheet sets a `managerId`. |
+| Owner | **Unassigned.** `managerId` is left empty on every sheet. The field is still per-sheet. |
+| Tags | **None.** No tags are sent. The field is still per-sheet. |
 | The 36 rows already in the sheets | **Not imported.** Marked handled on first read. |
 | Someone already in FXBO | **Skip on email. Allow on phone** — two people may share a line. |
 | Latency | **About a minute.** The worker polls every 60 seconds. |
+
+The last three were originally answered the other way — an IB flag, an owner and
+tags chosen per sheet — and were reversed on the same day, once the live CRM
+showed what those fields hold today (§2.1). The per-sheet columns survive the
+reversal because they cost one nullable column and one form field each, and
+because the answer that changed once can change again.
+
+### 2.1 What the live CRM holds, read 2026-11-06
+
+From the first 500 users (36 leads, 73 IBs), which is what made the three
+reversals above the obvious call:
+
+| Field | In use today |
+|---|---|
+| `managerId` | 20 on 229 users, then 23, 28, 7, 11, 29, 3; **224 unassigned** |
+| `referrer` | 499 empty, one holding `13311` |
+| `status` | 498 empty, `new` on two |
+| `tags` | `15pBonus` (160), `IB` (16), and FXBO's own `Incomplete …` tags |
+| `language` | 392 empty, `en` on 107 |
+| `source` | `rest api` on 461 — FXBO sets this itself for anything the API creates |
+
+Two consequences. An unassigned lead is the CRM's normal state, not an
+oversight. And `referrer` is effectively a free field, so putting an ad set name
+in it cannot collide with an existing convention — but see §5 for the one
+display risk it carries.
+
+**`GET /rest/managers` is refused**: `403 invalid_grant`, "Method is not
+allowed". The API user cannot list managers, the same scope gap that blocks API
+Clients and Finalto Admin. Manager ids therefore have to be read from the FXBO
+UI, which matters only if an owner is ever set.
 
 ---
 
@@ -156,20 +187,22 @@ One `POST /rest/users/new` per row, through the existing `/rest` proxy in
 | FXBO field | Value | Source |
 |---|---|---|
 | `lead` | `true` | always — this endpoint creates a client when false |
-| `ib` | `true` / `false` | the sheet's setting |
+| `ib` | `false` | the sheet's setting, false on all three today |
 | `firstName` | given name | §6.1 |
 | `lastName` | family name | §6.1 |
 | `email` | trimmed, lower-cased | `email` column |
 | `phone` | `+9647705108061` | `phone_number`, `p:` stripped |
 | `country` | ISO alpha-2 | §6.2 |
 | `language` | ISO 639-1 | the sheet's setting (`ar`, `tr`, `en`) |
-| `managerId` | integer | the sheet's setting |
 | `referrer` | `Partners-IB-Iraq` | `adset_name` — FXBO labels this field *lead source* |
-| `status` | string | the sheet's setting; omitted when unset, leaving FXBO's default |
-| `tags` | array | the sheet's setting; omitted when unset |
-| `utmParams` | query string | §6.3 |
+| `utmParams` | query string | §6.4 |
 | `sendWelcomeEmail` | `false` | these people did not ask for an account |
 | `acceptedDocuments` | `false` | they have accepted nothing |
+
+Eleven fields. **`managerId`, `tags` and `status` are not sent at all**, because
+all three sheets leave them unset: the lead lands unassigned, untagged, and on
+whatever status FXBO gives it. Setting any of them on a sheet adds that field to
+that sheet's payload and nothing else changes.
 
 Everything else the endpoint accepts — `password`, `middleName`, `city`,
 `birthDate`, `title`, `partnerId`, `secondaryEmail`, `secondaryPhone`,
@@ -177,6 +210,19 @@ Everything else the endpoint accepts — `password`, `middleName`, `city`,
 **omitted**, not sent empty. A Meta lead form gives us none of them, and sending
 an empty string where FXBO has a default is how a default gets overwritten with
 nothing.
+
+The line between the two is whether we have an answer, not whether the answer is
+interesting. `ib: false` is sent because the sheet states it; `city` is omitted
+because nobody asked the lead for one. So a sheet switched to `ib: true` changes
+one field in the payload, and no field ever carries a value we invented.
+
+**One thing to verify on the first real lead.** The API documents `referrer` as
+*lead source*, a free string, and 499 of 500 users leave it empty — but the one
+that does not holds `13311`, which reads like a user id. If FXBO's UI renders
+the field as a link to a referring user rather than as text, `Partners-IB-Iraq`
+will look wrong there, and the ad set name moves to a tag instead. This is
+checked by eye on the first lead the module creates, before the sheets are left
+running.
 
 **The Meta lead id is deliberately not pushed.** It would have to go in a tag,
 where it would be noise in every CRM list view. It is held in `meta_lead_rows`
@@ -212,7 +258,17 @@ In order, first that answers:
 If none answers, `country` is omitted and the row still goes through. A lead
 without a country is workable; a lead filed under the wrong one is not.
 
-### 6.3 utmParams
+### 6.3 Lead source
+
+`referrer` is the ad set name, read from the row rather than configured, so the
+same sheet produces a different value as campaigns are launched.
+
+`adset_name` is empty on organic and test rows, and may be empty on a lead that
+arrives through a form shared outside an ad. The fallback is `campaign_name`,
+then `form_name` — `Zero-Spread-UAE` is a more useful lead source than nothing.
+If all three are empty, `referrer` is omitted.
+
+### 6.4 utmParams
 
 A query string of standard UTM keys only, because FXBO's own example shows UTM
 keys and we have no evidence it keeps anything else:
@@ -226,7 +282,7 @@ utm_source=facebook&utm_medium=paid_social&utm_campaign=Partners-IB
 `ig`. Each value is URL-encoded; a form or ad name containing `&` would
 otherwise truncate everything after it.
 
-### 6.4 Rows that are skipped, not sent
+### 6.5 Rows that are skipped, not sent
 
 - Any field containing `<test lead:`, or an email of `test@meta.com`, or
   `is_organic` true — `skipped_test`.
@@ -239,7 +295,22 @@ otherwise truncate everything after it.
 ## 7. Registering a sheet, and the first read
 
 A sheet is added in the tab, not in code: spreadsheet id, tab name, a label, the
-IB flag, the owner, the language, an optional status and tags.
+language, and — all defaulting to off or empty — the IB flag, an owner, a
+status and tags.
+
+The three sheets go in like this:
+
+| | Iraq | Turkey | UAE |
+|---|---|---|---|
+| Label | Meta – Iraq | Meta – Turkey | Meta – UAE |
+| `language` | `ar` | `tr` | `en` |
+| `ib` | off | off | off |
+| `managerId` | empty | empty | empty |
+| `tags` | empty | empty | empty |
+| `status` | empty | empty | empty |
+
+Only the label and the language differ, which is the point: the three sheets
+behave identically unless someone deliberately makes one differ.
 
 On the **first** poll after a sheet is registered, every row then present is
 written directly as `skipped_existing` and nothing is sent. The sheet's
