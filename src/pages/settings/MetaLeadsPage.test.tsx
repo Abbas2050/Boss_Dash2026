@@ -105,6 +105,59 @@ describe("MetaLeadsPage", () => {
     });
   });
 
+  // The sheet ids are not in the code, so this form is the only way a sheet
+  // ever gets watched. Without it the module is inert however well it works.
+  it("registers a sheet from a pasted URL, with the defaults", async () => {
+    render(<MetaLeadsPage />);
+    await screen.findByRole("region", { name: "Sheets" });
+
+    fireEvent.change(screen.getByLabelText(/label/i), { target: { value: "Meta – UAE" } });
+    fireEvent.change(screen.getByLabelText(/spreadsheet/i), {
+      target: { value: "https://docs.google.com/spreadsheets/d/1aSbMb79/edit?gid=0#gid=0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add sheet/i }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/meta-leads/sheets", expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          label: "Meta – UAE",
+          spreadsheetId: "https://docs.google.com/spreadsheets/d/1aSbMb79/edit?gid=0#gid=0",
+          tabName: "Sheet1",
+          language: "en",
+          ib: false,
+          sendLeadSource: false,
+          managerId: "",
+          status: "",
+          tags: "",
+          enabled: true,
+        }),
+      }));
+    });
+  });
+
+  it("will not post a sheet with no label or no spreadsheet", async () => {
+    render(<MetaLeadsPage />);
+    await screen.findByRole("region", { name: "Sheets" });
+    const calls = (fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: /add sheet/i }));
+    expect((fetch as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(calls);
+    expect(screen.getByText(/a label and a spreadsheet link are needed/i)).toBeInTheDocument();
+  });
+
+  // Turning a sheet off is how you stop a runaway import without a deploy.
+  it("turns a sheet off from its row", async () => {
+    render(<MetaLeadsPage />);
+    await screen.findByRole("region", { name: "Sheets" });
+    fireEvent.click(sheets().getAllByRole("button", { name: /turn off/i })[0]);
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/meta-leads/sheets", expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"enabled":false'),
+      }));
+    });
+  });
+
   it("says so when the overview cannot be read", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: false, status: 500, json: async () => ({ ok: false, error: "pool is not initialized" }),

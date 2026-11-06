@@ -7,6 +7,7 @@ import { formatDubaiInstant } from "@/lib/dubaiTime";
 
 const OVERVIEW_URL = "/api/meta-leads/overview";
 const RETRY_URL = "/api/meta-leads/retry";
+const SHEETS_URL = "/api/meta-leads/sheets";
 
 type Sheet = {
   id: number;
@@ -70,10 +71,34 @@ const STATUS_TONE: Record<string, string> = {
   failed: "text-rose-600 dark:text-rose-400",
 };
 
+/**
+ * A new sheet, before it is saved. The spreadsheet field takes a pasted URL
+ * as readily as a bare id -- pasting the URL is what anyone will actually do,
+ * and the server pulls the id out of it.
+ *
+ * Everything below `language` defaults to off or empty, which is the whole
+ * point: the three sheets in use differ in nothing but their label, so any
+ * difference between them later is one somebody chose.
+ */
+const BLANK_SHEET = {
+  label: "",
+  spreadsheetId: "",
+  tabName: "Sheet1",
+  language: "en",
+  ib: false,
+  sendLeadSource: false,
+  managerId: "",
+  status: "",
+  tags: "",
+};
+
 export const MetaLeadsPage: React.FC = () => {
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [draft, setDraft] = useState({ ...BLANK_SHEET });
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -93,6 +118,53 @@ export const MetaLeadsPage: React.FC = () => {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const postSheet = useCallback(async (body: unknown) => {
+    await fetch(SHEETS_URL, {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await load();
+  }, [load]);
+
+  const addSheet = useCallback(async () => {
+    if (!draft.label.trim() || !draft.spreadsheetId.trim()) {
+      setFormError("A label and a spreadsheet link are needed.");
+      return;
+    }
+    setFormError(null);
+    setSaving(true);
+    try {
+      await postSheet({ ...draft, enabled: true });
+      setDraft({ ...BLANK_SHEET });
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, postSheet]);
+
+  // Posts the sheet back with `enabled` flipped. The save route takes the
+  // whole record, so the rest of its settings travel unchanged.
+  const toggleSheet = useCallback(async (sheet: Sheet) => {
+    setBusyId(-sheet.id);
+    try {
+      await postSheet({
+        id: sheet.id,
+        label: sheet.label,
+        spreadsheetId: sheet.spreadsheetId,
+        tabName: sheet.tabName,
+        language: sheet.language ?? "en",
+        ib: sheet.ib,
+        sendLeadSource: sheet.sendLeadSource,
+        managerId: sheet.managerId ?? "",
+        status: sheet.status ?? "",
+        tags: sheet.tags ?? "",
+        enabled: !sheet.enabled,
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }, [postSheet]);
 
   const retry = useCallback(async (id: number) => {
     setBusyId(id);
@@ -136,13 +208,119 @@ export const MetaLeadsPage: React.FC = () => {
 
           <section className="space-y-2" aria-label="Sheets">
             <h2 className="text-sm font-semibold uppercase text-muted-foreground">Sheets</h2>
+
+            <div className="rounded-md border p-3 text-sm">
+              <div className="mb-2 font-medium">Add a sheet</div>
+              <p className="mb-3 text-muted-foreground">
+                Everything already in the sheet when you add it is recorded as “was there
+                before” and never sent. Only rows that arrive afterwards reach FXBO.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Label</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.label}
+                    onChange={(e) => setDraft({ ...draft, label: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Spreadsheet link or id</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.spreadsheetId}
+                    onChange={(e) => setDraft({ ...draft, spreadsheetId: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Tab name</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.tabName}
+                    onChange={(e) => setDraft({ ...draft, tabName: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Language</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.language}
+                    onChange={(e) => setDraft({ ...draft, language: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Owner (manager id) — optional</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.managerId}
+                    onChange={(e) => setDraft({ ...draft, managerId: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Tags, comma separated — optional</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.tags}
+                    onChange={(e) => setDraft({ ...draft, tags: e.target.value })}
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="text-muted-foreground">Status — optional</span>
+                  <input
+                    className="rounded border bg-transparent px-2 py-1"
+                    value={draft.status}
+                    onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+                  />
+                </label>
+                <div className="flex flex-col justify-end gap-2">
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.ib}
+                      onChange={(e) => setDraft({ ...draft, ib: e.target.checked })}
+                    />
+                    <span>Create these as IB leads</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={draft.sendLeadSource}
+                      onChange={(e) => setDraft({ ...draft, sendLeadSource: e.target.checked })}
+                    />
+                    <span>Send the ad set name as lead source</span>
+                  </label>
+                </div>
+              </div>
+              {formError && (
+                <div className="mt-2 text-rose-600 dark:text-rose-400">{formError}</div>
+              )}
+              <button
+                type="button"
+                className="mt-3 rounded border px-3 py-1"
+                disabled={saving}
+                onClick={() => void addSheet()}
+              >
+                Add sheet
+              </button>
+            </div>
+
             {data.sheets.map((sheet) => (
               <div key={sheet.id} className="rounded-md border p-3 text-sm">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <span className="font-medium">{sheet.label}</span>
-                  <span className="text-muted-foreground">
-                    {sheet.enabled ? "on" : "off"} · {sheet.lastRowCount} rows read ·{" "}
-                    {sheet.lastPolledAt ? formatDubaiInstant(sheet.lastPolledAt) : "never polled"}
+                  <span className="flex items-center gap-3 text-muted-foreground">
+                    <span>
+                      {sheet.enabled ? "on" : "off"} · {sheet.lastRowCount} rows read ·{" "}
+                      {sheet.lastPolledAt ? formatDubaiInstant(sheet.lastPolledAt) : "never polled"}
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1"
+                      disabled={busyId === -sheet.id}
+                      onClick={() => void toggleSheet(sheet)}
+                    >
+                      {sheet.enabled ? "Turn off" : "Turn on"}
+                    </button>
                   </span>
                 </div>
                 {!sheet.bootstrappedAt && (
