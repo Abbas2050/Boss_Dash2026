@@ -23,6 +23,23 @@ import { makeCrmEventsRequeueHandler } from "./crmSignup/requeueRoute.js";
 import { makeWhatsappStatusHandler } from "./crmSignup/whatsappStatusRoute.js";
 import { initCrmSignupStore, findExistingClickIds, insertSignupEvent, listEventsSince, countEventsSince, latestEventReceivedAt, latestReceivedAtByStage, countResendableSends, requeueFailedSends, recordWhatsappDelivery } from "./crmSignup/store.js";
 import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js";
+// The inbound counterpart of crmSignup: that module watches what FXBO tells
+// us, this one watches three Meta Lead Ads sheets and tells FXBO.
+import {
+  makeMetaLeadsOverviewHandler,
+  makeMetaLeadsRetryHandler,
+  makeMetaLeadsSaveSheetHandler,
+} from "./metaLeads/router.js";
+import {
+  countRowsByStatus as countMetaLeadRows,
+  initMetaLeadsStore,
+  insertSheet as insertMetaLeadSheet,
+  listRecentRows as listMetaLeadRows,
+  listSheets as listMetaLeadSheets,
+  requeueRow as requeueMetaLeadRow,
+  updateSheet as updateMetaLeadSheet,
+} from "./metaLeads/store.js";
+import { kickMetaLeadsWorker, startMetaLeadsWorker } from "./metaLeads/worker.js";
 // The one test for a usable BREVO_LIST_ID, so the boot-time warning below and the
 // send-time gate cannot come to disagree about what "usable" means.
 import { isUsableBrevoListId } from "./crmSignup/brevo.js";
@@ -1350,6 +1367,27 @@ app.post('/api/crm-events/requeue', authRequired, adminOnly, makeCrmEventsRequeu
   kick: kickCrmEventsWorker,
 }));
 
+// The same gate as the CRM Events tab, and for the same reason: these routes
+// register a data source and replay a CRM write, which is admin work rather
+// than a setting. A Settings-only user shown this tab could only ever read
+// "Could not load".
+app.get('/api/meta-leads/overview', authRequired, adminOnly, makeMetaLeadsOverviewHandler({
+  listSheets: listMetaLeadSheets,
+  listRecentRows: listMetaLeadRows,
+  countRowsByStatus: countMetaLeadRows,
+}));
+
+app.post('/api/meta-leads/sheets', authRequired, adminOnly, makeMetaLeadsSaveSheetHandler({
+  insertSheet: insertMetaLeadSheet,
+  updateSheet: updateMetaLeadSheet,
+  kick: kickMetaLeadsWorker,
+}));
+
+app.post('/api/meta-leads/retry', authRequired, adminOnly, makeMetaLeadsRetryHandler({
+  requeueRow: requeueMetaLeadRow,
+  kick: kickMetaLeadsWorker,
+}));
+
 // DoubleTick's delivery reports. Public to the network (allow-listed in
 // auth/requireSession.js) and, unlike the two FXBO webhooks, carrying NO shared
 // secret -- their webhook has none to send, and the capability is the UUID v4
@@ -1539,6 +1577,10 @@ server.listen(PORT, () => {
   initCrmSignupStore()
     .then(() => startCrmEventsWorker())
     .catch((e) => console.error("[crm-events] store init failed:", e?.message || String(e)));
+
+  initMetaLeadsStore()
+    .then(() => startMetaLeadsWorker())
+    .catch((e) => console.error("[meta-leads] store init failed:", e?.message || String(e)));
 
   const profileCronEnabled = String(process.env.CLIENT_PROFILE_CRON_ENABLED || "true").toLowerCase() !== "false";
   const profileCronExpr = String(process.env.CLIENT_PROFILE_CRON || "15 2 * * *");
