@@ -187,8 +187,13 @@ in the tab.
 
 ## 5. What is pushed to FXBO
 
-One `POST /rest/users/new` per row, through the existing `/rest` proxy in
-`server.js`, so the CRM token stays server-side.
+One `POST /rest/users/new` per row, called from the server with the helpers in
+`docusign/crm.js` — `getCrmBaseUrl()`, `authHeaders()`, `versionQuery()` — so
+the CRM token is read in the same one place the Back Office panel reads it and
+never reaches the browser. Not through the `/rest` proxy in `server.js`: that
+proxy exists so the *browser* can reach the CRM without holding the token, and
+a server process calling its own HTTP front door to talk to a third party adds
+a hop and a failure mode for nothing.
 
 | FXBO field | Value | Source |
 |---|---|---|
