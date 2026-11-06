@@ -203,6 +203,19 @@ export const SETTINGS_MENU_ITEMS = [
     group: "admin",
     requiredPermissions: ["Settings", "Auth:ManageUsers"],
   },
+  // Beside CRM Events, on the same gate and for the same reason: its routes
+  // are mounted behind adminOnly, so a Settings-only user would be shown a tab
+  // that could only ever read "Could not load". It is the inbound counterpart
+  // of that page -- CRM Events watches what FXBO tells us, this watches what
+  // we tell FXBO.
+  {
+    key: "meta-leads",
+    name: "Meta Leads",
+    path: "/settings/meta-leads",
+    icon: "Share2",
+    group: "admin",
+    requiredPermissions: ["Settings", "Auth:ManageUsers"],
+  },
   // LP Statements is for the back office as well as for an admin, and the menu
   // model has no OR: getVisibleSettingsMenuItems -> canAccessAll uses .every(),
   // so requiredPermissions is a conjunction and cannot say "either of two

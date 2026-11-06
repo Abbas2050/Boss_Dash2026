@@ -24,7 +24,7 @@ const item = (key: string) => {
 const CORE = ["coverage", "google-sheet-mapping", "lp-manager", "lp-info", "internal-accounts",
   "symbol-mapping", "alerts", "client-account-monitor", "ws-test"];
 const ADMIN = ["api-clients", "api-vendor-urls", "finalto-accounts", "finalto-admin", "lp-equity-history",
-  "crm-events"];
+  "crm-events", "meta-leads"];
 
 describe("settings page chips", () => {
   it("offers one chip per settings page, every page except User Management", () => {
