@@ -57,7 +57,11 @@ export function buildLeadPayload(lead, sheet) {
   if (sheet?.language) payload.language = sheet.language;
   const managerId = Number(sheet?.managerId);
   if (Number.isFinite(managerId) && managerId > 0) payload.managerId = managerId;
-  if (sheet?.sendLeadSource && lead?.leadSource) payload.referrer = lead.leadSource;
+  // The SHEET's name, not the row's ad set. FXBO calls this field lead
+  // source, and the question anyone asks of a lead there is which sheet it
+  // came from -- an ad set name changes with every campaign and cannot answer
+  // that. The ad set is still on the lead, as utm_term.
+  if (sheet?.sendLeadSource && sheet?.label) payload.referrer = sheet.label;
   if (sheet?.status) payload.status = sheet.status;
   const tags = parseTags(sheet?.tags);
   if (tags.length) payload.tags = tags;

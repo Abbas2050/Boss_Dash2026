@@ -86,7 +86,9 @@ const BLANK_SHEET = {
   tabName: "Sheet1",
   language: "en",
   ib: false,
-  sendLeadSource: false,
+  // On by default: without it a lead arrives in FXBO with nothing naming
+  // where it came from, which is the first thing anyone asks of one.
+  sendLeadSource: true,
   managerId: "",
   status: "",
   tags: "",
@@ -97,6 +99,7 @@ export const MetaLeadsPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ ...BLANK_SHEET });
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -128,7 +131,7 @@ export const MetaLeadsPage: React.FC = () => {
     await load();
   }, [load]);
 
-  const addSheet = useCallback(async () => {
+  const saveSheet = useCallback(async () => {
     if (!draft.label.trim() || !draft.spreadsheetId.trim()) {
       setFormError("A label and a spreadsheet link are needed.");
       return;
@@ -136,12 +139,32 @@ export const MetaLeadsPage: React.FC = () => {
     setFormError(null);
     setSaving(true);
     try {
-      await postSheet({ ...draft, enabled: true });
+      await postSheet(editingId === null
+        ? { ...draft, enabled: true }
+        : { ...draft, id: editingId, enabled: true });
       setDraft({ ...BLANK_SHEET });
+      setEditingId(null);
     } finally {
       setSaving(false);
     }
-  }, [draft, postSheet]);
+  }, [draft, editingId, postSheet]);
+
+  /** Loads a registered sheet back into the one form, rather than a second one. */
+  const editSheet = useCallback((sheet: Sheet) => {
+    setFormError(null);
+    setEditingId(sheet.id);
+    setDraft({
+      label: sheet.label ?? "",
+      spreadsheetId: sheet.spreadsheetId ?? "",
+      tabName: sheet.tabName ?? "Sheet1",
+      language: sheet.language ?? "en",
+      ib: sheet.ib,
+      sendLeadSource: sheet.sendLeadSource,
+      managerId: sheet.managerId === null ? "" : String(sheet.managerId),
+      status: sheet.status ?? "",
+      tags: sheet.tags ?? "",
+    });
+  }, []);
 
   // Posts the sheet back with `enabled` flipped. The save route takes the
   // whole record, so the rest of its settings travel unchanged.
@@ -210,7 +233,9 @@ export const MetaLeadsPage: React.FC = () => {
             <h2 className="text-sm font-semibold uppercase text-muted-foreground">Sheets</h2>
 
             <div className="rounded-md border p-3 text-sm">
-              <div className="mb-2 font-medium">Add a sheet</div>
+              <div className="mb-2 font-medium">
+                {editingId === null ? "Add a sheet" : "Edit sheet"}
+              </div>
               <p className="mb-3 text-muted-foreground">
                 Everything already in the sheet when you add it is recorded as “was there
                 before” and never sent. Only rows that arrive afterwards reach FXBO.
@@ -287,21 +312,32 @@ export const MetaLeadsPage: React.FC = () => {
                       checked={draft.sendLeadSource}
                       onChange={(e) => setDraft({ ...draft, sendLeadSource: e.target.checked })}
                     />
-                    <span>Send the ad set name as lead source</span>
+                    <span>Send this sheet’s name as the lead source</span>
                   </label>
                 </div>
               </div>
               {formError && (
                 <div className="mt-2 text-rose-600 dark:text-rose-400">{formError}</div>
               )}
-              <button
-                type="button"
-                className="mt-3 rounded border px-3 py-1"
-                disabled={saving}
-                onClick={() => void addSheet()}
-              >
-                Add sheet
-              </button>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className="rounded border px-3 py-1"
+                  disabled={saving}
+                  onClick={() => void saveSheet()}
+                >
+                  {editingId === null ? "Add sheet" : "Save changes"}
+                </button>
+                {editingId !== null && (
+                  <button
+                    type="button"
+                    className="rounded border px-3 py-1"
+                    onClick={() => { setEditingId(null); setDraft({ ...BLANK_SHEET }); setFormError(null); }}
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
             </div>
 
             {data.sheets.map((sheet) => (
@@ -313,6 +349,13 @@ export const MetaLeadsPage: React.FC = () => {
                       {sheet.enabled ? "on" : "off"} · {sheet.lastRowCount} rows read ·{" "}
                       {sheet.lastPolledAt ? formatDubaiInstant(sheet.lastPolledAt) : "never polled"}
                     </span>
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1"
+                      onClick={() => editSheet(sheet)}
+                    >
+                      Edit
+                    </button>
                     <button
                       type="button"
                       className="rounded border px-2 py-1"

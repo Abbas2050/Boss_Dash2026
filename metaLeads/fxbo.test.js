@@ -6,7 +6,7 @@ const lead = (over = {}) => ({
   metaLeadId: "1", createdTime: "", firstName: "Dogan", lastName: "Gungor",
   email: "d_gungor43@hotmail.com", phone: "+905332360123", country: "TR",
   leadSource: "Partners-IB-Turkey",
-  utmParams: "utm_source=facebook&utm_medium=paid_social&utm_campaign=Partners-IB",
+  utmParams: "utm_source=facebook&utm_medium=paid_social&utm_campaign=Partners-IB&utm_term=Partners-IB-Turkey",
   campaignName: "Partners-IB", adsetName: "Partners-IB-Turkey", adName: "Ad2",
   skip: null, ...over,
 });
@@ -27,7 +27,7 @@ describe("buildLeadPayload", () => {
       phone: "+905332360123",
       country: "TR",
       language: "en",
-      utmParams: "utm_source=facebook&utm_medium=paid_social&utm_campaign=Partners-IB",
+      utmParams: "utm_source=facebook&utm_medium=paid_social&utm_campaign=Partners-IB&utm_term=Partners-IB-Turkey",
       sendWelcomeEmail: false,
       acceptedDocuments: false,
     });
@@ -48,10 +48,24 @@ describe("buildLeadPayload", () => {
       ib: true, sendLeadSource: true, managerId: 20, status: "new", tags: "IB, Meta",
     }));
     expect(payload.ib).toBe(true);
-    expect(payload.referrer).toBe("Partners-IB-Turkey");
     expect(payload.managerId).toBe(20);
     expect(payload.status).toBe("new");
     expect(payload.tags).toEqual(["IB", "Meta"]);
+  });
+
+  // The lead source names the SHEET, not the ad set. The ad set changes with
+  // every campaign launched, so it cannot answer "which sheet did this come
+  // from" -- and that is the question anyone looking at a lead in FXBO asks.
+  // The ad set is still on the lead, in utm_term.
+  it("sends the sheet's name as the lead source, not the ad set", () => {
+    const payload = buildLeadPayload(lead(), sheet({ sendLeadSource: true }));
+    expect(payload.referrer).toBe("Meta – Turkey");
+    expect(payload.utmParams).toContain("utm_term=");
+  });
+
+  it("omits the lead source when a sheet switches it off", () => {
+    const payload = buildLeadPayload(lead(), sheet({ sendLeadSource: false }));
+    expect(payload).not.toHaveProperty("referrer");
   });
 
   it("omits what the lead itself does not have", () => {
@@ -63,10 +77,10 @@ describe("buildLeadPayload", () => {
     expect(payload.phone).toBe("+905332360123");
   });
 
-  // A sheet with the switch on but a row with no ad set, campaign or form.
-  it("omits referrer when the switch is on but there is no source", () => {
+  // Not derived from the row, so a row with no ad set still carries it.
+  it("still names the sheet on a row that has no ad set", () => {
     const payload = buildLeadPayload(lead({ leadSource: null }), sheet({ sendLeadSource: true }));
-    expect(payload).not.toHaveProperty("referrer");
+    expect(payload.referrer).toBe("Meta – Turkey");
   });
 });
 

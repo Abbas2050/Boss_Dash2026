@@ -126,7 +126,7 @@ describe("MetaLeadsPage", () => {
           tabName: "Sheet1",
           language: "en",
           ib: false,
-          sendLeadSource: false,
+          sendLeadSource: true,
           managerId: "",
           status: "",
           tags: "",
@@ -146,6 +146,24 @@ describe("MetaLeadsPage", () => {
   });
 
   // Turning a sheet off is how you stop a runaway import without a deploy.
+  // Turkey was registered before the lead-source decision was made, so there
+  // has to be a way to change a sheet that does not involve the database.
+  it("loads a sheet into the form and saves it back under its own id", async () => {
+    render(<MetaLeadsPage />);
+    await screen.findByRole("region", { name: "Sheets" });
+    fireEvent.click(sheets().getAllByRole("button", { name: /^edit$/i })[0]);
+
+    expect(screen.getByLabelText(/label/i)).toHaveValue("Meta – Iraq");
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/meta-leads/sheets", expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"id":1'),
+      }));
+    });
+  });
+
   it("turns a sheet off from its row", async () => {
     render(<MetaLeadsPage />);
     await screen.findByRole("region", { name: "Sheets" });

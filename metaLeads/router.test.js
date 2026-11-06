@@ -46,7 +46,7 @@ describe("the save-sheet handler", () => {
     await handler({ body: { label: "Meta – UAE", spreadsheetId: "xyz" } }, r);
     expect(insertSheet).toHaveBeenCalledWith(expect.objectContaining({
       label: "Meta – UAE", spreadsheetId: "xyz", tabName: "Sheet1",
-      enabled: true, ib: false, sendLeadSource: false,
+      enabled: true, ib: false, sendLeadSource: true,
       managerId: null, language: "en", status: null, tags: null,
     }));
     expect(r.body).toEqual({ ok: true, id: 3 });

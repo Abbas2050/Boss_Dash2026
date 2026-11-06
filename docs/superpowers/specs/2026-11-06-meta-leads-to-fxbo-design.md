@@ -68,7 +68,7 @@ therefore derived from the phone's dialling code first.
 | Question | Decision |
 |---|---|
 | Lead type | **Plain leads. `ib` is false on all three sheets.** The flag is still per-sheet, so one can be switched on without a deploy. |
-| Lead source (`referrer`) | **Not sent.** Left empty, like the CRM's other 499 users. Per-sheet, so it can be switched on. |
+| Lead source (`referrer`) | **The sheet's own label**, e.g. `Meta – Iraq`. On by default (revised 2026-11-06, §6.3). |
 | Owner | **Unassigned.** `managerId` is left empty on every sheet. The field is still per-sheet. |
 | Tags | **None.** No tags are sent. The field is still per-sheet. |
 | Language | **`en` on all three sheets**, including Iraq and Turkey. |
@@ -217,20 +217,19 @@ a hop and a failure mode for nothing.
 | `phone` | `+9647705108061` | `phone_number`, `p:` stripped |
 | `country` | ISO alpha-2 | §6.2 |
 | `language` | `en` | the sheet's setting, `en` on all three |
+| `referrer` | `Meta – Iraq` | the sheet's label — FXBO calls this field *lead source* |
 | `utmParams` | query string | §6.4 |
 | `sendWelcomeEmail` | `false` | these people did not ask for an account |
 | `acceptedDocuments` | `false` | they have accepted nothing |
 
-Eleven fields. **`managerId`, `referrer`, `tags` and `status` are not sent at
-all**, because all three sheets leave them unset: the lead lands unassigned,
-unattributed in the CRM's own fields, untagged, and on whatever status FXBO
-gives it. Setting any of them on a sheet adds that field to that sheet's
+Twelve fields. **`managerId`, `tags` and `status` are not sent at all**,
+because all three sheets leave them unset: the lead lands unassigned, untagged,
+and on whatever status FXBO gives it. Setting any of them on a sheet adds that field to that sheet's
 payload and nothing else changes.
 
-With `referrer` empty, **`utmParams` is the only attribution that reaches the
-CRM.** FXBO files it under the user's marketing details, where the campaign, ad
-set and ad can still be read per lead — so nothing is lost, but it is read in a
-different place than a sales person would look first.
+`referrer` is what makes a lead's origin legible at a glance; `utmParams`
+carries the detail underneath it, filed under the user's marketing details,
+where the campaign, ad set and ad can be read per lead.
 
 Everything else the endpoint accepts — `password`, `middleName`, `city`,
 `birthDate`, `title`, `partnerId`, `secondaryEmail`, `secondaryPhone`,
@@ -281,19 +280,28 @@ In order, first that answers:
 If none answers, `country` is omitted and the row still goes through. A lead
 without a country is workable; a lead filed under the wrong one is not.
 
-### 6.3 Lead source, when a sheet turns it on
+### 6.3 Lead source is the sheet's name
 
-`referrer` is off on all three sheets and nothing is sent. The derivation is
-specified here because the per-sheet switch exists, and a rule invented later
-under time pressure is how two sheets end up disagreeing about what a lead
-source means.
+**Revised 2026-11-06, after the first sheet went live.** `referrer` was to be
+off everywhere, and when on was to carry the row's `adset_name`. Both parts
+were wrong, and the live CRM showed why: with `referrer`, `managerId` and
+`tags` all unset, a lead arrives in FXBO with nothing on it that names where
+it came from. The only trace is `marketingDetails.utm`, which is empty on all
+500 existing users, sits on the individual profile, and cannot be filtered or
+seen in a list.
 
-When on, `referrer` is the row's `adset_name` — read from the row, not
-configured, so the same sheet produces a different value as campaigns are
-launched. `adset_name` is empty on organic and test rows, and on a lead from a
-form shared outside an ad; the fallback is then `campaign_name`, then
-`form_name`, because `Zero-Spread-UAE` is a more useful lead source than
-nothing. If all three are empty the field is omitted.
+So `referrer` now carries **the sheet's label** — `Meta – Iraq` — and is on by
+default. The sheet, not the ad set: an ad set name changes with every campaign
+launched, so it cannot answer "which sheet did this come from", which is the
+question anyone looking at a lead in FXBO actually asks. The ad set is not
+lost; it is on the lead as `utm_term`.
+
+The per-sheet switch survives, now meaning "send this sheet's name as the lead
+source". It stays because nobody has yet seen how FXBO renders this field: the
+one user in the CRM who has a `referrer` holds `13311` beside a marketing link
+called "IB / Shahab", so it may display as an affiliate reference rather than
+free text. If it does, the switch turns it off without a deploy and the name
+moves to a tag instead.
 
 **It needs one look before it is trusted.** The API documents `referrer` as
 *lead source*, a free string, and 499 of 500 users leave it empty — but the one

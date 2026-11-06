@@ -93,7 +93,10 @@ export function makeMetaLeadsSaveSheetHandler({ insertSheet, updateSheet, kick }
       tabName: String(body.tabName ?? "").trim() || "Sheet1",
       enabled: body.enabled === undefined ? true : Boolean(body.enabled),
       ib: Boolean(body.ib),
-      sendLeadSource: Boolean(body.sendLeadSource),
+      // On unless asked otherwise. Without it a lead reaches FXBO with no
+      // field naming where it came from, and the escape hatch exists only
+      // because nobody has yet seen how FXBO renders this field.
+      sendLeadSource: body.sendLeadSource === undefined ? true : Boolean(body.sendLeadSource),
       managerId,
       language: String(body.language ?? "").trim() || "en",
       status: String(body.status ?? "").trim() || null,
