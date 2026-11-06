@@ -232,15 +232,35 @@ export async function insertLeadRow(sheetId, lead, status) {
   }
 }
 
+/**
+ * How long a row may sit in `sending` before it is treated as abandoned.
+ *
+ * A row is moved to `sending` before the CRM is called, so a worker that dies
+ * between the two -- an app pool recycle, which this host does routinely, or
+ * the outright stop it suffered on 1 and 3 November -- would otherwise leave
+ * the lead in a status nothing ever looks at again, and that the tab's retry
+ * button cannot reach either.
+ *
+ * Ten minutes rather than one: a real send takes a second, but a worker
+ * competing for a row still being sent is worse than a lead that arrives ten
+ * minutes late. A recovered row is re-sent, and for anything with an email the
+ * duplicate check catches a first send that did in fact succeed, so the repeat
+ * is recorded as `duplicate` rather than creating a second person.
+ */
+export const RECLAIM_AFTER_MINUTES = 10;
+
+export const DUE_ROWS_SQL = `
+  SELECT * FROM meta_lead_rows
+   WHERE (status IN ('pending', 'retrying')
+          AND (next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP()))
+      OR (status = 'sending'
+          AND updated_at <= UTC_TIMESTAMP() - INTERVAL ${RECLAIM_AFTER_MINUTES} MINUTE)
+   ORDER BY id
+   LIMIT ?
+`;
+
 export async function listDueRows(limit = 25) {
-  return all(
-    `SELECT * FROM meta_lead_rows
-      WHERE status IN ('pending', 'retrying')
-        AND (next_attempt_at IS NULL OR next_attempt_at <= UTC_TIMESTAMP())
-      ORDER BY id
-      LIMIT ?`,
-    [limit],
-  );
+  return all(DUE_ROWS_SQL, [limit]);
 }
 
 /**
@@ -251,13 +271,17 @@ export async function listDueRows(limit = 25) {
  * listDueRows. The claim is what makes that harmless: the UPDATE narrows on
  * the status it expects, and only one caller sees a row change.
  */
+export const CLAIM_ROW_SQL = `
+  UPDATE meta_lead_rows
+     SET status = 'sending', attempts = attempts + 1, updated_at = UTC_TIMESTAMP()
+   WHERE id = ?
+     AND (status IN ('pending', 'retrying')
+          OR (status = 'sending'
+              AND updated_at <= UTC_TIMESTAMP() - INTERVAL ${RECLAIM_AFTER_MINUTES} MINUTE))
+`;
+
 export async function claimRow(id) {
-  const result = await run(
-    `UPDATE meta_lead_rows
-        SET status = 'sending', attempts = attempts + 1
-      WHERE id = ? AND status IN ('pending', 'retrying')`,
-    [id],
-  );
+  const result = await run(CLAIM_ROW_SQL, [id]);
   return Number(result?.affectedRows || 0) === 1;
 }
 

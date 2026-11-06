@@ -177,6 +177,18 @@ new id seen ──> pending ──> sent
                    └──> failed           (after retries; requeueable from the tab)
 ```
 
+**A row stranded mid-send is recovered, not lost.** A row is moved to
+`sending` before the CRM is called, so a worker that dies between the two —
+an app pool recycle, which this host does routinely, or the outright stop it
+suffered on 1 and 3 November — would leave the lead in a status nothing looks
+at again and the tab's retry cannot reach. A row that has sat in `sending` for
+ten minutes is therefore treated as abandoned and claimed again. Ten minutes
+rather than one, because a worker competing for a send still in flight is
+worse than a lead ten minutes late; and the claim re-checks the age, so of two
+workers reading the same stranded row only one takes it. The repeat is safe
+for anything with an email: the duplicate check finds the record the lost send
+created and files the row as `duplicate` instead of creating a second person.
+
 Transient CRM failures — a 429, a 5xx, a dropped socket — are retried with
 exponential backoff up to six attempts, reusing `crmSignup/transientHttp.js`.
 A 4xx that is not 429 is permanent: it is recorded with the CRM's own wording,

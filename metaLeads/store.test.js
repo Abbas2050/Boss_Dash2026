@@ -5,7 +5,14 @@
 // actually declares, and how a database row becomes the config the payload
 // builder reads.
 import { describe, expect, it } from "vitest";
-import { META_LEAD_ROWS_SCHEMA, META_LEAD_SHEETS_SCHEMA, toSheetConfig } from "./store.js";
+import {
+  CLAIM_ROW_SQL,
+  DUE_ROWS_SQL,
+  META_LEAD_ROWS_SCHEMA,
+  META_LEAD_SHEETS_SCHEMA,
+  RECLAIM_AFTER_MINUTES,
+  toSheetConfig,
+} from "./store.js";
 
 describe("the schema", () => {
   // The whole deduplication strategy: a re-read of a sheet collides at the
@@ -32,6 +39,34 @@ describe("the schema", () => {
 
   it("starts a sheet un-bootstrapped, so its existing rows are never sent", () => {
     expect(META_LEAD_SHEETS_SCHEMA).toMatch(/bootstrapped_at DATETIME NULL/);
+  });
+});
+
+// A row is moved to `sending` before the CRM is called, so a worker that dies
+// mid-send -- an app pool recycle, which this host does routinely, or the
+// outright stop it suffered twice this month -- leaves the row in a status
+// nothing looks at again. The lead would be lost silently, and the tab's
+// retry button cannot reach it either, because that only moves a failure.
+describe("a send interrupted by a dying worker", () => {
+  it("looks for rows stranded in sending as well as the due ones", () => {
+    expect(DUE_ROWS_SQL).toMatch(/status IN \('pending', 'retrying'\)/);
+    expect(DUE_ROWS_SQL).toMatch(
+      new RegExp(`status = 'sending'[\\s\\S]*INTERVAL ${RECLAIM_AFTER_MINUTES} MINUTE`),
+    );
+  });
+
+  // The age is re-checked inside the claim, not just in the search. Without
+  // that, two workers reading the same stranded row would both claim it:
+  // the first sets status to sending, which is what the second is matching on.
+  it("re-checks the age when claiming, so only one worker takes it", () => {
+    expect(CLAIM_ROW_SQL).toMatch(
+      new RegExp(`status = 'sending'[\\s\\S]*INTERVAL ${RECLAIM_AFTER_MINUTES} MINUTE`),
+    );
+    expect(CLAIM_ROW_SQL).toMatch(/SET status = 'sending', attempts = attempts \+ 1, updated_at = UTC_TIMESTAMP\(\)/);
+  });
+
+  it("waits long enough that a send in flight is not taken from under it", () => {
+    expect(RECLAIM_AFTER_MINUTES).toBeGreaterThanOrEqual(10);
   });
 });
 
