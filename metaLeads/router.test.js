@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { makeMetaLeadsOverviewHandler, makeMetaLeadsRetryHandler, makeMetaLeadsSaveSheetHandler } from "./router.js";
+import {
+  makeMetaLeadsImportHandler,
+  makeMetaLeadsOverviewHandler,
+  makeMetaLeadsRetryHandler,
+  makeMetaLeadsSaveSheetHandler,
+} from "./router.js";
 
 const res = () => {
   const r = { statusCode: 200, body: null };
@@ -91,6 +96,35 @@ describe("the save-sheet handler", () => {
     await handler({ body: { label: "L", spreadsheetId: "abc" } }, r);
     expect(r.statusCode).toBe(409);
     expect(r.body.error).toMatch(/already registered/);
+  });
+});
+
+describe("the import handler", () => {
+  it("imports a sheet's untouched rows and wakes the worker", async () => {
+    const importExistingRows = vi.fn(async () => 30);
+    const kick = vi.fn();
+    const handler = makeMetaLeadsImportHandler({ importExistingRows, kick });
+    const r = res();
+    await handler({ body: { sheetId: 1 } }, r);
+    expect(importExistingRows).toHaveBeenCalledWith(1);
+    expect(kick).toHaveBeenCalled();
+    expect(r.body).toEqual({ ok: true, imported: 30 });
+  });
+
+  it("does not wake the worker when there was nothing to import", async () => {
+    const kick = vi.fn();
+    const handler = makeMetaLeadsImportHandler({ importExistingRows: vi.fn(async () => 0), kick });
+    const r = res();
+    await handler({ body: { sheetId: 1 } }, r);
+    expect(r.body).toEqual({ ok: true, imported: 0 });
+    expect(kick).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request with no sheet", async () => {
+    const handler = makeMetaLeadsImportHandler({ importExistingRows: vi.fn(), kick: vi.fn() });
+    const r = res();
+    await handler({ body: {} }, r);
+    expect(r.statusCode).toBe(400);
   });
 });
 

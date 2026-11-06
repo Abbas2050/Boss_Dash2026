@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAIM_ROW_SQL,
   DUE_ROWS_SQL,
+  IMPORT_EXISTING_SQL,
   META_LEAD_ROWS_SCHEMA,
   META_LEAD_SHEETS_SCHEMA,
   POOL_OPTIONS,
@@ -78,6 +79,31 @@ describe("a send interrupted by a dying worker", () => {
 // parses DATETIME in the Node process's zone -- which on this host is US
 // Eastern. Three bases for one kind of value. Pinning the session and the
 // driver to UTC makes all three the same.
+// Registering a sheet files everything already in it as skipped_existing and
+// sends none of it -- right, because nobody knows yet whether those rows were
+// handled another way. On 2026-11-06 it turned out none of the 36 had been:
+// they had sat in the sheets unworked since the 4th. So there has to be a way
+// to change that answer afterwards, per sheet, on purpose.
+describe("importing what was already there", () => {
+  it("moves only that sheet's untouched rows, and only those", () => {
+    expect(IMPORT_EXISTING_SQL).toMatch(/SET status = 'pending'/);
+    expect(IMPORT_EXISTING_SQL).toMatch(/WHERE sheet_id = \?/);
+    expect(IMPORT_EXISTING_SQL).toMatch(/AND status = 'skipped_existing'/);
+  });
+
+  // A Meta test row and a row with no contact details are skipped for reasons
+  // that importing does not change, so they must not be swept up with it.
+  it("leaves the test rows and the contactless ones where they are", () => {
+    expect(IMPORT_EXISTING_SQL).not.toMatch(/skipped_test/);
+    expect(IMPORT_EXISTING_SQL).not.toMatch(/skipped_empty/);
+  });
+
+  it("clears the attempt history so the rows go out at once", () => {
+    expect(IMPORT_EXISTING_SQL).toMatch(/attempts = 0/);
+    expect(IMPORT_EXISTING_SQL).toMatch(/next_attempt_at = NULL/);
+  });
+});
+
 describe("time", () => {
   it("reads and writes datetimes as UTC", () => {
     expect(POOL_OPTIONS.timezone).toBe("Z");

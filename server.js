@@ -26,12 +26,14 @@ import { startCrmEventsWorker, kickCrmEventsWorker } from "./crmSignup/worker.js
 // The inbound counterpart of crmSignup: that module watches what FXBO tells
 // us, this one watches three Meta Lead Ads sheets and tells FXBO.
 import {
+  makeMetaLeadsImportHandler,
   makeMetaLeadsOverviewHandler,
   makeMetaLeadsRetryHandler,
   makeMetaLeadsSaveSheetHandler,
 } from "./metaLeads/router.js";
 import {
   countRowsByStatus as countMetaLeadRows,
+  importExistingRows as importExistingMetaLeadRows,
   initMetaLeadsStore,
   insertSheet as insertMetaLeadSheet,
   listRecentRows as listMetaLeadRows,
@@ -1380,6 +1382,11 @@ app.get('/api/meta-leads/overview', authRequired, adminOnly, makeMetaLeadsOvervi
 app.post('/api/meta-leads/sheets', authRequired, adminOnly, makeMetaLeadsSaveSheetHandler({
   insertSheet: insertMetaLeadSheet,
   updateSheet: updateMetaLeadSheet,
+  kick: kickMetaLeadsWorker,
+}));
+
+app.post('/api/meta-leads/import-existing', authRequired, adminOnly, makeMetaLeadsImportHandler({
+  importExistingRows: importExistingMetaLeadRows,
   kick: kickMetaLeadsWorker,
 }));
 

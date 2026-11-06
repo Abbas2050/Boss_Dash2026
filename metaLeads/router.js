@@ -122,6 +122,29 @@ export function makeMetaLeadsSaveSheetHandler({ insertSheet, updateSheet, kick }
 }
 
 /**
+ * POST /api/meta-leads/import-existing
+ *
+ * Sends the rows that were already in a sheet when it was registered. Its
+ * own route rather than a flag on the save, because this one creates people
+ * in the CRM and registering a sheet deliberately does not.
+ */
+export function makeMetaLeadsImportHandler({ importExistingRows, kick }) {
+  return async function metaLeadsImport(req, res) {
+    const sheetId = Number(req?.body?.sheetId);
+    if (!Number.isFinite(sheetId) || sheetId <= 0) {
+      return res.status(400).json({ ok: false, error: "sheetId is required" });
+    }
+    try {
+      const imported = await importExistingRows(sheetId);
+      if (imported > 0) kick();
+      return res.json({ ok: true, imported });
+    } catch (error) {
+      return res.status(500).json({ ok: false, error: String(error?.message || error) });
+    }
+  };
+}
+
+/**
  * POST /api/meta-leads/retry
  *
  * Only a `failed` row moves; the store's WHERE sees to that. A `sent` row

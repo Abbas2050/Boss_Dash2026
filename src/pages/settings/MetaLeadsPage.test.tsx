@@ -164,6 +164,24 @@ describe("MetaLeadsPage", () => {
     });
   });
 
+  // One click here creates thirty people in the CRM, so it takes two.
+  it("asks before importing the rows that were already there", async () => {
+    render(<MetaLeadsPage />);
+    await screen.findByRole("region", { name: "Sheets" });
+    const calls = (fetch as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+
+    fireEvent.click(sheets().getAllByRole("button", { name: /send the rows already here/i })[0]);
+    expect((fetch as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(calls);
+
+    fireEvent.click(sheets().getByRole("button", { name: /yes, send them to fxbo/i }));
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/meta-leads/import-existing", expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ sheetId: 1 }),
+      }));
+    });
+  });
+
   it("turns a sheet off from its row", async () => {
     render(<MetaLeadsPage />);
     await screen.findByRole("region", { name: "Sheets" });

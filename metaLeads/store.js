@@ -338,6 +338,30 @@ export async function requeueRow(id) {
   return Number(result?.affectedRows || 0) === 1;
 }
 
+/**
+ * Send the rows that were already in a sheet when it was registered.
+ *
+ * Registering files them as `skipped_existing` and sends none of them, which
+ * is right while nobody knows whether they were handled another way. On
+ * 2026-11-06 it turned out none of the 36 had been -- they had sat in the
+ * sheets unworked since the 4th -- so the answer has to be changeable
+ * afterwards, per sheet, deliberately.
+ *
+ * Only `skipped_existing` moves. A Meta test row and a row with nobody to
+ * contact are skipped for reasons that importing does not change.
+ */
+export const IMPORT_EXISTING_SQL = `
+  UPDATE meta_lead_rows
+     SET status = 'pending', attempts = 0, next_attempt_at = NULL, detail = NULL
+   WHERE sheet_id = ?
+     AND status = 'skipped_existing'
+`;
+
+export async function importExistingRows(sheetId) {
+  const result = await run(IMPORT_EXISTING_SQL, [sheetId]);
+  return Number(result?.affectedRows || 0);
+}
+
 export async function listRecentRows(limit = 100) {
   return all(
     `SELECT r.*, s.label AS sheet_label

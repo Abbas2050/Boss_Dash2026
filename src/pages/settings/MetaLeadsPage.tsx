@@ -8,6 +8,7 @@ import { formatDubaiInstant } from "@/lib/dubaiTime";
 const OVERVIEW_URL = "/api/meta-leads/overview";
 const RETRY_URL = "/api/meta-leads/retry";
 const SHEETS_URL = "/api/meta-leads/sheets";
+const IMPORT_URL = "/api/meta-leads/import-existing";
 
 type Sheet = {
   id: number;
@@ -100,6 +101,9 @@ export const MetaLeadsPage: React.FC = () => {
   const [busyId, setBusyId] = useState<number | null>(null);
   const [draft, setDraft] = useState({ ...BLANK_SHEET });
   const [editingId, setEditingId] = useState<number | null>(null);
+  // Which sheet has had its import armed. One click would create every lead
+  // already in that sheet, so it takes two.
+  const [confirmImportId, setConfirmImportId] = useState<number | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -188,6 +192,21 @@ export const MetaLeadsPage: React.FC = () => {
       setBusyId(null);
     }
   }, [postSheet]);
+
+  const importExisting = useCallback(async (sheetId: number) => {
+    setBusyId(-sheetId);
+    try {
+      await fetch(IMPORT_URL, {
+        method: "POST",
+        headers: { ...authHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ sheetId }),
+      });
+      setConfirmImportId(null);
+      await load();
+    } finally {
+      setBusyId(null);
+    }
+  }, [load]);
 
   const retry = useCallback(async (id: number) => {
     setBusyId(id);
@@ -374,6 +393,41 @@ export const MetaLeadsPage: React.FC = () => {
                 )}
                 {sheet.lastError && (
                   <div className="mt-1 text-rose-600 dark:text-rose-400">{sheet.lastError}</div>
+                )}
+                {sheet.bootstrappedAt && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {confirmImportId === sheet.id ? (
+                      <>
+                        <span className="text-rose-600 dark:text-rose-400">
+                          This creates a lead in FXBO for every row that was already in this
+                          sheet. It cannot be undone from here.
+                        </span>
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-1"
+                          disabled={busyId === -sheet.id}
+                          onClick={() => void importExisting(sheet.id)}
+                        >
+                          Yes, send them to FXBO
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded border px-2 py-1"
+                          onClick={() => setConfirmImportId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        className="rounded border px-2 py-1"
+                        onClick={() => setConfirmImportId(sheet.id)}
+                      >
+                        Send the rows already here
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             ))}
