@@ -81,6 +81,37 @@ export const META_LEAD_ROWS_SCHEMA = `
   )
 `;
 
+/**
+ * Everything this module stores is UTC, and these two lines are what make
+ * that true rather than aspirational.
+ *
+ * There were three clocks in play and they disagreed. A column written with
+ * UTC_TIMESTAMP() holds a UTC wall clock; a column filled by its own
+ * CURRENT_TIMESTAMP default holds the session's, which on this host is US
+ * Eastern; and mysql2 parses a DATETIME coming back using the Node process's
+ * zone, Eastern again. On 2026-11-06 that put `last_polled_at` five hours in
+ * the future, and because `wantsFullRead` subtracts that instant from now, the
+ * hourly reconciliation stopped for good without logging anything.
+ *
+ * `timezone: "Z"` fixes the read, `SET SESSION time_zone` fixes the defaults,
+ * and together they mean a datetime written by SQL, by a column default or by
+ * JS all mean the same instant. Scoped to this pool, so nothing else in the
+ * app changes behaviour.
+ */
+export const SESSION_TIME_ZONE_SQL = "SET SESSION time_zone = '+00:00'";
+
+export const POOL_OPTIONS = Object.freeze({
+  host: AUTH_DB_HOST,
+  port: AUTH_DB_PORT,
+  database: AUTH_DB_NAME,
+  user: AUTH_DB_USER,
+  password: AUTH_DB_PASSWORD,
+  waitForConnections: true,
+  connectionLimit: 3,
+  queueLimit: 0,
+  timezone: "Z",
+});
+
 function hasDbConfig() {
   return Boolean(AUTH_DB_HOST && AUTH_DB_NAME && AUTH_DB_USER && AUTH_DB_PASSWORD);
 }
@@ -105,15 +136,11 @@ export async function initMetaLeadsStore() {
     );
   }
   if (!pool) {
-    pool = mysql.createPool({
-      host: AUTH_DB_HOST,
-      port: AUTH_DB_PORT,
-      database: AUTH_DB_NAME,
-      user: AUTH_DB_USER,
-      password: AUTH_DB_PASSWORD,
-      waitForConnections: true,
-      connectionLimit: 3,
-      queueLimit: 0,
+    pool = mysql.createPool(POOL_OPTIONS);
+    // Every connection, not just the first: a pool opens more on demand and
+    // one left on the host's clock would write the odd row five hours out.
+    pool.on?.("connection", (connection) => {
+      connection.query(SESSION_TIME_ZONE_SQL);
     });
   }
   await run(META_LEAD_SHEETS_SCHEMA);

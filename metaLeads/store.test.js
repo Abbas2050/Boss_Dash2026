@@ -10,7 +10,9 @@ import {
   DUE_ROWS_SQL,
   META_LEAD_ROWS_SCHEMA,
   META_LEAD_SHEETS_SCHEMA,
+  POOL_OPTIONS,
   RECLAIM_AFTER_MINUTES,
+  SESSION_TIME_ZONE_SQL,
   toSheetConfig,
 } from "./store.js";
 
@@ -67,6 +69,22 @@ describe("a send interrupted by a dying worker", () => {
 
   it("waits long enough that a send in flight is not taken from under it", () => {
     expect(RECLAIM_AFTER_MINUTES).toBeGreaterThanOrEqual(10);
+  });
+});
+
+// Found live on 2026-11-06: last_polled_at came back five hours in the
+// future. Columns written with UTC_TIMESTAMP() store a UTC wall clock, the
+// defaults written with CURRENT_TIMESTAMP store the session's, and mysql2
+// parses DATETIME in the Node process's zone -- which on this host is US
+// Eastern. Three bases for one kind of value. Pinning the session and the
+// driver to UTC makes all three the same.
+describe("time", () => {
+  it("reads and writes datetimes as UTC", () => {
+    expect(POOL_OPTIONS.timezone).toBe("Z");
+  });
+
+  it("pins the session clock to UTC, so the column defaults agree", () => {
+    expect(SESSION_TIME_ZONE_SQL).toMatch(/SET SESSION time_zone = '\+00:00'/);
   });
 });
 

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { drainOnce, MAX_ATTEMPTS, pollSheetOnce } from "./worker.js";
+import { drainOnce, MAX_ATTEMPTS, pollSheetOnce, wantsFullRead } from "./worker.js";
 
 const HEADER = ["id","created_time","ad_id","ad_name","adset_id","adset_name","campaign_id","campaign_name","form_id","form_name","is_organic","platform","email","phone_number","first_name","last_name","country","lead_status"];
 const leadRow = (id, email) => ["l:" + id,"2026-11-04T06:19:44-05:00","ag:1","Ad3","as:1","Partners-IB-Iraq","c:1","Partners-IB","f:1","Form","false","fb",email,"p:+9647705108061","Kaboul","Mutawa","IQ","CREATED"];
@@ -21,6 +21,35 @@ const pollDeps = (over = {}) => ({
   disableSheetWithError: vi.fn(async () => {}),
   now: () => new Date("2026-11-06T09:00:00Z"),
   ...over,
+});
+
+describe("wantsFullRead", () => {
+  const now = new Date("2026-11-06T09:00:00Z");
+
+  it("is due when the sheet has never had one", () => {
+    expect(wantsFullRead({ lastFullReadAt: null }, now)).toBe(true);
+  });
+
+  it("is not due within the hour", () => {
+    expect(wantsFullRead({ lastFullReadAt: "2026-11-06T08:30:00Z" }, now)).toBe(false);
+  });
+
+  it("is due after the hour", () => {
+    expect(wantsFullRead({ lastFullReadAt: "2026-11-06T07:30:00Z" }, now)).toBe(true);
+  });
+
+  // A stored timestamp in the future means the clock it was written by is not
+  // the clock we are reading it with -- which happened on 2026-11-06, five
+  // hours out, and silently stopped the full read for good. Subtracting a
+  // future instant gives a negative age that is never an hour old, so the
+  // sheet would never reconcile again and nothing would say why.
+  it("is due when the last one is somehow in the future", () => {
+    expect(wantsFullRead({ lastFullReadAt: "2026-11-06T14:00:00Z" }, now)).toBe(true);
+  });
+
+  it("is due when the timestamp cannot be read at all", () => {
+    expect(wantsFullRead({ lastFullReadAt: "not a date" }, now)).toBe(true);
+  });
 });
 
 describe("pollSheetOnce", () => {

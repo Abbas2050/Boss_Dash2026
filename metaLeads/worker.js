@@ -51,10 +51,23 @@ function dueAfter(attempts, now) {
   return mysqlDatetime(new Date(now.getTime() + minutes * 60 * 1000));
 }
 
-/** Is this poll the hourly full read? */
+/**
+ * Is this poll the hourly full read?
+ *
+ * A stored instant that is unreadable, or in the future, means the clock it
+ * was written by is not the clock we are reading it with. That happened on
+ * 2026-11-06 -- `last_full_read_at` came back five hours ahead -- and because
+ * the age of a future instant is negative, it is never an hour old: the
+ * reconciliation stopped for good and nothing said so. The cause is fixed in
+ * store.js, and this answers "due" rather than "never" if it ever recurs. An
+ * extra full read costs one API call; a reconciliation that silently stops
+ * costs the rows it would have found.
+ */
 export function wantsFullRead(sheet, now) {
   if (!sheet.lastFullReadAt) return true;
-  return now.getTime() - new Date(sheet.lastFullReadAt).getTime() >= FULL_READ_INTERVAL_MS;
+  const age = now.getTime() - new Date(sheet.lastFullReadAt).getTime();
+  if (!Number.isFinite(age) || age < 0) return true;
+  return age >= FULL_READ_INTERVAL_MS;
 }
 
 /**
