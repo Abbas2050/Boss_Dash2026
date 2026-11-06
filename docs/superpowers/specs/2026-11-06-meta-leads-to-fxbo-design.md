@@ -68,18 +68,24 @@ therefore derived from the phone's dialling code first.
 | Question | Decision |
 |---|---|
 | Lead type | **Plain leads. `ib` is false on all three sheets.** The flag is still per-sheet, so one can be switched on without a deploy. |
-| Lead source (`referrer`) | **The ad set name** — `Partners-IB-Iraq`, `Partners-IB-Turkey`. |
+| Lead source (`referrer`) | **Not sent.** Left empty, like the CRM's other 499 users. Per-sheet, so it can be switched on. |
 | Owner | **Unassigned.** `managerId` is left empty on every sheet. The field is still per-sheet. |
 | Tags | **None.** No tags are sent. The field is still per-sheet. |
+| Language | **`en` on all three sheets**, including Iraq and Turkey. |
 | The 36 rows already in the sheets | **Not imported.** Marked handled on first read. |
 | Someone already in FXBO | **Skip on email. Allow on phone** — two people may share a line. |
 | Latency | **About a minute.** The worker polls every 60 seconds. |
 
-The last three were originally answered the other way — an IB flag, an owner and
-tags chosen per sheet — and were reversed on the same day, once the live CRM
-showed what those fields hold today (§2.1). The per-sheet columns survive the
-reversal because they cost one nullable column and one form field each, and
-because the answer that changed once can change again.
+Four of these were originally answered the other way — an IB flag, a lead
+source, an owner and tags, each chosen per sheet — and were reversed on the
+same day, once the live CRM showed what those fields hold today (§2.1). The
+per-sheet columns survive the reversal because they cost one nullable column
+and one form field each, and because an answer that changed once can change
+again.
+
+What is left is a deliberately bare lead: a name, a way to contact them, a
+country, and the Meta campaign that produced them. Everything the sales team
+would otherwise have to undo is simply not set.
 
 ### 2.1 What the live CRM holds, read 2026-11-06
 
@@ -96,9 +102,9 @@ reversals above the obvious call:
 | `source` | `rest api` on 461 — FXBO sets this itself for anything the API creates |
 
 Two consequences. An unassigned lead is the CRM's normal state, not an
-oversight. And `referrer` is effectively a free field, so putting an ad set name
-in it cannot collide with an existing convention — but see §5 for the one
-display risk it carries.
+oversight. And `referrer` is effectively a free field — which is an argument for
+leaving it empty as everyone else does, and, if that is ever revisited, for
+checking §6.3 first.
 
 **`GET /rest/managers` is refused**: `403 invalid_grant`, "Method is not
 allowed". The API user cannot list managers, the same scope gap that blocks API
@@ -193,16 +199,21 @@ One `POST /rest/users/new` per row, through the existing `/rest` proxy in
 | `email` | trimmed, lower-cased | `email` column |
 | `phone` | `+9647705108061` | `phone_number`, `p:` stripped |
 | `country` | ISO alpha-2 | §6.2 |
-| `language` | ISO 639-1 | the sheet's setting (`ar`, `tr`, `en`) |
-| `referrer` | `Partners-IB-Iraq` | `adset_name` — FXBO labels this field *lead source* |
+| `language` | `en` | the sheet's setting, `en` on all three |
 | `utmParams` | query string | §6.4 |
 | `sendWelcomeEmail` | `false` | these people did not ask for an account |
 | `acceptedDocuments` | `false` | they have accepted nothing |
 
-Eleven fields. **`managerId`, `tags` and `status` are not sent at all**, because
-all three sheets leave them unset: the lead lands unassigned, untagged, and on
-whatever status FXBO gives it. Setting any of them on a sheet adds that field to
-that sheet's payload and nothing else changes.
+Eleven fields. **`managerId`, `referrer`, `tags` and `status` are not sent at
+all**, because all three sheets leave them unset: the lead lands unassigned,
+unattributed in the CRM's own fields, untagged, and on whatever status FXBO
+gives it. Setting any of them on a sheet adds that field to that sheet's
+payload and nothing else changes.
+
+With `referrer` empty, **`utmParams` is the only attribution that reaches the
+CRM.** FXBO files it under the user's marketing details, where the campaign, ad
+set and ad can still be read per lead — so nothing is lost, but it is read in a
+different place than a sales person would look first.
 
 Everything else the endpoint accepts — `password`, `middleName`, `city`,
 `birthDate`, `title`, `partnerId`, `secondaryEmail`, `secondaryPhone`,
@@ -216,13 +227,8 @@ interesting. `ib: false` is sent because the sheet states it; `city` is omitted
 because nobody asked the lead for one. So a sheet switched to `ib: true` changes
 one field in the payload, and no field ever carries a value we invented.
 
-**One thing to verify on the first real lead.** The API documents `referrer` as
-*lead source*, a free string, and 499 of 500 users leave it empty — but the one
-that does not holds `13311`, which reads like a user id. If FXBO's UI renders
-the field as a link to a referring user rather than as text, `Partners-IB-Iraq`
-will look wrong there, and the ad set name moves to a tag instead. This is
-checked by eye on the first lead the module creates, before the sheets are left
-running.
+Every field above is therefore defensible on its own terms, and the payload is
+small enough to read in full in the tab beside the row that produced it.
 
 **The Meta lead id is deliberately not pushed.** It would have to go in a tag,
 where it would be noise in every CRM list view. It is held in `meta_lead_rows`
@@ -258,15 +264,26 @@ In order, first that answers:
 If none answers, `country` is omitted and the row still goes through. A lead
 without a country is workable; a lead filed under the wrong one is not.
 
-### 6.3 Lead source
+### 6.3 Lead source, when a sheet turns it on
 
-`referrer` is the ad set name, read from the row rather than configured, so the
-same sheet produces a different value as campaigns are launched.
+`referrer` is off on all three sheets and nothing is sent. The derivation is
+specified here because the per-sheet switch exists, and a rule invented later
+under time pressure is how two sheets end up disagreeing about what a lead
+source means.
 
-`adset_name` is empty on organic and test rows, and may be empty on a lead that
-arrives through a form shared outside an ad. The fallback is `campaign_name`,
-then `form_name` — `Zero-Spread-UAE` is a more useful lead source than nothing.
-If all three are empty, `referrer` is omitted.
+When on, `referrer` is the row's `adset_name` — read from the row, not
+configured, so the same sheet produces a different value as campaigns are
+launched. `adset_name` is empty on organic and test rows, and on a lead from a
+form shared outside an ad; the fallback is then `campaign_name`, then
+`form_name`, because `Zero-Spread-UAE` is a more useful lead source than
+nothing. If all three are empty the field is omitted.
+
+**It needs one look before it is trusted.** The API documents `referrer` as
+*lead source*, a free string, and 499 of 500 users leave it empty — but the one
+that does not holds `13311`, which reads like a user id. If FXBO's UI renders
+the field as a link to a referring user rather than as text, an ad set name
+will look wrong there and belongs in a tag instead. Whoever switches this on
+checks the first lead by eye.
 
 ### 6.4 utmParams
 
@@ -294,23 +311,26 @@ otherwise truncate everything after it.
 
 ## 7. Registering a sheet, and the first read
 
-A sheet is added in the tab, not in code: spreadsheet id, tab name, a label, the
-language, and — all defaulting to off or empty — the IB flag, an owner, a
-status and tags.
+A sheet is added in the tab, not in code: spreadsheet id, tab name, a label,
+the language, and — all defaulting to off or empty — the IB flag, a lead
+source, an owner, a status and tags.
 
 The three sheets go in like this:
 
 | | Iraq | Turkey | UAE |
 |---|---|---|---|
 | Label | Meta – Iraq | Meta – Turkey | Meta – UAE |
-| `language` | `ar` | `tr` | `en` |
+| `language` | `en` | `en` | `en` |
 | `ib` | off | off | off |
+| `referrer` | off | off | off |
 | `managerId` | empty | empty | empty |
 | `tags` | empty | empty | empty |
 | `status` | empty | empty | empty |
 
-Only the label and the language differ, which is the point: the three sheets
-behave identically unless someone deliberately makes one differ.
+**Only the label differs.** That is the point, and it is worth stating plainly:
+there is currently no setting on which the three sheets disagree, so any future
+difference between them will be one somebody chose. The per-sheet columns exist
+to make that choice cheap, not because it has been made.
 
 On the **first** poll after a sheet is registered, every row then present is
 written directly as `skipped_existing` and nothing is sent. The sheet's
